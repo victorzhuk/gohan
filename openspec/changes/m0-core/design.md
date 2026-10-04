@@ -23,6 +23,7 @@ core/streams/   package streams    event kinds and payloads, Done, RunNotice/Not
                                    Attach, Collect/Last/Drain
 core/runtime/   package runtime    Stepper, Runtime, State, Status, native runtime
 core/flowdef/   package flowdef    definition model only (M4 fills it)
+std/flow               Extract and Classify recipes
 std/            package std        presets and DefaultPrompts
 std/permission  std/guard  std/structured  std/limit  std/retry  std/notes  std/outputs  std/toolsearch
                 std/keys  std/route  std/tokens
@@ -44,7 +45,11 @@ Every port ships a memory implementation in `core` (not `std`): they are the ref
 ## Test strategy for M0
 
 - Subtest per scenario ID; table-driven where several IDs share a fixture.
-- `gohantest.ScriptedModel` for every model interaction; no network in `-short`.
+- `gohantest.ScriptedModel` for every model interaction; no network in `-short`. Interim: the
+  testkit lands in task 29, so rows 22-27 use a local scripted model per package - three such
+  fakes are already landed (`core/build_test.go`, `core/model_stream_test.go`, `std/route/route_test.go`)
+  - and task 29 replaces them. A local fake that uses real time breaks the synctest bubble, so
+  its delay must yield on a channel, never on a timer.
 - `synctest` for every time-dependent scenario (leases, expiry, wall clock, windows).
 - Goroutine-leak profile in conformance suites.
 - `storetest` runs against memory implementations in M0 and is reused unchanged by `adapter/postgres` in M3.

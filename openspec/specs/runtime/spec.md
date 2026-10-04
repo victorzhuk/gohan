@@ -136,6 +136,7 @@ Resume strategies:
 ### Graceful shutdown
 
 ```go
+
 func (s *Stack) Shutdown(ctx context.Context) error
 func (s *Stack) Ready() bool
 func (s *Stack) Health(ctx context.Context) HealthReport
@@ -160,6 +161,21 @@ type ShutdownIncomplete struct {
 	RunIDs []string
 }
 ```
+
+The component-event sink is normative in shape:
+
+```go
+// Sink receives the component-level events a governed decorator produces.
+// A runtime never emits these itself; it reads them from the run-scoped ctx.
+type Sink interface {
+	Emit(ctx context.Context, e Event)
+}
+
+func WithSink(ctx context.Context, s Sink) context.Context
+func SinkFrom(ctx context.Context) (Sink, bool)
+```
+
+`Drive` installs the sink in the ctx it propagates into component calls. A component that finds no sink drops the event and carries on.
 
 The service calls `Shutdown` on SIGTERM with the grace budget as the ctx deadline (Kubernetes: `terminationGracePeriodSeconds` minus the preStop delay). Rules:
 

@@ -653,8 +653,9 @@
   },
   "runtime.message-round-trip": {
     "capability": "runtime",
+    "deferred_to": "M2",
     "origin": "R13",
-    "title": "message round trip"
+    "title": "message round trip (cross-backend: eino AgenticMessage and adk-go genai.Content)"
   },
   "streams.disconnect-during-side-effect": {
     "capability": "streams",
