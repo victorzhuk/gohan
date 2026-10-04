@@ -76,7 +76,7 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - scenarios: `errors.detail-never-carries-provider-body`, `errors.retry-after-on-retryable`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestProblemDetail'`
 
-- [ ] 3.4 `core`: Define terminal stream failure contracts using `Problem`, the next `EventMeta.Seq` and `gohan.stream_interrupted`; test core representations without introducing the M4 HTTP/SSE adapter.
+- [x] 3.4 `core`: Define terminal stream failure contracts using `Problem`, the next `EventMeta.Seq` and `gohan.stream_interrupted`; test core representations without introducing the M4 HTTP/SSE adapter.
   - files: `core/stream_error.go`, `core/stream_error_test.go`
   - scenarios: `streams.terminal-error-event`, `streams.close-without-done-is-interrupted`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestStreamErrors'`
@@ -188,14 +188,14 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - scenarios: `stores.concurrent-consume`, `suspension.token-reuse`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestCheckpointConsume'`
 
-9. [ ] `core`: `Journal` port + memory implementation, `Fingerprint`, `Reserve`/`Complete`, TTL. — `stores.concurrent-reserve`, `stores.journal-ttl`, `stores.replay-returns-recorded-result`
+9. [x] `core`: `Journal` port + memory implementation, `Fingerprint`, `Reserve`/`Complete`, TTL. — `stores.concurrent-reserve`, `stores.journal-ttl`, `stores.replay-returns-recorded-result`
 
-- [ ] 9.1 `core`: Implement `Journal`, its memory store, `Fingerprint`, `Reserve`/`Complete`, `ByFingerprint` and store-clock TTL, keyed by the row-3 `CallKey`.
+- [x] 9.1 `core`: Implement `Journal`, its memory store, `Fingerprint`, `Reserve`/`Complete`, `ByFingerprint` and store-clock TTL, keyed by the row-3 `CallKey`.
   - files: `core/stores/journal.go`, `core/stores/journal_memory.go`, `core/stores/journal_reserve_test.go`
   - scenarios: `stores.concurrent-reserve`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestJournalReserve'`
 
-- [ ] 9.2 `core`: Test `Journal` result expiry after run completion and recorded-result replay without tool execution.
+- [x] 9.2 `core`: Test `Journal` result expiry after run completion and recorded-result replay without tool execution.
   - files: `core/stores/journal_lifecycle_test.go`
   - scenarios: `stores.journal-ttl`, `stores.replay-returns-recorded-result`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestJournalLifecycle'`
@@ -901,6 +901,8 @@ The rows above keep their reviewed scope; these are the places the review correc
 - Row 15: `std/` root is package `std` and gains journal, shield, verify and uncertainty; the canonical fingerprint helper is frozen in `std/journal.go` (the spec gives a formula, not a function); metrics, the `Drive` loop's append count, `Flow.Invoke`/`Done` emission and `Recover`/`Resume` wiring are deferred to rows 22/23/24/27/28.
 - Row 16: `core/guards` declares `GuardInput`, `GuardAction`, `GuardVerdict`, `Guard`, `OutputMode` and `Fallback` — the design table's placement, except `GuardStage` and `GuardBlockedError`, which already live in `core/types` from row 3 and are referenced rather than moved. Frozen in `std/guard`: the rules grammar (`Rule{Name, Contains, Action}`, case-insensitive substring, first match decides), `Fence`/`OriginGuard`/`ContextGuard`, `Buffered`/`Windowed` with `DefaultWindow = 64`. Deferred: the failing `Build` (21.1), spans (28.1), `Flow.Invoke` (23.1), `Done(guard_blocked)` (23.2), the assembler's fencing call site (19.1), the chain-side origin overwrite (22).
 - Row 17: `ToolPolicy` stays in the driver package because its `DescribeGuard` is a `guards.Guard` and the type floor may not import `core/guards`; the effect cap is applied before gate evaluation. Frozen in `std`: the manifest hash (SHA-256 over name, description, schema, effect and scopes) and the pinned-file shape `{version:1, tools:[{name,hash}]}` sorted by name, since the spec declares neither; `NarrowTools` rejects widening with `ErrToolFilterWidened` and re-emits in base order. The active tool set persists in `Checkpoint.Data` — no store shape change. `depends_on` 19.1 dropped from 17.2: the assembler is the filter's consumer, not its dependency. Deferred: `Build`'s manifest option and share warning (21), `Replay`'s drift error (22), the effect-capped metric (28).
+
+- Chunk 3.4 and row 9: 3.4 was skipped when the rest of row 3 landed, and row 9's chunks landed without their ticks; both are closed now with their verifies green. 3.4's file resolves to `core/types/stream_error.go`, next to the payload vocabulary row 3 landed in `core/types/event.go`, rather than to a new `core/streams` package — the landed payload split wins over the design table's prose.
 
 ## Deferred
 
