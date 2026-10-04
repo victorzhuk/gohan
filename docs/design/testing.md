@@ -1,0 +1,55 @@
+## 11. Testing strategy
+
+- `gohantest.ScriptedModel`: canned turns (text, tool calls, errors, per-chunk delays), assertions on received requests.
+- `gohantest.Recorder` / `Replayer`: each model call is keyed by `hash(assembled request)` + profile `Version` (prefix-stable assembly keeps keys stable across unrelated edits); streams are recorded as timed chunk sequences and replayed under `synctest`. Modes: `Strict` (key must match, else the test fails with the first differing block), `ByTurn` (match by turn index and tool names when prompts were edited deliberately), `Rerecord`. Cassettes live in `t.ArtifactDir()`-relative fixtures and record the model version they came from.
+- `evals` (contract in `openspec/specs/release/`): SHA-pinned datasets, delta gating with hard-block/review bands, judge ×3 median with spread flag, pairwise shadow runner, `Import(sessionID)` through the `Redactor`, online sampler; plus tolerance-band assertions (`>= baseline - tolerance`), `pass@k` and `pass^k`, trajectory assertions on tool sequences, structured-field checks; LLM-backed judges are `Decider`s with temperature 0, enum/boolean output through constrained decoding, pinned `Version`, and a sampled human-label comparison job.
+- Conformance suites: `conformance.Runtime`, `conformance.Chain`, `conformance.Flow`, `conformance.Model`, `storetest.*`; adapters run them in their module tests. `conformance.Model(t, newModel, fixtures)` replays a fixture set every provider adapter ships (recorded responses for 429 with `Retry-After`, 5xx, 401, 400, context overflow, retired model, no-usage response, `max_tokens` truncation mid tool call, unmodelled block, explicit cache markers) and asserts the provider adapter contract in `openspec/specs/model/`: error classes, `RetryAfter`, `Usage` incl. cached/cache-write tokens, `ModelVersion` and `Estimated`, delta ordering, complete `ToolUse`, truncation marking, cancellation within 100 ms, `Idle` timeout, `Raw` round-trip, declared fidelity honoured, iterator contract.
+- Round-trip property tests for all message converters.
+- Scenario tests for S1–S4 in `examples/excursions` are the acceptance suite of the spec.
+- Real-provider integration tests behind a build tag; load test for S3 in a separate pipeline.
+- Scenario binding: each scenario ID in `openspec/scenarios.json` is the exact name of the subtest that covers it (`t.Run("flow.plain-invoke", …)`); `task spec:coverage` lists IDs with no matching subtest in `go test -list` output and subtests named like IDs that are not in the registry. No comments or tags carry IDs.
+- `t.Parallel()` and `t.Cleanup()` throughout; `synctest` for harness-time tests (budgets, timeouts, heartbeats) and `memory.WithNow` or short TTLs against testcontainers for store-time tests (`stores` *Two clocks*); goroutine-leak profile in conformance; hand-written fakes in `gohantest`, no mock generators.
+
+
+## Testkit shapes (illustrative tier — testkit is not a capability; names may change in task 29)
+
+```go
+// gohantest
+func NewScriptedModel(profile gohan.ModelProfile, turns ...Turn) *ScriptedModel
+func Text(s string) Turn
+func ToolCall(name string, args any) Turn
+func Fail(class gohan.ErrorClass) Turn
+func Refuse() Turn
+func Delay(d time.Duration) Turn
+func WithUsage(u gohan.Usage) Turn
+func (m *ScriptedModel) Requests() []gohan.ModelRequest
+
+func Record(t *testing.T, real gohan.Model) gohan.Model
+func Replay(t *testing.T) gohan.Model
+// cassette: testdata/cassettes/<TestName>.json — {"version": "<profile version>", "calls": [{"key": "<sha256 of assembled request>", "chunks": [{"at_ms": 12, "chunk": {...}}, …], "usage": {...}}]}
+// mode from GOHAN_CASSETTES = strict | byturn | rerecord (default strict)
+
+func Flaky(m gohan.Model, plan FaultPlan) gohan.Model
+type FaultPlan struct{ Every int; Class gohan.ErrorClass; AfterChunks int }
+func LeakCheck(t *testing.T)
+
+// conformance
+func Runtime(t *testing.T, newRuntime func() gohan.Runtime)               // runtime.* scenarios
+func Chain(t *testing.T, newStack func(chain gohan.ToolChain) *gohan.Stack) // chains.* ordering scenarios
+func Flow(t *testing.T, newFlow func() gohan.Flow[any, any])              // flow.*, suspension.* scenarios
+func Model(t *testing.T, newModel func() gohan.Model, fixtures Fixtures)  // model.status-to-class … model.raw-round-trip
+
+// storetest
+func SessionLog(t *testing.T, new func() gohan.SessionLog)
+func Checkpoints(t *testing.T, new func() gohan.Checkpoints)
+func Journal(t *testing.T, new func() gohan.Journal)
+func Runs(t *testing.T, new func() gohan.Runs)
+func AuditLog(t *testing.T, new func() gohan.AuditLog)
+func EventLog(t *testing.T, new func() gohan.EventLog)
+func Schemas(t *testing.T, s gohan.Stores)
+func Bloat(t *testing.T, s gohan.Stores)
+```
+
+Every suite runs the scenarios listed against its capability in `openspec/scenarios.json`, using subtest names equal to the IDs, so `task spec:coverage` counts adapters' conformance runs.
+
+Performance gates are specified in `openspec/specs/performance/spec.md`.

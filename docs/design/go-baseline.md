@@ -1,0 +1,18 @@
+# Go baseline and idiomatic contract
+
+**Toolchain.** `go 1.27` in every `go.mod`. Adopt what the 1.26 and 1.27 toolchains give (1.27.0 released 2026-08-19): `encoding/json/v2` for all marshaling and `jsontext` for streaming validation of model-emitted tool args (duplicate keys and invalid UTF-8 are rejected → `Failed(Permanent)` args error, metric `gohan.tool.invalid_args{reason}`); stdlib `uuid` for run/session/call IDs; generic methods where they remove package-level helpers; `errors.AsType[T]` (added in 1.26) in all examples and internal code; `testing/synctest` + `synctest.Sleep` + `httptest.NewTestServer` for every timeout, retry, breaker and streaming test (no `time.Sleep` in tests); `GOEXPERIMENT=goroutineleakprofile` in the conformance leak check; `t.ArtifactDir` (added in 1.26) for recorded fixtures; `tool` directives (added in 1.24) in `go.mod` for `golangci-lint` and `govulncheck`. Drop to 1.26 only for a feature with no 1.27 benefit; none is known.
+
+**Dependencies.** Core+std module: stdlib, OTel API, one JSON-schema library. Nothing else. Adapters own their dependencies.
+
+**Idioms (enforced in review and by lint where possible):**
+
+- Constructors take required arguments positionally and everything else as functional options: `gohan.Build(opts ...Option)`, `agent.New(stack, spec, rt, opts ...agent.Option)`, `NewTool(name, desc, fn, opts ...ToolOption)`. Options are `func(*config) error`; `Build` returns joined errors.
+- Interfaces are small and defined by the consumer: `Model` (2 methods), `Tool` (2), `Decider` (1), store ports (≤ 5). Behavior is added with callbacks and middleware (`func(next) next`), not by widening interfaces. Optional behavior uses interface upgrades (`if s, ok := store.(TxCompleter); ok`).
+- `context.Context` is the first parameter everywhere; run scope travels in `ctx` (`RunInfoFrom`, `PrincipalFrom`; closed set, `(T, bool)` accessors, setters in transport only — `identity` rule 8); nothing is stored in globals; no `init()` registration; `context.WithoutCancel` only in the cancel shield.
+- Streams are `iter.Seq2[T, error]` under the iterator contract (§6.5); pull with `iter.Pull` only when needed and always `defer stop()`.
+- Errors: exported sentinels (`ErrRunActive`, `ErrTokenConsumed`, `ErrVersionConflict`, `ErrNoPrincipal`, `ErrNotSuspendable`, `ErrManifestDrift`, `ErrCheckpointIncompatible`, `ErrToolSetDrift`) checked with `errors.Is`; typed errors (`*SuspendError`, `*StepError`, `*GuardBlockedError`, `*LimitExceededError`, `*UncertainOutcomeError`, `*ModelError`) for `errors.AsType`; `errors.Join` when several endpoints fail; wraps are short (`"reserve journal: %w"`).
+- Logging: `log/slog` only. `WithLogger(*slog.Logger)` (default `slog.Default()`); the harness derives a per-run logger with `run`, `session`, `root`, `flow`, `tenant` attrs; each step logs at `Debug` with `step`; decisions (gate, guard, failover, limit) log at `Info`; never message content unless content capture is on. Users wrap with a zerolog/zap handler in their own code; gohan never depends on one.
+- Zero-value usability where it makes sense (`RunLimits{}` means defaults); `Build` validates the rest at startup rather than lazily.
+- No reflection in hot paths: schema derivation for `NewTool` runs once at construction; hot paths are plain function calls over slices.
+- Generics only where they remove code or unsafe casts: `Flow[In, Out]`, `Decider[S, D]`, `Decision[D]`, `Step[M]`. No generic result wrappers, no generic stores.
+- Go proverbs applied: accept interfaces, return structs; the bigger the interface, the weaker the abstraction; make the zero value useful; a little copying is better than a little dependency; clear is better than clever.

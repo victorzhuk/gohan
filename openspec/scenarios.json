@@ -1,0 +1,2794 @@
+{
+  "flow.plain-invoke": {
+    "capability": "flow",
+    "origin": "R1",
+    "title": "plain invoke"
+  },
+  "flow.not-suspendable": {
+    "capability": "flow",
+    "origin": "R1",
+    "title": "not suspendable"
+  },
+  "flow.backend-swap": {
+    "capability": "flow",
+    "origin": "R1",
+    "title": "backend swap",
+    "deferred_to": "M2"
+  },
+  "messages.order-preserved": {
+    "capability": "messages",
+    "origin": "R5o",
+    "title": "order preserved"
+  },
+  "messages.reasoning-dropped-across-providers": {
+    "capability": "messages",
+    "origin": "R5o",
+    "title": "reasoning dropped across providers"
+  },
+  "messages.fidelity-gate-at-build": {
+    "capability": "messages",
+    "origin": "R5o",
+    "title": "fidelity gate at build"
+  },
+  "messages.typed-deltas": {
+    "capability": "messages",
+    "origin": "R5o",
+    "title": "typed deltas"
+  },
+  "messages.duplicate-keys-in-tool-args": {
+    "capability": "messages",
+    "origin": "R5o",
+    "title": "duplicate keys in tool args"
+  },
+  "messages.deterministic-tool-filter-on-replay": {
+    "capability": "messages",
+    "origin": "R5o",
+    "title": "deterministic tool filter on replay"
+  },
+  "suspension.approve-on-another-pod": {
+    "capability": "suspension",
+    "origin": "R4",
+    "title": "approve on another pod"
+  },
+  "suspension.token-reuse": {
+    "capability": "suspension",
+    "origin": "R4",
+    "title": "token reuse"
+  },
+  "suspension.reject-and-edit": {
+    "capability": "suspension",
+    "origin": "R4",
+    "title": "reject and edit"
+  },
+  "suspension.async-tool": {
+    "capability": "suspension",
+    "origin": "R4",
+    "title": "async tool"
+  },
+  "suspension.scheduled": {
+    "capability": "suspension",
+    "origin": "R4",
+    "title": "scheduled"
+  },
+  "suspension.mismatch": {
+    "capability": "suspension",
+    "origin": "R4",
+    "title": "mismatch"
+  },
+  "identity.no-principal": {
+    "capability": "identity",
+    "origin": "R8",
+    "title": "no principal"
+  },
+  "identity.model-cannot-set-identity": {
+    "capability": "identity",
+    "origin": "R8",
+    "title": "model cannot set identity"
+  },
+  "identity.credentials-on-resume": {
+    "capability": "identity",
+    "origin": "R8",
+    "title": "credentials on resume"
+  },
+  "identity.token-never-exported": {
+    "capability": "identity",
+    "origin": "R8",
+    "title": "token never exported"
+  },
+  "identity.tree-budget": {
+    "capability": "identity",
+    "origin": "R5g",
+    "title": "tree budget"
+  },
+  "identity.nested-spans-and-recovery": {
+    "capability": "identity",
+    "origin": "R5g",
+    "title": "nested spans and recovery"
+  },
+  "model.429-fails-over-without-retry": {
+    "capability": "model",
+    "origin": "R5j",
+    "title": "429 fails over without retry"
+  },
+  "model.5xx-retries-then-fails-over": {
+    "capability": "model",
+    "origin": "R5j",
+    "title": "5xx retries then fails over"
+  },
+  "model.incompatible-fallback-rejected-at-build": {
+    "capability": "model",
+    "origin": "R5j",
+    "title": "incompatible fallback rejected at build"
+  },
+  "model.context-re-fit-on-fallback": {
+    "capability": "model",
+    "origin": "R5j",
+    "title": "context re-fit on fallback"
+  },
+  "model.breaker-opens": {
+    "capability": "model",
+    "origin": "R5j",
+    "title": "breaker opens"
+  },
+  "model.version-drift": {
+    "capability": "model",
+    "origin": "R5j",
+    "title": "version drift",
+    "deferred_to": "M3"
+  },
+  "model.early-break-releases": {
+    "capability": "model",
+    "origin": "R5k",
+    "title": "early break releases"
+  },
+  "model.cancel-returns-promptly": {
+    "capability": "model",
+    "origin": "R5k",
+    "title": "cancel returns promptly"
+  },
+  "tools.unknown-tool": {
+    "capability": "tools",
+    "origin": "R5d",
+    "title": "unknown tool"
+  },
+  "tools.invalid-args-on-raw-tool": {
+    "capability": "tools",
+    "origin": "R5d",
+    "title": "invalid args on raw Tool"
+  },
+  "tools.classified-error": {
+    "capability": "tools",
+    "origin": "R5d",
+    "title": "classified error"
+  },
+  "tools.large-output-stored": {
+    "capability": "tools",
+    "origin": "R5d",
+    "title": "large output stored"
+  },
+  "tools.notes-survive-reset": {
+    "capability": "tools",
+    "origin": "R5d",
+    "title": "notes survive reset"
+  },
+  "tools.poisoned-description": {
+    "capability": "tools",
+    "origin": "R5f",
+    "title": "poisoned description"
+  },
+  "tools.rug-pull": {
+    "capability": "tools",
+    "origin": "R5f",
+    "title": "rug pull"
+  },
+  "tools.untrusted-effect-cap": {
+    "capability": "tools",
+    "origin": "R5f",
+    "title": "untrusted effect cap"
+  },
+  "tools.tool-filter-per-turn": {
+    "capability": "tools",
+    "origin": "R5l",
+    "title": "tool filter per turn"
+  },
+  "tools.inspect-from-another-pod": {
+    "capability": "tools",
+    "origin": "R5l",
+    "title": "inspect from another pod"
+  },
+  "tools.not-assembled-until-discovered": {
+    "capability": "tools",
+    "origin": "R5q",
+    "title": "not assembled until discovered"
+  },
+  "tools.activation-persists-across-resume": {
+    "capability": "tools",
+    "origin": "R5q",
+    "title": "activation persists across resume"
+  },
+  "tools.governed-while-deferred": {
+    "capability": "tools",
+    "origin": "R5q",
+    "title": "governed while deferred"
+  },
+  "tools.timeout-kills-group": {
+    "capability": "tools",
+    "origin": "R14",
+    "title": "timeout kills group"
+  },
+  "tools.output-cap": {
+    "capability": "tools",
+    "origin": "R14",
+    "title": "output cap"
+  },
+  "tools.env-allowlist": {
+    "capability": "tools",
+    "origin": "R14",
+    "title": "env allowlist"
+  },
+  "chains.denied-call-not-journaled": {
+    "capability": "chains",
+    "origin": "R3",
+    "title": "denied call not journaled"
+  },
+  "chains.scope-before-decider": {
+    "capability": "chains",
+    "origin": "R3",
+    "title": "scope before decider"
+  },
+  "chains.fallback-charged": {
+    "capability": "chains",
+    "origin": "R3",
+    "title": "fallback charged"
+  },
+  "chains.no-retry-after-first-chunk": {
+    "capability": "chains",
+    "origin": "R3",
+    "title": "no retry after first chunk"
+  },
+  "chains.cache-replace-is-free": {
+    "capability": "chains",
+    "origin": "R3",
+    "title": "cache replace is free"
+  },
+  "chains.per-endpoint-limits": {
+    "capability": "chains",
+    "origin": "R3",
+    "title": "per-endpoint limits"
+  },
+  "chains.empty-chains": {
+    "capability": "chains",
+    "origin": "R5i",
+    "title": "empty chains"
+  },
+  "chains.prompt-strings-accounted-for": {
+    "capability": "chains",
+    "origin": "R5i",
+    "title": "prompt strings accounted for"
+  },
+  "chains.step-named-failure": {
+    "capability": "chains",
+    "origin": "R5i",
+    "title": "step-named failure"
+  },
+  "chains.read-only-tools-pay-nothing": {
+    "capability": "chains",
+    "origin": "R5i",
+    "title": "read-only tools pay nothing"
+  },
+  "chains.preset-is-copyable": {
+    "capability": "chains",
+    "origin": "R5i",
+    "title": "preset is copyable"
+  },
+  "cache.refused-on-conversation": {
+    "capability": "cache",
+    "origin": "R5s",
+    "title": "refused on conversation",
+    "deferred_to": "M1"
+  },
+  "cache.key-includes-manifest": {
+    "capability": "cache",
+    "origin": "R5s",
+    "title": "key includes manifest",
+    "deferred_to": "M1"
+  },
+  "cache.never-cache-failures": {
+    "capability": "cache",
+    "origin": "R5s",
+    "title": "never cache failures",
+    "deferred_to": "M1"
+  },
+  "redaction.pseudonym-stable-within-session": {
+    "capability": "redaction",
+    "origin": "R5x",
+    "title": "pseudonym stable within session",
+    "deferred_to": "M1"
+  },
+  "redaction.stores-never-see-raw-entities": {
+    "capability": "redaction",
+    "origin": "R5x",
+    "title": "stores never see raw entities",
+    "deferred_to": "M1"
+  },
+  "redaction.streaming-rehydration": {
+    "capability": "redaction",
+    "origin": "R5x",
+    "title": "streaming rehydration",
+    "deferred_to": "M1"
+  },
+  "redaction.hallucinated-token-dropped": {
+    "capability": "redaction",
+    "origin": "R5x",
+    "title": "hallucinated token dropped",
+    "deferred_to": "M1"
+  },
+  "redaction.erasure": {
+    "capability": "redaction",
+    "origin": "R5x",
+    "title": "erasure",
+    "deferred_to": "M1"
+  },
+  "redaction.residency-enforced-at-build": {
+    "capability": "redaction",
+    "origin": "R5x",
+    "title": "residency enforced at build",
+    "deferred_to": "M1"
+  },
+  "guards.input-injection-blocked": {
+    "capability": "guards",
+    "origin": "R7",
+    "title": "input injection blocked"
+  },
+  "guards.indirect-injection": {
+    "capability": "guards",
+    "origin": "R7",
+    "title": "indirect injection"
+  },
+  "guards.windowed-output": {
+    "capability": "guards",
+    "origin": "R7",
+    "title": "windowed output"
+  },
+  "guards.intermediate-turns-unguarded": {
+    "capability": "guards",
+    "origin": "R7",
+    "title": "intermediate turns unguarded"
+  },
+  "guards.redaction": {
+    "capability": "guards",
+    "origin": "R7",
+    "title": "redaction",
+    "deferred_to": "M1"
+  },
+  "guards.notes-poisoning-blocked": {
+    "capability": "guards",
+    "origin": "R5e",
+    "title": "notes poisoning blocked"
+  },
+  "guards.provider-output-fenced": {
+    "capability": "guards",
+    "origin": "R5e",
+    "title": "provider output fenced"
+  },
+  "guards.origin-survives-conversion": {
+    "capability": "guards",
+    "origin": "R5e",
+    "title": "origin survives conversion",
+    "deferred_to": "M2"
+  },
+  "guards.origin-not-caller-settable": {
+    "capability": "guards",
+    "origin": "R5e",
+    "title": "origin not caller-settable"
+  },
+  "permission.grant-removes-the-repeat-ask": {
+    "capability": "permission",
+    "origin": "R5p",
+    "title": "grant removes the repeat ask"
+  },
+  "permission.fingerprint-change-misses-the-grant": {
+    "capability": "permission",
+    "origin": "R5p",
+    "title": "fingerprint change misses the grant"
+  },
+  "permission.grant-does-not-cross-sessions-or-principals": {
+    "capability": "permission",
+    "origin": "R5p",
+    "title": "grant does not cross sessions or principals"
+  },
+  "permission.rich-request": {
+    "capability": "permission",
+    "origin": "R5p",
+    "title": "rich request"
+  },
+  "permission.expiry-default": {
+    "capability": "permission",
+    "origin": "R5p",
+    "title": "expiry default"
+  },
+  "permission.queue-flood": {
+    "capability": "permission",
+    "origin": "R5p",
+    "title": "queue flood"
+  },
+  "assembly.prefix-stability": {
+    "capability": "assembly",
+    "origin": "R10",
+    "title": "prefix stability"
+  },
+  "assembly.tool-order": {
+    "capability": "assembly",
+    "origin": "R10",
+    "title": "tool order"
+  },
+  "assembly.truncate-policy": {
+    "capability": "assembly",
+    "origin": "R10",
+    "title": "truncate policy"
+  },
+  "build.impossible-combination": {
+    "capability": "build",
+    "origin": "R11",
+    "title": "impossible combination"
+  },
+  "build.resolved-matrix": {
+    "capability": "build",
+    "origin": "R11",
+    "title": "resolved matrix"
+  },
+  "stores.append-conflict": {
+    "capability": "stores",
+    "origin": "R6",
+    "title": "append conflict"
+  },
+  "stores.concurrent-consume": {
+    "capability": "stores",
+    "origin": "R6",
+    "title": "concurrent consume"
+  },
+  "stores.concurrent-reserve": {
+    "capability": "stores",
+    "origin": "R6",
+    "title": "concurrent reserve"
+  },
+  "stores.no-secrets-stored": {
+    "capability": "stores",
+    "origin": "R6",
+    "title": "no secrets stored"
+  },
+  "stores.lease-exclusivity": {
+    "capability": "stores",
+    "origin": "R6",
+    "title": "lease exclusivity"
+  },
+  "stores.reclaim-race": {
+    "capability": "stores",
+    "origin": "R6",
+    "title": "reclaim race"
+  },
+  "stores.replay-returns-recorded-result": {
+    "capability": "stores",
+    "origin": "R5",
+    "title": "replay returns recorded result"
+  },
+  "stores.crash-window": {
+    "capability": "stores",
+    "origin": "R5",
+    "title": "crash window"
+  },
+  "stores.same-transaction-journal": {
+    "capability": "stores",
+    "origin": "R5",
+    "title": "same-transaction journal",
+    "deferred_to": "M1"
+  },
+  "stores.late-commit": {
+    "capability": "stores",
+    "origin": "R5a",
+    "title": "late commit"
+  },
+  "stores.read-back-offered": {
+    "capability": "stores",
+    "origin": "R5a",
+    "title": "read-back offered"
+  },
+  "stores.uncertainty-surfaced": {
+    "capability": "stores",
+    "origin": "R5a",
+    "title": "uncertainty surfaced"
+  },
+  "stores.fingerprint-after-compaction": {
+    "capability": "stores",
+    "origin": "R5a",
+    "title": "fingerprint after compaction"
+  },
+  "stores.chain-written-only": {
+    "capability": "stores",
+    "origin": "R5m",
+    "title": "chain-written only"
+  },
+  "stores.decision-trail": {
+    "capability": "stores",
+    "origin": "R5m",
+    "title": "decision trail"
+  },
+  "stores.no-content": {
+    "capability": "stores",
+    "origin": "R5m",
+    "title": "no content"
+  },
+  "stores.append-failure-is-fatal-to-the-step": {
+    "capability": "stores",
+    "origin": "R5m",
+    "title": "append failure is fatal to the step"
+  },
+  "stores.journal-ttl": {
+    "capability": "stores",
+    "origin": "R5m",
+    "title": "journal TTL"
+  },
+  "stores.hash-chain": {
+    "capability": "stores",
+    "origin": "R5m",
+    "title": "hash chain"
+  },
+  "stores.native-checkpoint-after-adapter-upgrade": {
+    "capability": "stores",
+    "origin": "R5n",
+    "title": "native checkpoint after adapter upgrade"
+  },
+  "stores.graph-checkpoint-incompatible": {
+    "capability": "stores",
+    "origin": "R5n",
+    "title": "graph checkpoint incompatible"
+  },
+  "stores.shared-pool-across-services": {
+    "capability": "stores",
+    "origin": "R5n",
+    "title": "shared pool across services",
+    "deferred_to": "M3"
+  },
+  "stores.batch-yields-to-interactive": {
+    "capability": "stores",
+    "origin": "R5n",
+    "title": "batch yields to interactive",
+    "deferred_to": "M3"
+  },
+  "stores.daily-pool-budget": {
+    "capability": "stores",
+    "origin": "R5n",
+    "title": "daily pool budget",
+    "deferred_to": "M3"
+  },
+  "stores.retention-by-partition": {
+    "capability": "stores",
+    "origin": "R5u",
+    "title": "retention by partition",
+    "deferred_to": "M3"
+  },
+  "stores.transaction-across-model-call": {
+    "capability": "stores",
+    "origin": "R5u",
+    "title": "transaction across model call",
+    "deferred_to": "M3"
+  },
+  "stores.bloat-bound": {
+    "capability": "stores",
+    "origin": "R5u",
+    "title": "bloat bound",
+    "deferred_to": "M3"
+  },
+  "recovery.pod-dies-mid-turn": {
+    "capability": "recovery",
+    "origin": "R5b",
+    "title": "pod dies mid-turn"
+  },
+  "recovery.pod-dies-inside-a-side-effect": {
+    "capability": "recovery",
+    "origin": "R5b",
+    "title": "pod dies inside a side effect"
+  },
+  "recovery.no-double-run": {
+    "capability": "recovery",
+    "origin": "R5b",
+    "title": "no double run"
+  },
+  "recovery.headless-recovery-impossible": {
+    "capability": "recovery",
+    "origin": "R5b",
+    "title": "headless recovery impossible"
+  },
+  "limits.hard-cost-abort": {
+    "capability": "limits",
+    "origin": "R5c",
+    "title": "hard cost abort"
+  },
+  "limits.wall-clock": {
+    "capability": "limits",
+    "origin": "R5c",
+    "title": "wall clock"
+  },
+  "limits.limits-under-foreign-backend": {
+    "capability": "limits",
+    "origin": "R5c",
+    "title": "limits under foreign backend",
+    "deferred_to": "M2"
+  },
+  "runtime.plain-answer": {
+    "capability": "runtime",
+    "origin": "R2",
+    "title": "plain answer"
+  },
+  "runtime.tool-round-trip": {
+    "capability": "runtime",
+    "origin": "R2",
+    "title": "tool round trip"
+  },
+  "runtime.parallel-calls-ordering": {
+    "capability": "runtime",
+    "origin": "R2",
+    "title": "parallel calls ordering"
+  },
+  "runtime.max-turns": {
+    "capability": "runtime",
+    "origin": "R2",
+    "title": "max turns"
+  },
+  "runtime.cancellation": {
+    "capability": "runtime",
+    "origin": "R2",
+    "title": "cancellation"
+  },
+  "runtime.foreign-tool-under-native": {
+    "capability": "runtime",
+    "origin": "R13",
+    "title": "foreign tool under native"
+  },
+  "runtime.governed-components-in-eino-graph": {
+    "capability": "runtime",
+    "origin": "R13",
+    "title": "governed components in eino graph",
+    "deferred_to": "M2"
+  },
+  "runtime.message-round-trip": {
+    "capability": "runtime",
+    "origin": "R13",
+    "title": "message round trip"
+  },
+  "streams.disconnect-during-side-effect": {
+    "capability": "streams",
+    "origin": "R5h",
+    "title": "disconnect during side effect"
+  },
+  "streams.disconnect-during-model-call": {
+    "capability": "streams",
+    "origin": "R5h",
+    "title": "disconnect during model call"
+  },
+  "streams.monotonic-seq": {
+    "capability": "streams",
+    "origin": "R5h",
+    "title": "monotonic seq"
+  },
+  "streams.detached-reconnect": {
+    "capability": "streams",
+    "origin": "R5h",
+    "title": "detached reconnect"
+  },
+  "streams.detached-requires-log": {
+    "capability": "streams",
+    "origin": "R5h",
+    "title": "detached requires log"
+  },
+  "telemetry.same-tree-on-all-backends": {
+    "capability": "telemetry",
+    "origin": "R12",
+    "title": "same tree on all backends"
+  },
+  "telemetry.ttft-and-tpot": {
+    "capability": "telemetry",
+    "origin": "R12",
+    "title": "TTFT and TPOT"
+  },
+  "telemetry.loop-detection": {
+    "capability": "telemetry",
+    "origin": "R12",
+    "title": "loop detection"
+  },
+  "telemetry.rename-is-config": {
+    "capability": "telemetry",
+    "origin": "R5r",
+    "title": "rename is config"
+  },
+  "telemetry.langfuse-preset": {
+    "capability": "telemetry",
+    "origin": "R5r",
+    "title": "Langfuse preset",
+    "deferred_to": "M4"
+  },
+  "telemetry.prompt-source-outage": {
+    "capability": "telemetry",
+    "origin": "R5r",
+    "title": "prompt source outage",
+    "deferred_to": "M4"
+  },
+  "telemetry.replay-strictness": {
+    "capability": "telemetry",
+    "origin": "R5r",
+    "title": "replay strictness"
+  },
+  "structured-output.constrained": {
+    "capability": "structured-output",
+    "origin": "R9",
+    "title": "constrained",
+    "deferred_to": "M3"
+  },
+  "structured-output.validate-and-repair": {
+    "capability": "structured-output",
+    "origin": "R9",
+    "title": "validate and repair"
+  },
+  "structured-output.bounds-validated-after-constrained-decoding": {
+    "capability": "structured-output",
+    "origin": "R5t",
+    "title": "bounds validated after constrained decoding"
+  },
+  "structured-output.refusal-as-json": {
+    "capability": "structured-output",
+    "origin": "R5t",
+    "title": "refusal as JSON"
+  },
+  "structured-output.truncated-tool-args": {
+    "capability": "structured-output",
+    "origin": "R5t",
+    "title": "truncated tool args"
+  },
+  "structured-output.reason-first": {
+    "capability": "structured-output",
+    "origin": "R5t",
+    "title": "reason first"
+  },
+  "structured-output.strict-schema": {
+    "capability": "structured-output",
+    "origin": "R5t",
+    "title": "strict schema"
+  },
+  "engines.redelivery-returns-the-same-result": {
+    "capability": "engines",
+    "origin": "R5v",
+    "title": "redelivery returns the same result",
+    "deferred_to": "M0.5"
+  },
+  "engines.duplicate-workers": {
+    "capability": "engines",
+    "origin": "R5v",
+    "title": "duplicate workers",
+    "deferred_to": "M0.5"
+  },
+  "engines.crash-after-consume": {
+    "capability": "engines",
+    "origin": "R5v",
+    "title": "crash after consume",
+    "deferred_to": "M0.5"
+  },
+  "engines.suspended-runs-are-not-reclaimed": {
+    "capability": "engines",
+    "origin": "R5v",
+    "title": "suspended runs are not reclaimed",
+    "deferred_to": "M0.5"
+  },
+  "engines.revoked-authority-on-resume": {
+    "capability": "engines",
+    "origin": "R5v",
+    "title": "revoked authority on resume",
+    "deferred_to": "M0.5"
+  },
+  "engines.frozen-flag-on-replay": {
+    "capability": "engines",
+    "origin": "R5v",
+    "title": "frozen flag on replay",
+    "deferred_to": "M0.5"
+  },
+  "engines.live-deny-beats-approval": {
+    "capability": "engines",
+    "origin": "R5v",
+    "title": "live deny beats approval",
+    "deferred_to": "M0.5"
+  },
+  "engines.stale-control-state": {
+    "capability": "engines",
+    "origin": "R5v",
+    "title": "stale control state",
+    "deferred_to": "M0.5"
+  },
+  "engines.definition-pinned-across-deploy": {
+    "capability": "engines",
+    "origin": "R5v",
+    "title": "definition pinned across deploy",
+    "deferred_to": "M4"
+  },
+  "engines.expression-cannot-reach-a-host-call": {
+    "capability": "engines",
+    "origin": "R5v",
+    "title": "expression cannot reach a host call",
+    "deferred_to": "M4"
+  },
+  "engines.replay-is-step-re-execution": {
+    "capability": "engines",
+    "origin": "R5v",
+    "title": "replay is step re-execution",
+    "deferred_to": "M0.5"
+  },
+  "languages.same-definition-two-front-ends": {
+    "capability": "languages",
+    "origin": "R5w",
+    "title": "same definition, two front-ends",
+    "deferred_to": "M4"
+  },
+  "languages.unknown-call-rejected": {
+    "capability": "languages",
+    "origin": "R5w",
+    "title": "unknown call rejected",
+    "deferred_to": "M4"
+  },
+  "languages.schema-mismatch-rejected": {
+    "capability": "languages",
+    "origin": "R5w",
+    "title": "schema mismatch rejected",
+    "deferred_to": "M4"
+  },
+  "languages.expression-cannot-escape": {
+    "capability": "languages",
+    "origin": "R5w",
+    "title": "expression cannot escape",
+    "deferred_to": "M4"
+  },
+  "languages.expression-budget": {
+    "capability": "languages",
+    "origin": "R5w",
+    "title": "expression budget",
+    "deferred_to": "M4"
+  },
+  "languages.language-admission": {
+    "capability": "languages",
+    "origin": "R5w",
+    "title": "language admission",
+    "deferred_to": "M4"
+  },
+  "languages.unbounded-loop-rejected": {
+    "capability": "languages",
+    "origin": "R5w",
+    "title": "unbounded loop rejected",
+    "deferred_to": "M4"
+  },
+  "languages.approval-on-a-definition-step": {
+    "capability": "languages",
+    "origin": "R5w",
+    "title": "approval on a definition step",
+    "deferred_to": "M4"
+  },
+  "lifecycle.sunset-inside-notice-window": {
+    "capability": "lifecycle",
+    "origin": "R5y",
+    "title": "sunset inside notice window",
+    "deferred_to": "M1"
+  },
+  "lifecycle.deprecated-never-silent": {
+    "capability": "lifecycle",
+    "origin": "R5y",
+    "title": "deprecated never silent",
+    "deferred_to": "M1"
+  },
+  "lifecycle.successor-params-validated": {
+    "capability": "lifecycle",
+    "origin": "R5y",
+    "title": "successor params validated",
+    "deferred_to": "M1"
+  },
+  "lifecycle.upcast-on-read": {
+    "capability": "lifecycle",
+    "origin": "R5y",
+    "title": "upcast on read",
+    "deferred_to": "M1"
+  },
+  "lifecycle.historical-fixtures": {
+    "capability": "lifecycle",
+    "origin": "R5y",
+    "title": "historical fixtures",
+    "deferred_to": "M1"
+  },
+  "lifecycle.cost-tags-forwarded": {
+    "capability": "lifecycle",
+    "origin": "R5y",
+    "title": "cost tags forwarded",
+    "deferred_to": "M1"
+  },
+  "lifecycle.cache-write-socialized": {
+    "capability": "lifecycle",
+    "origin": "R5y",
+    "title": "cache write socialized",
+    "deferred_to": "M1"
+  },
+  "performance.chain-overhead-within-budget": {
+    "capability": "performance",
+    "origin": "RPERF",
+    "title": "chain overhead within budget"
+  },
+  "performance.prefix-build-allocation-free": {
+    "capability": "performance",
+    "origin": "RPERF",
+    "title": "prefix build allocation free"
+  },
+  "performance.regression-gate": {
+    "capability": "performance",
+    "origin": "RPERF",
+    "title": "regression gate"
+  },
+  "context.projection-does-not-write": {
+    "capability": "context",
+    "origin": "ADR-0090",
+    "title": "session log untouched",
+    "deferred_to": "M2"
+  },
+  "context.projection-deterministic": {
+    "capability": "context",
+    "origin": "ADR-0090",
+    "title": "deterministic projection",
+    "deferred_to": "M2"
+  },
+  "context.keep-last-n": {
+    "capability": "context",
+    "origin": "ADR-0090",
+    "title": "keep last N",
+    "deferred_to": "M2"
+  },
+  "context.notes-excluded": {
+    "capability": "context",
+    "origin": "ADR-0090",
+    "title": "notes never cleared",
+    "deferred_to": "M2"
+  },
+  "context.clear-at-least": {
+    "capability": "context",
+    "origin": "ADR-0090",
+    "title": "batched clearing",
+    "deferred_to": "M2"
+  },
+  "context.compaction-persisted": {
+    "capability": "context",
+    "origin": "ADR-0090",
+    "title": "compaction appended",
+    "deferred_to": "M2"
+  },
+  "context.replay-after-compaction": {
+    "capability": "context",
+    "origin": "ADR-0090",
+    "title": "replay after compaction",
+    "deferred_to": "M2"
+  },
+  "context.pending-call-survives": {
+    "capability": "context",
+    "origin": "ADR-0090",
+    "title": "pending call survives",
+    "deferred_to": "M2"
+  },
+  "context.summary-guarded": {
+    "capability": "context",
+    "origin": "ADR-0090",
+    "title": "summary is guarded",
+    "deferred_to": "M2"
+  },
+  "context.opaque-bound-to-model": {
+    "capability": "context",
+    "origin": "ADR-0090",
+    "title": "opaque compaction bound to model",
+    "deferred_to": "M2"
+  },
+  "context.opaque-fallback-rejected": {
+    "capability": "context",
+    "origin": "ADR-0090",
+    "title": "opaque under cross-provider fallback rejected",
+    "deferred_to": "M2"
+  },
+  "context.compaction-audited": {
+    "capability": "context",
+    "origin": "ADR-0090",
+    "title": "compaction audited",
+    "deferred_to": "M2"
+  },
+  "build.opaque-compaction-fallback": {
+    "capability": "build",
+    "origin": "ADR-0090",
+    "title": "opaque compaction under cross-provider fallback",
+    "deferred_to": "M2"
+  },
+  "subflows.fresh-history": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "fresh history",
+    "deferred_to": "M3"
+  },
+  "subflows.child-session": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "child session",
+    "deferred_to": "M3"
+  },
+  "subflows.output-guarded": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "output guarded",
+    "deferred_to": "M3"
+  },
+  "subflows.effect-derived": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "side effect dominates",
+    "deferred_to": "M3"
+  },
+  "subflows.effect-tighten-only": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "tightening only",
+    "deferred_to": "M3"
+  },
+  "subflows.nested-approval": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "approval inside child",
+    "deferred_to": "M3"
+  },
+  "subflows.nested-resume": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "resume routes to child",
+    "deferred_to": "M3"
+  },
+  "subflows.nested-tokens-single-use": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "both tokens single-use",
+    "deferred_to": "M3"
+  },
+  "subflows.max-depth": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "depth limit",
+    "deferred_to": "M3"
+  },
+  "subflows.max-parallel-children": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "parallel children",
+    "deferred_to": "M3"
+  },
+  "subflows.child-wall-clock": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "child wall clock",
+    "deferred_to": "M3"
+  },
+  "subflows.fixed-cost-share": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "fixed cost share",
+    "deferred_to": "M3"
+  },
+  "subflows.fail-fast": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "fail fast",
+    "deferred_to": "M3"
+  },
+  "subflows.collect-partials": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "collect partials",
+    "deferred_to": "M3"
+  },
+  "subflows.cancel-propagates": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "cancellation",
+    "deferred_to": "M3"
+  },
+  "subflows.child-events": {
+    "capability": "subflows",
+    "origin": "ADR-0091",
+    "title": "child events in parent stream",
+    "deferred_to": "M3"
+  },
+  "interop.awaiting-input-roundtrip": {
+    "capability": "interop",
+    "origin": "ADR-0092",
+    "title": "structured input round-trip",
+    "deferred_to": "M3"
+  },
+  "interop.awaiting-input-invalid": {
+    "capability": "interop",
+    "origin": "ADR-0092",
+    "title": "invalid input keeps token",
+    "deferred_to": "M3"
+  },
+  "interop.annotations-never-raise": {
+    "capability": "interop",
+    "origin": "ADR-0092",
+    "title": "annotations never raise",
+    "deferred_to": "M3"
+  },
+  "interop.mrtr-confirmation": {
+    "capability": "interop",
+    "origin": "ADR-0092",
+    "title": "input_required as suspension",
+    "deferred_to": "M3"
+  },
+  "interop.mrtr-replay": {
+    "capability": "interop",
+    "origin": "ADR-0092",
+    "title": "replay with inputResponses",
+    "deferred_to": "M3"
+  },
+  "interop.task-handle": {
+    "capability": "interop",
+    "origin": "ADR-0092",
+    "title": "task handle",
+    "deferred_to": "M3"
+  },
+  "interop.catalog-ttl": {
+    "capability": "interop",
+    "origin": "ADR-0092",
+    "title": "catalog ttl",
+    "deferred_to": "M3"
+  },
+  "interop.server-input-required": {
+    "capability": "interop",
+    "origin": "ADR-0092",
+    "title": "approval as input_required",
+    "deferred_to": "M3"
+  },
+  "interop.server-stateless-resume": {
+    "capability": "interop",
+    "origin": "ADR-0092",
+    "title": "stateless retry resumes",
+    "deferred_to": "M3"
+  },
+  "interop.server-long-task": {
+    "capability": "interop",
+    "origin": "ADR-0092",
+    "title": "long flow as task",
+    "deferred_to": "M3"
+  },
+  "sandbox.effect-derived": {
+    "capability": "sandbox",
+    "origin": "ADR-0093",
+    "title": "effect derived",
+    "deferred_to": "M2"
+  },
+  "sandbox.egress-denied": {
+    "capability": "sandbox",
+    "origin": "ADR-0093",
+    "title": "deny-all egress",
+    "deferred_to": "M2"
+  },
+  "sandbox.egress-allowlisted": {
+    "capability": "sandbox",
+    "origin": "ADR-0093",
+    "title": "allowlisted egress",
+    "deferred_to": "M2"
+  },
+  "sandbox.secret-injected": {
+    "capability": "sandbox",
+    "origin": "ADR-0093",
+    "title": "secret injected not visible",
+    "deferred_to": "M2"
+  },
+  "sandbox.secret-leak-redacted": {
+    "capability": "sandbox",
+    "origin": "ADR-0093",
+    "title": "leak redacted",
+    "deferred_to": "M2"
+  },
+  "sandbox.per-session-persists": {
+    "capability": "sandbox",
+    "origin": "ADR-0093",
+    "title": "per-session persistence",
+    "deferred_to": "M2"
+  },
+  "sandbox.snapshot-on-suspend": {
+    "capability": "sandbox",
+    "origin": "ADR-0093",
+    "title": "snapshot on suspension",
+    "deferred_to": "M2"
+  },
+  "sandbox.resume-restores": {
+    "capability": "sandbox",
+    "origin": "ADR-0093",
+    "title": "resume on another pod",
+    "deferred_to": "M2"
+  },
+  "sandbox.replay-no-reexec": {
+    "capability": "sandbox",
+    "origin": "ADR-0093",
+    "title": "replay does not re-execute",
+    "deferred_to": "M2"
+  },
+  "sandbox.per-call-closes": {
+    "capability": "sandbox",
+    "origin": "ADR-0093",
+    "title": "per-call closes",
+    "deferred_to": "M2"
+  },
+  "sandbox.seconds-budget": {
+    "capability": "sandbox",
+    "origin": "ADR-0093",
+    "title": "sandbox seconds budget",
+    "deferred_to": "M2"
+  },
+  "sandbox.exec-timeout": {
+    "capability": "sandbox",
+    "origin": "ADR-0093",
+    "title": "exec timeout",
+    "deferred_to": "M2"
+  },
+  "sandbox.output-to-store": {
+    "capability": "sandbox",
+    "origin": "ADR-0093",
+    "title": "large output to store",
+    "deferred_to": "M2"
+  },
+  "sandbox.host-exec-warning": {
+    "capability": "sandbox",
+    "origin": "ADR-0093",
+    "title": "host exec warning",
+    "deferred_to": "M2"
+  },
+  "skills.catalog-prefix-stable": {
+    "capability": "skills",
+    "origin": "ADR-0094",
+    "title": "catalog in prefix",
+    "deferred_to": "M4"
+  },
+  "skills.body-on-demand": {
+    "capability": "skills",
+    "origin": "ADR-0094",
+    "title": "body on demand",
+    "deferred_to": "M4"
+  },
+  "skills.body-clearable": {
+    "capability": "skills",
+    "origin": "ADR-0094",
+    "title": "body clearable",
+    "deferred_to": "M4"
+  },
+  "skills.resource-to-store": {
+    "capability": "skills",
+    "origin": "ADR-0094",
+    "title": "resource via store",
+    "deferred_to": "M4"
+  },
+  "skills.untrusted-no-scripts": {
+    "capability": "skills",
+    "origin": "ADR-0094",
+    "title": "untrusted is instructions-only",
+    "deferred_to": "M4"
+  },
+  "skills.script-sandboxed": {
+    "capability": "skills",
+    "origin": "ADR-0094",
+    "title": "scripts only in sandbox",
+    "deferred_to": "M4"
+  },
+  "skills.description-guarded": {
+    "capability": "skills",
+    "origin": "ADR-0094",
+    "title": "injected description excluded",
+    "deferred_to": "M4"
+  },
+  "skills.body-guarded": {
+    "capability": "skills",
+    "origin": "ADR-0094",
+    "title": "body guarded",
+    "deferred_to": "M4"
+  },
+  "skills.required-tool-missing": {
+    "capability": "skills",
+    "origin": "ADR-0094",
+    "title": "missing required tool",
+    "deferred_to": "M4"
+  },
+  "skills.no-widening": {
+    "capability": "skills",
+    "origin": "ADR-0094",
+    "title": "loading never widens",
+    "deferred_to": "M4"
+  },
+  "skills.manifest-drift": {
+    "capability": "skills",
+    "origin": "ADR-0094",
+    "title": "skill drift",
+    "deferred_to": "M4"
+  },
+  "skills.explain-lists": {
+    "capability": "skills",
+    "origin": "ADR-0094",
+    "title": "explain lists skills",
+    "deferred_to": "M4"
+  },
+  "agui.message-id-stable": {
+    "capability": "agui",
+    "origin": "ADR-0095",
+    "title": "message id stable",
+    "deferred_to": "M4"
+  },
+  "agui.reasoning-gated": {
+    "capability": "agui",
+    "origin": "ADR-0095",
+    "title": "reasoning gated",
+    "deferred_to": "M4"
+  },
+  "agui.state-patch": {
+    "capability": "agui",
+    "origin": "ADR-0095",
+    "title": "state patch",
+    "deferred_to": "M4"
+  },
+  "agui.client-state-guarded": {
+    "capability": "agui",
+    "origin": "ADR-0095",
+    "title": "client state guarded",
+    "deferred_to": "M4"
+  },
+  "agui.interrupt-roundtrip": {
+    "capability": "agui",
+    "origin": "ADR-0095",
+    "title": "interrupt round-trip",
+    "deferred_to": "M4"
+  },
+  "agui.frontend-tool": {
+    "capability": "agui",
+    "origin": "ADR-0095",
+    "title": "frontend tool",
+    "deferred_to": "M4"
+  },
+  "agui.frontend-tool-effect": {
+    "capability": "agui",
+    "origin": "ADR-0095",
+    "title": "frontend tool effect capped",
+    "deferred_to": "M4"
+  },
+  "agui.subagent-events": {
+    "capability": "agui",
+    "origin": "ADR-0095",
+    "title": "subagent attribution",
+    "deferred_to": "M4"
+  },
+  "agui.reconnect-last-event-id": {
+    "capability": "agui",
+    "origin": "ADR-0095",
+    "title": "reconnect",
+    "deferred_to": "M4"
+  },
+  "agui.consumed-token": {
+    "capability": "agui",
+    "origin": "ADR-0095",
+    "title": "consumed token",
+    "deferred_to": "M4"
+  },
+  "release.shadow-suppressed": {
+    "capability": "release",
+    "origin": "ADR-0096",
+    "title": "side effect suppressed",
+    "deferred_to": "M3"
+  },
+  "release.shadow-replayed": {
+    "capability": "release",
+    "origin": "ADR-0096",
+    "title": "side effect replayed",
+    "deferred_to": "M3"
+  },
+  "release.shadow-isolated": {
+    "capability": "release",
+    "origin": "ADR-0096",
+    "title": "primary stores untouched",
+    "deferred_to": "M3"
+  },
+  "release.shadow-budget": {
+    "capability": "release",
+    "origin": "ADR-0096",
+    "title": "shadow budget separate",
+    "deferred_to": "M3"
+  },
+  "release.shadow-suspension": {
+    "capability": "release",
+    "origin": "ADR-0096",
+    "title": "shadow suspension terminal",
+    "deferred_to": "M3"
+  },
+  "release.id-deterministic": {
+    "capability": "release",
+    "origin": "ADR-0096",
+    "title": "release id deterministic",
+    "deferred_to": "M3"
+  },
+  "release.run-attributes": {
+    "capability": "release",
+    "origin": "ADR-0096",
+    "title": "run carries release and variant",
+    "deferred_to": "M3"
+  },
+  "release.dataset-pinned": {
+    "capability": "release",
+    "origin": "ADR-0096",
+    "title": "dataset pinned",
+    "deferred_to": "M3"
+  },
+  "release.delta-gate": {
+    "capability": "release",
+    "origin": "ADR-0096",
+    "title": "delta gate bands",
+    "deferred_to": "M3"
+  },
+  "release.judge-median": {
+    "capability": "release",
+    "origin": "ADR-0096",
+    "title": "judge median and spread",
+    "deferred_to": "M3"
+  },
+  "release.pairwise-report": {
+    "capability": "release",
+    "origin": "ADR-0096",
+    "title": "pairwise shadow report",
+    "deferred_to": "M3"
+  },
+  "release.import-redacted": {
+    "capability": "release",
+    "origin": "ADR-0096",
+    "title": "import redacts",
+    "deferred_to": "M3"
+  },
+  "release.online-sampling": {
+    "capability": "release",
+    "origin": "ADR-0096",
+    "title": "online sampling off the request path",
+    "deferred_to": "M3"
+  },
+  "taint.substring-match": {
+    "capability": "taint",
+    "origin": "ADR-0097",
+    "title": "verbatim substring taints",
+    "deferred_to": "M1"
+  },
+  "taint.short-untainted": {
+    "capability": "taint",
+    "origin": "ADR-0097",
+    "title": "short values untainted",
+    "deferred_to": "M1"
+  },
+  "taint.user-untainted": {
+    "capability": "taint",
+    "origin": "ADR-0097",
+    "title": "user text untainted",
+    "deferred_to": "M1"
+  },
+  "taint.window-since-user-turn": {
+    "capability": "taint",
+    "origin": "ADR-0097",
+    "title": "taint window",
+    "deferred_to": "M1"
+  },
+  "taint.exfil-denied": {
+    "capability": "taint",
+    "origin": "ADR-0097",
+    "title": "tainted to exfil denied",
+    "deferred_to": "M1"
+  },
+  "taint.side-effect-asks": {
+    "capability": "taint",
+    "origin": "ADR-0097",
+    "title": "tainted to side effect asks",
+    "deferred_to": "M1"
+  },
+  "taint.read-only-allowed": {
+    "capability": "taint",
+    "origin": "ADR-0097",
+    "title": "read-only allowed",
+    "deferred_to": "M1"
+  },
+  "taint.gate-order": {
+    "capability": "taint",
+    "origin": "ADR-0097",
+    "title": "policy ordering",
+    "deferred_to": "M1"
+  },
+  "taint.trifecta-fails-build": {
+    "capability": "taint",
+    "origin": "ADR-0097",
+    "title": "trifecta without policy fails",
+    "deferred_to": "M1"
+  },
+  "taint.trifecta-with-policy": {
+    "capability": "taint",
+    "origin": "ADR-0097",
+    "title": "trifecta with policy builds",
+    "deferred_to": "M1"
+  },
+  "taint.no-exfil": {
+    "capability": "taint",
+    "origin": "ADR-0097",
+    "title": "no exfil no trifecta",
+    "deferred_to": "M1"
+  },
+  "taint.quarantine-carries-origin": {
+    "capability": "taint",
+    "origin": "ADR-0097",
+    "title": "quarantine output tainted",
+    "deferred_to": "M1"
+  },
+  "taint.subflow-carries-origin": {
+    "capability": "taint",
+    "origin": "ADR-0097",
+    "title": "sub-flow output tainted",
+    "deferred_to": "M1"
+  },
+  "tools.verify-reconciles-unknown": {
+    "capability": "tools",
+    "origin": "ADR-0098",
+    "title": "unknown reconciled"
+  },
+  "tools.verify-on-recover": {
+    "capability": "tools",
+    "origin": "ADR-0098",
+    "title": "verify on recover"
+  },
+  "tools.verify-read-only": {
+    "capability": "tools",
+    "origin": "ADR-0098",
+    "title": "verify never re-executes"
+  },
+  "tools.verify-error": {
+    "capability": "tools",
+    "origin": "ADR-0098",
+    "title": "verify error keeps uncertainty"
+  },
+  "decider.rules-confidence-one": {
+    "capability": "decider",
+    "origin": "ADR-0100",
+    "title": "rules are certain"
+  },
+  "decider.schema-validated": {
+    "capability": "decider",
+    "origin": "ADR-0100",
+    "title": "schema-validated decision"
+  },
+  "decider.failure-defaults-closed": {
+    "capability": "decider",
+    "origin": "ADR-0100",
+    "title": "decider failure defaults closed"
+  },
+  "decider.observable": {
+    "capability": "decider",
+    "origin": "ADR-0100",
+    "title": "decider is observable"
+  },
+  "flags.frozen-snapshot": {
+    "capability": "flags",
+    "origin": "ADR-0100",
+    "title": "frozen snapshot",
+    "deferred_to": "M1"
+  },
+  "flags.from-default-suspends": {
+    "capability": "flags",
+    "origin": "ADR-0100",
+    "title": "default is not fresh",
+    "deferred_to": "M1"
+  },
+  "flags.stale-then-deny": {
+    "capability": "flags",
+    "origin": "ADR-0100",
+    "title": "stale then denied",
+    "deferred_to": "M1"
+  },
+  "flags.never-widen": {
+    "capability": "flags",
+    "origin": "ADR-0100",
+    "title": "flags never widen",
+    "deferred_to": "M1"
+  },
+  "flags.replay-asserts-snapshot": {
+    "capability": "flags",
+    "origin": "ADR-0100",
+    "title": "replay asserts snapshot",
+    "deferred_to": "M1"
+  },
+  "working-state.notes-survive-compaction": {
+    "capability": "working-state",
+    "origin": "ADR-0100",
+    "title": "notes survive compaction"
+  },
+  "working-state.notes-versioned": {
+    "capability": "working-state",
+    "origin": "ADR-0100",
+    "title": "notes versioned"
+  },
+  "working-state.output-paging": {
+    "capability": "working-state",
+    "origin": "ADR-0100",
+    "title": "output paging"
+  },
+  "working-state.shared-state-restored": {
+    "capability": "working-state",
+    "origin": "ADR-0100",
+    "title": "shared state restored"
+  },
+  "working-state.shared-state-versioned": {
+    "capability": "working-state",
+    "origin": "ADR-0100",
+    "title": "shared state versioned"
+  },
+  "runtime.suspend-order": {
+    "capability": "runtime",
+    "origin": "ADR-0102",
+    "title": "suspend order"
+  },
+  "runtime.append-before-tool": {
+    "capability": "runtime",
+    "origin": "ADR-0102",
+    "title": "append before tool"
+  },
+  "runtime.done-after-finish": {
+    "capability": "runtime",
+    "origin": "ADR-0102",
+    "title": "done after finish"
+  },
+  "identity.session-forbidden-cross-tenant": {
+    "capability": "identity",
+    "origin": "ADR-0103",
+    "title": "cross-tenant send forbidden"
+  },
+  "identity.session-scope-read": {
+    "capability": "identity",
+    "origin": "ADR-0103",
+    "title": "read scope allows inspect"
+  },
+  "identity.resume-inside-run-refused": {
+    "capability": "identity",
+    "origin": "ADR-0103",
+    "title": "resume inside run refused"
+  },
+  "identity.approver-from-transport-only": {
+    "capability": "identity",
+    "origin": "ADR-0103",
+    "title": "approver from transport only"
+  },
+  "identity.credential-not-on-principal": {
+    "capability": "identity",
+    "origin": "ADR-0103",
+    "title": "credential not on principal"
+  },
+  "model.first-chunk-timeout-transient": {
+    "capability": "model",
+    "origin": "ADR-0104",
+    "title": "first-chunk timeout is transient"
+  },
+  "model.idle-timeout-permanent": {
+    "capability": "model",
+    "origin": "ADR-0104",
+    "title": "idle timeout after first chunk"
+  },
+  "model.partial-terminal-on-replay": {
+    "capability": "model",
+    "origin": "ADR-0104",
+    "title": "partial message is terminal on replay"
+  },
+  "flow.cancel-other-request": {
+    "capability": "flow",
+    "origin": "ADR-0104",
+    "title": "cancel from another request"
+  },
+  "flow.send-during-active-run": {
+    "capability": "flow",
+    "origin": "ADR-0104",
+    "title": "send during active run"
+  },
+  "flow.idempotent-send": {
+    "capability": "flow",
+    "origin": "ADR-0104",
+    "title": "idempotent send"
+  },
+  "limits.unbounded-rejected": {
+    "capability": "limits",
+    "origin": "ADR-0104",
+    "title": "unbounded run rejected"
+  },
+  "limits.cost-accumulates": {
+    "capability": "limits",
+    "origin": "ADR-0104",
+    "title": "cost accumulates across tree"
+  },
+  "stores.delete-cascades": {
+    "capability": "stores",
+    "origin": "ADR-0104",
+    "title": "delete cascades"
+  },
+  "model.status-to-class": {
+    "capability": "model",
+    "origin": "ADR-0105",
+    "title": "status maps to class",
+    "deferred_to": "M1"
+  },
+  "model.retry-after-parsed": {
+    "capability": "model",
+    "origin": "ADR-0105",
+    "title": "retry-after parsed",
+    "deferred_to": "M1"
+  },
+  "model.undeclared-fidelity": {
+    "capability": "model",
+    "origin": "ADR-0105",
+    "title": "undeclared fidelity fails build",
+    "deferred_to": "M1"
+  },
+  "model.cache-explicit-breakpoints": {
+    "capability": "model",
+    "origin": "ADR-0105",
+    "title": "explicit cache breakpoints",
+    "deferred_to": "M1"
+  },
+  "model.schema-never-ignored": {
+    "capability": "model",
+    "origin": "ADR-0105",
+    "title": "schema never ignored",
+    "deferred_to": "M1"
+  },
+  "model.usage-estimated": {
+    "capability": "model",
+    "origin": "ADR-0105",
+    "title": "usage estimated when absent",
+    "deferred_to": "M1"
+  },
+  "model.extra-collision": {
+    "capability": "model",
+    "origin": "ADR-0105",
+    "title": "extra cannot override governed fields",
+    "deferred_to": "M1"
+  },
+  "model.raw-round-trip": {
+    "capability": "model",
+    "origin": "ADR-0105",
+    "title": "raw round-trip",
+    "deferred_to": "M1"
+  },
+  "tools.schema-from-tags": {
+    "capability": "tools",
+    "origin": "ADR-0106",
+    "title": "schema from tags"
+  },
+  "tools.untyped-args-rejected": {
+    "capability": "tools",
+    "origin": "ADR-0106",
+    "title": "untyped args rejected"
+  },
+  "tools.out-passthrough": {
+    "capability": "tools",
+    "origin": "ADR-0106",
+    "title": "out passthrough"
+  },
+  "tools.panic-recovered": {
+    "capability": "tools",
+    "origin": "ADR-0106",
+    "title": "panic recovered"
+  },
+  "tools.default-timeout": {
+    "capability": "tools",
+    "origin": "ADR-0106",
+    "title": "default timeout by effect"
+  },
+  "telemetry.canonical-keys": {
+    "capability": "telemetry",
+    "origin": "ADR-0106",
+    "title": "canonical keys on spans"
+  },
+  "telemetry.forbidden-label": {
+    "capability": "telemetry",
+    "origin": "ADR-0106",
+    "title": "forbidden label rejected"
+  },
+  "telemetry.no-content-in-logs": {
+    "capability": "telemetry",
+    "origin": "ADR-0106",
+    "title": "no content in logs"
+  },
+  "flow.extract-recipe": {
+    "capability": "flow",
+    "origin": "ADR-0107",
+    "title": "extract recipe"
+  },
+  "flow.classify-recipe": {
+    "capability": "flow",
+    "origin": "ADR-0107",
+    "title": "classify recipe"
+  },
+  "flow.typed-result-on-conversation": {
+    "capability": "flow",
+    "origin": "ADR-0107",
+    "title": "typed result on conversation"
+  },
+  "streams.error-tuple-terminal": {
+    "capability": "streams",
+    "origin": "ADR-0108",
+    "title": "error tuple is terminal"
+  },
+  "streams.preflight-error-sole-tuple": {
+    "capability": "streams",
+    "origin": "ADR-0108",
+    "title": "pre-flight error is the sole tuple"
+  },
+  "streams.collect-helpers": {
+    "capability": "streams",
+    "origin": "ADR-0108",
+    "title": "collect helpers"
+  },
+  "identity.no-principal-at-seam": {
+    "capability": "identity",
+    "origin": "R35",
+    "title": "no principal fails at the seam"
+  },
+  "identity.accessor-outside-run": {
+    "capability": "identity",
+    "origin": "R35",
+    "title": "accessors outside a run"
+  },
+  "identity.values-survive-shield": {
+    "capability": "identity",
+    "origin": "R35",
+    "title": "values survive the cancel shield",
+    "deferred_to": "M1"
+  },
+  "identity.detached-reissues-credential": {
+    "capability": "identity",
+    "origin": "R35",
+    "title": "detached run re-issues credential",
+    "deferred_to": "M1"
+  },
+  "identity.credential-not-in-sandbox": {
+    "capability": "identity",
+    "origin": "R35",
+    "title": "credential not in sandbox",
+    "deferred_to": "M2"
+  },
+  "identity.idempotency-key-transport-only": {
+    "capability": "identity",
+    "origin": "R35",
+    "title": "idempotency key set by transport only",
+    "deferred_to": "M1"
+  },
+  "runtime.shutdown-rejects-new": {
+    "capability": "runtime",
+    "origin": "R36",
+    "title": "shutdown rejects new work"
+  },
+  "runtime.shutdown-preempts-at-safe-point": {
+    "capability": "runtime",
+    "origin": "R36",
+    "title": "preempt at safe point"
+  },
+  "runtime.shutdown-side-effect-completes": {
+    "capability": "runtime",
+    "origin": "R36",
+    "title": "side effect completes before preemption"
+  },
+  "runtime.shutdown-partial-model-call-dropped": {
+    "capability": "runtime",
+    "origin": "R36",
+    "title": "partial model call dropped"
+  },
+  "runtime.preempted-resume-continue": {
+    "capability": "runtime",
+    "origin": "R36",
+    "title": "client continues a preempted run"
+  },
+  "runtime.shutdown-grace-exhausted": {
+    "capability": "runtime",
+    "origin": "R36",
+    "title": "grace exhausted"
+  },
+  "recovery.preempted-before-stale": {
+    "capability": "recovery",
+    "origin": "R36",
+    "title": "preempted resumed before stale"
+  },
+  "stores.stale-by-store-clock": {
+    "capability": "stores",
+    "origin": "R37",
+    "title": "staleness by store clock"
+  },
+  "stores.skewed-caller-cannot-reclaim": {
+    "capability": "stores",
+    "origin": "R37",
+    "title": "skewed caller cannot reclaim"
+  },
+  "stores.checkpoint-expiry-store-clock": {
+    "capability": "stores",
+    "origin": "R37",
+    "title": "checkpoint expiry by store clock"
+  },
+  "stores.memstore-clock-jump": {
+    "capability": "stores",
+    "origin": "R37",
+    "title": "memory store clock jump"
+  },
+  "limits.wall-clock-monotonic": {
+    "capability": "limits",
+    "origin": "R37",
+    "title": "wall clock is monotonic"
+  },
+  "tools.provider-tool-registered": {
+    "capability": "tools",
+    "origin": "R38",
+    "title": "provider tool registered",
+    "deferred_to": "M1"
+  },
+  "tools.provider-tool-gate-before-call": {
+    "capability": "tools",
+    "origin": "R38",
+    "title": "gate decides before the call",
+    "deferred_to": "M1"
+  },
+  "tools.provider-approval-as-suspension": {
+    "capability": "tools",
+    "origin": "R38",
+    "title": "provider approval as suspension",
+    "deferred_to": "M1"
+  },
+  "tools.provider-result-origin": {
+    "capability": "tools",
+    "origin": "R38",
+    "title": "provider result carries origin",
+    "deferred_to": "M1"
+  },
+  "model.provider-tool-usage": {
+    "capability": "model",
+    "origin": "R38",
+    "title": "provider tool usage",
+    "deferred_to": "M1"
+  },
+  "taint.provider-tool-post-hoc": {
+    "capability": "taint",
+    "origin": "R38",
+    "title": "provider tool post hoc",
+    "deferred_to": "M1"
+  },
+  "limits.provider-calls-count": {
+    "capability": "limits",
+    "origin": "R38",
+    "title": "provider calls count",
+    "deferred_to": "M1"
+  },
+  "build.provider-tool-unsupported": {
+    "capability": "build",
+    "origin": "R38",
+    "title": "provider tool unsupported"
+  },
+  "working-state.subject-memory-isolated": {
+    "capability": "working-state",
+    "origin": "R39",
+    "title": "subject memory isolated",
+    "deferred_to": "M1"
+  },
+  "working-state.memory-write-untrusted-denied": {
+    "capability": "working-state",
+    "origin": "R39",
+    "title": "untrusted turn cannot write memory",
+    "deferred_to": "M1"
+  },
+  "working-state.memory-write-schema": {
+    "capability": "working-state",
+    "origin": "R39",
+    "title": "memory value must match schema",
+    "deferred_to": "M1"
+  },
+  "working-state.memory-read-carries-origin": {
+    "capability": "working-state",
+    "origin": "R39",
+    "title": "recalled memory carries origin",
+    "deferred_to": "M1"
+  },
+  "working-state.memory-consolidate-at-done": {
+    "capability": "working-state",
+    "origin": "R39",
+    "title": "consolidation at done",
+    "deferred_to": "M1"
+  },
+  "working-state.memory-forget": {
+    "capability": "working-state",
+    "origin": "R39",
+    "title": "forget",
+    "deferred_to": "M1"
+  },
+  "working-state.memory-ttl-eviction": {
+    "capability": "working-state",
+    "origin": "R39",
+    "title": "ttl eviction",
+    "deferred_to": "M1"
+  },
+  "redaction.erase-removes-memory": {
+    "capability": "redaction",
+    "origin": "R39",
+    "title": "erasure removes memory",
+    "deferred_to": "M1"
+  },
+  "runtime.batch-gate-first": {
+    "capability": "runtime",
+    "origin": "R40",
+    "title": "gate all before execution"
+  },
+  "runtime.batch-limit-before-execute": {
+    "capability": "runtime",
+    "origin": "R40",
+    "title": "batch limit before execution"
+  },
+  "runtime.readonly-parallel": {
+    "capability": "runtime",
+    "origin": "R40",
+    "title": "read-only calls run concurrently"
+  },
+  "runtime.side-effects-sequential": {
+    "capability": "runtime",
+    "origin": "R40",
+    "title": "side effects run in order"
+  },
+  "runtime.batch-ask-after-allowed": {
+    "capability": "runtime",
+    "origin": "R40",
+    "title": "ask after allowed calls"
+  },
+  "runtime.batch-one-result-per-call": {
+    "capability": "runtime",
+    "origin": "R40",
+    "title": "one result per call"
+  },
+  "runtime.parallel-tools-cap": {
+    "capability": "runtime",
+    "origin": "R40",
+    "title": "parallel tools cap"
+  },
+  "runtime.sequential-tools-hint": {
+    "capability": "runtime",
+    "origin": "R40",
+    "title": "sequential tools hint"
+  },
+  "stores.fork-prefix": {
+    "capability": "stores",
+    "origin": "R41",
+    "title": "fork copies the prefix"
+  },
+  "stores.fork-requires-no-lease": {
+    "capability": "stores",
+    "origin": "R41",
+    "title": "fork requires no lease"
+  },
+  "stores.fork-survives-parent-delete": {
+    "capability": "stores",
+    "origin": "R41",
+    "title": "fork survives parent delete"
+  },
+  "stores.reconstruct-crosses-fork": {
+    "capability": "stores",
+    "origin": "R41",
+    "title": "reconstruct crosses fork"
+  },
+  "flow.continue-without-input": {
+    "capability": "flow",
+    "origin": "R41",
+    "title": "continue without input"
+  },
+  "flow.regenerate-is-fork-and-continue": {
+    "capability": "flow",
+    "origin": "R41",
+    "title": "regenerate is fork and continue"
+  },
+  "permission.grants-not-inherited-on-fork": {
+    "capability": "permission",
+    "origin": "R41",
+    "title": "grants not inherited on fork"
+  },
+  "working-state.fork-copies-notes-and-state": {
+    "capability": "working-state",
+    "origin": "R41",
+    "title": "fork copies notes and shared state"
+  },
+  "agui.regenerate-maps-to-fork": {
+    "capability": "agui",
+    "origin": "R41",
+    "title": "regenerate maps to fork",
+    "deferred_to": "M4"
+  },
+  "streams.heartbeat-independent-of-consumer": {
+    "capability": "streams",
+    "origin": "R42",
+    "title": "heartbeat independent of consumer"
+  },
+  "streams.slow-consumer-no-idle-retry": {
+    "capability": "streams",
+    "origin": "R42",
+    "title": "slow consumer causes no idle retry"
+  },
+  "streams.consumer-stall-preempts": {
+    "capability": "streams",
+    "origin": "R42",
+    "title": "consumer stall preempts"
+  },
+  "streams.consumer-stall-detaches-with-log": {
+    "capability": "streams",
+    "origin": "R42",
+    "title": "consumer stall detaches with log"
+  },
+  "streams.stream-buffer-bound": {
+    "capability": "streams",
+    "origin": "R42",
+    "title": "stream buffer bound"
+  },
+  "stores.optional-preempted-lister-fallback": {
+    "capability": "stores",
+    "origin": "R43",
+    "title": "preempted lister fallback"
+  },
+  "working-state.memory-store-optional": {
+    "capability": "working-state",
+    "origin": "R43",
+    "title": "memory store optional"
+  },
+  "model.budget-reserves-output": {
+    "capability": "model",
+    "origin": "R44",
+    "title": "budget reserves output"
+  },
+  "model.heuristic-deterministic": {
+    "capability": "model",
+    "origin": "R44",
+    "title": "heuristic deterministic"
+  },
+  "model.token-counter-optional": {
+    "capability": "model",
+    "origin": "R44",
+    "title": "token counter optional"
+  },
+  "context.calibration-from-usage": {
+    "capability": "context",
+    "origin": "R44",
+    "title": "calibration from usage",
+    "deferred_to": "M2"
+  },
+  "context.calibration-persisted-for-replay": {
+    "capability": "context",
+    "origin": "R44",
+    "title": "calibration persisted for replay",
+    "deferred_to": "M2"
+  },
+  "context.overflow-compacts-and-retries-once": {
+    "capability": "context",
+    "origin": "R44",
+    "title": "overflow compacts and retries once",
+    "deferred_to": "M2"
+  },
+  "messages.blob-stored-by-ref": {
+    "capability": "messages",
+    "origin": "R45",
+    "title": "blob stored by reference"
+  },
+  "messages.blob-content-addressed": {
+    "capability": "messages",
+    "origin": "R45",
+    "title": "blob content-addressed"
+  },
+  "messages.blob-provider-id-reused": {
+    "capability": "messages",
+    "origin": "R45",
+    "title": "provider id reused",
+    "deferred_to": "M1"
+  },
+  "messages.url-only-from-user": {
+    "capability": "messages",
+    "origin": "R45",
+    "title": "url only from user"
+  },
+  "messages.blob-too-large": {
+    "capability": "messages",
+    "origin": "R45",
+    "title": "blob too large"
+  },
+  "build.blob-caps": {
+    "capability": "build",
+    "origin": "R45",
+    "title": "blob caps"
+  },
+  "redaction.erase-removes-blobs": {
+    "capability": "redaction",
+    "origin": "R45",
+    "title": "erasure removes blobs",
+    "deferred_to": "M1"
+  },
+  "guards.blob-guard-input": {
+    "capability": "guards",
+    "origin": "R45",
+    "title": "blob guard input"
+  },
+  "model.tool-args-delta-kind": {
+    "capability": "model",
+    "origin": "R46",
+    "title": "tool args delta kind"
+  },
+  "streams.tool-args-delta-preview-only": {
+    "capability": "streams",
+    "origin": "R46",
+    "title": "tool args delta preview only"
+  },
+  "streams.tool-args-delta-coalesced-in-log": {
+    "capability": "streams",
+    "origin": "R46",
+    "title": "tool args deltas coalesced in log"
+  },
+  "structured-output.result-delta-partial": {
+    "capability": "structured-output",
+    "origin": "R46",
+    "title": "result delta partial"
+  },
+  "structured-output.partial-never-validated": {
+    "capability": "structured-output",
+    "origin": "R46",
+    "title": "partial never validated"
+  },
+  "tools.args-validated-at-completion": {
+    "capability": "tools",
+    "origin": "R46",
+    "title": "args validated at completion"
+  },
+  "agui.tool-call-args-per-delta": {
+    "capability": "agui",
+    "origin": "R46",
+    "title": "tool call args per delta",
+    "deferred_to": "M4"
+  },
+  "permission.self-approval-refused-high-risk": {
+    "capability": "permission",
+    "origin": "R47",
+    "title": "self-approval refused for high risk"
+  },
+  "permission.approve-scope-required-medium": {
+    "capability": "permission",
+    "origin": "R47",
+    "title": "approve scope required for medium risk"
+  },
+  "permission.ineligible-keeps-token": {
+    "capability": "permission",
+    "origin": "R47",
+    "title": "ineligible approver keeps token"
+  },
+  "permission.quorum-two-approvers": {
+    "capability": "permission",
+    "origin": "R47",
+    "title": "quorum of two"
+  },
+  "permission.escalation-targets": {
+    "capability": "permission",
+    "origin": "R47",
+    "title": "escalation targets"
+  },
+  "permission.approval-audit-eligibility": {
+    "capability": "permission",
+    "origin": "R47",
+    "title": "approval audit records eligibility"
+  },
+  "permission.grant-inherits-policy": {
+    "capability": "permission",
+    "origin": "R47",
+    "title": "grant inherits policy"
+  },
+  "tools.name-grammar": {
+    "capability": "tools",
+    "origin": "R48",
+    "title": "name grammar"
+  },
+  "tools.collision-fails-build": {
+    "capability": "tools",
+    "origin": "R48",
+    "title": "collision fails build"
+  },
+  "tools.reserved-names": {
+    "capability": "tools",
+    "origin": "R48",
+    "title": "reserved names"
+  },
+  "tools.rename-is-new-tool": {
+    "capability": "tools",
+    "origin": "R48",
+    "title": "rename is a new tool"
+  },
+  "tools.tool-value-shared-and-concurrent": {
+    "capability": "tools",
+    "origin": "R48",
+    "title": "tool value shared and concurrent"
+  },
+  "interop.namespace-required-for-second-set": {
+    "capability": "interop",
+    "origin": "R48",
+    "title": "namespace required for a second set",
+    "deferred_to": "M3"
+  },
+  "interop.namespace-in-manifest": {
+    "capability": "interop",
+    "origin": "R48",
+    "title": "namespace in manifest",
+    "deferred_to": "M3"
+  },
+  "flow.feedback-owner-checked": {
+    "capability": "flow",
+    "origin": "R49",
+    "title": "feedback owner-checked"
+  },
+  "flow.feedback-idempotent-per-name": {
+    "capability": "flow",
+    "origin": "R49",
+    "title": "feedback idempotent per name"
+  },
+  "flow.feedback-never-in-context": {
+    "capability": "flow",
+    "origin": "R49",
+    "title": "feedback never in context"
+  },
+  "stores.feedback-cascades-on-erase": {
+    "capability": "stores",
+    "origin": "R49",
+    "title": "feedback cascades on erase"
+  },
+  "streams.feedback-recorded-event": {
+    "capability": "streams",
+    "origin": "R49",
+    "title": "feedback recorded event"
+  },
+  "telemetry.feedback-metric-labels": {
+    "capability": "telemetry",
+    "origin": "R49",
+    "title": "feedback metric labels",
+    "deferred_to": "M1"
+  },
+  "release.import-from-feedback": {
+    "capability": "release",
+    "origin": "R49",
+    "title": "import from feedback",
+    "deferred_to": "M4"
+  },
+  "stores.sessions-listed-by-owner": {
+    "capability": "stores",
+    "origin": "R50",
+    "title": "sessions listed by owner"
+  },
+  "stores.sessions-order-last-activity": {
+    "capability": "stores",
+    "origin": "R50",
+    "title": "sessions ordered by last activity"
+  },
+  "stores.sessions-default-excludes-forks-children": {
+    "capability": "stores",
+    "origin": "R50",
+    "title": "forks and children hidden by default"
+  },
+  "stores.session-index-optional": {
+    "capability": "stores",
+    "origin": "R50",
+    "title": "session index optional"
+  },
+  "stores.purge-respects-pinned-and-archived": {
+    "capability": "stores",
+    "origin": "R50",
+    "title": "purge respects pinned and archived"
+  },
+  "flow.title-generated-after-first-done": {
+    "capability": "flow",
+    "origin": "R50",
+    "title": "title generated after first done",
+    "deferred_to": "M1"
+  },
+  "flow.title-locked-by-rename": {
+    "capability": "flow",
+    "origin": "R50",
+    "title": "title locked by rename",
+    "deferred_to": "M1"
+  },
+  "identity.sessions-owner-checked": {
+    "capability": "identity",
+    "origin": "R50",
+    "title": "session listing owner-checked"
+  },
+  "stores.pg-schema-owned": {
+    "capability": "stores",
+    "origin": "R51",
+    "title": "schema owned by the adapter",
+    "deferred_to": "M3"
+  },
+  "stores.pg-migrate-serialised": {
+    "capability": "stores",
+    "origin": "R51",
+    "title": "migrate serialised",
+    "deferred_to": "M3"
+  },
+  "stores.pg-schema-too-old": {
+    "capability": "stores",
+    "origin": "R51",
+    "title": "schema too old",
+    "deferred_to": "M3"
+  },
+  "stores.pg-schema-ahead-warns": {
+    "capability": "stores",
+    "origin": "R51",
+    "title": "schema ahead warns",
+    "deferred_to": "M3"
+  },
+  "stores.pg-partitions-ahead": {
+    "capability": "stores",
+    "origin": "R51",
+    "title": "partitions created ahead",
+    "deferred_to": "M3"
+  },
+  "stores.pg-fresh-equals-upgraded": {
+    "capability": "stores",
+    "origin": "R51",
+    "title": "fresh equals upgraded",
+    "deferred_to": "M3"
+  },
+  "stores.pg-auto-migrate-refused-in-prod": {
+    "capability": "stores",
+    "origin": "R51",
+    "title": "auto-migrate refused in production",
+    "deferred_to": "M3"
+  },
+  "errors.every-sentinel-has-code": {
+    "capability": "messages",
+    "origin": "R52",
+    "title": "every sentinel has a code"
+  },
+  "errors.problem-of-unknown-is-internal": {
+    "capability": "messages",
+    "origin": "R52",
+    "title": "unknown error is internal"
+  },
+  "errors.detail-never-carries-provider-body": {
+    "capability": "messages",
+    "origin": "R52",
+    "title": "detail never carries provider body"
+  },
+  "errors.retry-after-on-retryable": {
+    "capability": "messages",
+    "origin": "R52",
+    "title": "retry-after on retryable"
+  },
+  "streams.terminal-error-event": {
+    "capability": "streams",
+    "origin": "R52",
+    "title": "terminal error event"
+  },
+  "streams.close-without-done-is-interrupted": {
+    "capability": "streams",
+    "origin": "R52",
+    "title": "close without done is interrupted"
+  },
+  "agui.run-error-code": {
+    "capability": "agui",
+    "origin": "R52",
+    "title": "run error carries code",
+    "deferred_to": "M4"
+  },
+  "flow.takeover-pauses-agent": {
+    "capability": "flow",
+    "origin": "R53",
+    "title": "takeover pauses the agent"
+  },
+  "flow.operator-send-origin": {
+    "capability": "flow",
+    "origin": "R53",
+    "title": "operator message carries origin"
+  },
+  "flow.send-during-human-control-no-run": {
+    "capability": "flow",
+    "origin": "R53",
+    "title": "send during human control runs nothing"
+  },
+  "flow.request-human-ends-run": {
+    "capability": "flow",
+    "origin": "R53",
+    "title": "request human ends the run",
+    "deferred_to": "M1"
+  },
+  "flow.handback-fences-operator-turns": {
+    "capability": "flow",
+    "origin": "R53",
+    "title": "hand-back fences operator turns",
+    "deferred_to": "M1"
+  },
+  "permission.takeover-requires-scope": {
+    "capability": "permission",
+    "origin": "R53",
+    "title": "takeover requires scope"
+  },
+  "stores.control-in-session-index": {
+    "capability": "stores",
+    "origin": "R53",
+    "title": "control in session index"
+  },
+  "release.import-skips-operator-turns": {
+    "capability": "release",
+    "origin": "R53",
+    "title": "import skips operator turns",
+    "deferred_to": "M4"
+  },
+  "chains.hedge-fires-on-ttft": {
+    "capability": "chains",
+    "origin": "R54",
+    "title": "hedge fires on late first chunk",
+    "deferred_to": "M1"
+  },
+  "chains.hedge-loser-cancelled-and-charged": {
+    "capability": "chains",
+    "origin": "R54",
+    "title": "hedge loser cancelled and charged",
+    "deferred_to": "M1"
+  },
+  "chains.hedge-budget-cap": {
+    "capability": "chains",
+    "origin": "R54",
+    "title": "hedge budget cap",
+    "deferred_to": "M1"
+  },
+  "chains.hedge-refused-with-provider-tools": {
+    "capability": "chains",
+    "origin": "R54",
+    "title": "hedge refused with provider tools",
+    "deferred_to": "M1"
+  },
+  "chains.hedge-never-same-endpoint": {
+    "capability": "chains",
+    "origin": "R54",
+    "title": "hedge never same endpoint",
+    "deferred_to": "M1"
+  },
+  "chains.hedge-single-journal-step": {
+    "capability": "chains",
+    "origin": "R54",
+    "title": "hedge single journal step",
+    "deferred_to": "M1"
+  },
+  "tools.egress-policy-required": {
+    "capability": "tools",
+    "origin": "R55",
+    "title": "egress policy required"
+  },
+  "tools.egress-metadata-blocked": {
+    "capability": "tools",
+    "origin": "R55",
+    "title": "metadata endpoint blocked",
+    "deferred_to": "M1"
+  },
+  "tools.egress-redirect-revalidated": {
+    "capability": "tools",
+    "origin": "R55",
+    "title": "redirect re-validated",
+    "deferred_to": "M1"
+  },
+  "tools.egress-rebinding-safe": {
+    "capability": "tools",
+    "origin": "R55",
+    "title": "rebinding safe",
+    "deferred_to": "M1"
+  },
+  "tools.egress-size-limit": {
+    "capability": "tools",
+    "origin": "R55",
+    "title": "size limit",
+    "deferred_to": "M1"
+  },
+  "tools.egress-audited": {
+    "capability": "tools",
+    "origin": "R55",
+    "title": "egress audited",
+    "deferred_to": "M1"
+  },
+  "sandbox.egress-shares-policy-type": {
+    "capability": "sandbox",
+    "origin": "R55",
+    "title": "egress shares the policy type",
+    "deferred_to": "M2"
+  },
+  "build.exfil-derived-from-egress": {
+    "capability": "build",
+    "origin": "R55",
+    "title": "exfil derived from egress"
+  },
+  "model.tenant-key-selected": {
+    "capability": "model",
+    "origin": "R56",
+    "title": "tenant key selected"
+  },
+  "model.tenant-key-missing-fails-closed": {
+    "capability": "model",
+    "origin": "R56",
+    "title": "missing tenant key fails closed"
+  },
+  "model.no-fallback-on-auth-error": {
+    "capability": "model",
+    "origin": "R56",
+    "title": "no fallback on auth error"
+  },
+  "model.isolation-per-key": {
+    "capability": "model",
+    "origin": "R56",
+    "title": "isolation per key",
+    "deferred_to": "M1"
+  },
+  "model.key-never-in-telemetry": {
+    "capability": "model",
+    "origin": "R56",
+    "title": "key never in telemetry",
+    "deferred_to": "M1"
+  },
+  "model.key-validated-at-build": {
+    "capability": "model",
+    "origin": "R56",
+    "title": "key validated at build"
+  },
+  "identity.tenant-for-key-from-ctx": {
+    "capability": "identity",
+    "origin": "R56",
+    "title": "tenant for provider key from ctx"
+  },
+  "stores.signal-cancel-cross-pod": {
+    "capability": "stores",
+    "origin": "R57",
+    "title": "cancel signal crosses pods"
+  },
+  "stores.mailbox-full": {
+    "capability": "stores",
+    "origin": "R57",
+    "title": "mailbox full"
+  },
+  "flow.steer-applied-at-boundary": {
+    "capability": "flow",
+    "origin": "R57",
+    "title": "steer applied at boundary"
+  },
+  "flow.steer-preserves-adjacency": {
+    "capability": "flow",
+    "origin": "R57",
+    "title": "steer preserves adjacency"
+  },
+  "flow.steer-after-final-reply-runs-turn": {
+    "capability": "flow",
+    "origin": "R57",
+    "title": "steer after final reply runs a turn"
+  },
+  "flow.steer-no-active-run": {
+    "capability": "flow",
+    "origin": "R57",
+    "title": "steer with no active run"
+  },
+  "identity.steer-root-only": {
+    "capability": "identity",
+    "origin": "R57",
+    "title": "steer is owner-checked and root-only"
+  },
+  "agui.input-on-live-run-steers": {
+    "capability": "agui",
+    "origin": "R57",
+    "title": "input on live run steers",
+    "deferred_to": "M4"
+  },
+  "stores.retention-purge-by-tier": {
+    "capability": "stores",
+    "origin": "R58",
+    "title": "purge by tier"
+  },
+  "stores.retention-zero-deletes-at-finish": {
+    "capability": "stores",
+    "origin": "R58",
+    "title": "zero retention deletes at finish"
+  },
+  "stores.hold-blocks-delete-and-purge": {
+    "capability": "stores",
+    "origin": "R58",
+    "title": "hold blocks delete and purge"
+  },
+  "stores.purge-audited": {
+    "capability": "stores",
+    "origin": "R58",
+    "title": "purge audited"
+  },
+  "redaction.erase-reports-held": {
+    "capability": "redaction",
+    "origin": "R58",
+    "title": "erase reports held sessions"
+  },
+  "working-state.notes-follow-working-retention": {
+    "capability": "working-state",
+    "origin": "R58",
+    "title": "notes follow working retention"
+  },
+  "identity.hold-requires-scope": {
+    "capability": "identity",
+    "origin": "R58",
+    "title": "hold requires scope"
+  },
+  "stores.notice-written-with-finish": {
+    "capability": "stores",
+    "origin": "R59",
+    "title": "notice written with finish"
+  },
+  "streams.notice-thin-no-content": {
+    "capability": "streams",
+    "origin": "R59",
+    "title": "notice is thin"
+  },
+  "streams.notice-retry-and-dead-letter": {
+    "capability": "streams",
+    "origin": "R59",
+    "title": "notice retried then dead-lettered",
+    "deferred_to": "M1"
+  },
+  "streams.webhook-standard-signed": {
+    "capability": "streams",
+    "origin": "R59",
+    "title": "webhook signed per Standard Webhooks",
+    "deferred_to": "M1"
+  },
+  "suspension.approval-notice-delivered": {
+    "capability": "suspension",
+    "origin": "R59",
+    "title": "approval notice delivered",
+    "deferred_to": "M1"
+  },
+  "identity.notice-endpoint-per-tenant": {
+    "capability": "identity",
+    "origin": "R59",
+    "title": "notice endpoint per tenant",
+    "deferred_to": "M1"
+  },
+  "interop.http-openapi-matches-handlers": {
+    "capability": "interop",
+    "origin": "R60",
+    "title": "OpenAPI matches handlers",
+    "deferred_to": "M4"
+  },
+  "interop.http-send-stream-reattach": {
+    "capability": "interop",
+    "origin": "R60",
+    "title": "stream and reattach",
+    "deferred_to": "M4"
+  },
+  "interop.http-multitask-header": {
+    "capability": "interop",
+    "origin": "R60",
+    "title": "multitask header",
+    "deferred_to": "M4"
+  },
+  "interop.http-problem-json": {
+    "capability": "interop",
+    "origin": "R60",
+    "title": "problem json",
+    "deferred_to": "M4"
+  },
+  "identity.http-authenticator-required": {
+    "capability": "identity",
+    "origin": "R60",
+    "title": "HTTP authenticator required",
+    "deferred_to": "M4"
+  },
+  "runtime.readyz-false-on-schema-skew": {
+    "capability": "runtime",
+    "origin": "R60",
+    "title": "readiness false on schema skew"
+  },
+  "runtime.readyz-false-during-shutdown": {
+    "capability": "runtime",
+    "origin": "R60",
+    "title": "readiness false during shutdown"
+  }
+}

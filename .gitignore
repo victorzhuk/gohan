@@ -1,0 +1,13 @@
+# Build output
+/bin/
+*.test
+*.out
+coverage.txt
+
+# Go workspace sums are reproducible per checkout
+go.work.sum
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
