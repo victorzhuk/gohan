@@ -21,6 +21,7 @@ const (
 	StopFailed          StopReason = "failed"
 	StopShadowSuspended StopReason = "shadow_suspended"
 	StopHandedOff       StopReason = "handed_off"
+	StopPreempted       StopReason = "preempted"
 )
 
 // Event is the payload half of a run event. The harness pairs each payload

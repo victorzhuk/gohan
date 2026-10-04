@@ -15,14 +15,14 @@ Status: accepted · Amends ADR-0056 (the module layout stands; the single-packag
 | `core/guards` | `GuardInput`, `GuardAction`, `OutputMode`, stages, `GuardBlockedError` |
 | `core/permission` | gate skeleton, `ApprovalPolicy`, `ApprovalRequest`, `Verdict`, scope and grant types |
 | `core/suspension` | `SuspendError`, reasons, `ResumeInput` constructors, `Waker` use |
-| `core/streams` | event kinds and payloads, `Done`, `RunNotice`/`NoticeKind`, deltas, `StreamBuffer`, `Attach`, `Collect`/`Last`/`Drain` |
+| `core/types` and the driver | the stream vocabulary is not a package of its own: event kinds, payloads, deltas and `Done` are floor types, while `Attach`, `Collect`/`Last`/`Drain` and the bounded `StreamBuffer` are driver code (`core/attach.go`, `core/stream_*.go`) |
 | `core/runtime` | `Stepper`, `Runtime`, `State`, `Status`, `Drive`'s step types, native runtime |
 | `core/flowdef` | definition model only (M4) |
 
 Rules that follow from it:
 
 1. One enum per package. Two enums with a member of the same name never share a package — that is the whole reason for the split.
-2. No leaf package imports `core/` or another leaf except downward in the table (`types` is the floor; `runtime` may use `chains`, `stores`, `guards`, `permission`, `suspension`, `streams`; nothing may import `core/` or `core/runtime` except the driver).
+2. No leaf package imports `core/` or another leaf except downward in the table (`types` is the floor; `runtime` may use `chains`, `stores`, `guards`, `permission`, `suspension`; nothing may import `core/` or `core/runtime` except the driver).
 3. The driver re-exports vocabulary as type aliases (`type Caps = types.Caps`) so documented call sites (`gohan.Caps`, `gohan.Message`, `gohan.Flow`) stay valid. A const is never re-exported: a const in `gohan` would recreate the collision the split removes.
 4. `std/*` stay separate packages; depguard forbids any `std` import from any `core/**` package.
 

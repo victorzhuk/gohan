@@ -9,6 +9,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -148,6 +149,91 @@ func TestChainLimits(t *testing.T) {
 			t.Fatalf("cost = %v, want 0.08 over two chunks", st.Cost())
 		}
 	})
+}
+
+// TestWallClockMonotonic pins the MaxWallClock budget to elapsed
+// monotonic time: the comparison at preCall and preToolCall reads
+// now.Sub(s.start) with both endpoints from time.Now(), so store
+// timestamps and system wall-clock steps cannot move it.
+func TestWallClockMonotonic(t *testing.T) {
+	limits := types.RunLimits{MaxTurns: 5, MaxToolCalls: 5, MaxWallClock: time.Second}
+
+	// The injected store clock is the only outside time the run sees;
+	// each subtest steps it like the scenario steps the wall clock.
+	clock := time.Now()
+	runStore := stores.NewMemoryRuns(stores.WithMemoryRunClock(func() time.Time { return clock }))
+	if _, err := runStore.Start(context.Background(), stores.Run{RunID: "run-wcm", SessionID: "s-wcm"}, time.Minute); err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	t.Run("limits.wall-clock-monotonic", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			// The wall clock steps back an hour and the store clock
+			// follows it; the budget still expires after the bound of
+			// elapsed time.
+			clock = time.Now().Add(-time.Hour).Round(0)
+			st := NewLimitsState()
+			mw := Limits(limits, types.Pricing{}, st)
+			slow := func(ctx context.Context, _ types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+				return func(yield func(types.ModelChunk, error) bool) {
+					select {
+					case <-ctx.Done():
+					case <-time.After(2 * limits.MaxWallClock):
+					}
+					yield(types.ModelChunk{Kind: types.DeltaText, Delta: "late"}, nil)
+				}
+			}
+			if _, err := collect(mw(slow)(context.Background(), types.ModelRequest{})); !isWallClock(err) {
+				t.Fatalf("err = %v, want *LimitExceededError{Limit: MaxWallClock}", err)
+			}
+		})
+	})
+
+	t.Run("a store clock jump does not trip the budget", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			// An hour of store-clock jumps lands before the budget is
+			// read; the limit compares two time.Now() readings only,
+			// so the jump cannot spend it.
+			clock = time.Now().Add(time.Hour)
+			st := NewLimitsState()
+			mw := Limits(limits, types.Pricing{}, st)
+			next := func(ctx context.Context, _ types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+				return func(yield func(types.ModelChunk, error) bool) {
+					yield(types.ModelChunk{Kind: types.DeltaText, Delta: "x"}, nil)
+				}
+			}
+			if _, err := collect(mw(next)(context.Background(), types.ModelRequest{})); err != nil {
+				t.Fatalf("err = %v, want the store clock jump to leave the budget untouched", err)
+			}
+		})
+	})
+
+	t.Run("elapsed time past the bound trips the budget", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			clock = time.Now().Add(-time.Hour).Round(0)
+			st := NewLimitsState()
+			mw := ToolLimits(limits, st)
+			tool := mw(func(ctx context.Context, _ types.ToolUse) (types.ToolResult, error) {
+				select {
+				case <-ctx.Done():
+					return types.ToolResult{}, ctx.Err()
+				case <-time.After(2 * limits.MaxWallClock):
+					return types.ToolResult{}, nil
+				}
+			})
+			_, err := tool(context.Background(), types.ToolUse{})
+			if !isWallClock(err) {
+				t.Fatalf("err = %v, want *LimitExceededError{Limit: MaxWallClock}", err)
+			}
+		})
+	})
+}
+
+// isWallClock reports whether err aborts the run on an expired
+// MaxWallClock budget.
+func isWallClock(err error) bool {
+	var over *types.LimitExceededError
+	return errors.As(err, &over) && over.Limit == "MaxWallClock"
 }
 
 func collect(seq iter.Seq2[types.ModelChunk, error]) ([]types.ModelChunk, error) {

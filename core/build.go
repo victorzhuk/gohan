@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -79,6 +80,7 @@ type Stack struct {
 	maxParallelTools int
 	limits           map[string]types.RunLimits
 	stores           stores.Stores
+	recovery         map[string]runtime.Runtime
 	manifest         ReleaseManifest
 }
 
@@ -127,6 +129,8 @@ func Build(opts ...Option) (*Stack, error) {
 		sequentialTools:  cfg.sequentialTools,
 		maxParallelTools: cfg.maxParallelTools,
 		limits:           limits,
+		recovery:         cfg.recovery,
+		stores:           cfg.stores,
 	}
 	s.manifest = computeReleaseManifest(profiles, cfg.prompts, cfg.pinned)
 	logger := cfg.logger

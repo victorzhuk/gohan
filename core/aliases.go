@@ -104,7 +104,11 @@ type (
 	Decider[S, D any] = types.Decider[S, D]
 
 	SessionLog  = stores.SessionLog
+	Runs        = stores.Runs
 	Checkpoints = stores.Checkpoints
+	Journal     = stores.Journal
+
+	ResumeInput = stores.ResumeInput
 
 	State   = runtime.State
 	Status  = runtime.Status

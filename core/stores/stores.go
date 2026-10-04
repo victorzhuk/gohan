@@ -4,5 +4,8 @@ package stores
 // against. It is data, not a constructor: zero fields mean the port is
 // absent and the operation that needs it is refused.
 type Stores struct {
-	SessionLog SessionLog
+	SessionLog  SessionLog
+	Runs        Runs
+	Checkpoints Checkpoints
+	Journal     Journal
 }

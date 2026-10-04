@@ -6,6 +6,8 @@ import (
 	"log/slog"
 
 	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/runtime"
+	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -25,6 +27,30 @@ type config struct {
 	sequentialTools  bool
 	maxParallelTools int
 	limits           map[string]types.RunLimits
+	recovery         map[string]runtime.Runtime
+	stores           stores.Stores
+}
+
+// WithStores binds the store ports Recover runs against. A zero field
+// means the operation that needs it is refused.
+func WithStores(s stores.Stores) Option {
+	return func(c *config) error {
+		c.stores = s
+		return nil
+	}
+}
+
+// WithRecoveryRuntime registers the backend runtime Recover re-drives a
+// flow's runs with. A flow without one cannot be re-run headlessly; its
+// stale runs finish as Failed with Uncertain.
+func WithRecoveryRuntime(flow string, rt runtime.Runtime) Option {
+	return func(c *config) error {
+		if c.recovery == nil {
+			c.recovery = make(map[string]runtime.Runtime)
+		}
+		c.recovery[flow] = rt
+		return nil
+	}
 }
 
 // WithPrompts sets the PromptSet whose strings the manifest hashes; core

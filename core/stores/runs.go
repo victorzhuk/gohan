@@ -254,6 +254,20 @@ func (s *MemoryRuns) ByOperation(ctx context.Context, tenant, operationID string
 	return cloneRun(s.runs[runID].run), nil
 }
 
+// ByID returns the run with the given id in any state, including finished
+// and failed ones. Cross-pod inspection reads through it; like
+// PreemptedLister it is an optional surface on Runs, discovered by type
+// assertion.
+func (s *MemoryRuns) ByID(_ context.Context, runID string) (Run, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.runs[runID]
+	if !ok {
+		return Run{}, fmt.Errorf("%w: run %s", ErrRunNotFound, runID)
+	}
+	return cloneRun(rec.run), nil
+}
+
 // Finish closes the run with the given terminal state. An expired or
 // foreign lease fails with types.ErrRunNotActive; the run is left open.
 func (s *MemoryRuns) Finish(ctx context.Context, l Lease, state RunState, uncertain []types.CallKey, resultRef string) error {
