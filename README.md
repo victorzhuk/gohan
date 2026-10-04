@@ -19,3 +19,12 @@ See `docs/design/scenarios.md` §9.0 — classify a support ticket in one typed 
 ## Modules
 
 `github.com/victorzhuk/gohan` (core, std, testkit) · `adapter/{eino,adkgo,openai,anthropic,jev,cel,lispico,postgres,redis,mcp,agui,docker,e2b,langfuse,openfeature}` · `examples/`
+
+## Development
+
+    task spec:types      # regenerate docs/design/types.md; fails on duplicate or undefined identifiers
+    task spec:coverage   # registered scenarios without a subtest, and subtests named like an unregistered ID
+    task spec            # spec:types, then spec:coverage
+    task lint            # golangci-lint; depguard enforces the core budget rule
+    task test            # go test -timeout 2m -short ./...
+    task bench           # benchmarks

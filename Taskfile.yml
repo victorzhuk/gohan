@@ -1,0 +1,37 @@
+version: '3'
+
+tasks:
+  default:
+    desc: List all tasks
+    cmds:
+      - task --list
+
+  spec:types:
+    desc: Generate the types index from docs
+    cmds:
+      - python3 tools/gen_types_index.py
+
+  spec:coverage:
+    desc: Run the spec coverage gate (extra flags after --)
+    set: [pipefail]
+    cmds:
+      - go test -json -timeout 2m -short ./... | python3 tools/spec_coverage.py {{.CLI_ARGS}}
+
+  spec:
+    desc: Regenerate the types index and run the spec coverage gate
+    deps: [spec:types, spec:coverage]
+
+  lint:
+    desc: Run golangci-lint (extra flags after --)
+    cmds:
+      - golangci-lint run {{.CLI_ARGS}}
+
+  test:
+    desc: Run short unit tests
+    cmds:
+      - go test -timeout 2m -short ./...
+
+  bench:
+    desc: Run benchmarks once each
+    cmds:
+      - go test -timeout 10m -run '^$' -bench . -benchtime=1x ./...

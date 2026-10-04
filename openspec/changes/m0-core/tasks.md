@@ -9,33 +9,33 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 - `task spec:coverage` reports every registered scenario without a subtest and every subtest named like an unregistered ID, and fails on the latter. `task spec:coverage --gate <milestone>` additionally fails when a scenario with no later `deferred_to` has no subtest — that is the milestone exit check, not the per-chunk check (ADR-0135).
 - Chunks marked **GATE** need the named project command as well.
 - `core/` is a package tree (ADR-0139): the driver is `core/` with package clause `gohan`, the shared vocabulary and ports are in `core/types`, and each enum lives in its own package. Imports run downward only; no leaf package imports `core/` or `core/runtime`. A chunk's `core/` label and file path say where its declarations land — the package table in `openspec/changes/m0-core/design.md` decides which leaf, so `core/store_session.go` lands as `core/stores/session.go` and `core/credential.go` as `core/types/credential.go` — and `./core/...` in a verify command covers the whole tree.
-- Row 1 carries no scenario: it lands the module, the tooling and the coverage gate every later row's definition of done depends on. It cannot require green lint and tests, because the first compilable unit arrives in row 2.
+- Row 1 carries no scenario: it lands the module, the tooling and the coverage gate every later row's definition of done depends on. Its floor is green `task lint`, `go vet` and `task test` over the package declarations it creates; row 2 is the first row with scenarios, because `core/types` holds the first declarations a scenario names.
 
 ## A. Module and types
 
-1. [ ] Create the root module (`github.com/victorzhuk/gohan`, go 1.27, Apache-2.0), `go.work`, Taskfile with `spec:types`, `spec:coverage` (scenarios.json vs `go test -list`), `lint`, `test`, `bench`; golangci-lint + depguard config encoding the core budget rule; `.github/workflows/ci.yml` with jobs `spec` (`spec:types`, `spec:coverage`), `lint`, `test` (root + adapter matrix, path-filtered, `-short`), `conformance` (each adapter × root `testkit`), `bench` (gate, pull requests only, reference runner), `examples` (offline from cassettes); all required checks on `main`; `LICENSE` (Apache-2.0), `README.md`. — no scenarios
+1. [x] Create the root module (`github.com/victorzhuk/gohan`, go 1.27, Apache-2.0), `go.work`, Taskfile with `spec:types`, `spec:coverage` (scenarios.json vs the `go test -json` execution stream), `lint`, `test`, `bench`; golangci-lint + depguard config encoding the core budget rule; `.github/workflows/ci.yml` with jobs `spec` (`spec:types`, `spec:coverage`), `lint`, `test` (root + adapter matrix, path-filtered, `-short`), `conformance` (each adapter × root `testkit`), `bench` (gate, pull requests only, reference runner), `examples` (offline from cassettes); all required checks on `master`; `LICENSE` (Apache-2.0), `README.md`. — no scenarios
 
-- [ ] 1.1 `core`: Scaffold `github.com/victorzhuk/gohan` with Go 1.27 and a minimal `.gitignore`; retain completed `git init`, branch `master`, and `origin` = `git@github.com:victorzhuk/gohan.git`.
-  - files: `go.mod`, `.gitignore`
+- [x] 1.1 `core`: Scaffold `github.com/victorzhuk/gohan` with Go 1.27 and a minimal `.gitignore`; declare the first two packages, `core/doc.go` (package `gohan`) and `core/types/doc.go`, so lint, vet and test have a compilable unit from the start; retain completed `git init`, branch `master`, and `origin` = `git@github.com:victorzhuk/gohan.git`.
+  - files: `go.mod`, `.gitignore`, `core/doc.go`, `core/types/doc.go`
   - scenarios: none
   - verify: `go mod edit -json`
 
-- [ ] 1.2 `core`: Commit `go.work`/`go.work.sum` as development wiring, never version authority; add Apache-2.0 `LICENSE` and `README.md`.
-  - files: `go.work`, `go.work.sum`, `LICENSE`, `README.md`
+- [x] 1.2 `core`: Commit `go.work` as development wiring, never version authority (`go.work.sum` stays ignored: it is reproducible per checkout); `LICENSE` and `README.md` already exist — the README gains the task-target list.
+  - files: `go.work`, `README.md`
   - scenarios: none
   - verify: `go work edit -json`
 
-- [ ] 1.3 `core`: Add Taskfile targets `spec:types`, `spec:coverage`, `lint`, `test`, `bench`, pinned tooling and golangci-lint + depguard enforcement of the core budget rule.
+- [x] 1.3 `core`: Add Taskfile targets `spec:types`, `spec:coverage`, `lint`, `test`, `bench`, pinned tooling and golangci-lint + depguard enforcement of the core budget rule.
   - files: `Taskfile.yml`, `.golangci.yml`, `go.mod`
   - scenarios: none
   - verify: `task --list-all`
 
-- [ ] 1.4 `core`: Implement `spec:coverage` under ADR-0135: discover actual scenario subtests, reject unregistered IDs and missing IDs without later `deferred_to`; use execution JSON because `go test -list` does not enumerate subtests. **GATE**
+- [x] 1.4 `core`: Implement `spec:coverage` under ADR-0135: discover actual scenario subtests, reject unregistered IDs and missing IDs without later `deferred_to`; use execution JSON because `go test -list` does not enumerate subtests. **GATE**
   - files: `tools/spec_coverage.py`, `tools/spec_coverage_test.py`, `Taskfile.yml`
   - scenarios: none
   - verify: `timeout 2m python3 -m unittest discover -s tools -p 'spec_coverage_test.py'`
 
-- [ ] 1.5 `core`: Add CI checks `spec`, `lint`, `test`, `bench` required on `master`; path-filter the empty M0 adapter matrix, run tests with `-short`, and gate PR benchmarks on the reference runner; add `api:check` only at M4; defer conformance/examples jobs until their suites exist; row 1 cannot require green lint/test because row 2 introduces the first compilable unit.
+- [x] 1.5 `core`: Add CI checks `spec`, `lint`, `test`, `bench` required on `master`; path-filter the empty M0 adapter matrix, run tests with `-short`, and gate PR benchmarks on the reference runner; add `api:check` only at M4; defer conformance/examples jobs until their suites exist; row 1 cannot require green lint/test because row 2 introduces the first compilable unit.
   - files: `.github/workflows/ci.yml`, `README.md`
   - scenarios: none
   - verify: `timeout 2m actionlint .github/workflows/ci.yml`
@@ -842,7 +842,7 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 
 The rows above keep their reviewed scope; these are the places the review corrected them, with the record that owns each change.
 
-- Row 1: branch is `master`; `git init`, the `origin` remote and `.gitignore` already exist; `go.work` and `go.work.sum` are committed as development wiring and are never the version authority. CI carries `spec`, `lint`, `test` and `bench` on `master` only — `conformance` and `examples` arrive with their suites, `api:check` with `adapter/httpapi` in M4, and the adapter matrix is empty for all of M0, so it is path-filtered. `task test:full` and `task examples:test` are named by `AGENTS.md` and land with rows 29 and 31.
+- Row 1: branch is `master`; `git init`, the `origin` remote, `.gitignore`, `LICENSE` and `README.md` already exist; `go.work` is committed as development wiring and is never the version authority, while `go.work.sum` stays ignored because it is reproducible per checkout. Row 1 also lands the first two package declarations (`core/doc.go`, `core/types/doc.go`), so `task lint`, `go vet` and `task test` have a compilable unit: an empty module fails them (measured: `go test` exit 1, `golangci-lint run` exit 5). CI carries `spec`, `lint`, `test` and `bench` on `master` only — `conformance` and `examples` arrive with their suites, `api:check` with `adapter/httpapi` in M4, and the adapter matrix is empty for all of M0, so it is path-filtered. `task test:full` and `task examples:test` are named by `AGENTS.md` and land with rows 29 and 31.
 - Row 1: `task spec:coverage` has no implementation and no owner — the target and its script are this row's work (ADR-0135).
 - Row 14: the gate skeleton, `ApprovalPolicy`, `ApprovalRequest` and `ApprovalPolicy.MaxPending` are core (`docs/design/architecture.md` §4.2a, `permission/spec.md`); only the tier defaults, grants and expiry policy are `std/permission`. The pending-approval cap is scoped per subject and tenant, so it is a policy value, not a `RunLimits` field.
 - Row 15: `stores.same-transaction-journal` is deferred to M1 with `adapter/postgres` (ADR-0016).
