@@ -714,46 +714,56 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - files: `core/stream_lifetime.go`, `core/stream_lifetime_test.go`, `core/attach.go`, `core/attach_test.go`
   - scenarios: `streams.disconnect-during-model-call`, `streams.detached-reconnect`, `streams.detached-requires-log`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestStreamLifetime'`
+  - note: there is **no `Attach` on `Conversation`** today (`core/conversation.go:19-25` declares Send, Continue, Resume, Cancel, Steer only) and the landed `reattach` always replays from `afterSeq=0` (`core/conversation.go:268`), so this chunk adds the ordered catch-up-then-live `Attach` plus the `Detached` vocabulary nothing declares. `Seq` is assigned only at `EventLog.Append` (`core/stores/events.go`), which is what makes ordered catch-up possible at all. You own `core/conversation.go` this wave.
+  - note: hook through row 22-25's seams - `Drive`/`DriveLifecycle` (`core/drive.go:62`, `core/drive_lifecycle.go:154`) are the only step loop; a second loop is the defect this note prevents.
 
 - [ ] 26.2 `core`: implement terminal error tuples and sole preflight failures for stream seams; implement `Collect`, `Last` and `Drain`.
   - files: `core/stream_errors.go`, `core/stream_errors_test.go`, `core/stream_helpers.go`, `core/stream_helpers_test.go`
   - scenarios: `streams.error-tuple-terminal`, `streams.preflight-error-sole-tuple`, `streams.collect-helpers`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestStreamErrorProtocol'`
+  - note: the terminal-error shapes already live in `core/types/stream_error.go`, but `core/aliases.go` has no `TerminalError` or `InterruptedStream` alias although both are in the floor. Yield the terminal tuple exactly once - a second construction is the failure this chunk guards against. You own `core/aliases.go` this wave.
 
 - [ ] 26.3 `core`: map `DeltaToolArgs` to preview-only `ToolArgsDelta`, emit `ResultDelta` previews, coalesce detached deltas in `EventLog` and validate complete arguments before execution.
   - files: `core/stream_previews.go`, `core/stream_previews_test.go`, `core/tool_args_completion.go`, `core/tool_args_completion_test.go`
   - scenarios: `model.tool-args-delta-kind`, `streams.tool-args-delta-preview-only`, `streams.tool-args-delta-coalesced-in-log`, `tools.args-validated-at-completion`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestStreamPreviews'`
+  - note: `ToolArgsDelta` is already emitted per fragment (`core/drive_turn.go:93`) and `ResultDelta` is declared (`core/types/event.go:57`) but emitted by nothing: route the first, add the second. `EventLogCoalesce` has no shape - freeze it. This chunk owns `core/drive_turn.go` this wave.
 
 - [ ] 26.4 `core`: implement run-owned lease heartbeat and bounded `StreamBuffer`; measure idle timeout on provider reads and block full buffers without loss, reordering or retry.
   - files: `core/stream_heartbeat.go`, `core/stream_heartbeat_test.go`, `core/stream_buffer.go`, `core/stream_buffer_test.go`
   - scenarios: `streams.heartbeat-independent-of-consumer`, `streams.slow-consumer-no-idle-retry`, `streams.stream-buffer-bound`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestStreamProtections'`
+  - note: `ModelStream.Generate` (`core/model_stream.go:62-71`) already runs a helper goroutine but over an **unbuffered** channel, so the provider read is paced by its consumer and the idle timer resets on consumer activity - the bounded buffer and the run-owned heartbeat are exactly what decouple the run from its reader. `StreamBuffer` has no shape: freeze its bound here. You own `core/model_stream.go` this wave.
 
 - [ ] 26.5 `core`: enforce `ConsumerStall` through safe-point `Preempted` suspension and `Continue()`; implement `OnStall(Detach)` with `EventLog` reattachment.
   - files: `core/stream_stall.go`, `core/stream_stall_test.go`
   - scenarios: `streams.consumer-stall-preempts`, `streams.consumer-stall-detaches-with-log`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestConsumerStall'`
+  - note: `ConsumerStall` exists only as a `RunLimits` field (`core/types/limits.go:18`) and is read by nothing; `resolveLimits` (`core/limits.go:36-45`) neither defaults nor validates it, so a zero value means disabled. `OnStall` has no shape: freeze it. Preempt at a safe point through the landed lifecycle. `core/drive_turn.go` belongs to 26.3 this wave - if you need to edit it, report it instead.
 
 - [ ] 26.6 `core`: implement typed `SharedState`/`SetSharedState`, session metadata persistence and resume restoration; emit the row-3 `StateChanged`/`PatchOp` shapes without core diffing.
   - files: `core/shared_state.go`, `core/shared_state_test.go`
   - scenarios: `working-state.shared-state-restored`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestSharedStateRestore'`
+  - note: `SharedState`/`SetSharedState` exist nowhere in `core` or `std` (only the spec and the generated index). This chunk owns the core side: the state, its ctx key, the **monotonically increasing version** and one `StateChanged` per update - that half of the original 26.7 belongs here, because a `std` package cannot emit core events. `SessionMeta` and the patch-carrying shape have no Go shape: freeze them.
 
 - [ ] 26.7 `std/state`: compute RFC 6902 JSON Patch for `SetSharedState`; integrate monotonically increasing versions and one core-emitted `StateChanged` per update.
   - files: `std/state/state.go`, `std/state/state_test.go`
   - scenarios: `working-state.shared-state-versioned`
   - verify: `go test -short -timeout 2m ./std/state/ -run 'TestSharedStateVersioned'`
+  - note: `PatchOp{Op, Path string; Value any}` **is already declared and landed** (`core/types/event.go:246-252`, normative in `agui/spec.md:26-31`, with the comment that core carries the type and `std/state` computes patches): use it, never freeze a second patch type. This chunk is the `std/state` package only - the version counter and the `StateChanged` emission are 26.6's. `std/state` does not exist yet: state its dependency direction like every other leaf.
 
 - [ ] 26.8 `std/context`: verify notes remain available through the `SlotSession` provider after `Truncate` hides earlier messages; exclude persisted compaction until M2.
   - files: `std/context/truncate_notes_test.go`
   - scenarios: `working-state.notes-survive-compaction`
   - verify: `go test -short -timeout 2m ./std/context/ -run 'TestNotesSurviveTruncate'`
+  - note: the chunk's premise does not hold. `Truncate.Project` (`std/context/truncate.go:53-90`) reads and returns only `stores.History` messages, and notes never enter history - a `SlotSession` provider injects them - so truncation cannot drop them and a test cannot observe it dropping them. Assert what is observable: the notes provider still returns its notes through `SlotSession` after a truncating projection, and no projected message carries note text. Test-only file, as the chunk says.
 
 - [ ] 26.9 `core`: gate `ReasoningDelta` on `Caps.ReasoningVisible`; retain opaque reasoning at message completion without adding deferred AG-UI scenarios.
   - files: `core/stream_reasoning.go`, `core/stream_reasoning_test.go`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./core/... -run 'TestReasoningDeltaGating'`
+  - note: `DeltaReasoning` is not gated today, it is **silently dropped**: the drive switch handles only `DeltaText` (`core/drive_turn.go:87`) and `DeltaToolArgs` (:93). So this chunk routes the delta first, then gates the visible half on `Caps.ReasoningVisible` and retains the opaque half at message completion - and `AssistantMessage` (`core/types/event.go:43-48`) has no field for the retained value, so freeze that carrier here. This chunk owns `core/drive_turn.go` next wave.
 
 27. [ ] `core`: `Recover`, `Inspect`, stale-lease reaper (`Stale(staleAfter)` by store clock), `Resuming` re-drive; `memory.WithNow`; monotonic wall-clock budget. — `recovery.pod-dies-mid-turn`, `recovery.pod-dies-inside-a-side-effect`, `recovery.headless-recovery-impossible`, `tools.inspect-from-another-pod`, `stores.stale-by-store-clock`, `stores.skewed-caller-cannot-reclaim`, `stores.checkpoint-expiry-store-clock`, `stores.memstore-clock-jump`, `limits.wall-clock-monotonic`
 
