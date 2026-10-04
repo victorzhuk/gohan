@@ -1,28 +1,33 @@
 #!/usr/bin/env python3
 """Generate docs/design/types.md from openspec/specs/*/spec.md code blocks."""
-import re, pathlib, collections
+import re, sys, json, pathlib, collections
 root = pathlib.Path(__file__).resolve().parent.parent
 rows = collections.defaultdict(list)
 dups = collections.defaultdict(list)
+decls = []
 for p in sorted((root / 'openspec/specs').glob('*/spec.md')):
     cap = p.parent.name
     s = p.read_text()
     for block in re.findall(r'```go\n(.*?)```', s, re.S):
         illustrative = '(illustrative)' in block
         tier = 'illustrative' if illustrative else 'normative'
-        for m in re.finditer(r'^type (\w+)', block, re.M):
+        for m in re.finditer(r'^type (\w+)(?:\[[^\]]*\])?( interface \{| struct \{|)', block, re.M):
+            shape = 'interface' if 'interface' in m.group(2) else 'struct' if 'struct' in m.group(2) else 'decl'
             rows['type'].append((m.group(1), cap, tier)); dups[m.group(1)].append(cap)
-        for m in re.finditer(r'^func (?:\([^)]*\) )?(\w+)', block, re.M):
-            rows['func'].append((m.group(1), cap, tier))
+            decls.append((m.group(1), cap, 'type', shape))
+        for m in re.finditer(r'^func \([^)]*?(\w+)\) (\w+)', block, re.M):
+            rows['func'].append((m.group(2), cap, tier)); decls.append((m.group(2), cap, 'method', m.group(1)))
+        for m in re.finditer(r'^func (\w+)', block, re.M):
+            rows['func'].append((m.group(1), cap, tier)); decls.append((m.group(1), cap, 'func', 'func'))
         for m in re.finditer(r'^(?:\t|var )(Err\w+)\s*=', block, re.M):
-            rows['error'].append((m.group(1), cap, tier))
+            rows['error'].append((m.group(1), cap, tier)); decls.append((m.group(1), cap, 'var', 'var'))
         for m in re.finditer(r'^\t(\w+)\s+\w+ = (?:iota|"\w+")', block, re.M):
-            rows['const'].append((m.group(1), cap, tier))
+            rows['const'].append((m.group(1), cap, tier)); decls.append((m.group(1), cap, 'const', 'const'))
         for m in re.finditer(r'^const (\w+) ', block, re.M):
-            rows['const'].append((m.group(1), cap, tier))
+            rows['const'].append((m.group(1), cap, tier)); decls.append((m.group(1), cap, 'const', 'const'))
         for cb in re.findall(r'^const \(\n(.*?)^\)', block, re.S | re.M):
             for m in re.finditer(r'^\t(\w+)', cb, re.M):
-                rows['const'].append((m.group(1), cap, tier))
+                rows['const'].append((m.group(1), cap, tier)); decls.append((m.group(1), cap, 'const', 'const'))
 HANDLES = {'Conversation', 'Flow'}
 ifaces = []
 for p_ in sorted((root / 'openspec/specs').glob('*/spec.md')):
@@ -38,8 +43,14 @@ out += ['## Interfaces', '', 'Kind per `docs/design/compatibility.md`: a *port* 
 for name, cap, kind in sorted(set(ifaces)):
     out.append(f'| `{name}` | `{cap}` | {kind} |')
 out.append('')
-catalog_src = (root / 'openspec/specs/messages/spec.md').read_text()
-catalog_body = catalog_src[catalog_src.index('### Requirement: Error catalog'):catalog_src.index('### Requirement: Blobs')]
+catalog_path = root / 'openspec/specs/messages/spec.md'
+catalog_src = catalog_path.read_text()
+BEGIN, END = '### Requirement: Error catalog', '### Requirement: Blobs'
+missing_headings = [h for h in (BEGIN, END) if h not in catalog_src]
+if missing_headings:
+    print(f'{catalog_path.relative_to(root)}: missing heading: ' + ', '.join(repr(h) for h in missing_headings))
+    sys.exit(1)
+catalog_body = catalog_src[catalog_src.index(BEGIN):catalog_src.index(END)]
 catalog_refs = set(re.findall(r'`\*?(Err\w+|\w+Error)\b', catalog_body))
 ERR_NAME = re.compile(r'^(Err(?!or)[A-Z]\w*|[A-Z]\w{2,}Error)$')
 # Every sentinel and typed error a spec declares needs a catalog row, except
@@ -93,7 +104,29 @@ for doc in [root / 'docs/design/scenarios.md']:
         for w in re.findall(r'\bgohan\.([A-Z]\w*)', block):
             if w not in defined: qs_missing.add(w)
 out += ['## Example listings', '', ('all `gohan.*` identifiers in docs/design/scenarios.md are defined' if not qs_missing else 'undefined in examples: ' + ', '.join(sorted(qs_missing))), '']
+# Same name, different kind or shape, in one Go package: the collision class
+# ADR-0139 removed by splitting the single core package. Package per capability
+# comes from tools/package_map.json (the machine-readable form of the package
+# plan in openspec/changes/m0-core/design.md).
+pkg_map_path = root / 'tools/package_map.json'
+if not pkg_map_path.exists():
+    print(f'missing package map: {pkg_map_path.relative_to(root)}')
+    sys.exit(1)
+pkg_of = json.loads(pkg_map_path.read_text())
+unmapped = sorted({cap for _, cap, _, _ in decls if cap not in pkg_of})
+by_pkg = collections.defaultdict(list)
+for name, cap, kind, shape in decls:
+    # Method names live in the receiver's namespace, not the package's.
+    if cap in pkg_of and kind != 'method':
+        by_pkg[(pkg_of[cap], name)].append((kind, shape, cap))
+collisions = []
+for (pkg, name), ds in sorted(by_pkg.items()):
+    variants = sorted({(k, s) for k, s, _ in ds})
+    if len(variants) > 1:
+        caps = ', '.join(sorted({c for _, _, c in ds}))
+        detail = ' vs '.join(f'{k}/{s}' for k, s in variants)
+        collisions.append(f'`{name}` in package `{pkg}` ({caps}): {detail}')
 undefined.update({k: {'docs/design/scenarios.md'} for k in qs_missing})
 (root / 'docs/design/types.md').write_text('\n'.join(out))
-print({k: len(set(v)) for k, v in rows.items()}, 'dups:', d, 'undefined:', sorted(undefined), 'uncatalogued:', uncatalogued, 'missing-rows:', missing_rows, 'empty-source:', empty_source, 'undeclared-source:', undeclared_source)
-import sys; sys.exit(1 if d or undefined or uncatalogued or missing_rows or empty_source or undeclared_source else 0)
+print({k: len(set(v)) for k, v in rows.items()}, 'dups:', d, 'undefined:', sorted(undefined), 'uncatalogued:', uncatalogued, 'missing-rows:', missing_rows, 'empty-source:', empty_source, 'undeclared-source:', undeclared_source, 'collisions:', collisions, 'unmapped-capabilities:', unmapped)
+sys.exit(1 if d or undefined or uncatalogued or missing_rows or empty_source or undeclared_source or collisions or unmapped else 0)

@@ -42,6 +42,7 @@ def make_tree(tmp, stores=STORES, messages=MESSAGES, catalog=CATALOG):
     (tmp / 'openspec/specs/messages/spec.md').write_text(messages + catalog)
     (tmp / 'docs/design/scenarios.md').write_text('')
     shutil.copy(SCRIPT, tmp / 'tools/gen_types_index.py')
+    shutil.copy(SCRIPT.parent / 'package_map.json', tmp / 'tools/package_map.json')
 
 
 def run_tree(tmp):
@@ -86,6 +87,42 @@ class GenTypesIndexTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn('undeclared-source:', r.stdout)
         self.assertIn('ErrGhost', r.stdout)
+
+    def test_same_name_different_kind_in_one_package_fails(self):
+        # messages and model both map to package `types` in package_map.json.
+        make_tree(self.tmp, stores=STORES)
+        (self.tmp / 'openspec/specs/stores/spec.md').unlink()
+        (self.tmp / 'openspec/specs/model').mkdir()
+        (self.tmp / 'openspec/specs/model/spec.md').write_text(
+            "```go\nvar ErrFoo = errors.New(\"gohan: foo\")\ntype Ghost struct{}\n```\n"
+        )
+        (self.tmp / 'openspec/specs/messages/spec.md').write_text(
+            "```go\nconst Ghost int = 1\n```\n" + CATALOG
+        )
+        r = run_tree(self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('collisions:', r.stdout)
+        self.assertIn('Ghost', r.stdout)
+        self.assertIn('types', r.stdout)
+
+    def test_unmapped_capability_fails(self):
+        make_tree(self.tmp)
+        d = self.tmp / 'openspec/specs/zzunmapped'
+        d.mkdir()
+        (d / 'spec.md').write_text("```go\ntype Thing struct{}\n```\n")
+        r = run_tree(self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('unmapped-capabilities:', r.stdout)
+        self.assertIn('zzunmapped', r.stdout)
+
+    def test_missing_catalog_heading_fails_cleanly(self):
+        catalog = CATALOG.replace('### Requirement: Blobs', '### Requirement: Removed')
+        make_tree(self.tmp, catalog=catalog)
+        r = run_tree(self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('openspec/specs/messages/spec.md', r.stdout)
+        self.assertIn('### Requirement: Blobs', r.stdout)
+        self.assertNotIn('Traceback', r.stderr)
 
 
 if __name__ == '__main__':

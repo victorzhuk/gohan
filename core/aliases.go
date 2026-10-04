@@ -32,6 +32,15 @@ type (
 	ToolArgsError  = types.ToolArgsError
 	Usage          = types.Usage
 
+	CostTags         = types.CostTags
+	Credential       = types.Credential
+	CredentialSource = types.CredentialSource
+	LatencyClass     = types.LatencyClass
+	Principal        = types.Principal
+	RunInfo          = types.RunInfo
+	RunMode          = types.RunMode
+	SessionOwner     = types.SessionOwner
+
 	AbortError            = types.AbortError
 	AssistantMessage      = types.AssistantMessage
 	CallKey               = types.CallKey
