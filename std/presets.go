@@ -33,27 +33,44 @@ type Preset struct {
 	Name      string
 	Prompts   chains.PromptSet
 	ToolChain chains.ToolChain
+	Limits    types.RunLimits
+	Pricing   types.Pricing
+
+	// state accumulates the run's spend across the model and tool
+	// limit steps. A nil state marks enforcement disabled.
+	state *chains.LimitsState
 }
 
 // Interactive bundles the low-latency class.
 func Interactive() Preset {
-	return Preset{Name: "interactive", Prompts: DefaultPrompts, ToolChain: presetChain()}
+	return limitsPreset("interactive", types.InteractiveLimits)
 }
 
 // Agentic bundles the long-running tool-using class.
 func Agentic() Preset {
-	return Preset{Name: "agentic", Prompts: DefaultPrompts, ToolChain: presetChain()}
+	return limitsPreset("agentic", types.AgenticLimits)
 }
 
 // Batch bundles the throughput class.
 func Batch() Preset {
-	return Preset{Name: "batch", Prompts: DefaultPrompts, ToolChain: presetChain()}
+	return limitsPreset("batch", types.BatchLimits)
 }
 
-func presetChain() chains.ToolChain {
+func limitsPreset(name string, limits types.RunLimits) Preset {
+	st := chains.NewLimitsState()
+	return Preset{
+		Name:      name,
+		Prompts:   DefaultPrompts,
+		ToolChain: presetChain(limits, st),
+		Limits:    limits,
+		state:     st,
+	}
+}
+
+func presetChain(limits types.RunLimits, st *chains.LimitsState) chains.ToolChain {
 	return chains.ToolChain{
 		{Name: "telemetry", Kind: chains.KindTelemetry, Use: passthrough()},
-		{Name: "limits", Kind: chains.KindLimit, Use: passthrough()},
+		{Name: "limits", Kind: chains.KindLimit, Use: chains.ToolLimits(limits, st)},
 		{Name: "gate", Kind: chains.KindGate, Use: passthrough()},
 		{Name: "hooks", Kind: chains.KindHooks, Use: passthrough()},
 		{Name: "journal", Kind: chains.KindJournal, Use: passthrough()},
@@ -64,15 +81,44 @@ func passthrough() chains.ToolMiddleware {
 	return func(next chains.ToolFunc) chains.ToolFunc { return next }
 }
 
+// WithoutLimits returns a copy of the preset with limit enforcement
+// removed: the chain's limits step runs the pass-through and Options
+// drops the limit middleware. A caller who wants the previous behaviour
+// opts out here.
+func (p Preset) WithoutLimits() Preset {
+	ch := make(chains.ToolChain, len(p.ToolChain))
+	copy(ch, p.ToolChain)
+	for i, s := range ch {
+		if s.Kind == chains.KindLimit {
+			ch[i].Use = passthrough()
+		}
+	}
+	p.ToolChain = ch
+	p.state = nil
+	return p
+}
+
+// LimitsMiddleware returns the model-chain limit step: it charges each
+// call's usage through the preset's Pricing and aborts on the preset's
+// Limits. The second return is false when enforcement is disabled.
+func (p Preset) LimitsMiddleware() (types.ModelMiddleware, bool) {
+	if p.state == nil {
+		return nil, false
+	}
+	return chains.Limits(p.Limits, p.Pricing, p.state), true
+}
+
 // Options presents the preset as driver Build options, per the build
-// spec's "std presets are Options too". Only the prompt set crosses
-// today, as a model middleware: the driver's option set has no
-// tool-middleware option yet, so the chain steps stay pass-through
-// placeholders that a service fills in place, and presenting them as
-// anything else would invent behavior the driver cannot carry. Options
-// never constructs a Build itself; the caller composes it.
+// spec's "std presets are Options too". The prompt set crosses as one
+// model middleware and the limit step as another; the tool-chain steps
+// cross as chain data a service composes itself. Options never
+// constructs a Build itself; the caller composes it.
 func (p Preset) Options() []gohan.Option {
-	return []gohan.Option{gohan.WithModelMiddleware(p.PromptMiddleware())}
+	mws := []types.ModelMiddleware{p.PromptMiddleware()}
+	if mw, ok := p.LimitsMiddleware(); ok {
+		mws = append(mws, mw)
+	}
+	return []gohan.Option{gohan.WithModelMiddleware(mws...)}
 }
 
 // PromptMiddleware places the preset's authored strings ahead of every

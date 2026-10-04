@@ -2,6 +2,7 @@ package std_test
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"reflect"
 	"strings"
@@ -117,6 +118,55 @@ func TestBatchAndAgenticPrompts(t *testing.T) {
 			t.Errorf("%s preset chain does not validate: %v", name, err)
 		}
 	}
+}
+
+func fakeSpend(n int) types.ModelFunc {
+	return func(ctx context.Context, _ types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+		return func(yield func(types.ModelChunk, error) bool) {
+			yield(types.ModelChunk{Kind: types.DeltaText, Delta: "x", Usage: &types.Usage{InputTokens: n}}, nil)
+		}
+	}
+}
+
+func collectModel(seq iter.Seq2[types.ModelChunk, error]) error {
+	var err error
+	for _, e := range seq {
+		if e != nil {
+			err = e
+		}
+	}
+	return err
+}
+
+func TestPresetLimitsEnforced(t *testing.T) {
+	t.Run("maxcost-abort", func(t *testing.T) {
+		p := std.Interactive()
+		p.Limits.MaxCost = 0.5
+		p.Pricing = types.Pricing{Input: 1}
+		mw, ok := p.LimitsMiddleware()
+		if !ok {
+			t.Fatal("preset enforces no limits by default")
+		}
+		err := collectModel(mw(fakeSpend(1))(context.Background(), types.ModelRequest{}))
+		var over *types.LimitExceededError
+		if !errors.As(err, &over) || over.Limit != "MaxCost" {
+			t.Fatalf("err = %v, want *LimitExceededError{Limit: MaxCost}", err)
+		}
+	})
+
+	t.Run("disabled-no-abort", func(t *testing.T) {
+		p := std.Interactive().WithoutLimits()
+		p.Limits.MaxToolCalls = 1
+		// Two calls through the disabled chain must both pass, where
+		// ToolLimits would abort the second against MaxToolCalls=1.
+		for i := range 2 {
+			if _, err := chains.RunToolChain(context.Background(), p.ToolChain, func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+				return types.ToolResult{ID: call.ID}, nil
+			}); err != nil {
+				t.Fatalf("call %d: %v", i+1, err)
+			}
+		}
+	})
 }
 
 func TestPresetOptions(t *testing.T) {
