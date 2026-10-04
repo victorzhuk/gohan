@@ -75,6 +75,15 @@ func IdempotencyKey(ctx context.Context) (string, bool)
 type CredentialSource interface {
 	Credentials(ctx context.Context, p Principal) (Credential, error)
 }
+
+// IdentityFieldMatcher matches argument or input field names against the
+// configured identity patterns. The patterns are supplied by the caller: the
+// defaults (user_id, tenant, customer_id, …) are a std policy value, so core
+// keeps the mechanism and std carries the policy.
+type IdentityFieldMatcher struct{ /* unexported match set */ }
+
+func NewIdentityFieldMatcher(names ...string) *IdentityFieldMatcher
+func (m *IdentityFieldMatcher) Match(name string) bool
 ```
 
 Rules:

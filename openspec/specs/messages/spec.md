@@ -154,6 +154,14 @@ type ToolError struct {
 	Message string
 }
 
+type ToolArgsError struct {
+	Reason  string
+	Message string
+}
+
+func ValidateToolArgs(args json.RawMessage) error
+func ArgsErrorResult(err error) ToolResult
+
 type ErrorCode string
 
 type Problem struct {
@@ -199,6 +207,7 @@ Rules:
 - A message is an **ordered** sequence of blocks; adapters preserve order in both directions. There is no tool-call side field and no tool role: an assistant turn that calls tools is `[Reasoning?, Text?, ToolUse, ToolUse…]`; results come back as a `RoleUser` message of `ToolResult` blocks, the shape every current provider accepts.
 - `Reasoning` is opaque: it round-trips only to the provider that produced it (`Provider` + `Signature`) and is `Dropped` for any other. The assembler never edits it.
 - `Origin` is assigned by the chain, never by callers: user input → `OriginUser`, tool results → `OriginTool{Name}`, provider output → `OriginProvider{Name}`, model output → `OriginModel`, instructions → `OriginSystem`, a human operator's reply during takeover → `OriginOperator{Subject}` (`flow` *Takeover*), which is trusted for taint like `OriginUser` but never counted as model-authored by audit, evals or feedback. Converters preserve it via `Message.Meta` where the foreign type has no slot. Guards and the assembler read it through `BlockOrigin()`.
+- `ValidateToolArgs` rejects arguments that are not a syntactically valid JSON object with unique keys and valid UTF-8; `ToolArgsError.Reason` is `duplicate_key`, `invalid_utf8` or `syntax`, and `ArgsErrorResult` renders any such error as a `Failed`/`Permanent` `ToolResult` the model reads.
 - `Outcome == Unknown` means the side effect may or may not have happened; the model sees a structured "outcome unknown" result and, if the tool declares `ReadBack`, an instruction to verify. `Ref` points into the output store when content was truncated (§6.15b).
 - `Document` carries retrieved chunks with metadata into guards, spans and evals. `CacheBreak` marks provider cache breakpoints. `Raw` is the escape hatch for provider blocks gohan does not model (server-side tools, citations, …); it round-trips through its own adapter only. `Compaction` replaces every history message with version ≤ `CoversUpTo` at assembly time; it is persisted in `SessionLog` and owned by the `context` capability.
 - **Blobs live once.** An `Image`, `Audio` or `File` whose `Data` exceeds `InlineBlobBytes` (harness constant, 64 KiB; spill vs reject order in *Limits* below) is written to `OutputStore` when it enters the harness (`Send`, tool result, provider result); the persisted block carries `Blob{Ref, SHA256, Bytes}` and `Data` is nil in `SessionLog`. Storage is content-addressed: equal bytes yield one `Ref`. `DeleteSession` and `EraseSubject` cascade to the refs the session or subject owns. Assembly loads bytes from the store only when the adapter has no provider handle: an adapter implementing the optional `BlobUploader` uploads a blob once per profile, records `ref → provider id` in session metadata, and sends the id on later turns (`messages.blob-provider-id-reused`); otherwise base64 from the store. Visual cost goes through `TokenEstimator` using `Caps.Blobs`.

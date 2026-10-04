@@ -103,14 +103,14 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - scenarios: `identity.model-cannot-set-identity`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestIdentityArguments'`
 
-5. [ ] Run `task spec:types` and diff the index against the package's exported identifiers; fix drift in either direction. — no scenarios
+5. [x] Run `task spec:types` and diff the index against the package's exported identifiers; fix drift in either direction. — no scenarios
 
-- [ ] 5.2 `core`: Extend `tools/gen_types_index.py` so it fails when one name is declared twice with different kinds in the same package — the check that would have caught the eight collisions of ADR-0139 — and fails cleanly (not with an uncaught `ValueError`) when a spec heading it indexes by name is missing. **GATE**
+- [x] 5.2 `core`: Extend `tools/gen_types_index.py` so it fails when one name is declared twice with different kinds in the same package — the check that would have caught the eight collisions of ADR-0139 — and fails cleanly (not with an uncaught `ValueError`) when a spec heading it indexes by name is missing. **GATE**
   - files: `tools/gen_types_index.py`, `tools/gen_types_index_test.py`
   - scenarios: none
   - verify: `timeout 2m python3 -m unittest discover -s tools -p 'gen_types_index_test.py'`
 
-- [ ] 5.1 `core`: Run the `spec:types` drift gate: regenerate `docs/design/types.md`, compare implemented exported identifiers with their capability contracts, and fix implementation or spec/index drift in either direction without requiring later-row identifiers to exist. **GATE**
+- [x] 5.1 `core`: Run the `spec:types` drift gate: regenerate `docs/design/types.md`, compare implemented exported identifiers with their capability contracts, and fix implementation or spec/index drift in either direction without requiring later-row identifiers to exist. **GATE**
   - files: `docs/design/types.md`, `tools/gen_types_index.py`
   - scenarios: none
   - verify: `task spec:types && git diff --exit-code -- docs/design/types.md`
