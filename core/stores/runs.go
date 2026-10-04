@@ -120,11 +120,12 @@ type PreemptedLister interface {
 }
 
 type runRecord struct {
-	run   Run
-	lease Lease
-	ttl   time.Duration
-	token types.ResumeToken
-	live  bool
+	run     Run
+	lease   Lease
+	ttl     time.Duration
+	token   types.ResumeToken
+	live    bool
+	signals []Signal
 }
 
 // MemoryRuns is the in-memory Runs reference implementation. The store
@@ -137,6 +138,9 @@ type MemoryRuns struct {
 	onSess map[string]string
 	now    func() time.Time
 	info   RunInfoSource
+
+	notices   []*noticeEntry
+	noticeSeq uint64
 }
 
 type MemoryRunOption func(*MemoryRuns)
@@ -256,11 +260,17 @@ func (s *MemoryRuns) Finish(ctx context.Context, l Lease, state RunState, uncert
 	if err != nil {
 		return err
 	}
+	for _, sig := range rec.signals {
+		if sig.Kind == SignalSteer {
+			return fmt.Errorf("%w: run %s", types.ErrSignalsPending, rec.run.RunID)
+		}
+	}
 	rec.run.State = state
 	rec.run.Uncertain = append([]types.CallKey(nil), uncertain...)
 	rec.run.ResultRef = resultRef
 	rec.lease = Lease{}
 	rec.live = false
+	s.appendNoticeLocked(ctx, rec, state)
 	return nil
 }
 
@@ -277,6 +287,7 @@ func (s *MemoryRuns) Suspend(ctx context.Context, l Lease, t types.ResumeToken) 
 	rec.token = t
 	rec.lease = Lease{}
 	rec.live = false
+	s.appendNoticeLocked(ctx, rec, Suspended)
 	return nil
 }
 

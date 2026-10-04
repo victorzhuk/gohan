@@ -126,6 +126,7 @@ func (Compacted) isEvent()        {}
 func (StateChanged) isEvent()     {}
 func (FeedbackRecorded) isEvent() {}
 func (SteerApplied) isEvent()     {}
+func (Done) isEvent()             {}
 
 // EventMeta travels with every Event. The harness pairs a payload with its
 // meta when it appends the event to the EventLog and when it delivers it on a

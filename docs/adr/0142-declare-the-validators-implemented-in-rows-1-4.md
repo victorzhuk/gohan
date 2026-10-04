@@ -14,6 +14,10 @@ Both families arrived the same way: the plan named an API the spec had left as p
 2. `identity` declares the mechanism rule 7 already describes: the configurable matcher type and its constructor, taking the patterns as an argument. The default field list (`user_id`, `tenant`, `customer_id`, …) stays a `std` policy value, because the core budget keeps every default out of `core`.
 3. Nothing moves in the implementation. The Go shapes are what the specs now say; the pass only supplies the words the specs were missing.
 
+## Third pass, after row 11
+
+`EventLog.Read` returns `Event` values and `Done` is the run's terminal event, but the `Done` declaration carried no `isEvent()`, so the terminal record could not be logged as a payload and chunk 11.3 had to carry it in a store-local envelope. The `streams` contract now declares `func (Done) isEvent()`, which is what the surrounding prose already said.
+
 ## Second pass, after row 6
 
 The drift audit of rows 1-4 left one more of the same class: `tools/spec.md:134` uses `gohan.Retryable(err)` in its error-mapping rule and its scenario `tools.classified-error` asserts the marker's effect, but no Go block declared it. The tool contract now declares `func Retryable(err error) error` beside the tool sentinels, so the index sees the function the driver exports.

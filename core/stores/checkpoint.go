@@ -37,6 +37,7 @@ type WorkspaceRef string
 // Originator is a Principal by type, so it cannot carry the caller's
 // credential: the token stays in ctx and is re-issued on resume.
 type Checkpoint struct {
+	SchemaVersion  SchemaVersion
 	SessionID      string
 	Flow           string
 	Backend        string

@@ -200,118 +200,118 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - scenarios: `stores.journal-ttl`, `stores.replay-returns-recorded-result`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestJournalLifecycle'`
 
-10. [ ] `core`: `Runs` port + memory implementation, leases, states incl. `Suspended`/`Resuming`, `Mode`; run mailbox (`Signal`/`Drain`, `Finish` atomic with pending steers); notice outbox (`RunNotice`, `Notifier`, `Notices`/`AckNotice`, written with `Finish`/`Suspend` — `stores.notice-written-with-finish`, `streams.notice-thin-no-content`). — `stores.lease-exclusivity`, `stores.reclaim-race`, `recovery.no-double-run`, `stores.signal-cancel-cross-pod`, `stores.mailbox-full`
+10. [x] `core`: `Runs` port + memory implementation, leases, states incl. `Suspended`/`Resuming`, `Mode`; run mailbox (`Signal`/`Drain`, `Finish` atomic with pending steers); notice outbox (`RunNotice`, `Notifier`, `Notices`/`AckNotice`, written with `Finish`/`Suspend` — `stores.notice-written-with-finish`, `streams.notice-thin-no-content`). — `stores.lease-exclusivity`, `stores.reclaim-race`, `recovery.no-double-run`, `stores.signal-cancel-cross-pod`, `stores.mailbox-full`
 
-- [ ] 10.1 `core`: Implement `Runs` states, `Suspended`/`Resuming`, `Mode`, operation lookup and memory state transitions.
+- [x] 10.1 `core`: Implement `Runs` states, `Suspended`/`Resuming`, `Mode`, operation lookup and memory state transitions.
   - files: `core/stores/runs.go`, `core/stores/runs_test.go`
   - scenarios: `recovery.no-double-run`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestRunsState'`
 
-- [ ] 10.2 `core`: Implement `Runs` leases, `Heartbeat`, store-clock expiry and atomic `Reclaim` in memory.
+- [x] 10.2 `core`: Implement `Runs` leases, `Heartbeat`, store-clock expiry and atomic `Reclaim` in memory.
   - files: `core/store_runs_leases.go`, `core/store_runs_leases_test.go`
   - scenarios: `stores.lease-exclusivity`, `stores.reclaim-race`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestRunsLeases'`
 
-- [ ] 10.3 `core`: Implement the `Signal`/`Drain` mailbox and atomic `Finish` refusal with pending steers.
+- [x] 10.3 `core`: Implement the `Signal`/`Drain` mailbox and atomic `Finish` refusal with pending steers.
   - files: `core/store_runs_mailbox.go`, `core/store_runs_mailbox_test.go`
   - scenarios: `stores.signal-cancel-cross-pod`, `stores.mailbox-full`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestRunsMailbox'`
 
-- [ ] 10.4 `core`: Implement the thin `RunNotice` outbox, `Notifier`, atomic `Finish`/`Suspend` writes and `Notices`/`AckNotice` claims.
+- [x] 10.4 `core`: Implement the thin `RunNotice` outbox, `Notifier`, atomic `Finish`/`Suspend` writes and `Notices`/`AckNotice` claims.
   - files: `core/store_runs_notices.go`, `core/store_runs_notices_test.go`
   - scenarios: `stores.notice-written-with-finish`, `streams.notice-thin-no-content`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestRunsNotices'`
 
-11. [ ] `core`: `AuditLog` (chain-written, checksums, hash chain) and `EventLog` (`Seq`, `Read`, `Expire`) ports + memory implementations; `RetentionPolicy`/`RetentionSource`, `Stack.Maintain`, `SessionMeta.Hold`, `ErrSessionHeld`, `Ephemeral()`. — `stores.chain-written-only`, `stores.no-content`, `stores.hash-chain`, `stores.append-failure-is-fatal-to-the-step`, `stores.decision-trail`, `stores.retention-purge-by-tier`, `stores.retention-zero-deletes-at-finish`, `stores.hold-blocks-delete-and-purge`, `stores.purge-audited`, `redaction.erase-reports-held`, `working-state.notes-follow-working-retention`, `identity.hold-requires-scope`
+11. [x] `core`: `AuditLog` (chain-written, checksums, hash chain) and `EventLog` (`Seq`, `Read`, `Expire`) ports + memory implementations; `RetentionPolicy`/`RetentionSource`, `Stack.Maintain`, `SessionMeta.Hold`, `ErrSessionHeld`, `Ephemeral()`. — `stores.chain-written-only`, `stores.no-content`, `stores.hash-chain`, `stores.append-failure-is-fatal-to-the-step`, `stores.decision-trail`, `stores.retention-purge-by-tier`, `stores.retention-zero-deletes-at-finish`, `stores.hold-blocks-delete-and-purge`, `stores.purge-audited`, `redaction.erase-reports-held`, `working-state.notes-follow-working-retention`, `identity.hold-requires-scope`
 
-- [ ] 11.1 `core`: Implement `AuditLog` and its memory store with restricted writers, checksums, hash chains and fatal append failures.
+- [x] 11.1 `core`: Implement `AuditLog` and its memory store with restricted writers, checksums, hash chains and fatal append failures.
   - files: `core/store_audit.go`, `core/store_audit_test.go`
-  - scenarios: `stores.chain-written-only`, `stores.no-content`, `stores.hash-chain`, `stores.append-failure-is-fatal-to-the-step`
+  - scenarios: `stores.chain-written-only`, `stores.no-content`, `stores.append-failure-is-fatal-to-the-step`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestAuditLog'`
 
-- [ ] 11.2 `core`: Implement the ordered `AuditLog` decision trail through `Reconstruct`.
+- [x] 11.2 `core`: Implement the ordered `AuditLog` decision trail through `Reconstruct`.
   - files: `core/store_audit_reconstruct.go`, `core/store_audit_reconstruct_test.go`
-  - scenarios: `stores.decision-trail`
+  - scenarios: `stores.decision-trail`, `stores.hash-chain`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestAuditReconstruct'`
 
-- [ ] 11.3 `core`: Implement `EventLog` and its memory ring buffer with `Seq`, ordered historical/live `Read` and `Expire`.
+- [x] 11.3 `core`: Implement `EventLog` and its memory ring buffer with `Seq`, ordered historical/live `Read` and `Expire`.
   - files: `core/store_events.go`, `core/store_events_test.go`
   - scenarios: `streams.monotonic-seq`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestEventLog'`
 
-- [ ] 11.4 `core`: Implement `RetentionPolicy`/`RetentionSource`, `Stack.Maintain`, audited tier purges and the `Ephemeral()` hook without core policy defaults.
+- [x] 11.4 `core`: Implement `RetentionPolicy`/`RetentionSource`, `Stack.Maintain`, audited tier purges and the `Ephemeral()` hook without core policy defaults.
   - files: `core/store_retention.go`, `core/store_retention_test.go`
   - scenarios: `stores.retention-purge-by-tier`, `stores.retention-zero-deletes-at-finish`, `stores.purge-audited`, `working-state.notes-follow-working-retention`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestStoreRetention'`
 
-- [ ] 11.5 `core`: Enforce `SessionMeta.Hold`, `ErrSessionHeld`, `session:hold` and held-session reporting during deletion, `Maintain` and erasure.
+- [x] 11.5 `core`: Enforce `SessionMeta.Hold`, `ErrSessionHeld`, `session:hold` and held-session reporting during deletion, `Maintain` and erasure.
   - files: `core/store_hold.go`, `core/store_hold_test.go`
   - scenarios: `stores.hold-blocks-delete-and-purge`, `redaction.erase-reports-held`, `identity.hold-requires-scope`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestSessionHold'`
 
-12. [ ] `core`: `FeedbackStore` port + memory implementation, `Stack.Feedback`, `FeedbackRecorded` (`flow.feedback-owner-checked`, `flow.feedback-idempotent-per-name`, `flow.feedback-never-in-context`, `stores.feedback-cascades-on-erase`, `streams.feedback-recorded-event`); `OutputStore` (content-addressed blobs, `InlineBlobBytes`, `Caps.Blobs` checks, URL rule; `messages.blob-stored-by-ref`, `messages.blob-content-addressed`, `messages.url-only-from-user`, `messages.blob-too-large`, `build.blob-caps`, `guards.blob-guard-input`), `NotesStore` (keyed by `NotesKey`, session scope only in M0) ports + memory implementations; schema versions + upcaster registry; `storetest` suites for all seven ports (`Schemas` included). — `working-state.notes-versioned`, `working-state.output-paging`, `stores.native-checkpoint-after-adapter-upgrade`, `stores.graph-checkpoint-incompatible`
+12. [x] `core`: `FeedbackStore` port + memory implementation, `Stack.Feedback`, `FeedbackRecorded` (`flow.feedback-owner-checked`, `flow.feedback-idempotent-per-name`, `flow.feedback-never-in-context`, `stores.feedback-cascades-on-erase`, `streams.feedback-recorded-event`); `OutputStore` (content-addressed blobs, `InlineBlobBytes`, `Caps.Blobs` checks, URL rule; `messages.blob-stored-by-ref`, `messages.blob-content-addressed`, `messages.url-only-from-user`, `messages.blob-too-large`, `build.blob-caps`, `guards.blob-guard-input`), `NotesStore` (keyed by `NotesKey`, session scope only in M0) ports + memory implementations; schema versions + upcaster registry; `storetest` suites for all seven ports (`Schemas` included). — `working-state.notes-versioned`, `working-state.output-paging`, `stores.native-checkpoint-after-adapter-upgrade`, `stores.graph-checkpoint-incompatible`
 
-- [ ] 12.1 `core`: Implement `FeedbackStore`, its memory store and owner-checked `Stack.Feedback` with versioned overwrite and isolated comments/corrections.
+- [x] 12.1 `core`: Implement `FeedbackStore`, its memory store and owner-checked `Stack.Feedback` with versioned overwrite and isolated comments/corrections.
   - files: `core/store_feedback.go`, `core/store_feedback_test.go`
   - scenarios: `flow.feedback-owner-checked`, `flow.feedback-idempotent-per-name`, `flow.feedback-never-in-context`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestFeedbackStore'`
 
-- [ ] 12.2 `core`: Implement `FeedbackStore` deletion/erasure cascades and thin `FeedbackRecorded` writes with the next `EventLog` sequence.
+- [x] 12.2 `core`: Implement `FeedbackStore` deletion/erasure cascades and thin `FeedbackRecorded` writes with the next `EventLog` sequence.
   - files: `core/store_feedback_lifecycle.go`, `core/store_feedback_lifecycle_test.go`
   - scenarios: `stores.feedback-cascades-on-erase`, `streams.feedback-recorded-event`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestFeedbackLifecycle'`
 
-- [ ] 12.3 `core`: Implement `OutputStore`, its content-addressed memory blobs, `InlineBlobBytes`, persisted references and paged output access.
+- [x] 12.3 `core`: Implement `OutputStore`, its content-addressed memory blobs, `InlineBlobBytes`, persisted references and paged output access.
   - files: `core/store_outputs.go`, `core/store_outputs_test.go`, `std/outputs/read_output.go`, `std/outputs/read_output_test.go`
   - scenarios: `messages.blob-stored-by-ref`, `messages.blob-content-addressed`, `working-state.output-paging`
   - verify: `go test -short -timeout 2m ./core/... ./std/outputs/ -run 'TestOutputStore'`
 
-- [ ] 12.4 `core`: Enforce `OutputStore` URL provenance, `Caps.Blobs` limits and `Build` checks; supply blob metadata to guards and reject MIME mismatches.
+- [x] 12.4 `core`: Enforce `OutputStore` URL provenance, `Caps.Blobs` limits and `Build` checks; supply blob metadata to guards and reject MIME mismatches.
   - files: `core/store_blob_checks.go`, `core/store_blob_checks_test.go`, `std/guard/blob.go`, `std/guard/blob_test.go`
   - scenarios: `messages.url-only-from-user`, `messages.blob-too-large`, `build.blob-caps`, `guards.blob-guard-input`
   - verify: `go test -short -timeout 2m ./core/... ./std/guard/ -run 'TestBlobChecks'`
 
-- [ ] 12.5 `core`: Implement `NotesStore` and its memory store keyed by `NotesKey`, with session scope and version-conflict semantics.
+- [x] 12.5 `core`: Implement `NotesStore` and its memory store keyed by `NotesKey`, with session scope and version-conflict semantics.
   - files: `core/store_notes.go`, `core/store_notes_test.go`
   - scenarios: `working-state.notes-versioned`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestNotesStore'`
 
-- [ ] 12.6 `core`: Implement stored `SchemaVersion` fields, pure read-time upcasters and checkpoint version compatibility without in-place rewrites.
+- [x] 12.6 `core`: Implement stored `SchemaVersion` fields, pure read-time upcasters and checkpoint version compatibility without in-place rewrites.
   - files: `core/store_schema.go`, `core/store_schema_test.go`, `core/checkpoint_compatibility.go`, `core/checkpoint_compatibility_test.go`
   - scenarios: `stores.native-checkpoint-after-adapter-upgrade`, `stores.graph-checkpoint-incompatible`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestStoreSchemas'`
 
-- [ ] 12.7 `testkit/storetest`: Implement `SessionLog` conformance through injected port factories; bind the memory store from an external core test, not from the suite.
+- [x] 12.7 `testkit/storetest`: Implement `SessionLog` conformance through injected port factories; bind the memory store from an external core test, not from the suite.
   - files: `testkit/storetest/session_log.go`, `testkit/storetest/session_log_test.go`, `core/storetest_session_log_test.go`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./testkit/storetest/ ./core/... -run 'TestStoretestSessionLog'`
 
-- [ ] 12.8 `testkit/storetest`: Implement `Checkpoints` conformance through injected port factories; bind the memory store from an external core test, not from the suite.
+- [x] 12.8 `testkit/storetest`: Implement `Checkpoints` conformance through injected port factories; bind the memory store from an external core test, not from the suite.
   - files: `testkit/storetest/checkpoints.go`, `testkit/storetest/checkpoints_test.go`, `core/storetest_checkpoints_test.go`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./testkit/storetest/ ./core/... -run 'TestStoretestCheckpoints'`
 
-- [ ] 12.9 `testkit/storetest`: Implement `Journal` conformance through injected port factories; bind the memory store from an external core test, not from the suite.
+- [x] 12.9 `testkit/storetest`: Implement `Journal` conformance through injected port factories; bind the memory store from an external core test, not from the suite.
   - files: `testkit/storetest/journal.go`, `testkit/storetest/journal_test.go`, `core/storetest_journal_test.go`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./testkit/storetest/ ./core/... -run 'TestStoretestJournal'`
 
-- [ ] 12.10 `testkit/storetest`: Implement `Runs` conformance through injected port factories and clocks; bind the memory store from an external core test, not from the suite.
+- [x] 12.10 `testkit/storetest`: Implement `Runs` conformance through injected port factories and clocks; bind the memory store from an external core test, not from the suite.
   - files: `testkit/storetest/runs.go`, `testkit/storetest/runs_test.go`, `core/storetest_runs_test.go`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./testkit/storetest/ ./core/... -run 'TestStoretestRuns'`
 
-- [ ] 12.11 `testkit/storetest`: Implement `AuditLog` conformance through injected port factories; bind the memory store from an external core test, not from the suite.
+- [x] 12.11 `testkit/storetest`: Implement `AuditLog` conformance through injected port factories; bind the memory store from an external core test, not from the suite.
   - files: `testkit/storetest/audit_log.go`, `testkit/storetest/audit_log_test.go`, `core/storetest_audit_log_test.go`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./testkit/storetest/ ./core/... -run 'TestStoretestAuditLog'`
 
-- [ ] 12.12 `testkit/storetest`: Implement `EventLog` conformance through injected port factories; bind the memory store from an external core test, not from the suite.
+- [x] 12.12 `testkit/storetest`: Implement `EventLog` conformance through injected port factories; bind the memory store from an external core test, not from the suite.
   - files: `testkit/storetest/event_log.go`, `testkit/storetest/event_log_test.go`, `core/storetest_event_log_test.go`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./testkit/storetest/ ./core/... -run 'TestStoretestEventLog'`
 
-- [ ] 12.13 `testkit/storetest`: Implement `Schemas` conformance with recorded released-version fixtures and injected readers; bind memory readers from an external core test.
+- [x] 12.13 `testkit/storetest`: Implement `Schemas` conformance with recorded released-version fixtures and injected readers; bind memory readers from an external core test.
   - files: `testkit/storetest/schemas.go`, `testkit/storetest/schemas_test.go`, `testkit/storetest/schema_fixtures_test.go`, `core/storetest_schemas_test.go`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./testkit/storetest/ ./core/... -run 'TestStoretestSchemas'`
@@ -850,6 +850,7 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 The rows above keep their reviewed scope; these are the places the review corrected them, with the record that owns each change.
 
 - Row 1: the CI set carries a race-detected test leg (`task test:race`, `-race -short`) and a pinned `govulncheck` job, because the lease-and-reclaim rows are the first ones the race detector is worth running on; the adapter matrix, `conformance` and `examples` stay deferred to their suites.
+- Rows 11 and 12: the audit log's chain, the event log's ring buffer, the retention sweep, legal hold, the feedback store, the content-addressed output store, the notes store and the schema registry all land in `core/stores`, with `std/outputs` and `std/guard` carrying the read-output tool and the blob guard. The `Stack`/`Stores` façades, `Ephemeral()` and the `Build`-side caps wiring stay row 21's; the retention sweep, the cascade and the fork copies reach other stores through injected dependents. The storetest suites mirror each port with their own types so `testkit/storetest` never imports `core/stores`, and each is bound to the memory implementation from a `core/` test — the shape `adapter/postgres` reuses in M3. Two conformance notes worth keeping: the runs suite drops assertions that encode one implementation (notice reason mapping, `ErrSignalsPending` on finish, the store-local not-found sentinel), and the schemas suite asserts upcaster determinism because purity is not provable in process. `Feedback` is declared in `core/stores` because the flow row has not landed it, and the store-local not-found sentinels stay the contract gap recorded under row 7.
 - Row 1: branch is `master`; `git init`, the `origin` remote, `.gitignore`, `LICENSE` and `README.md` already exist; `go.work` is committed as development wiring and is never the version authority, while `go.work.sum` stays ignored because it is reproducible per checkout. Row 1 also lands the first two package declarations (`core/doc.go`, `core/types/doc.go`), so `task lint`, `go vet` and `task test` have a compilable unit: an empty module fails them (measured: `go test` exit 1, `golangci-lint run` exit 5). CI carries `spec`, `lint`, `test` and `bench` on `master` only — `conformance` and `examples` arrive with their suites, `api:check` with `adapter/httpapi` in M4, and the adapter matrix is empty for all of M0, so it is path-filtered. `task test:full` and `task examples:test` are named by `AGENTS.md` and land with rows 29 and 31.
 - Row 3: `gohan.limit_exceeded`'s HTTP cell reads "429 for quota pools, else 422"; `ProblemOf` has no profile context, so it returns 422 and the quota-pool 429 is the transport's to set when the run's pool is known. `golangci-lint` now checks gofmt and goimports, because rows 1 and 2 left two files unformatted and the `default: standard` set does not look at formatting.
 - Rows 9 and 10: their pre-split file labels resolve into `core/stores` (`journal.go`, `journal_memory.go`, `runs.go`), and each row's chunk that names a mechanism a later row owns asserts the store-level part only: `stores.replay-returns-recorded-result` cannot establish `ToolFinished.Replayed`, because the journal decorator is row 15.1, and `stores.journal-ttl` cannot assert that audit records survive the purge, because `AuditLog` is row 11.1; `recovery.no-double-run` names `Invoke`, which is row 23.1, so 10.1 asserts `Runs.Start` returning `ErrRunActive`. The journal TTL is prose only ("default 24 h"), so row 9 names it `DefaultJournalTTL` in `core/stores`. `RunNotice`/`NoticeKind`/`Notifier` stay in `core/types` where row 3.1 landed them, even though the design's package plan lists them under `core/streams` — row 10 uses that copy rather than redeclaring.

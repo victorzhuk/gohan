@@ -51,6 +51,7 @@ type MemorySessionLog struct {
 	principals  PrincipalSource
 	dependents  []SessionDependent
 	leases      SessionLeaseHolder
+	audit       AuditLog
 	archivedFor time.Duration
 	sessions    map[string]*sessionRecord
 	msgSeq      int64
@@ -271,6 +272,11 @@ func (s *MemorySessionLog) Purge(ctx context.Context, olderThan time.Time) (int,
 		if rec.meta.Pinned {
 			continue
 		}
+		// A legal hold blocks the purge: zero retention does not apply
+		// either, so the hold check comes before every age rule.
+		if rec.meta.Hold != "" {
+			continue
+		}
 		if rec.meta.Archived {
 			if rec.meta.LastActivity.Before(archivedCut) {
 				purged = append(purged, id)
@@ -443,7 +449,11 @@ func (s *MemorySessionLog) UpdateSession(ctx context.Context, sessionID string, 
 		if !hasScope(pr, scopeSessionHold) {
 			return fmt.Errorf("update session %s: %w", sessionID, ErrHoldScopeMissing)
 		}
+		prev := rec.meta.Hold
 		rec.meta.Hold = *p.Hold
+		if err := s.auditHold(ctx, rec.meta, prev); err != nil {
+			return err
+		}
 	}
 	if p.Title != nil {
 		rec.meta.Title = *p.Title

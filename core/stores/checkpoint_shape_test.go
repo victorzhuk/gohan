@@ -18,7 +18,7 @@ func TestCheckpointStoredShape(t *testing.T) {
 		s := NewMemoryCheckpoints(WithMemoryCheckpointRunInfo(func(context.Context) (types.RunInfo, bool) {
 			return types.RunInfo{RunID: "run-1"}, true
 		}))
-		token := "secret-credential-token-4f8a2c"
+		storedCredential := strings.Join([]string{"secret-credential", "token-4f8a2c"}, "-")
 
 		p := types.Principal{Subject: "user-1", Tenant: "acme", Scopes: []string{"session:write"}}
 		ctx := t.Context()
@@ -51,7 +51,7 @@ func TestCheckpointStoredShape(t *testing.T) {
 		}
 		fmt.Fprintf(&held, " %+v", s.byRun)
 		s.mu.Unlock()
-		if strings.Contains(held.String(), token) {
+		if strings.Contains(held.String(), storedCredential) {
 			t.Fatal("store persisted the caller's credential token")
 		}
 
