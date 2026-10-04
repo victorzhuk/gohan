@@ -55,6 +55,7 @@ type RunInfo struct {
 	ReleaseID    string
 	Variant      string
 	Mode         RunMode
+	Depth int
 }
 
 type CostTags struct {
