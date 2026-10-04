@@ -33,17 +33,12 @@ func ToolManifestHash(spec types.ToolSpec) string {
 }
 
 // PinnedTool is one entry of a pinned manifest.
-type PinnedTool struct {
-	Name string `json:"name"`
-	Hash string `json:"hash"`
-}
+type PinnedTool = types.PinnedTool
 
 // PinnedManifest is the pinned-file shape. MarshalManifest writes it;
-// ParseManifest reads it back. The shape is frozen at version 1.
-type PinnedManifest struct {
-	Version int          `json:"version"`
-	Tools   []PinnedTool `json:"tools"`
-}
+// ParseManifest reads it back. The shape is frozen at version 1. The value
+// type lives on the floor; this alias keeps the std API stable.
+type PinnedManifest = types.PinnedManifest
 
 // ManifestOf hashes every spec into a name → hash map.
 func ManifestOf(specs []types.ToolSpec) map[string]string {

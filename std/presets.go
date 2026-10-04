@@ -2,7 +2,15 @@
 // starts from and edits in place.
 package std
 
-import "github.com/victorzhuk/gohan/core/chains"
+import (
+	"context"
+	"iter"
+	"strings"
+
+	gohan "github.com/victorzhuk/gohan/core"
+	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/types"
+)
 
 // DefaultPrompts is the exported PromptSet every preset bundles. Core
 // declares none of these strings.
@@ -54,4 +62,47 @@ func presetChain() chains.ToolChain {
 
 func passthrough() chains.ToolMiddleware {
 	return func(next chains.ToolFunc) chains.ToolFunc { return next }
+}
+
+// Options presents the preset as driver Build options, per the build
+// spec's "std presets are Options too". Only the prompt set crosses
+// today, as a model middleware: the driver's option set has no
+// tool-middleware option yet, so the chain steps stay pass-through
+// placeholders that a service fills in place, and presenting them as
+// anything else would invent behavior the driver cannot carry. Options
+// never constructs a Build itself; the caller composes it.
+func (p Preset) Options() []gohan.Option {
+	return []gohan.Option{gohan.WithModelMiddleware(p.PromptMiddleware())}
+}
+
+// PromptMiddleware places the preset's authored strings ahead of every
+// model call as one fenced system block. The strings are model-facing,
+// so the model middleware, not a chain step, is their honest carrier.
+func (p Preset) PromptMiddleware() types.ModelMiddleware {
+	ps := p.Prompts
+	return func(next types.ModelFunc) types.ModelFunc {
+		return func(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+			req.System = append(preamble(ps), req.System...)
+			return next(ctx, req)
+		}
+	}
+}
+
+// preamble renders every model-facing PromptSet string as one system
+// block, each accounted for by its named field.
+func preamble(ps chains.PromptSet) []types.Block {
+	return []types.Block{types.Text{
+		BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginSystem}},
+		Text: strings.Join([]string{
+			ps.FenceOpen,
+			ps.DataNotInstructions,
+			ps.FenceClose,
+			ps.OutcomeUnknown,
+			ps.ReadBackHint,
+			ps.OutputRefHint,
+			ps.RepairInstruction,
+			ps.NotesPreamble,
+			ps.OperatorTurn,
+		}, "\n"),
+	}}
 }

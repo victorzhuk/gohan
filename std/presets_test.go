@@ -2,9 +2,12 @@ package std_test
 
 import (
 	"context"
+	"iter"
 	"reflect"
+	"strings"
 	"testing"
 
+	gohan "github.com/victorzhuk/gohan/core"
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/types"
 	"github.com/victorzhuk/gohan/std"
@@ -113,5 +116,51 @@ func TestBatchAndAgenticPrompts(t *testing.T) {
 		if err := chains.ValidateToolChain(p.ToolChain); err != nil {
 			t.Errorf("%s preset chain does not validate: %v", name, err)
 		}
+	}
+}
+
+func TestPresetOptions(t *testing.T) {
+	for name, build := range map[string]func() std.Preset{
+		"interactive": std.Interactive,
+		"agentic":     std.Agentic,
+		"batch":       std.Batch,
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := build()
+			opts := p.Options()
+			if len(opts) == 0 {
+				t.Fatal("preset yields no options")
+			}
+			if _, err := gohan.Build(opts...); err != nil {
+				t.Fatalf("Build rejected preset options: %v", err)
+			}
+
+			// The prompt set survives the round trip: the option set's
+			// middleware carries every authored string onto the request.
+			var got types.ModelRequest
+			mw := p.PromptMiddleware()
+			call := mw(func(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+				got = req
+				return func(yield func(types.ModelChunk, error) bool) {}
+			})
+			for range call(context.Background(), types.ModelRequest{}) {
+			}
+			if len(got.System) != 1 {
+				t.Fatalf("request carries %d system blocks, want 1", len(got.System))
+			}
+			ps := p.Prompts
+			want := strings.Join([]string{
+				ps.FenceOpen, ps.DataNotInstructions, ps.FenceClose,
+				ps.OutcomeUnknown, ps.ReadBackHint, ps.OutputRefHint,
+				ps.RepairInstruction, ps.NotesPreamble, ps.OperatorTurn,
+			}, "\n")
+			block, ok := got.System[0].(types.Text)
+			if !ok {
+				t.Fatalf("system block is %T, want types.Text", got.System[0])
+			}
+			if block.Text != want {
+				t.Fatalf("prompt round trip lost strings:\ngot  %q\nwant %q", block.Text, want)
+			}
+		})
 	}
 }
