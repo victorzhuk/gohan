@@ -318,44 +318,51 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 
 ## C. Chains, guards, gate (governance before capability)
 
-13. [ ] `core`: chain-as-data (`Step`, `StepKind` incl. `KindHedge`, `ToolChain`, `ModelChain`), canonical-order validation (hedge outside fallback, inside router), `StepError`, `PromptSet` type, `Explain`/`Explanation`. — `chains.empty-chains`, `chains.step-named-failure`, `chains.prompt-strings-accounted-for`, `chains.preset-is-copyable`, `chains.cache-replace-is-free`
+13. [x] `core`: chain-as-data (`Step`, `StepKind` incl. `KindHedge`, `ToolChain`, `ModelChain`), canonical-order validation (hedge outside fallback, inside router), `StepError`, `PromptSet` type, `Explain`/`Explanation`. — `chains.empty-chains`, `chains.step-named-failure`, `chains.prompt-strings-accounted-for`, `chains.preset-is-copyable`, `chains.cache-replace-is-free`
 
-- [ ] 13.1 `core`: Define `Step`, `StepKind` including `KindHedge`, `ToolChain`, `ModelChain`, canonical-order validation and `StepError`; preserve empty chains and free cache replacement.
-  - files: `core/chain.go`, `core/chain_test.go`
+- [x] 13.1 `core`: Define `Step`, `StepKind` including `KindHedge`, `ToolChain`, `ModelChain`, canonical-order validation and `StepError`; preserve empty chains and free cache replacement.
+  - files: `core/chains/chain.go`, `core/chains/chain_test.go`
   - scenarios: `chains.empty-chains`, `chains.step-named-failure`, `chains.cache-replace-is-free`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestChain'`
+  - note: path resolved through the design package table: `core/chains`, package `chains`, which imports `core/types` only; `ModelFunc`/`ModelMiddleware`/`ModelChain` are deferred to 18.7 because they need `ModelRequest` (18.7) - 13.1 declares the tool half of the chain; `StepError` is an alias of `types.StepError`, never a redeclaration; the canonical-order validator gets an invented exported name (the spec is prose) and the ordering rule is asserted as a property of the validator, not of a runtime
 
-- [ ] 13.2 `core`: Define `PromptSet`, `Explain` and `Explanation`; account for prompt fields and validate copied preset chains without core defaults.
-  - files: `core/explain.go`, `core/explain_test.go`
+- [x] 13.2 `core`: Define `PromptSet`, `Explain` and `Explanation`; account for prompt fields and validate copied preset chains without core defaults.
+  - files: `core/chains/explain.go`, `core/chains/explain_test.go`, `std/presets.go`, `std/presets_test.go`
   - scenarios: `chains.prompt-strings-accounted-for`, `chains.preset-is-copyable`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestExplanation'`
+  - note: `std/presets.go` joins the chunk because `chains.prompt-strings-accounted-for` needs `std.Interactive()`/`std.DefaultPrompts` and no other chunk declares them (design.md gives presets to the `std` root package); `Explanation.Release`/`Skills` names `ReleaseManifest` (21.3) - assert the fields, defer the wiring; `ExplainHandler` waits for the driver entry (row 21/22)
 
 14. [ ] `std`: permission gate skeleton — `ApprovalPolicy` per risk tier at `Resume` (`permission.self-approval-refused-high-risk`, `permission.approve-scope-required-medium`, `permission.ineligible-keeps-token`, `permission.quorum-two-approvers`, `permission.escalation-targets`, `permission.approval-audit-eligibility`, `permission.grant-inherits-policy`), scope check, `Deny` rules, `Ask` → `HumanApproval` with `ApprovalRequest` (incl. `ArgOrigins`, `DiffFromLast`), session grants, expiry, `MaxPendingApprovals`; `TaintHook` slot wired but empty. — `permission.grant-removes-the-repeat-ask`, `permission.fingerprint-change-misses-the-grant`, `permission.grant-does-not-cross-sessions-or-principals`, `permission.rich-request`, `permission.expiry-default`, `permission.queue-flood`, `chains.scope-before-decider`, `chains.denied-call-not-journaled`, `decider.failure-defaults-closed`
 
 - [ ] 14.1 `core`: Implement the permission gate skeleton, scope-first hard `Deny`, closed decider failures and `Ask` → `HumanApproval`; wire the empty `TaintHook` slot.
-  - files: `core/permission.go`, `core/permission_test.go`
+  - files: `core/permission/gate.go`, `core/permission/gate_test.go`, `core/types/taint.go`
   - scenarios: `chains.scope-before-decider`, `chains.denied-call-not-journaled`, `decider.failure-defaults-closed`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestPermissionGate'`
+  - note: path resolved to the design package table: `core/permission`, package `permission` (the spec signature is `permission.Gate`); the empty `TaintHook` slot needs its vocabulary (`ArgTaint`, `TaintAction`, `TaintDenied`) declared in `core/types/taint.go` because no chunk owns the taint capability - taint behaviour stays M1; `chains.denied-call-not-journaled` asserts against `core/stores.Journal` (the journal step is 15.1); `decider.failure-defaults-closed` asserts a closed Deny, not runtime emission
 
 - [ ] 14.2 `core`: Define `ApprovalPolicy`, `ApprovalRequest`, `Eligibility` and `ApprovalPolicy.MaxPending`; preserve tokens on ineligible approval and carry `ArgOrigins`, `DiffFromLast` and eligibility audit data.
-  - files: `core/approval.go`, `core/approval_test.go`, `core/limits.go`, `core/limits_test.go`
+  - files: `core/permission/approval.go`, `core/permission/approval_test.go`
   - scenarios: `permission.ineligible-keeps-token`, `permission.rich-request`, `permission.approval-audit-eligibility`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestApprovalContract'`
+  - note: `core/limits.go` dropped: `MaxPending` is an `ApprovalPolicy` field, not a `RunLimits` field; the approval audit kinds (approval, granted_by_scope) are added to the landed `core/stores/audit.go` by this chunk, which is their single writer; `permission.rich-request` asserts the `ApprovalRequest` builder (`ArgOrigins`, `DiffFromLast`), not the `Suspended` emission (21/22)
 
 - [ ] 14.3 `std/permission`: Supply risk-tier `ApprovalPolicy` defaults for `Resume`, separate high-risk originators, require medium-risk approval scope and enforce distinct-approver quorum.
   - files: `std/permission/policy.go`, `std/permission/policy_test.go`
   - scenarios: `permission.self-approval-refused-high-risk`, `permission.approve-scope-required-medium`, `permission.quorum-two-approvers`
   - verify: `go test -short -timeout 2m ./std/permission/ -run 'TestApprovalPolicy'`
+  - note: the policy evaluator is tested directly: `Resume` is 24.1, so the scenarios' `Resume`-level THENs are asserted against the evaluator's decision and the deferral recorded
 
 - [ ] 14.4 `std/permission`: Implement policy-checked `ApproveScope` and session `Grant` matching by tool, fingerprint and subject.
-  - files: `std/permission/grant.go`, `std/permission/grant_test.go`
+  - files: `std/permission/grant.go`, `std/permission/grant_test.go`, `core/tool_fingerprint.go`
   - scenarios: `permission.grant-inherits-policy`, `permission.grant-removes-the-repeat-ask`, `permission.fingerprint-change-misses-the-grant`, `permission.grant-does-not-cross-sessions-or-principals`
   - verify: `go test -short -timeout 2m ./std/permission/ -run 'TestSessionGrant'`
+  - note: grants are stored through an injected `GrantStore` interface with a memory implementation (`std/permission` may not reach session metadata, which has no port); `ToolSpec.FingerprintFields` and `WithFingerprintFields` (tools spec:112, prose only) are declared here because `permission.fingerprint-change-misses-the-grant` needs them, and this chunk is their single writer; `MaxGrantTTL` and the grant audit record land here
 
 - [ ] 14.5 `std/permission`: Implement `RejectOnExpiry`, `EscalateOnExpiry` targets and `Waker` scheduling; enforce `ApprovalPolicy.MaxPending` per subject and tenant.
   - files: `std/permission/expiry.go`, `std/permission/expiry_test.go`, `std/permission/pending.go`, `std/permission/pending_test.go`
   - scenarios: `permission.expiry-default`, `permission.escalation-targets`, `permission.queue-flood`
   - verify: `go test -short -timeout 2m ./std/permission/ -run 'TestApprovalQueue'`
+  - note: `Waker` (24.2) arrives as a narrow consumer-owned interface declared in `std/permission`; `ExpiryVerdict`/`ExpiryTarget` naming follows the spec prose; `permission.expiry-default` asserts the policy decision and the injected target call, not the `Failed(Permanent)` result (22) or the `gohan.approval.expired` problem (28)
 
 15. [ ] `std`: journal step with fingerprint pinning, cancel shield (`context.WithoutCancel` for `SideEffect`), read-back, uncertainty surfacing, `Verify` reconciliation. — `stores.same-transaction-journal`, `stores.late-commit`, `stores.read-back-offered`, `stores.uncertainty-surfaced`, `stores.fingerprint-after-compaction`, `stores.crash-window`, `tools.verify-reconciles-unknown`, `tools.verify-read-only`, `tools.verify-error`, `tools.verify-on-recover`, `streams.disconnect-during-side-effect`, `chains.read-only-tools-pay-nothing`
 
@@ -363,6 +370,7 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - files: `std/journal.go`, `std/journal_test.go`
   - scenarios: `stores.late-commit`, `stores.fingerprint-after-compaction`, `stores.crash-window`
   - verify: `go test -short -timeout 2m ./std/ -run 'TestJournalIntent'`
+  - note: `std/` root is package `std` (first file; `std/presets.go` from 13.2 is its sibling and is sequenced before this row); the canonical fingerprint helper is invented and frozen here (`CanonicalFingerprint(tool, args)` per stores spec:305) because the spec gives a formula and no function; key pinning reuses the journal port's `ByFingerprint`/`Entry.Key`; `stores.crash-window` asserts the store-level Reserved -> re-execute branch, never real process death; the three journal metrics are row 28
 
 - [ ] 15.2 `std`: Apply `context.WithoutCancel` only to `SideEffect`, persist results before cancellation and exempt `ReadOnly` tools from journal and shield work.
   - files: `std/shield.go`, `std/shield_test.go`
@@ -373,30 +381,35 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - files: `std/verify.go`, `std/verify_test.go`
   - scenarios: `tools.verify-reconciles-unknown`, `tools.verify-read-only`, `tools.verify-error`, `tools.verify-on-recover`
   - verify: `go test -short -timeout 2m ./std/ -run 'TestVerifyReconciliation'`
+  - note: `tools.verify-on-recover` drives `Recover` (27.1) and `Resume` (24.1), which do not exist: assert the reconciliation function at the std level and record the wiring deferral; the `/verify` journal key is minted by the caller - the `Journal` port has no field for it
 
 - [ ] 15.4 `std`: Offer `ReadBack` after `Unknown` and surface unresolved `CallKey` entries through `UncertainOutcomeError` and `Done.Uncertain`.
   - files: `std/uncertainty.go`, `std/uncertainty_test.go`
   - scenarios: `stores.read-back-offered`, `stores.uncertainty-surfaced`
   - verify: `go test -short -timeout 2m ./std/ -run 'TestUncertainty'`
+  - note: `stores.uncertainty-surfaced` names `Flow.Invoke`/`Conversation.Done` (23.1/23.2): assert the returned `UncertainOutcomeError` and `Done.Uncertain` value, and record the emission deferral; `ReadBack` hint rendering uses `PromptSet` fields from 13.2 (sequenced before)
 
 - note: `stores.same-transaction-journal` needs `adapter/postgres` and is deferred to M1 (`deferred_to` in `openspec/scenarios.json`).
 
 16. [ ] `std`: guards — `GuardInput`, stages, rules-based input/context/description guards, `Buffered`/`Windowed` output, `Fallback`, fencing by `Origin`. — `guards.input-injection-blocked`, `guards.indirect-injection`, `guards.windowed-output`, `guards.intermediate-turns-unguarded`, `guards.notes-poisoning-blocked`, `guards.provider-output-fenced`, `guards.origin-not-caller-settable`, `tools.poisoned-description`, `decider.observable`
 
 - [ ] 16.1 `std/guard`: Implement rules-based input, tool-result and description guards using core `GuardInput` and stages; record observable decider decisions.
-  - files: `std/guard/rules.go`, `std/guard/rules_test.go`, `std/guard/description.go`, `std/guard/description_test.go`
+  - files: `core/guards/guard.go`, `core/guards/guard_test.go`, `std/guard/rules.go`, `std/guard/rules_test.go`, `std/guard/description.go`, `std/guard/description_test.go`
   - scenarios: `guards.input-injection-blocked`, `guards.indirect-injection`, `tools.poisoned-description`, `decider.observable`
   - verify: `go test -short -timeout 2m ./std/guard/ -run 'TestGuardRules'`
+  - note: `GuardInput`, `GuardAction`, `GuardVerdict`, `Guard`, `OutputMode` and `Fallback` are declared by this chunk in `core/guards` (design package table) because no other chunk owns them; `GuardStage` and `GuardBlockedError` already live in `core/types` from row 3 and are referenced, not moved - the design table's placement is superseded by the landed code; `tools.poisoned-description` asserts the checker returns `ErrToolDescription` (`Build` is 21.1); `decider.observable` asserts the recorded decision (the span is 28.1); `std/guard/blob.go` from 12.4 is not touched and its names are not redeclared
 
 - [ ] 16.2 `std/guard`: Implement context guards and fencing by chain-assigned `Origin`; reject poisoned notes and fence provider output with `PromptSet` fields.
   - files: `std/guard/context.go`, `std/guard/context_test.go`, `std/guard/origin.go`, `std/guard/origin_test.go`
   - scenarios: `guards.notes-poisoning-blocked`, `guards.provider-output-fenced`, `guards.origin-not-caller-settable`
   - verify: `go test -short -timeout 2m ./std/guard/ -run 'TestContextProvenance'`
+  - note: fencing is asserted on given inputs with `PromptSet` from 13.2; the assembler path (`SlotSession`, 19.1) is the caller, so `guards.provider-output-fenced` asserts the fence function; `guards.origin-not-caller-settable` asserts that a guard refuses an input whose `Origin` claims a chain-assigned kind, and the chain-side overwrite is recorded as a runtime deferral; the `gohan.guard.context_rejected` counter is row 28
 
 - [ ] 16.3 `std/guard`: Implement `Buffered` and `Windowed` user-facing output guards with `Fallback`; leave intermediate tool-call turns unguarded.
   - files: `std/guard/output.go`, `std/guard/output_test.go`
   - scenarios: `guards.windowed-output`, `guards.intermediate-turns-unguarded`
   - verify: `go test -short -timeout 2m ./std/guard/ -run 'TestOutputGuard'`
+  - note: `guards.windowed-output` asserts the `Buffered`/`Windowed` behaviour and the `GuardVerdict` it returns; the `Done(guard_blocked)` emission is 23.2 - record the deferral; the `Interactive -> Windowed 64` default uses `std.Interactive()` from 13.2 (sequenced before); the guards `Fallback` type is distinct from the model `Fallback` concept and must not be aliased into the driver
 
 17. [ ] `std`: tool policy — `Trusted`/`Untrusted`, `MaxEffect`, pinned manifest with hash drift, `ToolFilter` (narrow-only, deterministic), `Deferred` + `search_tools`. — `tools.rug-pull`, `tools.untrusted-effect-cap`, `tools.tool-filter-per-turn`, `tools.not-assembled-until-discovered`, `tools.activation-persists-across-resume`, `tools.governed-while-deferred`, `messages.deterministic-tool-filter-on-replay`
 
@@ -404,16 +417,19 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - files: `core/tool_policy.go`, `core/tool_policy_test.go`
   - scenarios: `tools.untrusted-effect-cap`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestToolPolicy'`
+  - note: `ToolPolicy` stays in the driver package (`gohan`) because its `DescribeGuard` field is a `guards.Guard` and `core/types` is the floor: it may not import `core/guards`; `Trusted`/`Untrusted` already live in `core/types/tool.go` and are referenced, not redeclared; the cap is applied before gate evaluation, so this chunk lands after 14.1 in the same rung; the `gohan.tool.effect_capped` metric is row 28
 
 - [ ] 17.2 `std`: Implement pinned tool manifests, hash-drift checks and narrow-only per-turn `ToolFilter`; enforce deterministic filtered sets on `Replay`.
   - files: `std/manifest.go`, `std/manifest_test.go`, `std/tool_filter.go`, `std/tool_filter_test.go`
   - scenarios: `tools.rug-pull`, `tools.tool-filter-per-turn`, `messages.deterministic-tool-filter-on-replay`
   - verify: `go test -short -timeout 2m ./std/ -run 'TestToolManifestAndFilter'`
+  - note: `depends_on` 19.1 dropped: the assembler is this chunk's *consumer*, not its dependency - expose the narrow-only filter as a pure function taking the per-turn context; `WithPinnedManifest` is a `Build` option (21.1) and the drift check is exposed as a pure function; `Replay` returning `ErrToolSetDrift` is 22 - assert the check; the manifest hash algorithm and the pinned-file shape are invented and frozen here (the spec declares neither)
 
 - [ ] 17.3 `std/toolsearch`: Implement `Deferred` discovery through `search_tools`, persist activation across resume and preserve scope checks after discovery.
   - files: `std/toolsearch/search.go`, `std/toolsearch/search_test.go`, `std/toolsearch/activation.go`, `std/toolsearch/activation_test.go`
   - scenarios: `tools.not-assembled-until-discovered`, `tools.activation-persists-across-resume`, `tools.governed-while-deferred`
   - verify: `go test -short -timeout 2m ./std/toolsearch/ -run 'TestDeferredTools'`
+  - note: the active tool set is persisted in `Checkpoint.Data` (`map[string]any`), which exists - no store shape change; `tools.not-assembled-until-discovered` asserts the deferred set is absent from the assembled set until discovered, via the filter from 17.2 (sequenced before), not through the assembler (19.1) or `Explain` (13.2 supplies the accounting); `tools.governed-while-deferred` reuses the scope check from 14.1; `MaxToolContextShare` is prose - the `Build` share warning is 21 territory
 
 ## D. Model side
 
@@ -878,6 +894,8 @@ The rows above keep their reviewed scope; these are the places the review correc
 - Row 30: `MaxOutput` is 64 KiB (`tools/spec.md` defaults rule, ADR-0106; the 16 KiB sites were corrected by ADR-0137).
 - Row 33 (M0.5): ADR-0136 gives M0.5 the offline paths of the three acceptance processes as `examples/{kafka-refunds,temporal-travel,camunda-invoice}` over core, std and the memory stores; the nine `engines.*` scenario IDs are enumerated in its chunks and `engines.*` is not a scenario ID.
 - Every chunk: `core` is a package tree (ADR-0139), so a file path names its package; verify commands use `./core/...`.
+
+- Row 13: paths resolved through the design package table (`core/chains`, package `chains`); the model half of the chain (`ModelFunc`, `ModelMiddleware`, `ModelChain`) moved to 18.7 because it needs `ModelRequest`; `std/presets.go` added to 13.2 because no chunk declared the presets its scenario needs. Names invented here and frozen, since the spec is prose: `ValidateToolChain` (ordering), `RunToolChain` (composition and panic naming), `Preset` (the presets' return type). Deferred at assertion time: usage charging for a replaced cache result and the assembled-request equality of an empty chain (22), `Explain`/`Stack` and the manifest prompt hash (21), span step recording (26/28).
 
 ## Deferred
 
