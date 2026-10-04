@@ -47,6 +47,9 @@ const (
 type Run struct {
 	SessionID   string
 	RunID       string
+	RootRunID   string
+	ParentRunID string
+	Depth       int
 	Flow        string
 	Backend     string
 	OperationID string

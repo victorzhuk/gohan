@@ -20,6 +20,49 @@ type LimitsState struct {
 	toolUses int
 	warned   bool
 	warnings []types.LimitWarning
+	tree     *treeSpend
+}
+
+// treeSpend is the cost the whole run tree charged; a tree's MaxCost is
+// one limit on one shared total, so it lives apart from the per-run
+// states that add to it.
+type treeSpend struct {
+	mu   sync.Mutex
+	cost float64
+}
+
+func (t *treeSpend) add(v float64) {
+	t.mu.Lock()
+	t.cost += v
+	t.mu.Unlock()
+}
+
+func (t *treeSpend) get() float64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.cost
+}
+
+// Branch returns a state that charges the same tree budget as s: every
+// descendant's spend accumulates into one shared total, and the cost
+// checks on a branch see that total against the hub's MaxCost.
+func (s *LimitsState) Branch() *LimitsState {
+	t := s.tree
+	if t == nil {
+		t = &treeSpend{cost: s.cost}
+		s.tree = t
+	}
+	return &LimitsState{tree: t}
+}
+
+// TreeCost reports the spend the whole run tree charged so far.
+func (s *LimitsState) TreeCost() float64 {
+	if s.tree != nil {
+		return s.tree.get()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cost
 }
 
 // NewLimitsState returns the accumulator one run shares across its
@@ -59,6 +102,9 @@ func (s *LimitsState) charge(u types.Usage, p types.Pricing) float64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cost += spent
+	if s.tree != nil {
+		s.tree.add(spent)
+	}
 	return s.cost
 }
 
@@ -82,8 +128,14 @@ func (s *LimitsState) preCall(l types.RunLimits, now time.Time) (time.Duration, 
 	if s.start.IsZero() {
 		s.start = now
 	}
-	if l.MaxCost > 0 && s.cost > l.MaxCost {
-		return 0, &types.LimitExceededError{Limit: "MaxCost", Value: s.cost}
+	if l.MaxCost > 0 {
+		cost := s.cost
+		if s.tree != nil {
+			cost = s.tree.get()
+		}
+		if cost > l.MaxCost {
+			return 0, &types.LimitExceededError{Limit: "MaxCost", Value: cost}
+		}
 	}
 	if l.MaxTurns > 0 {
 		s.turns++
@@ -100,10 +152,11 @@ func (s *LimitsState) preCall(l types.RunLimits, now time.Time) (time.Duration, 
 
 // afterCharge applies the post-spend checks: the soft-ratio warning once,
 // then the hard cost abort.
-func (s *LimitsState) afterCharge(l types.RunLimits, cost float64) error {
+func (s *LimitsState) afterCharge(l types.RunLimits) error {
 	if l.MaxCost <= 0 {
 		return nil
 	}
+	cost := s.TreeCost()
 	if cost >= l.MaxCost*l.SoftRatio {
 		s.warn(types.LimitWarning{Limit: "MaxCost", Ratio: cost / l.MaxCost})
 	}
@@ -150,7 +203,8 @@ func Limits(l types.RunLimits, p types.Pricing, st *LimitsState) types.ModelMidd
 					yield(types.ModelChunk{}, &types.LimitExceededError{Limit: "MaxWallClock", Value: l.MaxWallClock.Seconds()})
 					return
 				}
-				if err := st.afterCharge(l, st.charge(usage, p)); err != nil {
+				st.charge(usage, p)
+				if err := st.afterCharge(l); err != nil {
 					yield(types.ModelChunk{}, err)
 				}
 			}
