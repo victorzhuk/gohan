@@ -20,6 +20,7 @@ type Conversation interface {
 	Send(ctx context.Context, sessionID string, msg Message) iter.Seq2[Event, error]
 	Continue(ctx context.Context, sessionID string) iter.Seq2[Event, error]
 	Resume(ctx context.Context, t ResumeToken, r stores.ResumeInput) iter.Seq2[Event, error]
+	Attach(ctx context.Context, runID string, afterSeq int64) iter.Seq2[Event, error]
 	Cancel(ctx context.Context, sessionID string) error
 	Steer(ctx context.Context, sessionID string, msg Message) error
 }
@@ -43,17 +44,41 @@ var (
 )
 
 type conversation struct {
-	spec   string
-	rt     runtime.Runtime
-	log    stores.SessionLog
-	runs   stores.Runs
-	events stores.EventLog
-	cps    stores.Checkpoints
-	creds  types.CredentialSource
+	spec     string
+	rt       runtime.Runtime
+	log      stores.SessionLog
+	runs     stores.Runs
+	events   stores.EventLog
+	cps      stores.Checkpoints
+	creds    types.CredentialSource
+	detached bool
+	wall     time.Duration
 
-	mu    sync.Mutex
-	live  map[string]string
-	runID int
+	mu      sync.Mutex
+	live    map[string]string
+	waiters map[string]map[chan struct{}]struct{}
+	ended   map[string]bool
+	runID   int
+}
+
+// markRunEnded records that the run produced its last event and wakes any
+// Attach still waiting on it, so a late subscriber cannot sleep past the
+// run's end.
+func (c *conversation) markRunEnded(runID string) {
+	c.mu.Lock()
+	if c.ended == nil {
+		c.ended = map[string]bool{}
+	}
+	c.ended[runID] = true
+	c.mu.Unlock()
+	c.notify(runID)
+}
+
+// runEnded reports whether the run has finished producing events.
+func (c *conversation) runEnded(runID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ended[runID]
 }
 
 // ConversationOption configures a Conversation built by NewConversation.
@@ -79,12 +104,18 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 	if stack != nil {
 		c.log = stack.stores.SessionLog
 		c.creds = stack.credentials
+		if l, ok := stack.Limits(spec); ok {
+			c.wall = l.MaxWallClock
+		}
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
 	if c.runs == nil {
 		return nil, errConversationRuns
+	}
+	if c.detached && c.events == nil {
+		return nil, errDetachedNoLog
 	}
 	if c.events == nil {
 		return nil, errConversationEvents
@@ -161,6 +192,15 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 			return
 		}
 		c.track(sessionID, runID)
+		if c.detached {
+			runCtx, cancel := detachedContext(ctx, c.wall)
+			go func() {
+				defer cancel()
+				defer c.untrack(sessionID)
+				c.stream(runCtx, lease, sessionID, []Message{msg}, func(Event, error) bool { return true })
+			}()
+			return
+		}
 		defer c.untrack(sessionID)
 		c.stream(ctx, lease, sessionID, []Message{msg}, yield)
 	}
@@ -214,6 +254,7 @@ func (c *conversation) find(ctx context.Context, sessionID string) (stores.Run, 
 // stream drives the run under the lifecycle ordering, recording every
 // event in the run's log as it is yielded.
 func (c *conversation) stream(ctx context.Context, lease stores.Lease, sessionID string, input []Message, yield func(Event, error) bool) {
+	defer c.markRunEnded(lease.RunID)
 	lc := NewLifecycle(
 		WithLifecycleRuns(c.runs, lease),
 		WithLifecycleSession(sessionID),
@@ -257,7 +298,9 @@ func (c *conversation) stream(ctx context.Context, lease stores.Lease, sessionID
 func (c *conversation) relay(ctx context.Context, runID string, ev Event, yield func(Event, error) bool) {
 	if err := c.events.Append(ctx, runID, stores.Event{Payload: ev, Meta: types.EventMeta{RunID: runID}}); err != nil {
 		yield(nil, fmt.Errorf("record event: %w", err))
+		return
 	}
+	c.notify(runID)
 }
 
 func (c *conversation) finishQuietly(ctx context.Context, lease stores.Lease) {

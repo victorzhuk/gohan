@@ -37,6 +37,18 @@ type turnConfig struct {
 	// before Finish. A stop reason other than completed ends the loop there,
 	// which is how Runs.SignalCancel lands at the next safe point.
 	poll func() types.StopReason
+	// coalesce merges consecutive preview deltas into one record before the
+	// sink forwards them to the EventLog in a detached run; nil streams
+	// every fragment as it arrives.
+	coalesce *DeltaCoalescer
+	// resultPreview renders the run's typed result as the ResultDelta
+	// preview fragments the client sees before Done. The preview is never
+	// journaled, gated or passed to a tool; nil emits none.
+	resultPreview func(msg types.Message) []string
+	// reasoningVisible gates whether provider reasoning streams to the
+	// consumer as ReasoningDelta; opaque reasoning is retained on the
+	// assistant message at completion either way.
+	reasoningVisible bool
 }
 
 // driveTurns runs one model call per turn, executes the turn's tool calls
@@ -53,12 +65,39 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 	turn := 0
 	maxTokens := c.maxTokens
 	truncated, repaired := 0, 0
+	// emitDelta streams one preview delta; with a coalescer the fragment
+	// feeds the open record and the closed records come back out.
+	emitDelta := func(ev types.Event) {
+		if sink == nil {
+			return
+		}
+		if c.coalesce == nil {
+			sink.Emit(ctx, ev)
+			return
+		}
+		for _, e := range c.coalesce.Add(ev) {
+			sink.Emit(ctx, e)
+		}
+	}
+	// flushDeltas closes the open coalesced record before a non-delta event
+	// or a terminal tuple, so the log never holds a partial call's fragments
+	// behind the record that completes the call.
+	flushDeltas := func() {
+		if sink == nil || c.coalesce == nil {
+			return
+		}
+		for _, e := range c.coalesce.Flush() {
+			sink.Emit(ctx, e)
+		}
+	}
 	for {
 		if turn >= c.maxTurns {
+			flushDeltas()
 			yield(types.Done{Reason: types.StopLimit}, nil)
 			return
 		}
 		if err := ctx.Err(); err != nil {
+			flushDeltas()
 			yield(nil, err)
 			return
 		}
@@ -73,6 +112,7 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 		turn++
 
 		var sb strings.Builder
+		var reasoning strings.Builder
 		var calls []types.ToolUse
 		finish := types.FinishStop
 		for chunk, err := range c.model(ctx, req) {
@@ -80,21 +120,35 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 				if ctx.Err() != nil {
 					err = ctx.Err()
 				}
+				flushDeltas()
 				yield(nil, err)
 				return
 			}
 			switch chunk.Kind {
 			case types.DeltaText:
 				sb.WriteString(chunk.Delta)
-				if sink != nil {
-					sink.Emit(ctx, types.TextDelta{Turn: turn, Delta: chunk.Delta})
+				emitDelta(types.TextDelta{Turn: turn, Delta: chunk.Delta})
+			case types.DeltaReasoning:
+				reasoning.WriteString(chunk.Delta)
+				if c.reasoningVisible {
+					emitDelta(types.ReasoningDelta{Turn: turn, Delta: chunk.Delta})
 				}
 			case types.DeltaToolArgs:
-				if chunk.ToolUse != nil && sink != nil {
-					sink.Emit(ctx, types.ToolArgsDelta{Turn: turn, CallID: chunk.ToolUse.ID, Name: chunk.ToolUse.Name, Delta: chunk.Delta})
+				if chunk.ToolUse != nil {
+					// A fragment preview carries the call identity and the
+					// fragment text; the complete block carries Args and
+					// never streams a fragment of its own.
+					if chunk.Delta != "" {
+						emitDelta(types.ToolArgsDelta{Turn: turn, CallID: chunk.ToolUse.ID, Name: chunk.ToolUse.Name, Delta: chunk.Delta})
+					}
+					// Only the complete block enters the batch: a fragment
+					// is a preview, never an argument set to execute.
+					if len(chunk.ToolUse.Args) > 0 {
+						calls = append(calls, *chunk.ToolUse)
+					}
 				}
 			}
-			if chunk.ToolUse != nil {
+			if chunk.ToolUse != nil && chunk.Kind != types.DeltaToolArgs && len(chunk.ToolUse.Args) > 0 {
 				calls = append(calls, *chunk.ToolUse)
 			}
 			if chunk.Finish != "" && chunk.Finish != types.FinishStop {
@@ -119,12 +173,14 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 			if retry > 0 {
 				maxTokens = retry
 				msgs = append(msgs, truncatedTurn(tu, *result, turn))
+				flushDeltas()
 				continue
 			}
 		}
 
 		if len(calls) > 0 {
-			stop, callErr := runCalls(ctx, c, sink, turn, calls, &msgs)
+			flushDeltas()
+			stop, callErr := runCalls(ctx, c, sink, turn, calls, &msgs, reasoning.String())
 			if callErr != nil {
 				yield(nil, callErr)
 				return
@@ -141,18 +197,29 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 			repaired++
 			prompt, ok, err := c.repair(reply, repaired)
 			if err != nil {
+				flushDeltas()
 				yield(nil, err)
 				return
 			}
 			if ok {
+				asst := types.Message{ID: assistantID(turn), Role: types.RoleAssistant, Blocks: []types.Block{types.Text{Text: reply}}}
+				retainReasoning(&asst, reasoning.String())
 				msgs = append(msgs,
-					types.Message{ID: assistantID(turn), Role: types.RoleAssistant, Blocks: []types.Block{types.Text{Text: reply}}},
+					asst,
 					prompt)
+				flushDeltas()
 				continue
 			}
 		}
 		asst := types.Message{ID: assistantID(turn), Role: types.RoleAssistant, Blocks: []types.Block{types.Text{Text: reply}}}
+		retainReasoning(&asst, reasoning.String())
 		msgs = append(msgs, asst)
+		if c.resultPreview != nil {
+			for _, d := range c.resultPreview(asst) {
+				emitDelta(types.ResultDelta{Turn: turn, MessageID: asst.ID, Delta: d})
+			}
+		}
+		flushDeltas()
 		ev := types.AssistantMessage{Turn: turn, Message: asst}
 		if sink != nil {
 			sink.Emit(ctx, ev)
@@ -169,8 +236,9 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 // under the injected shield; after it the run stops. It returns a stop
 // reason when the safe point ends the run, the cancellation error when a
 // call observed it, or "" and nil when the loop continues.
-func runCalls(ctx context.Context, c turnConfig, sink types.Sink, turn int, calls []types.ToolUse, msgs *[]types.Message) (types.StopReason, error) {
+func runCalls(ctx context.Context, c turnConfig, sink types.Sink, turn int, calls []types.ToolUse, msgs *[]types.Message, reasoning string) (types.StopReason, error) {
 	asst := types.Message{ID: assistantID(turn), Role: types.RoleAssistant}
+	retainReasoning(&asst, reasoning)
 	for _, cu := range calls {
 		asst.Blocks = append(asst.Blocks, cu)
 	}
@@ -178,6 +246,13 @@ func runCalls(ctx context.Context, c turnConfig, sink types.Sink, turn int, call
 
 	results := types.Message{ID: resultID(turn), Role: types.RoleUser}
 	for _, cu := range calls {
+		if res, ok := validateCompletion(cu); !ok {
+			results.Blocks = append(results.Blocks, res)
+			if sink != nil {
+				sink.Emit(ctx, types.ToolFinished{Turn: turn, Result: res})
+			}
+			continue
+		}
 		if sink != nil {
 			sink.Emit(ctx, types.ToolStarted{Turn: turn, Call: cu})
 		}

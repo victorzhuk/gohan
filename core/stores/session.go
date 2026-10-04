@@ -2,6 +2,7 @@ package stores
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/victorzhuk/gohan/core/types"
@@ -112,4 +113,13 @@ type SessionPatch struct {
 type SessionIndex interface {
 	Sessions(ctx context.Context, owner types.SessionOwner, q SessionQuery) ([]SessionMeta, string, error)
 	UpdateSession(ctx context.Context, sessionID string, p SessionPatch) error
+}
+
+// SessionStateMeta is the optional shared-state metadata surface on a
+// SessionLog. The shared state lives outside the message history so a
+// resume on another pod reads it from the session row alone; the version
+// is the state's own monotonic counter, independent of history versions.
+type SessionStateMeta interface {
+	SharedStateMeta(ctx context.Context, sessionID string) (json.RawMessage, int64, error)
+	SetSharedStateMeta(ctx context.Context, sessionID string, expectedVersion int64, value json.RawMessage) (int64, error)
 }

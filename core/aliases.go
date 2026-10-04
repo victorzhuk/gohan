@@ -80,6 +80,7 @@ type (
 	SuspendReason         = types.SuspendReason
 	Suspended             = types.Suspended
 	TextDelta             = types.TextDelta
+	TerminalError         = types.TerminalError
 	ToolArgsDelta         = types.ToolArgsDelta
 	ToolFinished          = types.ToolFinished
 	ToolStarted           = types.ToolStarted
@@ -110,4 +111,11 @@ type (
 	Runtime = runtime.Runtime
 	Stepper = runtime.Stepper
 	Sink    = types.Sink
+)
+
+// TerminalFailure and InterruptedStream build the terminal stream event; the
+// type aliases above cannot carry the constructors.
+var (
+	TerminalFailure   = types.TerminalFailure
+	InterruptedStream = types.InterruptedStream
 )

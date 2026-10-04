@@ -2,6 +2,7 @@ package stores
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -42,6 +43,14 @@ type sessionRecord struct {
 	hist   History
 	kidsOf map[SessionKind][]string
 	linked bool
+	state  sharedStateRow
+}
+
+// sharedStateRow is the session's persisted shared state: the JSON value
+// and the state's own monotonic version, independent of history versions.
+type sharedStateRow struct {
+	value   json.RawMessage
+	version int64
 }
 
 // MemorySessionLog is the in-memory SessionLog and SessionIndex reference
@@ -341,6 +350,11 @@ func (s *MemorySessionLog) Fork(ctx context.Context, from, upTo string) (string,
 		Version:    int64(cut + 1),
 		ForkedFrom: point,
 	}
+	// A fork renumbers shared state from 1 so later writes in either
+	// session never conflict with the other.
+	if rec.state.version > 0 {
+		child.state = sharedStateRow{value: slices.Clone(rec.state.value), version: 1}
+	}
 	s.sessions[childID] = child
 	for _, d := range s.dependents {
 		if err := d.CopySessionDependents(ctx, from, childID); err != nil {
@@ -477,6 +491,34 @@ func (s *MemorySessionLog) Owner(_ context.Context, sessionID string) (types.Ses
 		return types.SessionOwner{}, fmt.Errorf("session %s: %w", sessionID, ErrSessionNotFound)
 	}
 	return rec.meta.Owner, nil
+}
+
+// SharedStateMeta reads the session's shared state value and version.
+func (s *MemorySessionLog) SharedStateMeta(ctx context.Context, sessionID string) (json.RawMessage, int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.get(ctx, sessionID, scopeSessionRead)
+	if err != nil {
+		return nil, 0, err
+	}
+	return slices.Clone(rec.state.value), rec.state.version, nil
+}
+
+// SetSharedStateMeta writes the shared state under an expected-version
+// check and returns the advanced version.
+func (s *MemorySessionLog) SetSharedStateMeta(ctx context.Context, sessionID string, expectedVersion int64, value json.RawMessage) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.get(ctx, sessionID, scopeSessionWrite)
+	if err != nil {
+		return 0, err
+	}
+	if rec.state.version != expectedVersion {
+		return 0, fmt.Errorf("shared state session %s at version %d: %w", sessionID, expectedVersion, types.ErrVersionConflict)
+	}
+	rec.state.value = slices.Clone(value)
+	rec.state.version = expectedVersion + 1
+	return rec.state.version, nil
 }
 
 func (s *MemorySessionLog) UpdateSession(ctx context.Context, sessionID string, p SessionPatch) error {
