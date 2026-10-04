@@ -3,7 +3,6 @@ package permission
 import (
 	"encoding/json"
 	"encoding/json/jsontext"
-	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -48,7 +47,9 @@ type ApprovedVia struct {
 }
 
 // ErrApproverNotEligible reports a principal that may not approve a request.
-var ErrApproverNotEligible = errors.New("gohan: principal may not approve this request")
+// The sentinel's home is the floor (types), so errors.Is matches the same
+// error whichever package declares the reference.
+var ErrApproverNotEligible = types.ErrApproverNotEligible
 
 // ApprovalRequest is the payload a suspended call carries.
 type ApprovalRequest struct {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"time"
 
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
@@ -82,6 +83,7 @@ type Lifecycle struct {
 	verify    func(ctx context.Context, keys []types.CallKey) ([]types.CallKey, error)
 	maxTurns  int
 	resultRef string
+	waker     Waker
 }
 
 // LifecycleOption configures a Lifecycle.
@@ -186,6 +188,15 @@ func DriveLifecycle(ctx context.Context, lc *Lifecycle, rt runtime.Runtime, r ru
 				}
 			}
 			if err != nil {
+				if se, ok := errors.AsType[*types.SuspendError](err); ok {
+					ev, serr := lc.suspend(sctx, rt, r, st, se)
+					if serr != nil {
+						yield(nil, serr)
+						return
+					}
+					yield(ev, nil)
+					return
+				}
 				if ferr := lc.finishRun(sctx, st, stores.Failed, nil); ferr != nil {
 					yield(nil, ferr)
 					return
@@ -196,7 +207,7 @@ func DriveLifecycle(ctx context.Context, lc *Lifecycle, rt runtime.Runtime, r ru
 			st = next
 			switch status {
 			case runtime.SuspendedStatus:
-				ev, err := lc.suspend(sctx, rt, r, st)
+				ev, err := lc.suspend(sctx, rt, r, st, nil)
 				if err != nil {
 					yield(nil, err)
 					return
@@ -227,7 +238,14 @@ func DriveLifecycle(ctx context.Context, lc *Lifecycle, rt runtime.Runtime, r ru
 // suspend persists the checkpoint, releases the lease and only then emits
 // Suspended: the order runtime/spec.md fixes. A crash before Suspend leaves
 // the run to the reaper; a crash after it leaves the client the EventLog.
-func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.AgentRun, st runtime.State) (types.Event, error) {
+// sig, when the step returned a SuspendError, supplies the reason, the
+// payload and the wake time the event carries; a Scheduled wake arms the
+// waker exactly once, after the run is marked suspended.
+func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.AgentRun, st runtime.State, sig *types.SuspendError) (types.Event, error) {
+	reason, payload, wakeAt := lc.reason, any(nil), time.Time{}
+	if sig != nil {
+		reason, payload, wakeAt = sig.Reason, sig.Payload, sig.WakeAt
+	}
 	data, err := json.Marshal(st)
 	if err != nil {
 		return nil, fmt.Errorf("gohan: encode checkpoint: %w", err)
@@ -236,7 +254,7 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 		SchemaVersion: stores.CurrentSchemaVersion,
 		SessionID:     lc.sessionID,
 		Backend:       rt.Name(),
-		Reason:        lc.reason,
+		Reason:        reason,
 		Data:          data,
 	})
 	if err != nil {
@@ -247,7 +265,12 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 			return nil, err
 		}
 	}
-	return types.Suspended{Token: token, Reason: lc.reason}, nil
+	if reason == types.Scheduled && lc.waker != nil {
+		if err := lc.waker.Schedule(ctx, token, wakeAt); err != nil {
+			return nil, err
+		}
+	}
+	return types.Suspended{Token: token, Reason: reason, Payload: payload, WakeAt: wakeAt}, nil
 }
 
 // finishTurn verifies every Uncertain entry, closes the run and returns
