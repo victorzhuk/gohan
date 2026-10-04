@@ -5,23 +5,13 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
 // AssembleInput carries everything one StablePrefix assembly reads. It
 // mirrors the assembly contract: the providers map is keyed by slot and the
 // history arrives already loaded, so assembly itself never touches a store.
-type AssembleInput struct {
-	Run       types.RunInfo
-	Profile   types.ModelProfile
-	System    []types.Block
-	Tools     []types.ToolSpec
-	History   stores.History
-	Input     []types.Message
-	Providers map[types.ContextSlot][]types.ContextProvider
-	Filter    ToolFilter
-}
+type AssembleInput = types.AssembleInput
 
 // StablePrefix assembles a request whose byte prefix up to the last
 // CacheBreak is identical across runs that differ only after the boundary:
@@ -54,8 +44,8 @@ func (StablePrefix) Assemble(ctx context.Context, in AssembleInput) (types.Model
 	}
 	system = append(system, types.CacheBreak{})
 
-	messages := make([]types.Message, 0, len(in.History.Messages)+len(in.Input)+1)
-	messages = append(messages, in.History.Messages...)
+	messages := make([]types.Message, 0, len(in.History)+len(in.Input)+1)
+	messages = append(messages, in.History...)
 	turn, err := provideSlot(ctx, in, types.SlotTurn, in.Run)
 	if err != nil {
 		return types.ModelRequest{}, err

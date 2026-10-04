@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -75,7 +76,15 @@ type Stack struct {
 	prompts          chains.PromptSet
 	sequentialTools  bool
 	maxParallelTools int
+	limits           map[string]types.RunLimits
+	stores           stores.Stores
 	manifest         ReleaseManifest
+}
+
+// Limits returns the resolved run limits installed for a flow.
+func (s *Stack) Limits(flow string) (types.RunLimits, bool) {
+	l, ok := s.limits[flow]
+	return l, ok
 }
 
 // Manifest returns the release identity Build computed over the pinned
@@ -92,6 +101,14 @@ func Build(opts ...Option) (*Stack, error) {
 			return nil, err
 		}
 	}
+	limits := make(map[string]types.RunLimits, len(cfg.limits))
+	for flow, l := range cfg.limits {
+		resolved, err := resolveLimits(flow, l)
+		if err != nil {
+			return nil, err
+		}
+		limits[flow] = resolved
+	}
 	profiles := make(map[string]types.ModelProfile, len(cfg.models))
 	for _, m := range cfg.models {
 		p := m.Profile()
@@ -107,6 +124,7 @@ func Build(opts ...Option) (*Stack, error) {
 		prompts:          cfg.prompts,
 		sequentialTools:  cfg.sequentialTools,
 		maxParallelTools: cfg.maxParallelTools,
+		limits:           limits,
 	}
 	s.manifest = computeReleaseManifest(profiles, cfg.prompts, cfg.pinned)
 	logger := cfg.logger

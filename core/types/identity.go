@@ -1,5 +1,7 @@
 package types
 
+import "context"
+
 // Principal identifies the caller. It never carries secrets; credentials
 // travel only in context (see Credential).
 type Principal struct {
@@ -57,4 +59,43 @@ type RunInfo struct {
 	ReleaseID    string
 	Variant      string
 	Mode         RunMode
+}
+
+type ctxKey int
+
+const (
+	ctxPrincipal ctxKey = iota
+	ctxRunInfo
+	ctxIdempotencyKey
+)
+
+// WithPrincipal attaches the transport-verified principal. Only transport
+// and harness code call it.
+func WithPrincipal(ctx context.Context, p Principal) context.Context {
+	return context.WithValue(ctx, ctxPrincipal, p)
+}
+
+// WithIdempotencyKey attaches the caller-supplied idempotency key. Only
+// transport and harness code call it.
+func WithIdempotencyKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, ctxIdempotencyKey, key)
+}
+
+// PrincipalFrom reports the principal in ctx, or ok == false outside a run.
+func PrincipalFrom(ctx context.Context) (Principal, bool) {
+	p, ok := ctx.Value(ctxPrincipal).(Principal)
+	return p, ok
+}
+
+// RunInfoFrom reports the run info in ctx, or ok == false outside a run.
+func RunInfoFrom(ctx context.Context) (RunInfo, bool) {
+	r, ok := ctx.Value(ctxRunInfo).(RunInfo)
+	return r, ok
+}
+
+// IdempotencyKey reports the idempotency key in ctx, or ok == false when the
+// caller supplied none.
+func IdempotencyKey(ctx context.Context) (string, bool) {
+	k, ok := ctx.Value(ctxIdempotencyKey).(string)
+	return k, ok
 }

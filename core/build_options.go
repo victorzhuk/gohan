@@ -23,6 +23,7 @@ type config struct {
 	prompts          chains.PromptSet
 	sequentialTools  bool
 	maxParallelTools int
+	limits           map[string]types.RunLimits
 }
 
 // WithPrompts sets the PromptSet whose strings the manifest hashes; core

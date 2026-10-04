@@ -20,3 +20,19 @@ type ContextProvider interface {
 	Slot() ContextSlot
 	Provide(ctx context.Context, ri RunInfo) ([]Block, error)
 }
+
+// AssembleInput carries everything one assembly reads. It mirrors the
+// assembly contract: the providers map is keyed by slot, the loaded history
+// messages arrive as a slice, and assembly itself never touches a store.
+// The Filter field keeps an unnamed type so the std package can keep its
+// named ToolFilter without a floor dependency on it.
+type AssembleInput struct {
+	Run       RunInfo
+	Profile   ModelProfile
+	System    []Block
+	Tools     []ToolSpec
+	History   []Message
+	Input     []Message
+	Providers map[ContextSlot][]ContextProvider
+	Filter    func(specs []ToolSpec, turn int) []ToolSpec
+}

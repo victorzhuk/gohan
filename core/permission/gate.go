@@ -21,7 +21,17 @@ const (
 	Allow Verdict = iota
 	DenyVerdict
 	Ask
+	TaintDenied
 )
+
+// Decision is the whole-call verdict the batch protocol reads before any
+// call executes.
+type Decision struct {
+	Verdict Verdict
+	// Reason states why the call was denied, without the tool prefix.
+	Reason string
+	Taints []types.ArgTaint
+}
 
 // ErrApprovalRequired marks a call the gate suspended for human approval.
 var ErrApprovalRequired = errors.New("gohan: human approval required")
@@ -98,6 +108,23 @@ func Gate(d types.Decider[*ToolInvocation, Verdict], opts ...Option) types.ToolM
 	return g.middleware
 }
 
+// DecideCall resolves the verdict for one invocation without running it:
+// missing scopes deny hard, the taint hook may deny or ask, and the
+// decider (or the closed defaults) settle the rest. The batch protocol
+// calls it for every call before the first one executes.
+func DecideCall(ctx context.Context, d types.Decider[*ToolInvocation, Verdict], inv *ToolInvocation, opts ...Option) Decision {
+	g := &gate{
+		decider:       d,
+		minConfidence: 1,
+		specLookup:    func(string) (types.ToolSpec, bool) { return types.ToolSpec{}, false },
+		runLookup:     func(context.Context) types.RunInfo { return types.RunInfo{} },
+	}
+	for _, opt := range opts {
+		opt(g)
+	}
+	return g.decideCall(ctx, inv)
+}
+
 func (g *gate) middleware(next types.ToolFunc) types.ToolFunc {
 	return func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
 		spec, ok := g.specLookup(call.Name)
@@ -106,30 +133,51 @@ func (g *gate) middleware(next types.ToolFunc) types.ToolFunc {
 		}
 		inv := &ToolInvocation{Spec: spec, Call: call, Run: g.runLookup(ctx)}
 
-		if missing := missingScopes(inv.Run.Principal.Scopes, spec.RequiredScopes); len(missing) > 0 {
-			return denied(call.Name, "missing scope "+strings.Join(missing, ", ")), nil
-		}
-
-		if g.taintHook != nil {
-			action, taints := g.taintHook(ctx, spec, call.Args)
-			inv.Taints = taints
-			switch action {
-			case types.TaintDeny:
-				return taintDenied(call.Name, taints), nil
-			case types.TaintAsk:
-				return types.ToolResult{}, &AskError{Invocation: inv}
-			}
-		}
-
-		switch g.decide(ctx, inv) {
+		switch d := g.decideCall(ctx, inv); d.Verdict {
 		case Allow:
 			return next(ctx, call)
 		case DenyVerdict:
-			return denied(call.Name, "denied by policy"), nil
+			return denied(call.Name, d.Reason), nil
+		case TaintDenied:
+			return taintDenied(call.Name, d.Taints), nil
 		default:
 			return types.ToolResult{}, &AskError{Invocation: inv}
 		}
 	}
+}
+
+// decideCall applies the scope check, the taint hook and the decider to one
+// invocation. A broken decider asks — it must never widen permission.
+func (g *gate) decideCall(ctx context.Context, inv *ToolInvocation) Decision {
+	if missing := missingScopes(inv.Run.Principal.Scopes, inv.Spec.RequiredScopes); len(missing) > 0 {
+		return Decision{Verdict: DenyVerdict, Reason: "missing scope " + strings.Join(missing, ", ")}
+	}
+
+	if g.taintHook != nil {
+		action, taints := g.taintHook(ctx, inv.Spec, inv.Call.Args)
+		inv.Taints = taints
+		switch action {
+		case types.TaintDeny:
+			return Decision{Verdict: TaintDenied, Reason: taintReason(taints), Taints: taints}
+		case types.TaintAsk:
+			return Decision{Verdict: Ask, Taints: taints}
+		}
+	}
+
+	if v := g.decide(ctx, inv); v == DenyVerdict {
+		return Decision{Verdict: v, Reason: "denied by policy"}
+	} else if v != Allow {
+		return Decision{Verdict: v}
+	}
+	return Decision{Verdict: Allow}
+}
+
+func taintReason(taints []types.ArgTaint) string {
+	if len(taints) == 0 {
+		return "denied by taint policy"
+	}
+	t := taints[0]
+	return types.TaintDenied{Arg: t.Arg, Origins: t.Origins}.Error()
 }
 
 // decide consults the decider. Without one the defaults are closed:

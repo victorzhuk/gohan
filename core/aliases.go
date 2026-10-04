@@ -1,6 +1,7 @@
 package gohan
 
 import (
+	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -103,4 +104,10 @@ type (
 
 	SessionLog  = stores.SessionLog
 	Checkpoints = stores.Checkpoints
+
+	State   = runtime.State
+	Status  = runtime.Status
+	Runtime = runtime.Runtime
+	Stepper = runtime.Stepper
+	Sink    = types.Sink
 )

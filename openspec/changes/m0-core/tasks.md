@@ -568,50 +568,50 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 
 ## E. Runtime, flow, suspension
 
-22. [ ] `core`: `RunLimits` and the `WithLimits` option; the native runtime - `Stepper`, `Runtime`, `State`, `Status`, `Drive`/`DriveResume` - at effect granularity with the tool batch protocol; the `Stack` store façades. - `limits.unbounded-rejected`, `runtime.plain-answer`, `runtime.batch-gate-first`, `runtime.batch-limit-before-execute`, `runtime.readonly-parallel`, `runtime.side-effects-sequential`, `runtime.batch-ask-after-allowed`, `runtime.batch-one-result-per-call`, `runtime.parallel-tools-cap`, `runtime.sequential-tools-hint`, `runtime.tool-round-trip`, `runtime.parallel-calls-ordering`, `runtime.max-turns`, `runtime.cancellation`, `runtime.suspend-order`, `runtime.append-before-tool`, `runtime.done-after-finish` (17 IDs, chunk-disjoint)
+22. [x] `core`: `RunLimits` and the `WithLimits` option; the native runtime - `Stepper`, `Runtime`, `State`, `Status`, `Drive`/`DriveResume` - at effect granularity with the tool batch protocol; the `Stack` store façades. - `limits.unbounded-rejected`, `runtime.plain-answer`, `runtime.batch-gate-first`, `runtime.batch-limit-before-execute`, `runtime.readonly-parallel`, `runtime.side-effects-sequential`, `runtime.batch-ask-after-allowed`, `runtime.batch-one-result-per-call`, `runtime.parallel-tools-cap`, `runtime.sequential-tools-hint`, `runtime.tool-round-trip`, `runtime.parallel-calls-ordering`, `runtime.max-turns`, `runtime.cancellation`, `runtime.suspend-order`, `runtime.append-before-tool`, `runtime.done-after-finish` (17 IDs, chunk-disjoint)
 
 - note: the runtime capability's Go block is illustrative (`runtime/spec.md:16`), so the names below may change without an ADR; its batch rules, its ordering rules and every WHEN/THEN are normative. The runtime is a **leaf** package - `core/runtime/` per `design.md:24` - never the driver. `core/drive*.go` is the driver package `gohan`, which declares no shared type (ADR-0139 rule 3), so every vocabulary type it names gets an alias in `core/aliases.go`.
 - note: neither `core/runtime` nor `core/drive*.go` may import `std` (depguard). Every std dependency arrives as a function value or an interface the caller passes: the assembler (`std/stableprefix.Assemble`), the journal, the cancel shield, the output verifier, the tool filter. `AssembleInput` moves from `std/assembly.go:15` into `core/types` with an alias left behind, because `AgentRun.Assemble` names it. The ctx seams the runtime needs (`RunInfoFrom`, `WithPrincipal`/`PrincipalFrom`, `WithIdempotencyKey`) live in the driver today and move to the floor for the same reason.
 - note: `runtime.message-round-trip` (`runtime/spec.md:326`) requires conversion to eino's `AgenticMessage` and adk-go's `genai.Content`; M0 carries no adapter, so its owner becomes M2 in `scenarios.json`. `runtime.governed-components-in-eino-graph` was already `deferred_to: M2`.
 - note: the component-event sink (`runtime/spec.md:86`) is declared by this row in `core/types`, beside the event payloads, and its shape is now normative in that spec (ADR-0143): a leaf runtime cannot reach the driver's notifier. The runtime emits runtime-originated events only - `TextDelta`, `ToolStarted`, `ToolFinished` and the turn counter arrive through the sink.
 
-- [ ] 22.1 `core`: Declare `RunLimits` in the floor with its zero-value defaults, and the `WithLimits` option that refuses an unbounded run at build time.
+- [x] 22.1 `core`: Declare `RunLimits` in the floor with its zero-value defaults, and the `WithLimits` option that refuses an unbounded run at build time.
   - files: `core/types/limits.go`, `core/limits.go`, `core/limits_test.go`
   - scenarios: `limits.unbounded-rejected`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestRunLimits'`
   - note: `design.md:14` puts the value type in `core/types`, and the spec's illustrative `AgentSpec` already carries `RunLimits` (`runtime/spec.md:23`). Fields: `limits/spec.md:19`; zero-value defaults: `limits/spec.md:44`. `limits.unbounded-rejected` (`limits/spec.md:57`) asserts that `Build` fails naming the flow when the limits are zero and no preset installs them - a build-time assertion, not a runtime one. Enforcement (hard-cost abort, wall clock, tree cost) is 23.7; the runtime's per-turn counting is 22.5.
 
-- [ ] 22.2 `core`: Implement `Stepper`, `Runtime`, illustrative `State`/`Status`, `Drive`/`DriveResume` at effect granularity; preserve `Message` blocks and history versions.
+- [x] 22.2 `core`: Implement `Stepper`, `Runtime`, illustrative `State`/`Status`, `Drive`/`DriveResume` at effect granularity; preserve `Message` blocks and history versions.
   - files: `core/runtime/runtime.go`, `core/types/assembly.go`, `core/types/sink.go`, `core/drive.go`, `core/runtime_test.go`
   - scenarios: `runtime.plain-answer`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestRuntimeState'`
   - note: the declarations land in the leaf `core/runtime`; `Drive`/`DriveResume` are functions and may live in the driver package. This chunk also moves `AssembleInput` and the identity ctx seams into the floor, leaving aliases behind, and declares the `Sink` port plus its run-scoped ctx constructor (ADR-0143). The principal seam is `runtime/spec.md:99`: `PrincipalFrom(ctx)` or `ErrNoPrincipal` unless `AllowAnonymous`.
 
-- [ ] 22.3 `core`: Implement the tool batch protocol: gate and reserve limits before execution, decide the whole batch before the first call runs, answer `Ask` in call order, and produce one result per call.
+- [x] 22.3 `core`: Implement the tool batch protocol: gate and reserve limits before execution, decide the whole batch before the first call runs, answer `Ask` in call order, and produce one result per call.
   - files: `core/runtime/runtime_batch.go`, `core/permission/gate.go`, `core/runtime_batch_test.go`
   - scenarios: `runtime.batch-gate-first`, `runtime.batch-limit-before-execute`, `runtime.batch-ask-after-allowed`, `runtime.batch-one-result-per-call`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestRuntimeBatchProtocol'`
   - note: `permission.Gate` returns only a `types.ToolMiddleware` today (`core/permission/gate.go:82`) and runs inside the call, which cannot deny before the first call executes - this chunk exports a decision seam on that package. `Deny` and `TaintDenied` produce `Failed(Permanent)` results at once (`runtime/spec.md:114`). `Ask` suspends one at a time in call order, `EditArgs` unchanged (`:116`), and the resume half ("on resume only the approved call executes") is 24.1. Frozen literals: the `not_executed:` reason prefix (`:124`) and `not_executed: rejected by <approver>`.
 
-- [ ] 22.4 `core`: Execute `ReadOnly` calls concurrently up to the resolved cap and side effects sequentially, journalled one at a time; consume row 21's options through the resolved strategy.
+- [x] 22.4 `core`: Execute `ReadOnly` calls concurrently up to the resolved cap and side effects sequentially, journalled one at a time; consume row 21's options through the resolved strategy.
   - files: `core/runtime/runtime_schedule.go`, `core/runtime_schedule_test.go`
   - scenarios: `runtime.readonly-parallel`, `runtime.side-effects-sequential`, `runtime.parallel-tools-cap`, `runtime.sequential-tools-hint`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestRuntimeScheduling'`
   - note: read the cap from `Stack.ResolveStrategies`' `StrategyPlan` (`core/build.go:61`; the options are `core/build_options.go:104` and `:92`), never from the config directly, and the profile term is `p.Caps.ParallelTools && !s.sequential`. Side effects run one at a time under the injected cancel shield with the journal reserve/complete in call order (`runtime/spec.md:115`). Results reach the next model call in **call** order, not completion order. `runtime.readonly-parallel` is a wall-clock assertion and needs `synctest.Test` with `synctest.Wait()` (pattern: `core/model_stream_test.go:98`); the cap assertion is an invariant - peak concurrency counted with an atomic, never measured with time.
 
-- [ ] 22.5 `core`: Implement the per-turn `Drive` loop, ordered tool round trips, `MaxTurns`, and cancellation without further component calls; execute the retry and repair turns designed by row 20.
+- [x] 22.5 `core`: Implement the per-turn `Drive` loop, ordered tool round trips, `MaxTurns`, and cancellation without further component calls; execute the retry and repair turns designed by row 20.
   - files: `core/drive_turn.go`, `core/drive_turn_test.go`
   - scenarios: `runtime.tool-round-trip`, `runtime.parallel-calls-ordering`, `runtime.max-turns`, `runtime.cancellation`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestRuntimeTurns'`
   - note: `runtime.max-turns` counts **model calls** (`runtime/spec.md:306`), and a steer-drain turn counts too (`:121`). Limits are enforced in the chains (`limits/spec.md:48`), so the loop must not double-count `MaxToolCalls`. Cancellation needs the iterator to yield `context.Canceled` and stop, an in-flight side effect to finish under the shield, and a `Runs.SignalCancel` to stop at the next safe point (`:310`). This chunk executes the retry and repair turns that 20.2 and 20.3 only decide.
 
-- [ ] 22.6 `core`: Enforce `Drive` lifecycle ordering: append before the gate, checkpoint before suspension, and `Runs.Finish` before terminal `Done`.
+- [x] 22.6 `core`: Enforce `Drive` lifecycle ordering: append before the gate, checkpoint before suspension, and `Runs.Finish` before terminal `Done`.
   - files: `core/drive_lifecycle.go`, `core/drive_lifecycle_test.go`
   - scenarios: `runtime.suspend-order`, `runtime.append-before-tool`, `runtime.done-after-finish`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestRuntimeLifecycle'`
   - note: `runtime/spec.md:127-130` fixes the suspend order (`Checkpoints.Put`, then `Runs.Suspend`, then the `Suspended` event, then the iterator ends); terminal `Done` is emitted last, after `Runs.Finish` (`:134`) and after verification of every `Uncertain` entry (`:131`, through the injected verifier). The append shape differs by turn: no calls or only `ReadOnly` calls append assistant and results once at step end; `SideEffect` and `Idempotent` append the assistant with its pending calls before the batch and advance `HistoryVersion`. `Runs.Finish` returns `ErrSignalsPending` while a steer is pending, which forces one more turn unless `MaxTurns` is reached.
 
-- [ ] 22.7 `core`: Declare the `Stores` value type and the `Stack` store façades, and expose the session log's fork through an optional interface.
+- [x] 22.7 `core`: Declare the `Stores` value type and the `Stack` store façades, and expose the session log's fork through an optional interface.
   - files: `core/stores/stores.go`, `core/stack_stores.go`, `core/stack_stores_test.go`
   - scenarios: none of its own - it is asserted through its consumers, `flow.regenerate-is-fork-and-continue` (23.3) and `stores.control-in-session-index` (23.5)
   - verify: `go test -short -timeout 2m ./core/... -run 'TestStackStores'`

@@ -32,6 +32,13 @@ type SessionLog interface {
 	Delete(ctx context.Context, sessionID string) error
 }
 
+// SessionForker is the optional fork surface on a SessionLog. A port grows
+// only through an optional interface discovered by type assertion; a log
+// without it cannot fork.
+type SessionForker interface {
+	Fork(ctx context.Context, from, upTo string) (string, error)
+}
+
 // SessionDependent is a store keyed by session id that must follow the
 // session log's cascade and fork operations. Consumer-owned: each dependent
 // store adapter satisfies it and registers through an option.

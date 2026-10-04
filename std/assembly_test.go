@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -58,9 +57,9 @@ func baseInput() AssembleInput {
 		Run:     types.RunInfo{Turn: 3},
 		Profile: types.ModelProfile{Name: "gpt", Version: "1"},
 		System:  []types.Block{types.Text{Text: "be helpful"}},
-		History: stores.History{Messages: []types.Message{
+		History: []types.Message{
 			{ID: "m1", Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: "hi"}}},
-		}},
+		},
 		Input: []types.Message{{Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: "next"}}}},
 	}
 }
@@ -167,7 +166,7 @@ func TestStablePrefix(t *testing.T) {
 
 	t.Run("compaction blocks", func(t *testing.T) {
 		in := baseInput()
-		in.History.Messages = append(in.History.Messages,
+		in.History = append(in.History,
 			types.Message{ID: "m2", Role: types.RoleAssistant, Blocks: []types.Block{
 				types.Compaction{CoversUpTo: 7, Summary: []types.Block{types.Text{Text: "earlier"}}},
 			}})
