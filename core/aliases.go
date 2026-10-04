@@ -101,5 +101,6 @@ type (
 	Decision[D any]   = types.Decision[D]
 	Decider[S, D any] = types.Decider[S, D]
 
-	SessionLog = stores.SessionLog
+	SessionLog  = stores.SessionLog
+	Checkpoints = stores.Checkpoints
 )
