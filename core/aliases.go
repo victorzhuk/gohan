@@ -1,6 +1,9 @@
 package gohan
 
-import "github.com/victorzhuk/gohan/core/types"
+import (
+	"github.com/victorzhuk/gohan/core/stores"
+	"github.com/victorzhuk/gohan/core/types"
+)
 
 type (
 	Role           = types.Role
@@ -97,4 +100,6 @@ type (
 
 	Decision[D any]   = types.Decision[D]
 	Decider[S, D any] = types.Decider[S, D]
+
+	SessionLog = stores.SessionLog
 )
