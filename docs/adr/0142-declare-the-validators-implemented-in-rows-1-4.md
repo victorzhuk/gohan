@@ -14,6 +14,14 @@ Both families arrived the same way: the plan named an API the spec had left as p
 2. `identity` declares the mechanism rule 7 already describes: the configurable matcher type and its constructor, taking the patterns as an argument. The default field list (`user_id`, `tenant`, `customer_id`, …) stays a `std` policy value, because the core budget keeps every default out of `core`.
 3. Nothing moves in the implementation. The Go shapes are what the specs now say; the pass only supplies the words the specs were missing.
 
+## Second pass, after row 6
+
+The drift audit of rows 1-4 left one more of the same class: `tools/spec.md:134` uses `gohan.Retryable(err)` in its error-mapping rule and its scenario `tools.classified-error` asserts the marker's effect, but no Go block declared it. The tool contract now declares `func Retryable(err error) error` beside the tool sentinels, so the index sees the function the driver exports.
+
+Declaring it exposed a limit in the index's collision check, which maps a declaration to a package through its capability alone: `Retryable` is also an `ErrorKind` member in package `types`, so the check reported a collision that does not exist, because the function is driver-declared (ADR-0139: the driver holds what users call directly). The check now knows the driver-declared names from ADR-0139's list and routes them to package `gohan`.
+
+`ToolArgsError` joined the named waivers in the catalogue requirement: it becomes the same model-visible `Failed`/`Permanent` result as `ToolError`, so it never reaches a transport.
+
 ## Consequences
 
 The drift gate reports no implemented-but-undeclared identifier, and `spec:types` sees both families, so a future shape change fails the index instead of drifting quietly. The next row that needs either API (`6.5`/`6.6` for the schema walker and the call path, `21.x` for `Build`'s warning) consumes it by name rather than re-deriving it.

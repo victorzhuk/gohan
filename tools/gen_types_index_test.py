@@ -35,11 +35,17 @@ var ErrFoo = errors.New("gohan: foo")
 MESSAGES = ""
 
 
-def make_tree(tmp, stores=STORES, messages=MESSAGES, catalog=CATALOG):
+TOOLS = ""
+
+
+def make_tree(tmp, stores=STORES, messages=MESSAGES, tools=TOOLS, catalog=CATALOG):
     for rel in ('openspec/specs/messages', 'openspec/specs/stores', 'tools', 'docs/design'):
         (tmp / rel).mkdir(parents=True, exist_ok=True)
     (tmp / 'openspec/specs/stores/spec.md').write_text(stores)
     (tmp / 'openspec/specs/messages/spec.md').write_text(messages + catalog)
+    if tools:
+        (tmp / 'openspec/specs/tools').mkdir(parents=True, exist_ok=True)
+        (tmp / 'openspec/specs/tools/spec.md').write_text(tools)
     (tmp / 'docs/design/scenarios.md').write_text('')
     shutil.copy(SCRIPT, tmp / 'tools/gen_types_index.py')
     shutil.copy(SCRIPT.parent / 'package_map.json', tmp / 'tools/package_map.json')
@@ -104,6 +110,41 @@ class GenTypesIndexTest(unittest.TestCase):
         self.assertIn('collisions:', r.stdout)
         self.assertIn('Ghost', r.stdout)
         self.assertIn('types', r.stdout)
+
+    def test_driver_declared_name_does_not_collide_with_leaf_const(self):
+        # `Retryable` is a messages const (package `types`) and the driver
+        # function `gohan.Retryable` declared by the tools spec; the driver
+        # routes to package `gohan` per ADR-0139, so this is not a collision.
+        make_tree(
+            self.tmp,
+            messages="```go\nconst Retryable int = 1\n```\n",
+            tools="```go\nfunc Retryable(err error) bool\n```\n",
+        )
+        r = run_tree(self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('collisions: []', r.stdout)
+
+    def test_genuine_leaf_collision_still_fails(self):
+        # Same spelling, two leaf declarations, different kinds: a real
+        # same-package collision that the driver routing must not mask.
+        make_tree(self.tmp, messages="```go\nconst Retryable int = 1\n```\n")
+        (self.tmp / 'openspec/specs/model').mkdir()
+        (self.tmp / 'openspec/specs/model/spec.md').write_text(
+            "```go\ntype Retryable struct{}\n```\n"
+        )
+        r = run_tree(self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('collisions:', r.stdout)
+        self.assertIn('Retryable', r.stdout)
+        self.assertIn('types', r.stdout)
+
+    def test_toolargs_error_is_waived_from_catalog(self):
+        # `ToolArgsError` never becomes a client-facing Problem; like
+        # `*SuspendError` and `ToolError` it needs no catalog row.
+        make_tree(self.tmp, stores=STORES + "```go\ntype ToolArgsError struct{}\n```\n")
+        r = run_tree(self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn('ToolArgsError', r.stdout)
 
     def test_unmapped_capability_fails(self):
         make_tree(self.tmp)

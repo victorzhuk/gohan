@@ -85,6 +85,9 @@ type ErrToolSetDrift struct{ Missing, Extra []string }
 
 var ErrToolDescription = errors.New("gohan: tool description carries an instruction directive")
 
+// Retryable marks err as retryable for the model-visible result of a tool call.
+func Retryable(err error) error
+
 // (illustrative) functional options for NewTool
 type ToolOption func(*ToolSpec)
 

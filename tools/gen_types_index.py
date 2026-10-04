@@ -54,9 +54,10 @@ catalog_body = catalog_src[catalog_src.index(BEGIN):catalog_src.index(END)]
 catalog_refs = set(re.findall(r'`\*?(Err\w+|\w+Error)\b', catalog_body))
 ERR_NAME = re.compile(r'^(Err(?!or)[A-Z]\w*|[A-Z]\w{2,}Error)$')
 # Every sentinel and typed error a spec declares needs a catalog row, except
-# the two waivers that never reach a transport.
+# the waivers that never become a client-facing Problem: they surface as the
+# model-visible Failed/Permanent tool result instead.
 typed_errors = {n for n, _, _ in rows['type'] if ERR_NAME.match(n)}
-waivers = {'SuspendError', 'ToolError'}
+waivers = {'SuspendError', 'ToolError', 'ToolArgsError'}
 missing_rows = sorted((typed_errors | {n for n, _, _ in rows['error']}) - catalog_refs - waivers)
 uncatalogued = sorted(n for n, _, _ in rows['error'] if n not in catalog_refs)
 # Each table row's Source column must name something, and every Err/Error
@@ -113,12 +114,34 @@ if not pkg_map_path.exists():
     print(f'missing package map: {pkg_map_path.relative_to(root)}')
     sys.exit(1)
 pkg_of = json.loads(pkg_map_path.read_text())
+# Names the driver package `gohan` declares directly (ADR-0139): what users
+# call. A declaration whose name and kind match here routes to `gohan` even
+# when its capability maps to a leaf package, so it cannot collide with a
+# same-spelling leaf declaration. Add new driver names here by name, not by
+# regex; give each the kinds the driver actually declares.
+driver_declared = {
+    'Build': {'func'},
+    'Option': {'type'},
+    'Stack': {'type'},
+    'Flow': {'type'},
+    'FlowFunc': {'type'},
+    'Conversation': {'type'},
+    'Drive': {'func'},
+    'DriveResume': {'func'},
+    'Recover': {'func'},
+    'Inspect': {'func'},
+    'Explain': {'func'},
+    'NewTool': {'func'},
+    'Runnable': {'type', 'func'},
+    'Retryable': {'func'},
+}
 unmapped = sorted({cap for _, cap, _, _ in decls if cap not in pkg_of})
 by_pkg = collections.defaultdict(list)
 for name, cap, kind, shape in decls:
     # Method names live in the receiver's namespace, not the package's.
     if cap in pkg_of and kind != 'method':
-        by_pkg[(pkg_of[cap], name)].append((kind, shape, cap))
+        pkg = 'gohan' if kind in driver_declared.get(name, ()) else pkg_of[cap]
+        by_pkg[(pkg, name)].append((kind, shape, cap))
 collisions = []
 for (pkg, name), ds in sorted(by_pkg.items()):
     variants = sorted({(k, s) for k, s, _ in ds})

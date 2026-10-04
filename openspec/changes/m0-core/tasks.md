@@ -117,39 +117,39 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 
 ## B. Ports and memory stores
 
-6. [ ] `core`: `Model`, `Tool`, `Decider`, `EgressPolicy` + `ErrEgressPolicyRequired` + exfil derivation (`tools.egress-policy-required`, `build.exfil-derived-from-egress`), name grammar and collision check (`tools.name-grammar`, `tools.collision-fails-build`, `tools.reserved-names`, `tools.rename-is-new-tool`, `tools.tool-value-shared-and-concurrent`), `ToolSpec` (incl. `Effect`, `Trust`, `Capabilities`, `Verify`, `Deferred`, `Executor`), `Usage.ProviderToolCalls`, `Caps.ProviderTools`, `NewTool` with schema derivation and `ExcludeFields`. — `tools.unknown-tool`, `tools.invalid-args-on-raw-tool`, `tools.classified-error`, `tools.schema-from-tags`, `tools.untyped-args-rejected`, `tools.out-passthrough`, `tools.panic-recovered`, `tools.default-timeout`, `decider.rules-confidence-one`, `decider.schema-validated`
+6. [x] `core`: `Model`, `Tool`, `Decider`, `EgressPolicy` + `ErrEgressPolicyRequired` + exfil derivation (`tools.egress-policy-required`, `build.exfil-derived-from-egress`), name grammar and collision check (`tools.name-grammar`, `tools.collision-fails-build`, `tools.reserved-names`, `tools.rename-is-new-tool`, `tools.tool-value-shared-and-concurrent`), `ToolSpec` (incl. `Effect`, `Trust`, `Capabilities`, `Verify`, `Deferred`, `Executor`), `Usage.ProviderToolCalls`, `Caps.ProviderTools`, `NewTool` with schema derivation and `ExcludeFields`. — `tools.unknown-tool`, `tools.invalid-args-on-raw-tool`, `tools.classified-error`, `tools.schema-from-tags`, `tools.untyped-args-rejected`, `tools.out-passthrough`, `tools.panic-recovered`, `tools.default-timeout`, `decider.rules-confidence-one`, `decider.schema-validated`
 
-- [ ] 6.1 `core`: Declare `Model`, `Decider`, `Decision`, `Usage.ProviderToolCalls` and `Caps.ProviderTools`; test confidence and decision-schema contracts.
-  - files: `core/model.go`, `core/decider.go`, `core/decider_test.go`
+- [x] 6.1 `core`: Declare `Decider` and `Decision` from `openspec/specs/decider/spec.md` (both generic and dependency-free); test the confidence and decision-schema contracts. The `Model` port moves to 18.6, because its signature needs `ModelProfile` and `ModelRequest`; `Usage.ProviderToolCalls` already landed in 2.2, and `Caps.ProviderTools` is a field of the `Caps` that 18.6 declares.
+  - files: `core/types/decider.go`, `core/types/decider_test.go`
   - scenarios: `decider.rules-confidence-one`, `decider.schema-validated`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestDeciderContract'`
 
-- [ ] 6.2 `core`: Declare `Tool`, `ToolSpec`, `Effect`, `Trust`, `Capabilities`, `Verify`, `Deferred` and `Executor`; keep tool-policy values in `std` under row 17.
-  - files: `core/tool.go`, `core/tool_test.go`
+- [x] 6.2 `core`: Declare the tool vocabulary — `Tool`, `ToolSpec`, `Effect`, `Trust`, `Capabilities`, `Executor`, `RiskTier`, `PrivateRanges`, `EgressPolicy`, `Verify`, `Deferred` — keeping tool-policy values in `std` under row 17. `EgressPolicy` belongs here because `ToolSpec` carries one.
+  - files: `core/types/tool.go`, `core/types/tool_test.go`
   - scenarios: `tools.tool-value-shared-and-concurrent`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestToolConcurrentValue'`
 
-- [ ] 6.3 `core`: Enforce tool name grammar, collision checks, reserved names and rename identity in `NewTool` and `Build`.
+- [x] 6.3 `core`: Enforce tool name grammar, collision checks, reserved names and rename identity in `NewTool` and `Build`.
   - files: `core/tool_names.go`, `core/tool_names_test.go`
   - scenarios: `tools.name-grammar`, `tools.collision-fails-build`, `tools.reserved-names`, `tools.rename-is-new-tool`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestToolNames'`
 
-- [ ] 6.4 `core`: Declare `EgressPolicy` and `ErrEgressPolicyRequired`; reject missing policies and derive `Capabilities.Exfil` at `Build`.
-  - files: `core/tool_egress.go`, `core/tool_egress_test.go`
+- [x] 6.4 `core`: Require an `EgressPolicy` on a tool that reaches the network (`ErrEgressPolicyRequired`) and derive `Capabilities.Exfil` at `Build`, using the `ToolSpec` and `Capabilities` that 6.2 declares.
+  - files: `core/types/tool_egress.go`, `core/types/tool_egress_test.go`
   - scenarios: `tools.egress-policy-required`, `build.exfil-derived-from-egress`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestToolEgressContract'`
 
-- [ ] 6.5 `core`: Derive `NewTool` schemas with the `json`/`desc`/`enum`/`min`/`max`/`pattern` walker, `ExcludeFields` and untyped-argument rejection.
+- [x] 6.5 `core`: Derive `NewTool` schemas with the `json`/`desc`/`enum`/`min`/`max`/`pattern` walker, `ExcludeFields` and untyped-argument rejection.
   - files: `core/tool_schema.go`, `core/tool_schema_test.go`
   - scenarios: `tools.schema-from-tags`, `tools.untyped-args-rejected`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestToolSchema'`
 
-- [ ] 6.6 `core`: Reject unknown tools and invalid raw `Tool` arguments before `Call`; preserve classified errors in `ToolResult`.
+- [x] 6.6 `core`: Reject unknown tools and invalid raw `Tool` arguments before `Call`; preserve classified errors in `ToolResult`.
   - files: `core/tool_call.go`, `core/tool_call_test.go`
   - scenarios: `tools.unknown-tool`, `tools.invalid-args-on-raw-tool`, `tools.classified-error`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestToolCallContract'`
 
-- [ ] 6.7 `core`: Complete `NewTool` output mapping, panic recovery and effect-specific timeout application.
+- [x] 6.7 `core`: Complete `NewTool` output mapping, panic recovery and effect-specific timeout application.
   - files: `core/tool_new.go`, `core/tool_new_test.go`
   - scenarios: `tools.out-passthrough`, `tools.panic-recovered`, `tools.default-timeout`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestNewToolExecution'`
@@ -444,7 +444,7 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - scenarios: `model.breaker-opens`, `model.429-fails-over-without-retry`, `chains.fallback-charged`
   - verify: `go test -short -timeout 2m ./std/route/ -run 'TestEndpointRouting'`
 
-- [ ] 18.6 `core`: Add `ModelProfile`, `Caps`, `Pricing`, `LatencyClass` and error class normalisation; enforce model iterator release, cancellation and first-chunk/idle timeout semantics.
+- [ ] 18.6 `core`: Add the `Model` port, `ModelProfile`, `Caps` (with its `ProviderTools` field), `Pricing` and error class normalisation (`LatencyClass` already landed in row 4); enforce model iterator release, cancellation and first-chunk/idle timeout semantics.
   - files: `core/model_profile.go`, `core/model_stream.go`, `core/model_profile_test.go`, `core/model_stream_test.go`
   - scenarios: `model.early-break-releases`, `model.cancel-returns-promptly`, `model.first-chunk-timeout-transient`, `model.idle-timeout-permanent`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestModelStream'`
@@ -852,6 +852,8 @@ The rows above keep their reviewed scope; these are the places the review correc
 - Row 1: the CI set carries a race-detected test leg (`task test:race`, `-race -short`) and a pinned `govulncheck` job, because the lease-and-reclaim rows are the first ones the race detector is worth running on; the adapter matrix, `conformance` and `examples` stay deferred to their suites.
 - Row 1: branch is `master`; `git init`, the `origin` remote, `.gitignore`, `LICENSE` and `README.md` already exist; `go.work` is committed as development wiring and is never the version authority, while `go.work.sum` stays ignored because it is reproducible per checkout. Row 1 also lands the first two package declarations (`core/doc.go`, `core/types/doc.go`), so `task lint`, `go vet` and `task test` have a compilable unit: an empty module fails them (measured: `go test` exit 1, `golangci-lint run` exit 5). CI carries `spec`, `lint`, `test` and `bench` on `master` only — `conformance` and `examples` arrive with their suites, `api:check` with `adapter/httpapi` in M4, and the adapter matrix is empty for all of M0, so it is path-filtered. `task test:full` and `task examples:test` are named by `AGENTS.md` and land with rows 29 and 31.
 - Row 3: `gohan.limit_exceeded`'s HTTP cell reads "429 for quota pools, else 422"; `ProblemOf` has no profile context, so it returns 422 and the quota-pool 429 is the transport's to set when the run's pool is known. `golangci-lint` now checks gofmt and goimports, because rows 1 and 2 left two files unformatted and the `default: standard` set does not look at formatting.
+- Row 6: it lands the tool vocabulary in `core/types/tool.go`, the egress mechanism in `core/types/tool_egress.go`, the schema walker in `core/types/tool_schema.go` (with a consumer-owned `IdentityFieldExcluder`, because `types` never imports the driver), the decider in `core/types/decider.go`, and the driver's construction and call paths in `core/tool.go`, `core/tool_names.go`, `core/tool_new.go` and `core/tool_call.go`. `Build` wiring — registration, collisions, reserved names, egress enforcement, exfil derivation — is row 21's, and each mechanism is exposed by name for it. `gohan.Retryable` is declared in the tool contract, `ToolArgsError` is a named catalogue waiver, and the index's collision check now routes driver-declared names to package `gohan` (ADR-0142, second pass).
+- Rows 6 and 18: the `Model` port moves to 18.6, because `Profile() ModelProfile` and `Generate(ctx, ModelRequest)` need both row-18 types, and `EgressPolicy` moves into 6.2 with the rest of the tool vocabulary, because `ToolSpec` carries one; 6.4 keeps the missing-policy refusal and the `Capabilities.Exfil` derivation.
 - Row 4: the identity vocabulary lands in `core/types/identity.go` and `core/types/credential.go` (`Principal`, `RunInfo`, `CostTags`, `SessionOwner`, `LatencyClass`, `RunMode`, `Credential`, the `CredentialSource` port), the unexported keys and the `(T, bool)` accessors in `core/identity.go`, the seam in `core/identity_seam.go` and the exclusion mechanism in `core/identity_args.go`; rows 6, 14 and 18 use them instead of declaring their own. `ApprovalFrom` waits for `Approval` (permission, row 14), and the default identity field list (`user_id`, `tenant`, `customer_id`) waits for `std` in row 17: core carries the mechanism, std the policy.
 - Row 3: it lands the whole shared vocabulary rather than the event payloads alone — the 32 sentinels, the 12 typed errors, the model error classes, the event set, and the seven types the payloads reference — because the payloads, the catalog and every later row's errors are one contract; rows 9, 12, 16, 24 and 26 use those declarations instead of making their own. `CallKey` moves here from 9.1 (`Done.Uncertain` needs it) and `streams.monotonic-seq` moves to 11.3: a type package cannot establish "`Seq` values are exactly 1..N in delivery order", the `EventLog` that assigns `Seq` can. `errors.retry-after-on-retryable` keeps its M0 half here (the row is `Retryable`, and `gohan.mailbox_full` carries a 1 s `RetryAfter`); the HTTP leg — a 409 `application/problem+json` with `Retry-After` set to the lease's remaining seconds — arrives with `adapter/httpapi` in M4, and the remaining lease is the transport's to supply.
 - Row 2: the block model and its `BlockKind` tags are one unit; `ModelChunk`/`Usage`/`DeltaKind`/`FinishReason` are the second, and the request shape moved to 18.7 — `ModelRequest` needs `ToolSpec`, which row 12 lands, so declaring it in row 2 would pull the whole tool vocabulary forward. `CompactionKind` is declared with its block in `core/types` (the `context` spec shows its members and names `messages` as the owner).
