@@ -14,7 +14,7 @@ linters:
             - "**/std/**"
           allow:
             - "$gostd"
-            - "github.com/victorzhuk/gohan/**"
+            - "github.com/victorzhuk/gohan"
           deny:
             - pkg: "github.com/victorzhuk/gohan/std/**"
               desc: core never imports std

@@ -10,6 +10,7 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 - Chunks marked **GATE** need the named project command as well.
 - `core/` is a package tree (ADR-0139): the driver is `core/` with package clause `gohan`, the shared vocabulary and ports are in `core/types`, and each enum lives in its own package. Imports run downward only; no leaf package imports `core/` or `core/runtime`. A chunk's `core/` label and file path say where its declarations land — the package table in `openspec/changes/m0-core/design.md` decides which leaf, so `core/store_session.go` lands as `core/stores/session.go` and `core/credential.go` as `core/types/credential.go` — and `./core/...` in a verify command covers the whole tree.
 - Row 1 carries no scenario: it lands the module, the tooling and the coverage gate every later row's definition of done depends on. Its floor is green `task lint`, `go vet` and `task test` over the package declarations it creates; row 2 is the first row with scenarios, because `core/types` holds the first declarations a scenario names.
+- The driver package declares no shared type and re-exports no const (ADR-0139 rule 3). The last step of every vocabulary row adds the type aliases for what that row landed into `core/aliases.go`, so the documented call sites (`gohan.Message`, `gohan.Caps`, `gohan.Flow`) stay valid without ever recreating the name collisions the split removed.
 
 ## A. Module and types
 
@@ -35,25 +36,25 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - scenarios: none
   - verify: `timeout 2m python3 -m unittest discover -s tools -p 'spec_coverage_test.py'`
 
-- [x] 1.5 `core`: Add CI checks `spec`, `lint`, `test`, `bench` required on `master`; path-filter the empty M0 adapter matrix, run tests with `-short`, and gate PR benchmarks on the reference runner; add `api:check` only at M4; defer conformance/examples jobs until their suites exist; row 1 cannot require green lint/test because row 2 introduces the first compilable unit.
+- [x] 1.5 `core`: Add CI checks `spec`, `lint`, `test`, `bench` required on `master`; path-filter the empty M0 adapter matrix, run tests with `-short`, and gate PR benchmarks on the reference runner; add `api:check` only at M4; defer conformance/examples jobs until their suites exist.
   - files: `.github/workflows/ci.yml`, `README.md`
   - scenarios: none
   - verify: `timeout 2m actionlint .github/workflows/ci.yml`
 
-2. [ ] `core`: message model — `Message`, `Block` kinds incl. `Compaction`, `Origin`, `Role`, `ModelRequest`/`ModelChunk`/`Usage`, `ToolUse`/`ToolResult`/`Outcome`. Round-trip property tests for the block model. — `messages.order-preserved`, `messages.typed-deltas`, `messages.duplicate-keys-in-tool-args`
+2. [x] `core`: message model — `Message`, `Block` kinds incl. `Compaction`, `Origin`, `Role`, `ModelRequest`/`ModelChunk`/`Usage`, `ToolUse`/`ToolResult`/`Outcome`. Round-trip property tests for the block model. — `messages.order-preserved`, `messages.typed-deltas`, `messages.duplicate-keys-in-tool-args`
 
-- [ ] 2.1 `core`: Implement `Message`, `Role`, `BlockBase` with `BlockOrigin`, all `Block` kinds including `Compaction`, `ToolUse`, `ToolResult` and `Outcome`; preserve ordered blocks and reasoning signatures in round-trip property tests.
-  - files: `core/message.go`, `core/message_test.go`
+- [x] 2.1 `core`: Implement `Message`, `Role`, `BlockBase` with `BlockOrigin`, all `Block` kinds including `Compaction`, `ToolUse`, `ToolResult` and `Outcome`; preserve ordered blocks and reasoning signatures in round-trip property tests.
+  - files: `core/types/message.go`, `core/types/message_test.go`
   - scenarios: `messages.order-preserved`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestMessageRoundTrip'`
 
-- [ ] 2.2 `core`: Implement `ModelRequest`, `ModelChunk`, `Usage` and their supporting data types; preserve `DeltaReasoning`, `DeltaText` and `DeltaToolArgs` distinctions.
-  - files: `core/model_types.go`, `core/model_types_test.go`
+- [x] 2.2 `core`: Implement `DeltaKind`, `FinishReason`, `ModelChunk` and `Usage`; preserve `DeltaReasoning`, `DeltaText` and `DeltaToolArgs` distinctions. `ModelRequest`, `ModelOptions`, `ToolChoice` and `AffinityKeyStrategy` land in 18.7 instead: the request shape is `{System []Block, Tools []ToolSpec, Messages []Message, Options ModelOptions}` and `ToolSpec` arrives with row 12.
+  - files: `core/types/model_types.go`, `core/types/model_types_test.go`
   - scenarios: `messages.typed-deltas`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestModelTypes'`
 
-- [ ] 2.3 `core`: Validate complete `ToolUse.Args` with `json/v2`; reject duplicate JSON keys as `ToolResult` with `Failed`/`Permanent` for the later runtime to consume.
-  - files: `core/tool_args.go`, `core/tool_args_test.go`
+- [x] 2.3 `core`: Validate complete `ToolUse.Args` with `json/v2`; reject duplicate JSON keys as `ToolResult` with `Failed`/`Permanent` for the later runtime to consume (`ValidateToolArgs`, `ToolArgsError{Reason}`, `ArgsErrorResult`).
+  - files: `core/types/tool_args.go`, `core/types/tool_args_test.go`
   - scenarios: `messages.duplicate-keys-in-tool-args`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestToolArgs'`
 
@@ -446,6 +447,11 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - files: `core/model_profile.go`, `core/model_stream.go`, `core/model_profile_test.go`, `core/model_stream_test.go`
   - scenarios: `model.early-break-releases`, `model.cancel-returns-promptly`, `model.first-chunk-timeout-transient`, `model.idle-timeout-permanent`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestModelStream'`
+
+- [ ] 18.7 `core`: Declare `ModelRequest`, `ModelOptions`, `ToolChoice` and `AffinityKeyStrategy` in `core/types/model_request.go` (`openspec/specs/model/spec.md` §6.5), now that `ToolSpec` (row 12) and the message vocabulary exist; keep the marshaling of an assembled request stable, because the record/replay key is a hash of it (`docs/design/testing.md`).
+  - files: `core/types/model_request.go`, `core/types/model_request_test.go`
+  - scenarios: none
+  - verify: `go test -short -timeout 2m ./core/... -run 'TestModelRequest'`
 
 - [ ] 18.7 `core`: Exclude terminal partial assistant messages with `FinishError` from provider history on replay and continuation.
   - files: `core/model_history.go`, `core/model_history_test.go`
@@ -843,6 +849,8 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 The rows above keep their reviewed scope; these are the places the review corrected them, with the record that owns each change.
 
 - Row 1: branch is `master`; `git init`, the `origin` remote, `.gitignore`, `LICENSE` and `README.md` already exist; `go.work` is committed as development wiring and is never the version authority, while `go.work.sum` stays ignored because it is reproducible per checkout. Row 1 also lands the first two package declarations (`core/doc.go`, `core/types/doc.go`), so `task lint`, `go vet` and `task test` have a compilable unit: an empty module fails them (measured: `go test` exit 1, `golangci-lint run` exit 5). CI carries `spec`, `lint`, `test` and `bench` on `master` only — `conformance` and `examples` arrive with their suites, `api:check` with `adapter/httpapi` in M4, and the adapter matrix is empty for all of M0, so it is path-filtered. `task test:full` and `task examples:test` are named by `AGENTS.md` and land with rows 29 and 31.
+- Row 2: the block model and its `BlockKind` tags are one unit; `ModelChunk`/`Usage`/`DeltaKind`/`FinishReason` are the second, and the request shape moved to 18.7 — `ModelRequest` needs `ToolSpec`, which row 12 lands, so declaring it in row 2 would pull the whole tool vocabulary forward. `CompactionKind` is declared with its block in `core/types` (the `context` spec shows its members and names `messages` as the owner).
+- Rows 2–F: every `files:` line carries the resolved path — a `core/` label resolves through the package plan in `design.md` before dispatch, so `core/message.go` is `core/types/message.go` and the driver file is `core/aliases.go` — and each vocabulary row adds the driver aliases for its own declarations (ADR-0139 rule 3).
 - Row 1: `task spec:coverage` has no implementation and no owner — the target and its script are this row's work (ADR-0135).
 - Row 14: the gate skeleton, `ApprovalPolicy`, `ApprovalRequest` and `ApprovalPolicy.MaxPending` are core (`docs/design/architecture.md` §4.2a, `permission/spec.md`); only the tier defaults, grants and expiry policy are `std/permission`. The pending-approval cap is scoped per subject and tenant, so it is a policy value, not a `RunLimits` field.
 - Row 15: `stores.same-transaction-journal` is deferred to M1 with `adapter/postgres` (ADR-0016).
