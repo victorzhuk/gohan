@@ -80,4 +80,21 @@ type (
 	ToolFinished          = types.ToolFinished
 	ToolStarted           = types.ToolStarted
 	UncertainOutcomeError = types.UncertainOutcomeError
+
+	Capabilities          = types.Capabilities
+	Effect                = types.Effect
+	EgressDenied          = types.EgressDenied
+	EgressPolicy          = types.EgressPolicy
+	Executor              = types.Executor
+	IdentityFieldExcluder = types.IdentityFieldExcluder
+	PrivateRanges         = types.PrivateRanges
+	RiskTier              = types.RiskTier
+	SchemaBuilder         = types.SchemaBuilder
+	SchemaOption          = types.SchemaOption
+	Tool                  = types.Tool
+	ToolSpec              = types.ToolSpec
+	Trust                 = types.Trust
+
+	Decision[D any]   = types.Decision[D]
+	Decider[S, D any] = types.Decider[S, D]
 )
