@@ -72,6 +72,7 @@ type Stack struct {
 	middleware       []types.ModelMiddleware
 	estimator        types.TokenEstimator
 	keys             types.ProviderKeySource
+	credentials      types.CredentialSource
 	pinned           *types.PinnedManifest
 	prompts          chains.PromptSet
 	sequentialTools  bool
@@ -120,6 +121,7 @@ func Build(opts ...Option) (*Stack, error) {
 		middleware:       cfg.middleware,
 		estimator:        cfg.estimator,
 		keys:             cfg.keys,
+		credentials:      cfg.credentials,
 		pinned:           cfg.pinned,
 		prompts:          cfg.prompts,
 		sequentialTools:  cfg.sequentialTools,

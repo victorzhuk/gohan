@@ -27,16 +27,11 @@ func FlowFunc[In, Out any](name string, fn func(context.Context, In) (Out, error
 type flowFunc[In, Out any] struct {
 	name string
 	fn   func(context.Context, In) (Out, error)
-}
-
-// Resume always fails: a plain function has no suspension point to return
-// to (flow.not-suspendable).
-func (f *flowFunc[In, Out]) Resume(_ context.Context, _ types.ResumeToken, _ stores.ResumeInput) (Out, error) {
-	var zero Out
-	return zero, types.ErrNotSuspendable
+	last In
 }
 
 func (f *flowFunc[In, Out]) Invoke(ctx context.Context, in In) (Out, error) {
+	f.last = in
 	step := &flowStep[In, Out]{fn: f.fn, in: in}
 	var out Out
 	for _, err := range driveFlow(ctx, step) {

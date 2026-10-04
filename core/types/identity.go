@@ -1,6 +1,10 @@
 package types
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"time"
+)
 
 // Principal identifies the caller. It never carries secrets; credentials
 // travel only in context (see Credential).
@@ -61,6 +65,7 @@ type RunInfo struct {
 	RunID        string
 	RootRunID    string
 	ParentRunID  string
+	Depth        int
 	Turn         int
 	Principal    Principal
 	LatencyClass LatencyClass
@@ -71,13 +76,35 @@ type RunInfo struct {
 	Mode         RunMode
 }
 
+// Approval records who approved a resume. It travels in ctx on the resumed
+// run; tools observe who approved and never execute with approver rights.
+// The verdict itself stays stores.ApprovalVerdict on the stores ResumeInput.
+type Approval struct {
+	Approver Principal
+	At       time.Time
+}
+
+// InputRequest is the structured prompt a run asks the user for when it
+// suspends with AwaitingInput.
+type InputRequest struct {
+	Prompt string
+	Schema json.RawMessage
+}
+
 type ctxKey int
 
 const (
 	ctxPrincipal ctxKey = iota
 	ctxRunInfo
 	ctxIdempotencyKey
+	ctxApproval
 )
+
+// WithApproval attaches the approval a resume delivered. Only harness code
+// on the resumed run sets it.
+func WithApproval(ctx context.Context, a Approval) context.Context {
+	return context.WithValue(ctx, ctxApproval, a)
+}
 
 // WithPrincipal attaches the transport-verified principal. Only transport
 // and harness code call it.
@@ -91,6 +118,12 @@ func WithIdempotencyKey(ctx context.Context, key string) context.Context {
 	return context.WithValue(ctx, ctxIdempotencyKey, key)
 }
 
+// WithRunInfo attaches the run identity the driver records for the run in
+// ctx. Only harness code calls it.
+func WithRunInfo(ctx context.Context, r RunInfo) context.Context {
+	return context.WithValue(ctx, ctxRunInfo, r)
+}
+
 // PrincipalFrom reports the principal in ctx, or ok == false outside a run.
 func PrincipalFrom(ctx context.Context) (Principal, bool) {
 	p, ok := ctx.Value(ctxPrincipal).(Principal)
@@ -101,6 +134,13 @@ func PrincipalFrom(ctx context.Context) (Principal, bool) {
 func RunInfoFrom(ctx context.Context) (RunInfo, bool) {
 	r, ok := ctx.Value(ctxRunInfo).(RunInfo)
 	return r, ok
+}
+
+// ApprovalFrom reports the approval a resume delivered, or ok == false on a
+// run that was not resumed with a decision.
+func ApprovalFrom(ctx context.Context) (Approval, bool) {
+	a, ok := ctx.Value(ctxApproval).(Approval)
+	return a, ok
 }
 
 // IdempotencyKey reports the idempotency key in ctx, or ok == false when the

@@ -672,9 +672,9 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - note: both recipes are declared in the flow spec's implementations table (`flow/spec.md:86-87`, tagged M0) but appear nowhere else - not in `docs/design/types.md`, not in the package table, which this rung adds. They build on `Flow` and `FlowFunc` (23.1) and on row 20's strict schema. A new package: `std/flow` must state its dependency direction like every other leaf.
 
 
-24. [ ] `core`: suspension — `SuspendError`, reasons incl. `AwaitingInput`, `ResumeInput` constructors, `Waker` port, `Replay` resume, token mismatch/consumed/expired, checkpoint incompatibility. — `suspension.approve-on-another-pod`, `suspension.reject-and-edit`, `suspension.async-tool`, `suspension.scheduled`, `suspension.mismatch`, `identity.credentials-on-resume`, `identity.resume-inside-run-refused`, `identity.approver-from-transport-only`
+24. [x] `core`: suspension — `SuspendError`, reasons incl. `AwaitingInput`, `ResumeInput` constructors, `Waker` port, `Replay` resume, token mismatch/consumed/expired, checkpoint incompatibility. — `suspension.approve-on-another-pod`, `suspension.reject-and-edit`, `suspension.async-tool`, `suspension.scheduled`, `suspension.mismatch`, `identity.credentials-on-resume`, `identity.resume-inside-run-refused`, `identity.approver-from-transport-only`
 
-- [ ] 24.1 `core`: implement `SuspendError`, suspension reasons including `AwaitingInput`, `ResumeInput` constructors and approval `Replay`; restore originator credentials before tool execution.
+- [x] 24.1 `core`: implement `SuspendError`, suspension reasons including `AwaitingInput`, `ResumeInput` constructors and approval `Replay`; restore originator credentials before tool execution.
   - files: `core/suspension.go`, `core/suspension_test.go`, `core/resume.go`, `core/resume_test.go`
   - scenarios: `suspension.approve-on-another-pod`, `suspension.reject-and-edit`, `identity.credentials-on-resume`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestApprovalResume'`
@@ -683,14 +683,14 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 - note: `DriveResume` ignores its input parameter (`_ stores.ResumeInput`, `core/drive.go:49`), so this chunk appends the resume input to history itself before re-driving. `identity.credentials-on-resume` needs the originator's credentials restored from the checkpoint: `CredentialSource` exists in the floor (`core/types/credential.go:24`) but nothing injects it - `Stack` has no field and no option names it, so add the option (`core/build_options.go`, `core/build.go`) and take the source from there.
 - note: the file labels in the plan resolve to the driver package `gohan`; `design.md:23` still describes a `core/suspension` package that does not exist. The types live in the floor and the constructors in the driver - this is the same resolution row 3.4 recorded for the stream errors.
 
-- [ ] 24.2 `core`: implement `AwaitingTool` delivery through `Replay` and `Scheduled` suspension through the `Waker` port.
+- [x] 24.2 `core`: implement `AwaitingTool` delivery through `Replay` and `Scheduled` suspension through the `Waker` port.
   - files: `core/suspension_delivery.go`, `core/suspension_delivery_test.go`
   - scenarios: `suspension.async-tool`, `suspension.scheduled`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestSuspensionDelivery'`
 - note: `Waker` collides with a landed name: `std/permission` declares `Schedule(token string, at time.Time)` (`std/permission/expiry.go:11`) while the spec's port is `Schedule(ctx, ResumeToken, time.Time) error`. The spec shape is the one to declare where the delivery path consumes it, and the landed queue is reached through a small adapter - one spelling per package, and record the collision.
 - note: `SuspendTool` has no Go shape anywhere and nothing in `core` or `std` returns a resumable error today, so a tool cannot produce `AwaitingTool`: freeze the shape here. `Replay` is the resume strategy the runtime spec names at :90 and is **not** `stores.ResumeReplay` (the checkpoint-compatibility plan) - freeze a distinct name. `(*Lifecycle).suspend` hardcodes the reason with no payload and no `WakeAt` (`core/drive_lifecycle.go:230-251`, default reason `types.AwaitingTool` at :139): fill both, and `Suspended` already carries the fields (`core/types/event.go:74-79`).
 
-- [ ] 24.3 `core`: enforce token mismatch, consumption, expiry and checkpoint compatibility before execution; refuse resume inside a run and derive `ResumeInput.Approver` only from transport identity.
+- [x] 24.3 `core`: enforce token mismatch, consumption, expiry and checkpoint compatibility before execution; refuse resume inside a run and derive `ResumeInput.Approver` only from transport identity.
   - files: `core/resume_validation.go`, `core/resume_validation_test.go`
   - scenarios: `suspension.mismatch`, `suspension.token-reuse`, `identity.resume-inside-run-refused`, `identity.approver-from-transport-only`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestResumeValidation'`
@@ -698,9 +698,9 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 - note: `ErrTokenMismatch` from the store means only "unknown token" (`core/stores/checkpoint_memory.go:97`), and a checkpoint carries `SessionID`, `Backend` and `BackendVersion` but no flow identity (`core/stores/checkpoint.go:37-51`) - compare what exists and record the cross-flow half. `ErrResumeInsideRun` and `ErrApproverNotEligible` are declared **twice** with identical text (`core/types/errors.go:20,23` and `core/permission/approval.go:51`), so `errors.Is` does not match across packages: give them one home in the floor and alias the other.
 - note: this chunk also covers the half of `suspension.token-reuse` the plan left unowned (the store-level half is 8.2's): after a resume, the tool is not executed again.
 
-25. [ ] `core`: run trees (`RootRunID`, `ParentRunID`, `Depth`), tree budget, `FlowAsTool` typed wrapper (full sub-flow contract is M3). — `identity.tree-budget`, `identity.nested-spans-and-recovery`
+25. [x] `core`: run trees (`RootRunID`, `ParentRunID`, `Depth`), tree budget, `FlowAsTool` typed wrapper (full sub-flow contract is M3). — `identity.tree-budget`, `identity.nested-spans-and-recovery`
 
-- [ ] 25.1 `core`: implement the minimal typed `FlowAsTool`, `RootRunID`/`ParentRunID`/`Depth`, the hub's `MaxCost` accounting across the tree, and the root `Done.Cost` projection; exclude nested suspension, `Collect`/`FailFast`, parallel children, per-child session history and sub-flow limits beyond the tree budget (`subflows`, M3).
+- [x] 25.1 `core`: implement the minimal typed `FlowAsTool`, `RootRunID`/`ParentRunID`/`Depth`, the hub's `MaxCost` accounting across the tree, and the root `Done.Cost` projection; exclude nested suspension, `Collect`/`FailFast`, parallel children, per-child session history and sub-flow limits beyond the tree budget (`subflows`, M3).
   - files: `core/types/flow_tool.go`, `core/run_tree.go`, `core/run_tree_test.go`, `core/chains/limits.go`, `core/stores/runs.go`
   - scenarios: `identity.tree-budget`, and the root half of `limits.cost-accumulates` (`Done.Cost` on the root equals the summed spend)
   - verify: `go test -short -timeout 2m ./core/... -run 'TestRunTree|TestChainLimits'`

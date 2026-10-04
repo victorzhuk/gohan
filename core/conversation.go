@@ -24,10 +24,6 @@ type Conversation interface {
 	Steer(ctx context.Context, sessionID string, msg Message) error
 }
 
-// errConversationUnimplemented marks the methods rows 23.3 and 23.4 own;
-// the interface is declared whole here so callers can type against it.
-var errConversationUnimplemented = errors.New("gohan: conversation method lands in a later row")
-
 // SessionControlReader is the optional per-session control read on a
 // session log. A log without it reports ControlAgent.
 type SessionControlReader interface {
@@ -52,6 +48,8 @@ type conversation struct {
 	log    stores.SessionLog
 	runs   stores.Runs
 	events stores.EventLog
+	cps    stores.Checkpoints
+	creds  types.CredentialSource
 
 	mu    sync.Mutex
 	live  map[string]string
@@ -80,6 +78,7 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 	c := &conversation{spec: spec, rt: rt, live: map[string]string{}}
 	if stack != nil {
 		c.log = stack.stores.SessionLog
+		c.creds = stack.credentials
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -167,10 +166,6 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 	}
 }
 
-func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.ResumeInput) iter.Seq2[Event, error] {
-	return func(yield func(Event, error) bool) { yield(nil, errConversationUnimplemented) }
-}
-
 // Cancel posts SignalCancel to the session's run and returns once the runs
 // store shows the run finished or the lease TTL elapsed.
 func (c *conversation) Cancel(ctx context.Context, sessionID string) error {
@@ -223,7 +218,13 @@ func (c *conversation) stream(ctx context.Context, lease stores.Lease, sessionID
 		WithLifecycleRuns(c.runs, lease),
 		WithLifecycleSession(sessionID),
 	)
-	for ev, err := range DriveLifecycle(ctx, lc, c.rt, runtime.AgentRun{Input: input}) {
+	ag := runtime.AgentRun{Input: input}
+	if c.cps != nil {
+		// Suspension persists through the conversation's checkpoints
+		// store; without one the runtime cannot suspend.
+		ag.Save = c.cps.Put
+	}
+	for ev, err := range DriveLifecycle(ctx, lc, c.rt, ag) {
 		if err != nil {
 			var gb *types.GuardBlockedError
 			if errors.As(err, &gb) {

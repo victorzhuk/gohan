@@ -18,6 +18,7 @@ type config struct {
 	middleware       []types.ModelMiddleware
 	estimator        types.TokenEstimator
 	keys             types.ProviderKeySource
+	credentials      types.CredentialSource
 	logger           *slog.Logger
 	pinned           *types.PinnedManifest
 	prompts          chains.PromptSet
@@ -47,6 +48,17 @@ func WithModels(models ...types.Model) Option {
 func WithProviderKeys(src types.ProviderKeySource) Option {
 	return func(c *config) error {
 		c.keys = src
+		return nil
+	}
+}
+
+// WithCredentialSource sets the source that re-issues the originator's
+// credential when a suspended run resumes, before any tool executes
+// (identity.credentials-on-resume). NewConversation picks it up from the
+// stack unless a conversation option overrides it.
+func WithCredentialSource(src types.CredentialSource) Option {
+	return func(c *config) error {
+		c.credentials = src
 		return nil
 	}
 }
