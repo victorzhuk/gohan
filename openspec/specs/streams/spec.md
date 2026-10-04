@@ -76,7 +76,7 @@ type Notifier interface {
 type Done struct{ Reason StopReason; Seq int64; Usage Usage; Cost float64; Uncertain []CallKey; Result json.RawMessage }
 ```
 
-All events embed `EventMeta{SessionID, RunID, RootRunID, ParentRunID, Depth, Flow, Seq, Time}`. `Seq` is monotonic per run, starting at 1, assigned by the harness; transports expose it as the SSE `id:` field. A `FeedbackRecorded` written for a finished run extends that run's `Seq` in its `EventLog` only, so `Done` stays the last event of the run's stream. `TextDelta` is advisory; `AssistantMessage` is authoritative. With `Windowed` output, deltas are released only after their window passes the output guard. `ReasoningDelta` is emitted only when `Caps.ReasoningVisible` is set (`agui`). `Message.ID` is assigned by `SessionLog.Append`.
+Every event travels with `EventMeta{SessionID, RunID, RootRunID, ParentRunID, Depth, Flow, Seq, Time}`: the harness pairs a payload with its meta when it appends the event to the `EventLog` and when it delivers it on a stream, so the payload structs above stay bare and carry no run identity of their own. `Seq` is monotonic per run, starting at 1, assigned by the harness; transports expose it as the SSE `id:` field. A `FeedbackRecorded` written for a finished run extends that run's `Seq` in its `EventLog` only, so `Done` stays the last event of the run's stream. `TextDelta` is advisory; `AssistantMessage` is authoritative. With `Windowed` output, deltas are released only after their window passes the output guard. `ReasoningDelta` is emitted only when `Caps.ReasoningVisible` is set (`agui`). `Message.ID` is assigned by `SessionLog.Append`.
 
 ### Error-tuple protocol (normative for every `iter.Seq2[T, error]` seam)
 

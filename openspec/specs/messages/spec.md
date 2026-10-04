@@ -212,7 +212,7 @@ Rules:
 
 ### Requirement: Error catalog
 
-`ProblemOf` is the only place a Go error becomes client-facing. The catalog is closed and versioned with the spec; every sentinel and typed error a spec defines has a row, and `spec:types` fails when one does not. `Title` is the code's fixed English title; `Detail` is rendered from a fixed template per code with allow-listed `Fields` (`tool`, `limit`, `retry_after`, `run_id`, `stage`, `reason`) and never contains provider bodies, prompts, arguments, tenant or subject ids; `Instance` is the run id. Unknown errors become `gohan.internal` with `Detail: "internal error"` and the cause logged with the run id. Transports: HTTP responds `application/problem+json` with `type: https://gohan.dev/problems/<code>`, `status`, and `Retry-After` when `RetryAfter > 0`; a stream that has already started sends one terminal `error` event `{code, kind, retry_after, instance}` and closes, and a close without `done` or `error` is `gohan.stream_interrupted` (client-side, reattach by `Seq`); AG-UI sends `RUN_ERROR{code, message: Title}`; the MCP server sets JSON-RPC `error.data.code`. `Explain` prints the catalog.
+`ProblemOf` is the only place a Go error becomes client-facing. The catalog is closed and versioned with the spec; every sentinel and typed error a spec defines has a row, and `spec:types` fails when one does not — except the two that never reach a transport: `*SuspendError`, which is the suspension signal, and `ToolError`, which is tool-result data the model reads. `Title` is the code's fixed English title; `Detail` is rendered from a fixed template per code with allow-listed `Fields` (`tool`, `limit`, `retry_after`, `run_id`, `stage`, `reason`, `key_id`) and never contains provider bodies, prompts, arguments, tenant or subject ids; `Instance` is the run id. Unknown errors become `gohan.internal` with `Detail: "internal error"` and the cause logged with the run id. Transports: HTTP responds `application/problem+json` with `type: https://gohan.dev/problems/<code>`, `status`, and `Retry-After` when `RetryAfter > 0`; a stream that has already started sends one terminal `error` event `{code, kind, retry_after, instance}` and closes, and a close without `done` or `error` is `gohan.stream_interrupted` (client-side, reattach by `Seq`); AG-UI sends `RUN_ERROR{code, message: Title}`; the MCP server sets JSON-RPC `error.data.code`. `Explain` prints the catalog.
 
 | Code | Kind | HTTP | Source |
 |---|---|---|---|
@@ -236,7 +236,7 @@ Rules:
 | `gohan.shutting_down` | Retryable (`RetryAfter` 1 s) | 503 | `ErrShuttingDown` |
 | `gohan.checkpoint_incompatible` | Permanent | 409 | `ErrCheckpointIncompatible` |
 | `gohan.tool_denied` | Permanent (carries `tool`) | 403 | gate `DenyVerdict`, `TaintDenied`, `EgressDenied`, `ShadowSuppressed` |
-| `gohan.guard_blocked` | Permanent (carries `stage`) | 422 | `GuardBlocked` |
+| `gohan.guard_blocked` | Permanent (carries `stage`) | 422 | `GuardBlockedError` |
 | `gohan.provider_key_missing` | Permanent | 422 | `ErrNoProviderKey` |
 | `gohan.provider_key_rejected` | Permanent (carries `key_id`) | 422 | `ModelError{ClassAuth}` on a tenant key |
 | `gohan.model_rate_limited` | Retryable (`RetryAfter` from provider) | 429 | `ModelError{ClassRateLimited}` after the chain gave up |
@@ -249,6 +249,9 @@ Rules:
 | `gohan.configuration` | Permanent | 500 | build- and startup-time errors that reach a request only through misconfiguration: `ErrToolName`, `ErrToolCollision`, `ErrToolDescription`, `ErrManifestDrift`, `ErrToolSetDrift`, `ErrMemoryStoreRequired`, `ErrNoTokenEstimator`, `ErrSessionIndexRequired`, `ErrSchemaTooOld`, `ErrPartitionMissing`, `ErrShutdownIncomplete`, `ErrEgressPolicyRequired` |
 | `gohan.version_conflict` | Permanent | 409 | `ErrVersionConflict` |
 | `gohan.structured_output` | Permanent | 422 | `ErrStructuredOutput` |
+| `gohan.chain_step` | Permanent | 500 | `StepError` |
+| `gohan.subflow_partial` | Permanent | 422 | `PartialError` |
+| `gohan.outcome_unknown` | Retryable | 409 | `UncertainOutcomeError` |
 | `gohan.internal` | Permanent | 500 | any other error, including `ErrSignalsPending` escaping the runtime (a bug) |
 
 #### Scenario: every sentinel has a code

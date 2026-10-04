@@ -69,6 +69,7 @@ var (
 	ErrTokenExpired   = errors.New("gohan: resume token expired")
 	ErrTokenMismatch  = errors.New("gohan: resume token belongs to another flow or runtime")
 	ErrInputInvalid   = errors.New("gohan: delivered input does not match the requested schema")
+	ErrNotSuspendable = errors.New("gohan: this flow cannot suspend or resume")
 )
 
 type Waker interface {

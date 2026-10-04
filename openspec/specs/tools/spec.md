@@ -83,6 +83,8 @@ type ErrToolCollision struct{ Name string; Sources []string }
 var ErrToolName = errors.New("gohan: tool name must match ^[a-z][a-z0-9_]{0,63}$")
 type ErrToolSetDrift struct{ Missing, Extra []string }
 
+var ErrToolDescription = errors.New("gohan: tool description carries an instruction directive")
+
 // (illustrative) functional options for NewTool
 type ToolOption func(*ToolSpec)
 

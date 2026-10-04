@@ -5,8 +5,8 @@ import (
 
 	"reflect"
 
-	"encoding/json/v2"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 )
 
 type Role string

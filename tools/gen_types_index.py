@@ -41,9 +41,31 @@ out.append('')
 catalog_src = (root / 'openspec/specs/messages/spec.md').read_text()
 catalog_body = catalog_src[catalog_src.index('### Requirement: Error catalog'):catalog_src.index('### Requirement: Blobs')]
 catalog_refs = set(re.findall(r'`\*?(Err\w+|\w+Error)\b', catalog_body))
+ERR_NAME = re.compile(r'^(Err(?!or)[A-Z]\w*|[A-Z]\w{2,}Error)$')
+# Every sentinel and typed error a spec declares needs a catalog row, except
+# the two waivers that never reach a transport.
+typed_errors = {n for n, _, _ in rows['type'] if ERR_NAME.match(n)}
+waivers = {'SuspendError', 'ToolError'}
+missing_rows = sorted((typed_errors | {n for n, _, _ in rows['error']}) - catalog_refs - waivers)
 uncatalogued = sorted(n for n, _, _ in rows['error'] if n not in catalog_refs)
+# Each table row's Source column must name something, and every Err/Error
+# identifier it names must be declared by some spec.
+catalog_rows = []
+for line in catalog_body.splitlines():
+    if not line.startswith('| `gohan.'):
+        continue
+    cells = [c.strip() for c in line.strip().strip('|').split('|')]
+    catalog_rows.append(cells)
+empty_source = sorted(cells[0] for cells in catalog_rows if len(cells) < 4 or not cells[-1])
+undeclared_source = []
 d = {k: v for k, v in dups.items() if len(set(v)) > 1}
 defined = {n for n, _, _ in rows['type']} | {n for n, _, _ in rows['func']} | {n for n, _, _ in rows['const']} | {n for n, _, _ in rows['error']}
+for cells in catalog_rows:
+    if len(cells) < 4:
+        continue
+    for name in re.findall(r'`\*?(\w+)`', cells[-1]):
+        if ERR_NAME.match(name) and name not in defined:
+            undeclared_source.append((cells[0], name))
 builtin = set('Second Minute Millisecond string int int64 float64 bool byte error any context time json iter io Context Seq2 RawMessage Duration Time Reader ReadCloser Writer map chan func struct interface In Out S D M'.split())
 undefined = collections.defaultdict(set)
 for p in sorted((root / 'openspec/specs').glob('*/spec.md')):
@@ -73,5 +95,5 @@ for doc in [root / 'docs/design/scenarios.md']:
 out += ['## Example listings', '', ('all `gohan.*` identifiers in docs/design/scenarios.md are defined' if not qs_missing else 'undefined in examples: ' + ', '.join(sorted(qs_missing))), '']
 undefined.update({k: {'docs/design/scenarios.md'} for k in qs_missing})
 (root / 'docs/design/types.md').write_text('\n'.join(out))
-print({k: len(set(v)) for k, v in rows.items()}, 'dups:', d, 'undefined:', sorted(undefined), 'uncatalogued:', uncatalogued)
-import sys; sys.exit(1 if d or undefined or uncatalogued else 0)
+print({k: len(set(v)) for k, v in rows.items()}, 'dups:', d, 'undefined:', sorted(undefined), 'uncatalogued:', uncatalogued, 'missing-rows:', missing_rows, 'empty-source:', empty_source, 'undeclared-source:', undeclared_source)
+import sys; sys.exit(1 if d or undefined or uncatalogued or missing_rows or empty_source or undeclared_source else 0)

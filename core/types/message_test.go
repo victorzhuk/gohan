@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"encoding/json/v2"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 )
 
 func TestMessageRoundTrip(t *testing.T) {

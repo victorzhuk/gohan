@@ -29,6 +29,8 @@ func Partial[Out any](acc string) (Out, error)
 
 // PartialView parses the accumulated text into an unvalidated deep-partial view.
 func PartialView(acc string) (PartialValue, error)
+
+var ErrStructuredOutput = errors.New("gohan: model output failed schema validation")
 ```
 
 ## Requirements

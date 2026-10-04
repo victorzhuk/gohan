@@ -34,3 +34,8 @@ linters:
               desc: leaf packages never import the driver package
             - pkg: "github.com/victorzhuk/gohan/core/runtime"
               desc: leaf packages never import core/runtime
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

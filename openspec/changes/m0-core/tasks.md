@@ -10,6 +10,7 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 - Chunks marked **GATE** need the named project command as well.
 - `core/` is a package tree (ADR-0139): the driver is `core/` with package clause `gohan`, the shared vocabulary and ports are in `core/types`, and each enum lives in its own package. Imports run downward only; no leaf package imports `core/` or `core/runtime`. A chunk's `core/` label and file path say where its declarations land — the package table in `openspec/changes/m0-core/design.md` decides which leaf, so `core/store_session.go` lands as `core/stores/session.go` and `core/credential.go` as `core/types/credential.go` — and `./core/...` in a verify command covers the whole tree.
 - Row 1 carries no scenario: it lands the module, the tooling and the coverage gate every later row's definition of done depends on. Its floor is green `task lint`, `go vet` and `task test` over the package declarations it creates; row 2 is the first row with scenarios, because `core/types` holds the first declarations a scenario names.
+- Row 3 lands the whole shared vocabulary: the 32 sentinels, the 12 typed errors, the model error classes, the 14 event payloads and the seven types those payloads reference (`CallKey`, `PatchOp`, `FeedbackTarget`, `FeedbackSource`, `ResumeToken`, `SuspendReason`, `GuardStage`). A later row uses them; it declares only what row 3 does not, and the corrections list records the split per row.
 - The driver package declares no shared type and re-exports no const (ADR-0139 rule 3). The last step of every vocabulary row adds the type aliases for what that row landed into `core/aliases.go`, so the documented call sites (`gohan.Message`, `gohan.Caps`, `gohan.Flow`) stay valid without ever recreating the name collisions the split removed.
 
 ## A. Module and types
@@ -58,19 +59,19 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - scenarios: `messages.duplicate-keys-in-tool-args`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestToolArgs'`
 
-3. [ ] `core`: events and stop reasons — `Event` kinds, `EventMeta` with `Seq`, `StopReason`; error classes and sentinel errors from `docs/design/types.md`; `ErrorCode` catalog, `Problem`, `ProblemOf` (`errors.every-sentinel-has-code`, `errors.problem-of-unknown-is-internal`, `errors.detail-never-carries-provider-body`, `errors.retry-after-on-retryable`, `streams.terminal-error-event`, `streams.close-without-done-is-interrupted`). — `streams.monotonic-seq`
+3. [x] `core`: events and stop reasons — `Event` kinds, `EventMeta` with `Seq`, `StopReason`; error classes and sentinel errors from `docs/design/types.md`; `ErrorCode` catalog, `Problem`, `ProblemOf` (`errors.every-sentinel-has-code`, `errors.problem-of-unknown-is-internal`, `errors.detail-never-carries-provider-body`, `errors.retry-after-on-retryable`, `streams.terminal-error-event`, `streams.close-without-done-is-interrupted`). — `streams.monotonic-seq`
 
-- [ ] 3.1 `core`: Implement `Event` kinds, `EventMeta`, `StopReason` and supporting event payload types; assign gapless run-local `Seq` starting at 1 through `Done.Seq`.
-  - files: `core/event.go`, `core/event_test.go`
-  - scenarios: `streams.monotonic-seq`
-  - verify: `go test -short -timeout 2m ./core/... -run 'TestEventSequence'`
+- [x] 3.1 `core`: Implement `StopReason`, `EventMeta`, the sealed `Event` interface, all fourteen payload types, `NoticeKind`/`RunNotice`/`Notifier`, `Done` and `CallKey`; `StateChanged` and `FeedbackRecorded` bring `PatchOp`, `FeedbackTarget` and `FeedbackSource` with them.
+  - files: `core/types/event.go`, `core/types/event_test.go`
+  - scenarios: none
+  - verify: `go test -short -timeout 2m ./core/... -run 'TestEventTypes'`
 
-- [ ] 3.2 `core`: Implement error classes, sentinel errors from `docs/design/types.md`, the `ErrorCode` catalog, `Problem` and `ProblemOf`; enforce catalog completeness and the unknown-error `gohan.internal` fallback. **GATE**
-  - files: `core/errors.go`, `core/problem.go`, `core/problem_test.go`, `tools/gen_types_index.py`
+- [x] 3.2 `core`: Implement error classes, sentinel errors from `docs/design/types.md`, the `ErrorCode` catalog, `Problem` and `ProblemOf`, plus `ResumeToken`, `SuspendReason` and `GuardStage` with their members, which the `Suspended` and `GuardBlocked` payloads need; enforce catalog completeness and the unknown-error `gohan.internal` fallback. **GATE**
+  - files: `core/types/errors.go`, `core/types/problem.go`, `core/types/problem_test.go`, `tools/gen_types_index.py`, `tools/gen_types_index_test.py`
   - scenarios: `errors.every-sentinel-has-code`, `errors.problem-of-unknown-is-internal`
-  - verify: `go test -short -timeout 2m ./core/... -run 'TestProblemCatalog' && task spec:types`
+  - verify: `go test -short -timeout 2m ./core/... -run 'TestProblemCatalog' && task spec:types && timeout 2m python3 -m unittest discover -s tools -p 'gen_types_index_test.py'`
 
-- [ ] 3.3 `core`: Render `Problem.Detail` from fixed templates and allow-listed fields; exclude provider bodies and preserve retryable `RetryAfter`, including lease remaining for `ErrRunActive`.
+- [x] 3.3 `core`: Render `Problem.Detail` from fixed templates and allow-listed fields; exclude provider bodies and preserve retryable `RetryAfter`, including lease remaining for `ErrRunActive`.
   - files: `core/problem.go`, `core/problem_detail_test.go`
   - scenarios: `errors.detail-never-carries-provider-body`, `errors.retry-after-on-retryable`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestProblemDetail'`
@@ -187,9 +188,9 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - scenarios: `stores.concurrent-consume`, `suspension.token-reuse`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestCheckpointConsume'`
 
-9. [ ] `core`: `Journal` port + memory implementation, `CallKey`, `Fingerprint`, `Reserve`/`Complete`, TTL. — `stores.concurrent-reserve`, `stores.journal-ttl`, `stores.replay-returns-recorded-result`
+9. [ ] `core`: `Journal` port + memory implementation, `Fingerprint`, `Reserve`/`Complete`, TTL. — `stores.concurrent-reserve`, `stores.journal-ttl`, `stores.replay-returns-recorded-result`
 
-- [ ] 9.1 `core`: Implement `Journal`, its memory store, `CallKey`, `Fingerprint`, `Reserve`/`Complete`, `ByFingerprint` and store-clock TTL.
+- [ ] 9.1 `core`: Implement `Journal`, its memory store, `Fingerprint`, `Reserve`/`Complete`, `ByFingerprint` and store-clock TTL, keyed by the row-3 `CallKey`.
   - files: `core/store_journal.go`, `core/store_journal_memory.go`, `core/store_journal_reserve_test.go`
   - scenarios: `stores.concurrent-reserve`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestJournalReserve'`
@@ -235,7 +236,7 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 
 - [ ] 11.3 `core`: Implement `EventLog` and its memory ring buffer with `Seq`, ordered historical/live `Read` and `Expire`.
   - files: `core/store_events.go`, `core/store_events_test.go`
-  - scenarios: none
+  - scenarios: `streams.monotonic-seq`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestEventLog'`
 
 - [ ] 11.4 `core`: Implement `RetentionPolicy`/`RetentionSource`, `Stack.Maintain`, audited tier purges and the `Ephemeral()` hook without core policy defaults.
@@ -641,7 +642,7 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - scenarios: `streams.consumer-stall-preempts`, `streams.consumer-stall-detaches-with-log`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestConsumerStall'`
 
-- [ ] 26.6 `core`: implement typed `SharedState`/`SetSharedState`, session metadata persistence and resume restoration; hold `StateChanged`/`PatchOp` shapes and emit supplied patches without core diffing.
+- [ ] 26.6 `core`: implement typed `SharedState`/`SetSharedState`, session metadata persistence and resume restoration; emit the row-3 `StateChanged`/`PatchOp` shapes without core diffing.
   - files: `core/shared_state.go`, `core/shared_state_test.go`
   - scenarios: `working-state.shared-state-restored`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestSharedStateRestore'`
@@ -849,6 +850,7 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 The rows above keep their reviewed scope; these are the places the review corrected them, with the record that owns each change.
 
 - Row 1: branch is `master`; `git init`, the `origin` remote, `.gitignore`, `LICENSE` and `README.md` already exist; `go.work` is committed as development wiring and is never the version authority, while `go.work.sum` stays ignored because it is reproducible per checkout. Row 1 also lands the first two package declarations (`core/doc.go`, `core/types/doc.go`), so `task lint`, `go vet` and `task test` have a compilable unit: an empty module fails them (measured: `go test` exit 1, `golangci-lint run` exit 5). CI carries `spec`, `lint`, `test` and `bench` on `master` only — `conformance` and `examples` arrive with their suites, `api:check` with `adapter/httpapi` in M4, and the adapter matrix is empty for all of M0, so it is path-filtered. `task test:full` and `task examples:test` are named by `AGENTS.md` and land with rows 29 and 31.
+- Row 3: it lands the whole shared vocabulary rather than the event payloads alone — the 32 sentinels, the 12 typed errors, the model error classes, the event set, and the seven types the payloads reference — because the payloads, the catalog and every later row's errors are one contract; rows 9, 12, 16, 24 and 26 use those declarations instead of making their own. `CallKey` moves here from 9.1 (`Done.Uncertain` needs it) and `streams.monotonic-seq` moves to 11.3: a type package cannot establish "`Seq` values are exactly 1..N in delivery order", the `EventLog` that assigns `Seq` can. `errors.retry-after-on-retryable` keeps its M0 half here (the row is `Retryable`, and `gohan.mailbox_full` carries a 1 s `RetryAfter`); the HTTP leg — a 409 `application/problem+json` with `Retry-After` set to the lease's remaining seconds — arrives with `adapter/httpapi` in M4, and the remaining lease is the transport's to supply.
 - Row 2: the block model and its `BlockKind` tags are one unit; `ModelChunk`/`Usage`/`DeltaKind`/`FinishReason` are the second, and the request shape moved to 18.7 — `ModelRequest` needs `ToolSpec`, which row 12 lands, so declaring it in row 2 would pull the whole tool vocabulary forward. `CompactionKind` is declared with its block in `core/types` (the `context` spec shows its members and names `messages` as the owner).
 - Rows 2–F: every `files:` line carries the resolved path — a `core/` label resolves through the package plan in `design.md` before dispatch, so `core/message.go` is `core/types/message.go` and the driver file is `core/aliases.go` — and each vocabulary row adds the driver aliases for its own declarations (ADR-0139 rule 3).
 - Row 1: `task spec:coverage` has no implementation and no owner — the target and its script are this row's work (ADR-0135).

@@ -77,6 +77,7 @@ var (
 	ErrSignalsPending         = errors.New("gohan: steer signals arrived after the last drain")
 	ErrOperationExists        = errors.New("gohan: operation id already recorded")
 	ErrCheckpointIncompatible = errors.New("gohan: checkpoint schema or backend version incompatible")
+	ErrVersionConflict        = errors.New("gohan: append with a stale version")
 )
 
 type Checkpoints interface {
