@@ -27,6 +27,8 @@ const (
 	AuditResumed      AuditKind = "resumed"
 	AuditLimit        AuditKind = "limit"
 	AuditSessionFork  AuditKind = "session.fork"
+	AuditApproval     AuditKind = "approval"
+	AuditGrantedScope AuditKind = "granted_by_scope"
 )
 
 // AuditRecord is one entry of the decision trail. It carries checksums and

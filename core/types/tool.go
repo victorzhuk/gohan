@@ -74,20 +74,21 @@ type EgressDenied struct {
 // ToolSpec is the full declaration of one tool. A Tool value holds one spec
 // built once before Build and shared by every run.
 type ToolSpec struct {
-	Name           string
-	Description    string
-	Schema         json.RawMessage
-	Effect         Effect
-	RequiredScopes []string
-	Timeout        time.Duration
-	ReadBack       string
-	MaxOutput      int
-	Deferred       bool
-	Risk           RiskTier
-	Capabilities   Capabilities
-	Executor       Executor
-	Egress         *EgressPolicy
-	Verify         func(ctx context.Context, args json.RawMessage, r ToolResult) (Outcome, error)
+	Name              string
+	Description       string
+	Schema            json.RawMessage
+	Effect            Effect
+	RequiredScopes    []string
+	Timeout           time.Duration
+	ReadBack          string
+	MaxOutput         int
+	Deferred          bool
+	Risk              RiskTier
+	Capabilities      Capabilities
+	Executor          Executor
+	Egress            *EgressPolicy
+	FingerprintFields []string
+	Verify            func(ctx context.Context, args json.RawMessage, r ToolResult) (Outcome, error)
 }
 
 // ToolOption adjusts a ToolSpec at construction.

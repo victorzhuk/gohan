@@ -10,10 +10,10 @@ import (
 )
 
 // ToolFunc invokes one tool and streams nothing back: one result, one error.
-type ToolFunc func(ctx context.Context, call types.ToolUse) (types.ToolResult, error)
+type ToolFunc = types.ToolFunc
 
 // ToolMiddleware wraps one tool invocation.
-type ToolMiddleware func(next ToolFunc) ToolFunc
+type ToolMiddleware = types.ToolMiddleware
 
 // StepKind classifies a step so ordering constraints can be validated
 // without executing the chain.
