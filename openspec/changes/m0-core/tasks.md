@@ -618,54 +618,54 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - note: `stores/spec.md:54` models `Stores` as a value type and no Go declaration exists anywhere. It belongs in `core/stores` beside the ports it carries, **not** in the floor: a floor type cannot name a leaf's interfaces, and moving the frozen ports upward to satisfy it would invert the dependency direction (ADR-0139). `stores.md:313` makes `Stack.Sessions` the owner-scoped entry point. `MemorySessionLog.Fork` (`core/stores/session_memory.go:299`) is not on the `SessionLog` interface (`core/stores/session.go:28`), so expose it as an optional interface, which is the only way a port may grow (`docs/design/compatibility.md`) and what 23.3 needs.
 
 
-23. [ ] `core`: `Flow[In, Out]`, `FlowFunc`, `Conversation` (`Send`, `Cancel`, `Continue`, `Steer` with runtime drain at safe points; takeover through `SessionControl`, `TakeOver`/`HandBack`/`OperatorSend`, `StopHandedOff`), `RunLimits` enforcement, and `std/flow`'s `Extract` and `Classify`. - `flow.plain-invoke`, `flow.not-suspendable`, `flow.typed-result-on-conversation`, `flow.cancel-other-request`, `flow.send-during-active-run`, `flow.idempotent-send`, `flow.send-during-human-control-no-run`, `flow.continue-without-input`, `flow.regenerate-is-fork-and-continue`, `flow.steer-applied-at-boundary`, `flow.steer-preserves-adjacency`, `flow.steer-after-final-reply-runs-turn`, `flow.steer-no-active-run`, `identity.steer-root-only`, `permission.takeover-requires-scope`, `stores.control-in-session-index`, `flow.takeover-pauses-agent`, `flow.operator-send-origin`, `limits.hard-cost-abort`, `limits.wall-clock`, `limits.cost-accumulates`, `flow.extract-recipe`, `flow.classify-recipe` (23 IDs, chunk-disjoint)
+23. [x] `core`: `Flow[In, Out]`, `FlowFunc`, `Conversation` (`Send`, `Cancel`, `Continue`, `Steer` with runtime drain at safe points; takeover through `SessionControl`, `TakeOver`/`HandBack`/`OperatorSend`, `StopHandedOff`), `RunLimits` enforcement, and `std/flow`'s `Extract` and `Classify`. - `flow.plain-invoke`, `flow.not-suspendable`, `flow.typed-result-on-conversation`, `flow.cancel-other-request`, `flow.send-during-active-run`, `flow.idempotent-send`, `flow.send-during-human-control-no-run`, `flow.continue-without-input`, `flow.regenerate-is-fork-and-continue`, `flow.steer-applied-at-boundary`, `flow.steer-preserves-adjacency`, `flow.steer-after-final-reply-runs-turn`, `flow.steer-no-active-run`, `identity.steer-root-only`, `permission.takeover-requires-scope`, `stores.control-in-session-index`, `flow.takeover-pauses-agent`, `flow.operator-send-origin`, `limits.hard-cost-abort`, `limits.wall-clock`, `limits.cost-accumulates`, `flow.extract-recipe`, `flow.classify-recipe` (23 IDs, chunk-disjoint)
 
 - note: this row's chunks all sit in the driver package `gohan` and call row 22's `Drive` and row 21's `Stack`, except 23.7 (a `core/chains` leaf) and 23.8 (`std/flow`). The driver declares no shared type (ADR-0139 rule 3): every vocabulary type gets an alias in `core/aliases.go`.
 - note: `docs/design/types.md` does not list the driver's generic types - `Flow`, `FlowFunc`, `Conversation`, `SessionControl` are declared in `flow/spec.md` and the driver's own files.
 
-- [ ] 23.1 `core`: Implement `Flow[In, Out]`, `FlowFunc`, and typed `Done.Result` with matching canonical JSON in the final assistant message.
+- [x] 23.1 `core`: Implement `Flow[In, Out]`, `FlowFunc`, and typed `Done.Result` with matching canonical JSON in the final assistant message.
   - files: `core/flow.go`, `core/flow_test.go`
   - scenarios: `flow.plain-invoke`, `flow.not-suspendable`, `flow.typed-result-on-conversation`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestFlowContract'`
   - note: `flow/spec.md:110` requires the value as one `Text` block of canonical JSON in the final assistant message, with `Done.Result` carrying the same bytes as `json.RawMessage`. `ErrNotSuspendable` is `flow/spec.md:80`; `AbortError` and `Done` already exist in the floor and are referenced, never redeclared. The `gohan.flow` span (`flow/spec.md`, `flow.plain-invoke`) belongs to telemetry (row 28): assert the returned events and record the span emission.
 
-- [ ] 23.2 `core`: Implement `Conversation.Send` and `Cancel`, live-run refusal, idempotent reattachment, and `StopHandedOff` without starting a run under human control.
+- [x] 23.2 `core`: Implement `Conversation.Send` and `Cancel`, live-run refusal, idempotent reattachment, and `StopHandedOff` without starting a run under human control.
   - files: `core/conversation.go`, `core/conversation_test.go`
   - scenarios: `flow.cancel-other-request`, `flow.send-during-active-run`, `flow.idempotent-send`, `flow.send-during-human-control-no-run`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestConversationSend'`
   - note: the constructor name is frozen here (the flow spec says `agent.New`, and no `agent` package exists in the package table): the driver exposes it. `Send` reads the control state **before** `Runs.Start`, or the hand-off branch records a run it must not. `Cancel` returns only once `Runs` shows the run finished or the lease TTL expires (`flow.md:103`), which needs a fake clock under `synctest`. The refusal errors (`ErrEmptyHistory`, `ErrSessionHandedOff`, `ErrRunNotActive`, `ErrRunActive`) are already in the floor. `Done(guard_blocked)` - deferred here by row 16 - is emitted by this chunk.
 
-- [ ] 23.3 `core`: Implement `Conversation.Continue` without input and regeneration through the session fork followed by `Continue`.
+- [x] 23.3 `core`: Implement `Conversation.Continue` without input and regeneration through the session fork followed by `Continue`.
   - files: `core/conversation_continue.go`, `core/conversation_continue_test.go`
   - scenarios: `flow.continue-without-input`, `flow.regenerate-is-fork-and-continue`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestConversationContinue'`
   - note: depends on 22.7's optional fork interface - `MemorySessionLog.Fork` already refuses a fork while a run is active, which the scenario asserts. The regenerate scenario also asserts that the fork's first model call reports cached input tokens for the shared prefix, which is row 19's assembly projection: assert what the request carries and record any half the projection owns.
 
-- [ ] 23.4 `core`: Implement `Conversation.Steer` and the runtime drain at safe points; preserve tool adjacency and run another turn when the finish finds pending steers.
+- [x] 23.4 `core`: Implement `Conversation.Steer` and the runtime drain at safe points; preserve tool adjacency and run another turn when the finish finds pending steers.
   - files: `core/conversation_steer.go`, `core/drive_mailbox.go`, `core/conversation_steer_test.go`
   - scenarios: `flow.steer-applied-at-boundary`, `flow.steer-preserves-adjacency`, `flow.steer-after-final-reply-runs-turn`, `flow.steer-no-active-run`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestConversationSteer'`
   - note: `core/drive_mailbox.go` is the driver package's safe-point drain and calls row 22's loop seam; the mailbox depth (ten signals, then `ErrMailboxFull` on the eleventh, `stores/spec.md:452`) is already in `core/stores`. `SteerApplied` exists in the floor. The drain-turn interaction with `MaxTurns` belongs to 23.7's enforcement, not here.
 
-- [ ] 23.5 `core`: Enforce root-only `Steer` ownership and the takeover scope check; expose `SessionControl` filtering through the session index.
+- [x] 23.5 `core`: Enforce root-only `Steer` ownership and the takeover scope check; expose `SessionControl` filtering through the session index.
   - files: `core/session_control.go`, `core/session_control_test.go`, `core/types/identity.go`
   - scenarios: `identity.steer-root-only`, `permission.takeover-requires-scope`, `stores.control-in-session-index`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestSessionControl'`
   - note: the `session:control` scope has no literal anywhere today - only `scopeSessionWrite = "session:write"` (`core/stores/session_memory.go:24`) and its grant in `std/permission/policy.go:40`. Declare the control scope once in the floor and use it in both places. `SessionQuery.Control` filtering and the `Control` field are already implemented in the memory index; the scenario asserts them through `Stack.Sessions` (22.7).
 
-- [ ] 23.6 `core`: Implement `TakeOver`/`HandBack`/`OperatorSend`, safe-point takeover, pending-token expiry, audited control transitions, and `OriginOperator` messages without model calls.
+- [x] 23.6 `core`: Implement `TakeOver`/`HandBack`/`OperatorSend`, safe-point takeover, pending-token expiry, audited control transitions, and `OriginOperator` messages without model calls.
   - files: `core/session_takeover.go`, `core/session_takeover_test.go`
   - scenarios: `flow.takeover-pauses-agent`, `flow.operator-send-origin`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestSessionTakeover'`
   - note: `flow.md:176` requires takeover to cancel a streaming run at its next safe point and to expire a pending human-approval token - both are timing assertions and need `synctest`. `ControlHandoffRequested`/`ControlHuman` are in `core/stores`. The hand-back restore half is M1-deferred (`flow.handback-fences-operator-turns`), so assert the transitions this chunk makes observable.
 
-- [ ] 23.7 `core/chains`: Enforce `RunLimits` - turns, tool calls, cost, wall clock and the soft ratio - in the chain, so the limits apply under any backend; charge a fallback once per chunk.
+- [x] 23.7 `core/chains`: Enforce `RunLimits` - turns, tool calls, cost, wall clock and the soft ratio - in the chain, so the limits apply under any backend; charge a fallback once per chunk.
   - files: `core/chains/limits.go`, `core/chains/limits_test.go`
   - scenarios: `limits.hard-cost-abort`, `limits.wall-clock`, `limits.cost-accumulates`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestChainLimits'`
   - note: `limits/spec.md:48` says the chains enforce the limits, which is why the runtime must not also count `MaxToolCalls`. This chunk carries the charging half of `chains.fallback-charged`, deferred by row 18: the routing decision and the fallback-once ordering already landed, the spend does not. `limits.cost-accumulates` needs 0.04 + 0.04 + 0.04 against a `MaxCost` of 0.10 to abort on the third spend with `Done.Cost` on the root equal to the sum; the root/tree machinery is row 25, so assert the accumulation this chunk owns and record the root projection. `limits.wall-clock` is monotonic-time and needs `synctest`. `std/presets.go` currently installs a pass-through telemetry step, so pricing arrives here.
 
-- [ ] 23.8 `std/flow`: Implement `Extract` and `Classify` as governed single-call recipes with typed validation and no tools.
+- [x] 23.8 `std/flow`: Implement `Extract` and `Classify` as governed single-call recipes with typed validation and no tools.
   - files: `std/flow/extract.go`, `std/flow/extract_test.go`, `std/flow/classify.go`, `std/flow/classify_test.go`
   - scenarios: `flow.extract-recipe`, `flow.classify-recipe`
   - verify: `go test -short -timeout 2m ./std/flow/ -run 'TestFlowRecipes'`

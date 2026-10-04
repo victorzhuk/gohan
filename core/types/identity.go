@@ -10,6 +10,16 @@ type Principal struct {
 	Scopes  []string
 }
 
+// Session scope names gate the session paths on top of plain ownership.
+// The control scope is the takeover vocabulary: session:write alone never
+// moves a session into human control.
+const (
+	ScopeSessionRead    = "session:read"
+	ScopeSessionWrite   = "session:write"
+	ScopeSessionHold    = "session:hold"
+	ScopeSessionControl = "session:control"
+)
+
 // SessionOwner records which principal opened a session.
 type SessionOwner struct {
 	Tenant  string

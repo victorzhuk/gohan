@@ -20,9 +20,10 @@ var (
 )
 
 const (
-	scopeSessionRead  = "session:read"
-	scopeSessionWrite = "session:write"
-	scopeSessionHold  = "session:hold"
+	scopeSessionRead    = "session:read"
+	scopeSessionWrite   = "session:write"
+	scopeSessionHold    = "session:hold"
+	scopeSessionControl = types.ScopeSessionControl
 )
 
 const (
@@ -432,6 +433,50 @@ func (s *MemorySessionLog) Sessions(ctx context.Context, owner types.SessionOwne
 		cursor = fmt.Sprintf("%d:%s", last.LastActivity.UnixNano(), last.ID)
 	}
 	return out, cursor, nil
+}
+
+// Control reports the session's control state. The conversation reads it
+// at the Send gate; no ownership check applies beyond the session lookup,
+// because the state only decides whether the agent or a human is in charge.
+func (s *MemorySessionLog) Control(ctx context.Context, sessionID string) (SessionControl, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.get(ctx, sessionID, scopeSessionRead)
+	if err != nil {
+		// A session that has no first append yet runs under agent
+		// control; Send creates it right after this gate.
+		if errors.Is(err, ErrSessionNotFound) {
+			return ControlAgent, nil
+		}
+		return ControlAgent, err
+	}
+	return rec.meta.Control, nil
+}
+
+// SetControl moves the session between agent and human control. The
+// takeover and hand-back transitions are the only writers; the caller must
+// hold the session's control scope.
+func (s *MemorySessionLog) SetControl(ctx context.Context, sessionID string, control SessionControl) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.get(ctx, sessionID, scopeSessionControl)
+	if err != nil {
+		return err
+	}
+	rec.meta.Control = control
+	return nil
+}
+
+// Owner reports the session's recorded owner. The control checks compare
+// tenants against it, which must not imply read access to the history.
+func (s *MemorySessionLog) Owner(_ context.Context, sessionID string) (types.SessionOwner, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.sessions[sessionID]
+	if !ok {
+		return types.SessionOwner{}, fmt.Errorf("session %s: %w", sessionID, ErrSessionNotFound)
+	}
+	return rec.meta.Owner, nil
 }
 
 func (s *MemorySessionLog) UpdateSession(ctx context.Context, sessionID string, p SessionPatch) error {
