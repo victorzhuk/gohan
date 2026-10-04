@@ -25,6 +25,7 @@ core/runtime/   package runtime    Stepper, Runtime, State, Status, native runti
 core/flowdef/   package flowdef    definition model only (M4 fills it)
 std/            package std        presets and DefaultPrompts
 std/permission  std/guard  std/structured  std/limit  std/retry  std/notes  std/outputs  std/toolsearch
+                std/keys  std/route  std/tokens
 std/telemetry   std/tool/exec  std/state  std/context (Truncate only in M0)
 testkit/gohantest  testkit/conformance  testkit/storetest
 examples/quickstart  examples/excursions

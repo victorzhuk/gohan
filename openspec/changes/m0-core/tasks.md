@@ -433,69 +433,87 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 
 ## D. Model side
 
-18. [ ] `core`: `ModelProfile` (incl. `Keys`), `ProviderKeySource`/`ProviderCredential`/`ErrNoProviderKey`, `Build` key validation (`model.tenant-key-selected`, `model.tenant-key-missing-fails-closed`, `model.no-fallback-on-auth-error`, `model.key-validated-at-build`, `identity.tenant-for-key-from-ctx`), `Caps`, `Pricing`, error class normalisation, `LatencyClass`. `std`: `retry.Exponential`/`RetryAfter`, `std/limit` local limiter, circuit breaker, `Fallback` before first chunk, per-endpoint wrapping. — `model.429-fails-over-without-retry`, `model.5xx-retries-then-fails-over`, `model.breaker-opens`, `model.early-break-releases`, `model.cancel-returns-promptly`, `model.first-chunk-timeout-transient`, `model.idle-timeout-permanent`, `model.partial-terminal-on-replay`, `chains.no-retry-after-first-chunk`, `chains.fallback-charged`, `chains.per-endpoint-limits`
+18. [x] `core`: `ModelProfile` (incl. `Keys`), `ProviderKeySource`/`ProviderCredential`/`ErrNoProviderKey`, `Build` key validation (`model.tenant-key-selected`, `model.tenant-key-missing-fails-closed`, `model.no-fallback-on-auth-error`, `model.key-validated-at-build`, `identity.tenant-for-key-from-ctx`), `Caps`, `Pricing`, error class normalisation, `LatencyClass`. `std`: `retry.Exponential`/`RetryAfter`, `std/limit` local limiter, circuit breaker, `Fallback` before first chunk, per-endpoint wrapping. — `model.429-fails-over-without-retry`, `model.5xx-retries-then-fails-over`, `model.breaker-opens`, `model.early-break-releases`, `model.cancel-returns-promptly`, `model.first-chunk-timeout-transient`, `model.idle-timeout-permanent`, `model.partial-terminal-on-replay`, `chains.no-retry-after-first-chunk`, `chains.fallback-charged`, `chains.per-endpoint-limits`
 
-- [ ] 18.1 `std/keys`: Add env- and map-backed `ProviderKeySource`, `ProviderCredential`, `ErrNoProviderKey`; select `ModelProfile.Keys` from `PrincipalFrom(ctx)` and refuse auth fallback.
-  - files: `std/keys/keys.go`, `std/keys/keys_test.go`
+- [x] 18.1 `std/keys`: Add env- and map-backed `ProviderKeySource`, `ProviderCredential`, `ErrNoProviderKey`; select `ModelProfile.Keys` from `PrincipalFrom(ctx)` and refuse auth fallback.
+  - files: `std/keys/keys.go`, `std/keys/keys_test.go`, `core/types/model_keys.go`
   - scenarios: `model.tenant-key-selected`, `model.tenant-key-missing-fails-closed`, `model.no-fallback-on-auth-error`, `identity.tenant-for-key-from-ctx`
   - verify: `go test -short -timeout 2m ./std/keys/ -run 'TestProviderKeys'`
+  - note: the ports (`ProviderCredential`, `ProviderKeySource`, `ProviderKeyValidator`) live in the type floor, not in `std/keys`, because the design table puts ports in `core/types` and `core/build_keys.go` must reach them without importing `std`; `ProviderKeyValidator` is declared here because the spec names it and no chunk owned it; `ErrNoProviderKey` already exists in `core/types/errors.go:58` and is referenced, never redeclared; `std/keys` implements the env- and map-backed source; the scenarios' `Usage.KeyID` and provider-class halves have no adapter in M0 - assert the credential the source returns and record the rest; `depends_on` 18.6
 
-- [ ] 18.2 `core`: Validate platform credentials through `ProviderKeyValidator` during `Build`.
+- [x] 18.2 `core`: Validate platform credentials through `ProviderKeyValidator` during `Build`.
   - files: `core/build_keys.go`, `core/build_keys_test.go`
   - scenarios: `model.key-validated-at-build`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestBuildProviderKeys'`
+  - note: `Build` itself is 21.1, so this chunk exposes the validation seam as a function over profiles and a source; `depends_on` 18.1, not 21.1 - the wiring is recorded, not implemented; the depguard rule forbids `core` importing `std`, so the seam takes the floor's `ProviderKeySource` interface and 21.1 passes `std/keys` in
 
-- [ ] 18.3 `std/retry`: Add `retry.Exponential` and `RetryAfter`; retry transient failures before the first chunk only, then expose exhaustion to `Fallback`.
+- [x] 18.3 `std/retry`: Add `retry.Exponential` and `RetryAfter`; retry transient failures before the first chunk only, then expose exhaustion to `Fallback`.
   - files: `std/retry/retry.go`, `std/retry/retry_test.go`
   - scenarios: `model.5xx-retries-then-fails-over`, `chains.no-retry-after-first-chunk`
   - verify: `go test -short -timeout 2m ./std/retry/ -run 'TestRetryPolicy'`
+  - note: `retry.Exponential` and `RetryAfter` have no Go shape in any spec: freeze both, and return the model middleware the floor declares in 18.7; retry applies before the first chunk only and exhaustion surfaces to the router's fallback (18.5) - assert the policy's attempt sequence, and record the failover half; `depends_on` 18.7
 
-- [ ] 18.4 `std/limit`: Add the local limiter and `MaxInFlight` bulkhead with independent per-endpoint wrapping.
+- [x] 18.4 `std/limit`: Add the local limiter and `MaxInFlight` bulkhead with independent per-endpoint wrapping.
   - files: `std/limit/model.go`, `std/limit/model_test.go`
   - scenarios: `chains.per-endpoint-limits`
   - verify: `go test -short -timeout 2m ./std/limit/ -run 'TestEndpointLimits'`
+  - note: the limiter takes its per-endpoint ceiling as a constructor argument: `ModelProfile.MaxInFlight` (18.6) and its wiring are the route/Build layers' job, so this chunk never reads a profile; per-endpoint independence is the scenario's assertion; `LimitExceededError` already exists in the floor; `depends_on` 18.6
 
-- [ ] 18.5 `std/route`: Add circuit breaker, static/by-`LatencyClass` routing and `Fallback` before the first chunk; charge the successful endpoint's usage.
+- [x] 18.5 `std/route`: Add circuit breaker, static/by-`LatencyClass` routing and `Fallback` before the first chunk; charge the successful endpoint's usage.
   - files: `std/route/route.go`, `std/route/breaker.go`, `std/route/fallback.go`, `std/route/route_test.go`
   - scenarios: `model.breaker-opens`, `model.429-fails-over-without-retry`, `chains.fallback-charged`
   - verify: `go test -short -timeout 2m ./std/route/ -run 'TestEndpointRouting'`
+  - note: no `Router`, `Breaker` or `BreakerPolicy` interface exists in any spec: freeze the shapes, the open threshold, the window and the half-open delay, and record them; the scenarios' metric halves (`gohan.model.failover{class=...}`) are row 28 and the charging half of `chains.fallback-charged` needs `RunLimits` (23.7) - assert the routing decision, the fallback-once-per-chunk ordering and the endpoint choice; `depends_on` 18.3, 18.4, 18.6, 18.7
 
-- [ ] 18.6 `core`: Add the `Model` port, `ModelProfile`, `Caps` (with its `ProviderTools` field), `Pricing` and error class normalisation (`LatencyClass` already landed in row 4); enforce model iterator release, cancellation and first-chunk/idle timeout semantics.
-  - files: `core/model_profile.go`, `core/model_stream.go`, `core/model_profile_test.go`, `core/model_stream_test.go`
+- [x] 18.6 `core`: Add the `Model` port, `ModelProfile` (with `Keys`), `KeyMode`, `Caps`, `Pricing`, `Fidelity`, `ProviderToolCap`, `CacheMode`, `CompactionMode`, the `TokenCounter` port and the budget value types; move `BlobCaps` to the type floor with an alias in `core/stores`.
+  - files: `core/types/model_profile.go`, `core/types/model.go`, `core/types/fidelity.go`, `core/types/tokens.go`, `core/types/model_profile_test.go`, `core/types/tokens_test.go`, `core/stores/blob_checks.go`
+  - scenarios: none
+  - verify: `go test -short -timeout 2m ./core/... -run 'TestModelProfile'`
+  - note: this is the row's vocabulary root and carries no scenario - it exists so 18.1, 18.3, 18.4, 18.9, 19.2 and 19.3 have something to compile against; `Fidelity` is declared here because `Caps.Fidelity` needs it and no other chunk owns the type (messages spec:196); `TokenCounter` and the budget value types live in the floor because the driver declares no shared type and `core` may not import `std`; `BlobCaps` moves out of `core/stores/blob_checks.go` with an alias left behind, because `Caps.Blobs` needs it and the floor may not import `stores`; the stream semantics of the old 18.6 block moved to 18.9 so each dispatch stays inside one reviewable unit
+
+- [x] 18.9 `core`: Enforce model iterator release, cancellation and first-chunk/idle timeout semantics.
+  - files: `core/model_stream.go`, `core/model_stream_test.go`
   - scenarios: `model.early-break-releases`, `model.cancel-returns-promptly`, `model.first-chunk-timeout-transient`, `model.idle-timeout-permanent`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestModelStream'`
+  - note: split out of the old 18.6 block; `testing/synctest` for the three timeout and cancellation scenarios; the transient/permanent class split is the spec's, so assert the class, not an emitted call
 
-- [ ] 18.7 `core`: Declare `ModelRequest`, `ModelOptions`, `ToolChoice` and `AffinityKeyStrategy` in `core/types/model_request.go` (`openspec/specs/model/spec.md` §6.5), now that `ToolSpec` (row 12) and the message vocabulary exist; keep the marshaling of an assembled request stable, because the record/replay key is a hash of it (`docs/design/testing.md`).
-  - files: `core/types/model_request.go`, `core/types/model_request_test.go`
+- [x] 18.7 `core`: Declare `ModelRequest`, `ModelOptions`, `ToolChoice` and `AffinityKeyStrategy` in `core/types/model_request.go` (`openspec/specs/model/spec.md` §6.5), now that `ToolSpec` (row 12) and the message vocabulary exist; keep the marshaling of an assembled request stable, because the record/replay key is a hash of it (`docs/design/testing.md`).
+  - files: `core/types/model_request.go`, `core/types/model_request_test.go`, `core/types/middleware.go`, `core/chains/model_chain.go`, `core/chains/model_chain_test.go`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./core/... -run 'TestModelRequest'`
+  - note: this chunk also lands the chain's model half that row 13 deferred: `ModelFunc` and `ModelMiddleware` join the tool half in the type floor (`core/types/middleware.go`) so a policy package can wrap a model call without importing a peer leaf, and `core/chains/model_chain.go` declares `ModelChain` plus the aliases; the assembled request's marshaling is frozen here because the record/replay key is a hash of it; verify selector covers both test functions
 
-- [ ] 18.7 `core`: Exclude terminal partial assistant messages with `FinishError` from provider history on replay and continuation.
+- [x] 18.8 `core`: Exclude terminal partial assistant messages with `FinishError` from provider history on replay and continuation.
   - files: `core/model_history.go`, `core/model_history_test.go`
   - scenarios: `model.partial-terminal-on-replay`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestModelTerminalHistory'`
+  - note: renumbered from the plan's duplicate 18.7. The exclusion is a pure projection over a history slice; the `Flow`/`Conversation` emission that consumes it is row 23, so record that half. No `Message` field carries a finish state, so the projection reads a message meta key it freezes (`Meta["finish"]`, typed `FinishError`/`FinishReason`) - **row 23 must set that key when it emits a terminal partial**, and that key is the contract until a spec declares a real field
 
-19. [ ] `std`: `StablePrefix` assembler, slots, `ContextProvider`, `CacheBreak` rules, `Truncate` projection (persisted compaction is M2), `std/tokens.Heuristic` + `ContextBudget`. — `model.budget-reserves-output`, `model.heuristic-deterministic`, `model.token-counter-optional`, `assembly.prefix-stability`, `assembly.tool-order`, `assembly.truncate-policy`, `model.context-re-fit-on-fallback`
+19. [x] `std`: `StablePrefix` assembler, slots, `ContextProvider`, `CacheBreak` rules, `Truncate` projection (persisted compaction is M2), `std/tokens.Heuristic` + `ContextBudget`. — `model.budget-reserves-output`, `model.heuristic-deterministic`, `model.token-counter-optional`, `assembly.prefix-stability`, `assembly.tool-order`, `assembly.truncate-policy`, `model.context-re-fit-on-fallback`
 
-- [ ] 19.1 `std`: Add `StablePrefix` assembly, slots, `ContextProvider` integration and `CacheBreak` rules with stable tool ordering.
-  - files: `std/assembly.go`, `std/assembly_test.go`
+- [x] 19.1 `std`: Add `StablePrefix` assembly, slots, `ContextProvider` integration and `CacheBreak` rules with stable tool ordering.
+  - files: `core/types/assembly.go`, `core/types/assembly_test.go`, `std/assembly.go`, `std/assembly_test.go`
   - scenarios: `assembly.prefix-stability`, `assembly.tool-order`
   - verify: `go test -short -timeout 2m ./std/ -run 'TestStablePrefix'`
+  - note: `ContextSlot`, the slot constants and `ContextProvider` live in the floor, per the design table; the assembler must not redeclare `std.ToolFilter` (17.2 already exports one with a different shape) - take it as the floor's selector type and adapt at the call site; `CacheBreak` is placed twice, after `SlotStatic` and after `SlotSession`, per the assembly spec; prefix stability is a byte comparison of the assembled request; `depends_on` 18.7
 
-- [ ] 19.2 `core`: Add `ContextBudget` from `openspec/specs/model/spec.md` §Contract/6.5; reserve output and margin, and use optional `TokenCounter` only at the compaction decision.
-  - files: `core/context_budget.go`, `core/context_budget_test.go`
+- [x] 19.2 `core`: Add `ContextBudget` from `openspec/specs/model/spec.md` §Contract/6.5; reserve output and margin, and use optional `TokenCounter` only at the compaction decision.
+  - files: `core/types/context_budget.go`, `core/types/context_budget_test.go`
   - scenarios: `model.budget-reserves-output`, `model.token-counter-optional`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestContextBudget'`
+  - note: the driver declares no shared type, so the budget arithmetic's home is the floor, beside the budget value types 18.6 declares; the `TokenCounter` port is optional and consulted only at the compaction decision; `Reserved` has no spec formula - freeze it and the rounding; assert the 200000-8000-margin arithmetic the scenario pins; `depends_on` 18.6
 
-- [ ] 19.3 `std/tokens`: Add deterministic `Heuristic` from `openspec/specs/model/spec.md` §Contract/Token budget.
+- [x] 19.3 `std/tokens`: Add deterministic `Heuristic` from `openspec/specs/model/spec.md` §Contract/Token budget.
   - files: `std/tokens/heuristic.go`, `std/tokens/heuristic_test.go`
   - scenarios: `model.heuristic-deterministic`
   - verify: `go test -short -timeout 2m ./std/tokens/ -run 'TestHeuristic'`
+  - note: implements the floor's `TokenCounter`; the image-token rule has no `Caps` field to read, so freeze the constant and record it; the heuristic must be deterministic across calls and independent of `std/context`; `depends_on` 18.6
 
-- [ ] 19.4 `std/context`: Add `Truncate` projection from `openspec/specs/context/spec.md` §Contract/Two stages with different persistence; preserve whole turns and prefix, and re-fit each fallback profile without persisted compaction.
+- [x] 19.4 `std/context`: Add `Truncate` projection from `openspec/specs/context/spec.md` §Contract/Two stages with different persistence; preserve whole turns and prefix, and re-fit each fallback profile without persisted compaction.
   - files: `std/context/truncate.go`, `std/context/truncate_test.go`
   - scenarios: `assembly.truncate-policy`, `model.context-re-fit-on-fallback`
   - verify: `go test -short -timeout 2m ./std/context/ -run 'TestTruncate'`
+  - note: the spec names the projection and no type: freeze `Truncate`'s shape and record it; `model.context-re-fit-on-fallback` asserts the pure re-fit call for a second profile, with the router (18.5) as the caller; `assembly.truncate-policy` asserts whole turns and the prefix survive and that the session log is untouched; keep test function names distinct from row 26's future file in this package; `depends_on` 19.1, 19.2
 
 20. [ ] `std/structured`: `Partial[Out]` (`structured-output.result-delta-partial`, `structured-output.partial-never-validated`), `ToolSchema`, `ValidateRepair`, `ReasonFirst`, app-side validation, strict schema derivation, refusal-as-JSON, truncated-args handling. — `structured-output.validate-and-repair`, `structured-output.bounds-validated-after-constrained-decoding`, `structured-output.refusal-as-json`, `structured-output.truncated-tool-args`, `structured-output.reason-first`, `structured-output.strict-schema`
 
@@ -903,6 +921,8 @@ The rows above keep their reviewed scope; these are the places the review correc
 - Row 17: `ToolPolicy` stays in the driver package because its `DescribeGuard` is a `guards.Guard` and the type floor may not import `core/guards`; the effect cap is applied before gate evaluation. Frozen in `std`: the manifest hash (SHA-256 over name, description, schema, effect and scopes) and the pinned-file shape `{version:1, tools:[{name,hash}]}` sorted by name, since the spec declares neither; `NarrowTools` rejects widening with `ErrToolFilterWidened` and re-emits in base order. The active tool set persists in `Checkpoint.Data` — no store shape change. `depends_on` 19.1 dropped from 17.2: the assembler is the filter's consumer, not its dependency. Deferred: `Build`'s manifest option and share warning (21), `Replay`'s drift error (22), the effect-capped metric (28).
 
 - Chunk 3.4 and row 9: 3.4 was skipped when the rest of row 3 landed, and row 9's chunks landed without their ticks; both are closed now with their verifies green. 3.4's file resolves to `core/types/stream_error.go`, next to the payload vocabulary row 3 landed in `core/types/event.go`, rather than to a new `core/streams` package — the landed payload split wins over the design table's prose.
+
+- Rows 18 and 19: the plan's duplicate chunk id 18.7 is renumbered 18.8, and the old 18.6 is split into 18.6 (profile, caps, port and budget vocabulary) and 18.9 (stream release, cancellation and timeouts) so each dispatch stayed reviewable. Ports and value types moved to the floor because the driver declares no shared type and `core` may not import `std`: `ProviderKeySource`/`ProviderCredential`/`ProviderKeyValidator` in `core/types/model_keys.go`, `ContextSlot`/`ContextProvider` in `core/types/assembly.go`, the estimator port and budget types in `core/types/tokens.go` with the arithmetic in `core/types/context_budget.go`. `BlobCaps` moved out of `core/stores/blob_checks.go` into the floor with an alias left behind, since `Caps.Blobs` needs it; `Fidelity` is declared here because `Caps.Fidelity` needs it and no chunk owned it. 18.7 landed the chain's model half that row 13 deferred: `ModelFunc`/`ModelMiddleware` join the tool pair in the floor and `core/chains/model_chain.go` carries `ModelChain` plus aliases. `std/keys`, `std/route` and `std/tokens` are added to the design package table. Frozen here, with no spec shape to follow: `ClassifyProviderError` and its code sets; the retry policy (two retries, 100ms base, 2s cap, no jitter, transient class only); the limiter's constructor and per-endpoint bulkheads; the router, the breaker (threshold 5, window 30s, half-open 10s) and the fallback middleware; `Truncate`'s shape; the heuristic's token rules with its frozen image constant; the budget formulas (`margin = MaxTokens/2` truncated, `Reserved = MaxTokens + margin`, `Limit = window - Reserved`). The terminal-partial state has no `Message` field, so the projection keys on `Meta["finish"]` and row 23 must set it. `gohantest.ScriptedModel` does not exist yet, so every model test in these rows uses a local fake and the shared testkit stays deferred. Deferred at assertion time: the `Build` seam wiring (21.1), the fallback charge (`RunLimits`, 23.7), the failover and effect-capped metrics (28), the flow's `Done` emission (23) and the adapter-produced `Usage.KeyID`.
 
 ## Deferred
 

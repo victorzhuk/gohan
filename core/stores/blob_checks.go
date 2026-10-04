@@ -7,14 +7,9 @@ import (
 	"github.com/victorzhuk/gohan/core/types"
 )
 
-// BlobCaps is the profile's blob policy. It stays a parameter here until
-// Caps (model) lands in core/types.
-type BlobCaps struct {
-	MaxBytes      int64
-	MaxPerRequest int
-	MaxPixels     int
-	Formats       []string
-}
+// BlobCaps is the profile's blob policy, declared in the type floor beside
+// Caps (model) so the floor can carry it without importing stores.
+type BlobCaps = types.BlobCaps
 
 // URLForwardable reports whether a block's URL may be passed to a provider
 // as a URL. Only user- and system-authored blocks qualify; any other origin
