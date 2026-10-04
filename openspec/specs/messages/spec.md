@@ -47,11 +47,23 @@ type Origin struct {
 
 type Block interface {
 	isBlock()
-	Origin() Origin
+	BlockOrigin() Origin
 }
 
-type Text struct{ Text string }
+// BlockBase is embedded by every block; Origin and Seq live here.
+type BlockBase struct {
+	Origin Origin
+	Seq    int64
+}
+
+func (b BlockBase) BlockOrigin() Origin { return b.Origin }
+
+type Text struct {
+	BlockBase
+	Text string
+}
 type Reasoning struct {
+	BlockBase
 	Text      string
 	Signature []byte
 	Provider  string
@@ -62,18 +74,21 @@ type Blob struct {
 	Bytes  int64
 }
 type Image struct {
+	BlockBase
 	MIME string
 	Data []byte
 	URL  string
 	Blob Blob
 }
 type Audio struct {
+	BlockBase
 	MIME string
 	Data []byte
 	URL  string
 	Blob Blob
 }
 type File struct {
+	BlockBase
 	MIME string
 	Name string
 	Data []byte
@@ -83,35 +98,39 @@ type File struct {
 
 var ErrBlobTooLarge = errors.New("gohan: block exceeds the profile's blob limit")
 type Document struct {
+	BlockBase
 	Content []Block
 	Source  string
 	Meta    map[string]string
 }
 type ToolUse struct {
+	BlockBase
 	ID   string
 	Name string
 	Args json.RawMessage
 }
 type ToolResult struct {
+	BlockBase
 	ID      string
 	Content []Block
 	Outcome Outcome
 	Error   *ToolError
 	Ref     string
 }
-type CacheBreak struct{}
+type CacheBreak struct{ BlockBase }
 type Raw struct {
+	BlockBase
 	Provider string
 	Value    any
 }
 type Compaction struct {
+	BlockBase
 	CoversUpTo int64
 	Kind       CompactionKind
 	Summary    []Block
 	Opaque     Raw
 	Model      string
 	Tokens     int
-	Origin     Origin
 }
 
 type Outcome int
@@ -179,13 +198,13 @@ Rules:
 
 - A message is an **ordered** sequence of blocks; adapters preserve order in both directions. There is no tool-call side field and no tool role: an assistant turn that calls tools is `[Reasoning?, Text?, ToolUse, ToolUse…]`; results come back as a `RoleUser` message of `ToolResult` blocks, the shape every current provider accepts.
 - `Reasoning` is opaque: it round-trips only to the provider that produced it (`Provider` + `Signature`) and is `Dropped` for any other. The assembler never edits it.
-- `Origin` is assigned by the chain, never by callers: user input → `OriginUser`, tool results → `OriginTool{Name}`, provider output → `OriginProvider{Name}`, model output → `OriginModel`, instructions → `OriginSystem`, a human operator's reply during takeover → `OriginOperator{Subject}` (`flow` *Takeover*), which is trusted for taint like `OriginUser` but never counted as model-authored by audit, evals or feedback. Converters preserve it via `Message.Meta` where the foreign type has no slot. Guards and the assembler read it.
+- `Origin` is assigned by the chain, never by callers: user input → `OriginUser`, tool results → `OriginTool{Name}`, provider output → `OriginProvider{Name}`, model output → `OriginModel`, instructions → `OriginSystem`, a human operator's reply during takeover → `OriginOperator{Subject}` (`flow` *Takeover*), which is trusted for taint like `OriginUser` but never counted as model-authored by audit, evals or feedback. Converters preserve it via `Message.Meta` where the foreign type has no slot. Guards and the assembler read it through `BlockOrigin()`.
 - `Outcome == Unknown` means the side effect may or may not have happened; the model sees a structured "outcome unknown" result and, if the tool declares `ReadBack`, an instruction to verify. `Ref` points into the output store when content was truncated (§6.15b).
 - `Document` carries retrieved chunks with metadata into guards, spans and evals. `CacheBreak` marks provider cache breakpoints. `Raw` is the escape hatch for provider blocks gohan does not model (server-side tools, citations, …); it round-trips through its own adapter only. `Compaction` replaces every history message with version ≤ `CoversUpTo` at assembly time; it is persisted in `SessionLog` and owned by the `context` capability.
 - **Blobs live once.** An `Image`, `Audio` or `File` whose `Data` exceeds `InlineBlobBytes` (harness constant, 64 KiB; spill vs reject order in *Limits* below) is written to `OutputStore` when it enters the harness (`Send`, tool result, provider result); the persisted block carries `Blob{Ref, SHA256, Bytes}` and `Data` is nil in `SessionLog`. Storage is content-addressed: equal bytes yield one `Ref`. `DeleteSession` and `EraseSubject` cascade to the refs the session or subject owns. Assembly loads bytes from the store only when the adapter has no provider handle: an adapter implementing the optional `BlobUploader` uploads a blob once per profile, records `ref → provider id` in session metadata, and sends the id on later turns (`messages.blob-provider-id-reused`); otherwise base64 from the store. Visual cost goes through `TokenEstimator` using `Caps.Blobs`.
 - **URLs are never forwarded on the model's behalf.** A `URL` in a block whose origin is `OriginUser` or `OriginSystem` may be passed to a provider that fetches URLs. A `URL` in a block with any other origin is fetched by the harness with `std/egress.Client` under the flow's `EgressPolicy` (`tools` *Egress*) and stored as a blob; it is never sent to the provider as a URL.
 - **Limits.** `Caps.Blobs{MaxBytes, MaxPerRequest, MaxPixels, Formats}` per profile; the harness constant `InlineBlobBytes` (64 KiB) is the spill threshold and `MaxBytes` the hard per-block cap, so a block between the two is stored by ref and only a block over `MaxBytes` is rejected; `Send` and tool results reject a block over `MaxBytes` or outside `Formats` with `ErrBlobTooLarge` (`Permanent`); `Build` fails when a flow's declared block kinds exceed the profile; `RunLimits.MaxBlobBytes` caps a session's total (default 256 MiB, `*LimitExceededError`).
-- Every adapter declares a **fidelity matrix**: for each block type, `Preserved`, `Degraded` (e.g. `File` sent as extracted text) or `Dropped`. `Explain` prints it per profile; the round-trip suite asserts it. `Build` fails when a flow can emit a block its model would `Drop` unless the flow opts in (`AllowDrop(File)`).
+- Every adapter declares a **fidelity matrix**: for each block type, `Preserved`, `Degraded` (e.g. `File` sent as extracted text) or `Dropped`. `Explain` prints it per profile; the round-trip suite asserts it. `Build` fails when a flow can emit a block its model would `Drop` unless the flow opts in (`AllowDrop(File)`). The opt-in is the `std/flow` option `AllowDrop(kinds ...BlockKind)`, resolved like every other flow option (`build` §Strategies); the gate is scenario `messages.fidelity-gate-at-build`.
 - `ModelChunk` streams typed deltas (`DeltaText`, `DeltaReasoning`, `DeltaToolArgs` as preview only — `streams`); `ToolUse` blocks are emitted complete. A `ToolUse` produced under `Finish == max_tokens` is marked truncated and is never executed: the model receives a `Failed(Permanent)` result naming truncation and the turn is retried once with a larger `MaxTokens` (metric `gohan.tool.truncated_args`). Schema-valid free-text fields carrying refusal signatures are classified `ModelError{Class: ContentPolicy}` (`gohan.model.refusal_as_json`).
 
 
@@ -222,6 +241,7 @@ Rules:
 | `gohan.provider_key_rejected` | Permanent (carries `key_id`) | 422 | `ModelError{ClassAuth}` on a tenant key |
 | `gohan.model_rate_limited` | Retryable (`RetryAfter` from provider) | 429 | `ModelError{ClassRateLimited}` after the chain gave up |
 | `gohan.model_unavailable` | Retryable | 503 | `ModelError{ClassTransient}`, breaker open |
+| `gohan.model_version_drift` | Permanent | 409 | `ModelError{ClassVersionDrift}` after every endpoint drifted |
 | `gohan.context_overflow` | Permanent | 422 | `ModelError{ClassContextOverflow}` after the backstop |
 | `gohan.content_policy` | Permanent | 422 | `ModelError{ClassContentPolicy}` |
 | `gohan.aborted` | Permanent (carries `reason`) | 422 | `*AbortError` |

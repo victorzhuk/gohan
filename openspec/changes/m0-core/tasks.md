@@ -42,7 +42,7 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 
 2. [ ] `core`: message model — `Message`, `Block` kinds incl. `Compaction`, `Origin`, `Role`, `ModelRequest`/`ModelChunk`/`Usage`, `ToolUse`/`ToolResult`/`Outcome`. Round-trip property tests for the block model. — `messages.order-preserved`, `messages.typed-deltas`, `messages.duplicate-keys-in-tool-args`
 
-- [ ] 2.1 `core`: Implement `Message`, `Role`, `Origin`, all `Block` kinds including `Compaction`, `ToolUse`, `ToolResult` and `Outcome`; preserve ordered blocks and reasoning signatures in round-trip property tests.
+- [ ] 2.1 `core`: Implement `Message`, `Role`, `BlockBase` with `BlockOrigin`, all `Block` kinds including `Compaction`, `ToolUse`, `ToolResult` and `Outcome`; preserve ordered blocks and reasoning signatures in round-trip property tests.
   - files: `core/message.go`, `core/message_test.go`
   - scenarios: `messages.order-preserved`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestMessageRoundTrip'`
@@ -476,7 +476,7 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 
 20. [ ] `std/structured`: `Partial[Out]` (`structured-output.result-delta-partial`, `structured-output.partial-never-validated`), `ToolSchema`, `ValidateRepair`, `ReasonFirst`, app-side validation, strict schema derivation, refusal-as-JSON, truncated-args handling. — `structured-output.validate-and-repair`, `structured-output.bounds-validated-after-constrained-decoding`, `structured-output.refusal-as-json`, `structured-output.truncated-tool-args`, `structured-output.reason-first`, `structured-output.strict-schema`
 
-- [ ] 20.1 `std/structured`: Add `Partial[Out]` for accumulated `ResultDelta` text; prevent partial values from validation, storage or `Done.Result`.
+- [ ] 20.1 `std/structured`: Add `Partial[Out]` (validated) and `PartialView[Out]` returning `PartialValue` (deep-partial, never validated) for accumulated `ResultDelta` text; prevent partial values from validation, storage or `Done.Result`.
   - files: `std/structured/partial.go`, `std/structured/partial_test.go`
   - scenarios: `structured-output.result-delta-partial`, `structured-output.partial-never-validated`
   - verify: `go test -short -timeout 2m ./std/structured/ -run 'TestPartial'`

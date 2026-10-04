@@ -78,8 +78,8 @@ type Waker interface {
 
 Sources of suspension:
 
-- Gate `Ask` → `HumanApproval`, payload = pending `ToolUse`.
-- A tool returns `gohan.SuspendTool(reason, payload)` → e.g. `AwaitingTool` with a job handle; `Resume(Deliver(result))` becomes the tool result.
+- Gate `Ask` → `HumanApproval`, payload = the `ApprovalRequest` built from the pending `ToolUse` (`permission`), which carries that `ToolUse` in its `Call` field and is what the approver's client fetches through `Inspect(runID)`.
+- A tool returns `gohan.SuspendTool(reason, payload)` for a resumable reason → e.g. `AwaitingTool` with a job handle; `Resume(Deliver(result))` becomes the tool result. `HumanHandoff` is the one non-resumable reason (next bullet).
 - A tool or flow asking the user for structured data → `AwaitingInput` with `InputRequest{Prompt, Schema}`; `Resume(Deliver(data))` is validated against the schema (`interop`).
 - A provider batch submission → `AwaitingBatch`.
 - `Scheduled` → gohan calls `Waker.Schedule(token, WakeAt)`; the user's scheduler calls `Resume(token, Deliver(nil))`.
@@ -87,7 +87,7 @@ Sources of suspension:
 - `Preempted` → the harness suspended the run during `Stack.Shutdown` (`runtime`); the client or `Recover` calls `Resume(token, Continue())`; `Continue()` is valid only for this reason.
 - Emergency-control state stale or unavailable before a new effect → `AwaitingControl` (ADR-0079); resumed automatically by the flags provider's freshness watcher or by `Waker` at the maximum wait, after which the effect is denied.
 
-Rules: tokens are single-use; a suspension inside a sub-flow surfaces as the parent's suspension with a chained token (`subflows`); resume on another pod works; `Resume` with a token from a different flow or runtime returns `ErrTokenMismatch` before any component runs.
+Rules: a token is single-use and is consumed by the first `Resume` that decides the suspension — `Approve` reaching quorum, `Reject`, `EditArgs`, `Deliver` or `Continue`; a `Resume` refused for approver eligibility or recorded as a partial approval while `Quorum > 1` does not consume it and the run stays suspended (`permission`); a suspension inside a sub-flow surfaces as the parent's suspension with a chained token (`subflows`); resume on another pod works; `Resume` with a token from a different flow or runtime returns `ErrTokenMismatch` before any component runs.
 
 
 ## Requirements

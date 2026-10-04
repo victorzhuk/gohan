@@ -76,7 +76,7 @@ type Notifier interface {
 type Done struct{ Reason StopReason; Seq int64; Usage Usage; Cost float64; Uncertain []CallKey; Result json.RawMessage }
 ```
 
-All events embed `EventMeta{SessionID, RunID, RootRunID, ParentRunID, Depth, Flow, Seq, Time}`. `Seq` is monotonic per run, starting at 1, assigned by the harness; transports expose it as the SSE `id:` field. `TextDelta` is advisory; `AssistantMessage` is authoritative. With `Windowed` output, deltas are released only after their window passes the output guard. `ReasoningDelta` is emitted only when `Caps.ReasoningVisible` is set (`agui`). `Message.ID` is assigned by `SessionLog.Append`.
+All events embed `EventMeta{SessionID, RunID, RootRunID, ParentRunID, Depth, Flow, Seq, Time}`. `Seq` is monotonic per run, starting at 1, assigned by the harness; transports expose it as the SSE `id:` field. A `FeedbackRecorded` written for a finished run extends that run's `Seq` in its `EventLog` only, so `Done` stays the last event of the run's stream. `TextDelta` is advisory; `AssistantMessage` is authoritative. With `Windowed` output, deltas are released only after their window passes the output guard. `ReasoningDelta` is emitted only when `Caps.ReasoningVisible` is set (`agui`). `Message.ID` is assigned by `SessionLog.Append`.
 
 ### Error-tuple protocol (normative for every `iter.Seq2[T, error]` seam)
 
@@ -108,7 +108,7 @@ Default (**attached**): a run lives under the caller's `ctx`. Cancellation stops
 2. *Provider reads are decoupled.* The model chain reads the provider stream on a helper goroutine into a per-call buffer of `StreamBuffer` chunks (default 64) that `yield` drains; `ModelProfile.Timeout.Idle` is measured on the provider read, never on the consumer, so a slow client cannot cause an idle-timeout retry. When the buffer is full the provider read blocks; a provider that then closes the stream is not retried (the turn re-runs under rule 3), and `gohan.stream.buffer_full` increments.
 3. *A stalled consumer is a preemption.* When no event is taken for `RunLimits.ConsumerStall` (interactive 30 s, agentic 120 s, batch 0 = disabled), the run is preempted at its next safe point exactly as under `Stack.Shutdown` (`runtime`): `Suspended{Preempted, Token}` is the last event the consumer receives, the lease is released, and the client resumes with `Resume(token, Continue())`. A flow built with `agent.OnStall(Detach)` and an `EventLog` instead continues as `Detached` and the client reattaches from its last `Seq`. `gohan.stream.consumer_stalled{action}` counts both.
 
-Transports set a per-event write deadline equal to `ConsumerStall` so a stall surfaces as a failed write rather than a hung goroutine (`examples/` SSE recipe).
+Transports set a per-event write deadline equal to `ConsumerStall` when it is non-zero, so a stall surfaces as a failed write rather than a hung goroutine; with `ConsumerStall` 0 (stall-preemption disabled, e.g. `BatchLimits`) no per-event deadline is set (`examples/` SSE recipe).
 
 **Detached** (`agent.Detached()` flow option): the run executes under a harness-owned ctx bounded by `RunLimits.MaxWallClock`; `Send` returns once the run is started, and clients consume events through:
 
@@ -205,7 +205,7 @@ ID: `streams.monotonic-seq`
 #### Scenario: feedback recorded event
 ID: `streams.feedback-recorded-event`
 - WHEN feedback is recorded for a message of a run that has an `EventLog`
-- THEN `FeedbackRecorded` is appended with the next `Seq` and carries no comment or correction text
+- THEN `FeedbackRecorded` is appended to the run's `EventLog` with the next `Seq` after `Done`, outside the finished run's event stream, and carries no comment or correction text
 
 #### Scenario: heartbeat independent of consumer
 ID: `streams.heartbeat-independent-of-consumer`

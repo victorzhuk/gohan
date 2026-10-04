@@ -79,7 +79,7 @@ type CredentialSource interface {
 
 Rules:
 
-1. Only transport code calls `WithPrincipal`. Flows without a principal fail with `ErrNoPrincipal` unless built with `agent.AllowAnonymous()`.
+1. Only transport code calls `WithPrincipal`. Flows without a principal fail with `ErrNoPrincipal` (the sentinel declared in `flow`; `Send`, `Invoke` and `Resume` all return it per rule 8) unless built with `agent.AllowAnonymous()`.
 2. Credentials never live on `Principal`: `Credential` travels only in `ctx` (`WithCredential`, set by transport code) and is never persisted, logged or exported to spans. `Checkpoint.Originator` is a `Principal` and therefore cannot carry a token by type.
 3. On resume, the originator principal is restored from the checkpoint and passed through `CredentialSource` (token exchange / on-behalf-of / service-issued) before any tool runs. The approver is available via `ApprovalFrom(ctx)` and recorded in journal and audit spans; tools never execute with approver rights.
 4. A sub-flow invoked from a tool (`FlowAsTool`) inherits `RootRunID` and sets `ParentRunID`; budget, `RunLimits`, spans and `Runs` recovery are keyed by the root. Sub-flow output enters the parent as a tool result and passes the tool-result guard. Isolation, effect derivation, nested suspension, child limits and fan-out failure policy are defined by `subflows`.

@@ -117,7 +117,7 @@ ID: `guards.provider-output-fenced`
 #### Scenario: origin survives conversion
 ID: `guards.origin-survives-conversion`
 - WHEN a tool-result `Part` is converted to eino/adk-go types and back
-- THEN `Origin()` equals `OriginTool{Name}`
+- THEN `BlockOrigin()` equals `OriginTool{Name}`
 
 #### Scenario: blob guard input
 ID: `guards.blob-guard-input`

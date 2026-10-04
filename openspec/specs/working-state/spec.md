@@ -71,16 +71,16 @@ func (s *Stack) ForgetMemory(ctx context.Context, owner SessionOwner, ids ...str
 2. **Tools, not ambient context.** `notes.Memory` registers `memory_write` and `memory_read` (`ReadOnly` effect, `Trusted`, `Risk: High`). Subject memory is never injected by a `SlotSession` provider: it enters context only through a visible `memory_read` call, whose result blocks carry `OriginTool{"memory_read"}` with each entry's stored `Origins` attached, so fencing (`guards`) and taint rule 1 treat remembered text like the tool result it came from.
 3. **Write gate.** `memory_write` accepts only values valid against `MemoryPolicy.Schema` (validated like `Extract` output; free text is rejected `Failed(Permanent)`); it is forced `Ask` when any argument is tainted (`taint` rule 6 applies to both scopes) and is denied (`Failed(Permanent)`, `gohan.memory.write_denied`) whenever the taint window since the last user message contains an `Untrusted` block, unless the flow declares `notes.AllowUntrustedMemory()`. Every entry records `Origins` of the blocks its value was derived from and the writing `RunID`.
 4. **Consolidation is a privileged write.** Session-to-subject summarisation runs only as `std/flow.Extract` over `SessionLog` with the same `Schema`, at `Done`, audited as `memory_consolidate` with the source session; compaction (`context`) never writes subject memory.
-5. **Controls and retention.** `Stack.Memory` lists and `Stack.ForgetMemory` deletes entries for an owner (owner-checked like `Inspect`); `EraseSubject` (`redaction`) removes the tier. `MaxEntries` (default 64) and `TTL` (default 90 days, store clock) evict oldest first; `gohan.memory.evicted{tenant}`. Flow definitions (`languages`) declare `memory: {schema, max_entries, ttl}`.
+5. **Controls and retention.** `Stack.Memory` lists and `Stack.ForgetMemory` deletes entries for an owner (owner-checked like `Inspect`); `EraseSubject` (`redaction`) removes the tier. `MaxEntries` (default 64) and `TTL` (default 90 days, store clock) evict oldest first; `gohan.memory.evicted` (a `tenant` label needs `WithTenantLabel()`). Flow definitions (`languages`) declare `memory: {schema, max_entries, ttl}`.
 
 ```go
 type OutputStore interface {
 	Put(ctx context.Context, ri RunInfo, content []Block) (ref string, err error)
-	Get(ctx context.Context, ref string) ([]Block, error)
+	Get(ctx context.Context, ref string) ([]byte, error)
 }
 ```
 
-Tool results larger than `ToolSpec.MaxOutput` are stored and replaced inline by a head excerpt plus `Ref`; a built-in `read_output(ref, range)` tool lets the model page through them. Implementations: memory, postgres (same module), user-provided (S3 etc.).
+Tool results larger than `ToolSpec.MaxOutput` are stored and replaced inline by a head excerpt plus `Ref`; a built-in `read_output(ref, range)` tool lets the model page through them. `Put` stores blocks; `Get` returns the stored bytes, which is what blob assembly (`messages.blob-stored-by-ref`) and `read_output` read. Implementations: memory, postgres (same module), user-provided (S3 etc.).
 
 Shared state: `SharedState[S](ctx) (S, int64, bool)` (`ok == false` outside a run) and `SetSharedState[S](ctx, next) (int64, error)` — typed, JSON-serialisable, versioned, persisted in session metadata, restored on resume; every `SetSharedState` emits `StateChanged{Version, Patch}` (RFC 6902) on the run's stream. Client-supplied state (`agui`) passes `StageInput` and becomes a new version.
 

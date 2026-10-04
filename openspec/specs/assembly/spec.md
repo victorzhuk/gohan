@@ -59,7 +59,7 @@ new input
 
 `ToolFilter` runs per turn before assembly and may narrow (never widen) the registered tools by business state (e.g. hide `create_booking` until a slot is selected). Filtered-out tools stay governed; a model call to one is an unknown-tool error.
 
-Rules: no timestamps, run IDs or random values before the last `CacheBreak`; providers must be deterministic for identical inputs. `ContextPolicy` (projections + compactor) is defined by the `context` capability; projections run before `Assemble`, a persisted `Compaction` block replaces the history it covers.
+Rules: no timestamps, run IDs or random values before the last `CacheBreak`; providers must be deterministic for identical inputs. `ContextPolicy` (projections + compactor) is defined by the `context` capability; projections run before `Assemble`, a persisted `Compaction` block replaces the history it covers. Truncation is the `Truncate` projection of `context`, so assembly never reduces `SessionLog`; the only persisted history reduction is a `Compaction` block.
 
 
 ## Requirements
@@ -79,4 +79,4 @@ ID: `assembly.tool-order`
 #### Scenario: truncate policy
 ID: `assembly.truncate-policy`
 - WHEN history exceeds `TokenBudget.Limit` (`model`)
-- THEN oldest turns are dropped whole (never splitting a tool call from its result) and the prefix is unchanged
+- THEN the `Truncate` projection (`context`) drops the oldest turns whole (never splitting a tool call from its result) before `Assemble`, the prefix is unchanged and `SessionLog` keeps every turn

@@ -200,6 +200,7 @@ const (
 	ClassDeprecated
 	ClassAuth
 	ClassPermanent
+	ClassVersionDrift
 )
 
 type ModelError struct {
@@ -265,7 +266,7 @@ Text and reasoning stream as typed deltas; `ToolUse` blocks are emitted complete
 
 Every `Model` implementation (`adapter/openai`, `adapter/anthropic`, gateways, `gohantest.ScriptedModel`) SHALL:
 
-1. **Errors.** Return every failure as `*ModelError`. Mapping: HTTP 429 and provider quota codes → `ClassRateLimited` with `RetryAfter` parsed from `Retry-After` / `x-ratelimit-reset-*` when present; 5xx, connection errors, `Connect`/`FirstChunk` timeouts → `ClassTransient`; context-length errors → `ClassContextOverflow`; safety refusals at the request level → `ClassContentPolicy`; model-retired/not-found → `ClassDeprecated`; 401/403 → `ClassAuth`; 400 and everything else → `ClassPermanent`. `retry.RetryAfter` honours `RetryAfter`.
+1. **Errors.** Return every failure as `*ModelError`. Mapping: HTTP 429 and provider quota codes → `ClassRateLimited` with `RetryAfter` parsed from `Retry-After` / `x-ratelimit-reset-*` when present; 5xx, connection errors, `Connect`/`FirstChunk` timeouts → `ClassTransient`; context-length errors → `ClassContextOverflow`; safety refusals at the request level → `ClassContentPolicy`; model-retired/not-found → `ClassDeprecated`; 401/403 → `ClassAuth`; 400 and everything else → `ClassPermanent`; a `Usage.ModelVersion` that differs from `Profile.Version` on a profile with `Caps.StrictVersion` → `ClassVersionDrift`. `RetryAfter` rides on the error so the transport can send `Retry-After`; the chain never retries `ClassRateLimited` on the same endpoint, so `retry.RetryAfter` does not apply to it (`chains`).
 2. **Fidelity.** Declare `Caps.Fidelity` for every `BlockKind` the adapter may receive; `KindText`, `KindToolUse`, `KindToolResult` default to `Preserved`, all other kinds must be declared explicitly. `Build` fails when a flow can produce a kind the profile leaves undeclared. `Degraded` conversions are deterministic and documented per adapter.
 3. **Cache.** `CacheNone`: `CacheBreak` blocks are dropped. `CacheAuto`: provider-side prefix caching, `CacheBreak` dropped, `Usage.CachedInputTokens` filled from the provider's usage. `CacheExplicit`: the first `Caps.CacheBreakpoints` `CacheBreak`s map to provider cache markers in order, later ones are dropped with `gohan.cache.breakpoints_dropped`; cache-write tokens are reported in `Usage.CacheWriteTokens`.
 4. **Structured output.** `ResponseSchema` on a profile without `Caps.Constrained` is a `ClassPermanent` `ModelError` at call time; adapters never silently ignore a schema. `std/structured.ToolSchema` is the app-side fallback the strategy resolver picks at `Build`.
@@ -281,7 +282,7 @@ Every `Model` implementation (`adapter/openai`, `adapter/anthropic`, gateways, `
 
 `Timeout.Idle` is measured on the provider read into the stream buffer, not on the consumer (`streams` *Slow consumers*). `Timeout` defaults from `LatencyClass` when zero: `Interactive` 5 s / 10 s / 15 s, `Agentic` 10 s / 30 s / 60 s, `Batch` 30 s / 120 s / 300 s (connect / first chunk / idle between chunks). A `Connect` or `FirstChunk` expiry is a `Transient` error (retry and fallback apply); an `Idle` expiry after the first chunk is `Permanent` for that call. **Mid-stream failure** (any error after the first chunk, including `Idle` expiry): the partial assistant message is appended to `SessionLog` with `Finish: FinishError`; deltas already streamed are not retracted; the run ends with `StopFailed` and `Done` carries the error; `Replay` treats a `FinishError` message as terminal and never re-sends it to a provider; the next user turn starts fresh from that history.
 
-`Version` pins the exact model the profile was validated against. Providers report the served version in `Usage.ModelVersion`; a mismatch increments `gohan.model.version_drift` and, with `Caps.StrictVersion`, fails the call as `Permanent` so the router moves on. Fallback targets are validated at build for `Caps` compatibility with every flow that can reach them (tools, constrained output, images, streaming) and get their own `ContextPolicy` (projections, then compaction) before the request is sent.
+`Version` pins the exact model the profile was validated against. Providers report the served version in `Usage.ModelVersion`; a mismatch increments `gohan.model.version_drift` and, with `Caps.StrictVersion`, fails the call as `ClassVersionDrift`, which is never retried on that endpoint and fails over to the next one (`chains`); when every endpoint drifts the error surfaces. Fallback targets are validated at build for `Caps` compatibility with every flow that can reach them (tools, constrained output, images, streaming) and get their own `ContextPolicy` (projections, then compaction) before the request is sent.
 
 **Iterator contract** (normative for every `iter.Seq2` returned by gohan or an adapter): the iterator body runs on the caller's goroutine; any helper goroutine it starts terminates before the iterator returns; it returns within one network read of `ctx.Done()`; when `yield` returns false it releases all resources (HTTP body, stream reader) before returning; it never yields after returning an error. `conformance.Model` verifies early break and cancellation with a goroutine-leak check. Error tuples follow the protocol in `streams`. Consumers that need pull semantics use `iter.Pull` and must call `stop`; core and `std` never do so on the request path.
 
@@ -298,7 +299,7 @@ ID: `model.status-to-class`
 #### Scenario: retry-after parsed
 ID: `model.retry-after-parsed`
 - WHEN a 429 carries `Retry-After: 7`
-- THEN `ModelError.RetryAfter == 7s` and `retry.RetryAfter` waits at least that long before the next attempt on that endpoint
+- THEN `ModelError.RetryAfter == 7s`; `ClassRateLimited` is never retried on the same endpoint, so the request fails over at once and, when every endpoint is exhausted, the value is returned to the client as `Retry-After`
 
 #### Scenario: undeclared fidelity fails build
 ID: `model.undeclared-fidelity`
@@ -431,7 +432,7 @@ ID: `model.breaker-opens`
 #### Scenario: version drift
 ID: `model.version-drift`
 - WHEN a provider reports `ModelVersion` different from `Profile.Version`
-- THEN `gohan.model.version_drift` increments; with `StrictVersion` the call fails `Permanent` and falls over
+- THEN `gohan.model.version_drift` increments; with `StrictVersion` the call fails `ClassVersionDrift`, is not retried on that endpoint, and falls over; with no other endpoint left it surfaces
 
 ### Requirement: Tool argument deltas
 

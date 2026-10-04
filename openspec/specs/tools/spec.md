@@ -127,7 +127,7 @@ Tools registered from own code default to `Trusted`. Tools imported from eino, a
 
 `ReadBack` names a `ReadOnly` tool that verifies this tool's effect (e.g. `get_booking` for `create_booking`); it is offered to the model after an `Unknown` outcome. `MaxOutput` caps inline content (default 64 KiB); the rest goes to the output store.
 
-`Verify` (optional, `ReadOnly` by definition) reads authoritative state and returns the true outcome. The harness runs it after every `SideEffect` result whose outcome is `Unknown`, on `Resume`/`Recover` for every journal entry still `Unknown`, and before `Done` while `Uncertain` is non-empty; a reconciled entry becomes `Succeeded`/`Failed` in the journal with an audit record, and `*UncertainOutcomeError` is returned only for entries with no `Verify` or whose `Verify` errored. `Verify` never re-executes the effect and is itself journaled by `CallKey` + `"/verify"`.
+`Verify` (optional, `ReadOnly` by definition) reads authoritative state and returns the true outcome. The harness runs it after every `SideEffect` result whose outcome is `Unknown`, on `Resume`/`Recover` for every journal entry still `Unknown`, and before `Done` while `Uncertain` is non-empty; a reconciled entry's recorded result becomes `Outcome: Succeeded` or `Outcome: Failed` in the journal with an audit record, and `*UncertainOutcomeError` is returned only for entries with no `Verify` or whose `Verify` errored. `Verify` never re-executes the effect and is itself journaled by `CallKey` + `"/verify"`.
 
 Error mapping: a Go `error` becomes `Outcome: Failed` with `Kind: Permanent`; `gohan.Retryable(err)` marks it `Retryable`; a timeout or context deadline on a `SideEffect` tool becomes `Outcome: Unknown` (on `ReadOnly`/`Idempotent` tools it is `Retryable`). `SuspendError`, `AbortError` and cancellation pass through. The model never receives a bare retryable error for a `SideEffect` call.
 
@@ -324,7 +324,7 @@ ID: `tools.governed-while-deferred`
 
 ### Requirement: Provider-executed tools
 
-Tools the provider runs inside the model call (web search, code execution, hosted MCP) are registered like any other tool with `Executor: ByProvider`; `std/tool/provider` ships `WebSearch(opts...)`, `CodeExec()` and `HostedMCP(url, allowed ...string)`, all `Untrusted`, with effect `ReadOnly` for search and `SideEffect` for the other two, and `Exfil: true` for search and hosted MCP. Rules:
+Tools the provider runs inside the model call (web search, code execution, hosted MCP) are registered like any other tool with `Executor: ByProvider`; `std/tool/provider` ships `WebSearch(opts...)`, `CodeExec()` and `HostedMCP(url, allowed ...string)`, all `Untrusted`, with effect `ReadOnly` for search and `SideEffect` for the other two, and `Exfil: true` for search and hosted MCP. They ship their own `ToolPolicy` raising `MaxEffect` to the declared effect, so the import cap does not apply to them; a wiring that lowers `MaxEffect` below the declared effect still caps it and increments `gohan.tool.effect_capped` (`tools.untrusted-effect-cap`). Rules:
 
 1. **Enable path.** The adapter translates the spec into the provider's tool declaration (search `max_uses` from the run's remaining `MaxToolCalls`, domain allow/deny from `WithDomains`, hosted-MCP `allowed_tools` from `allowed`). A profile whose `Caps.ProviderTools` does not list the tool's kind fails `Build` with `gohan.tool.provider_unsupported`.
 2. **Gate before the call.** Because the call happens inside the model request, the permission gate runs on the spec before the request is sent: `Deny` → the tool is not declared; `Ask` → declared with the provider's approval flag (`require_approval: always`) when `Caps.ProviderTools` marks approval as supported, otherwise treated as `Deny`; `Allow` → declared. A provider approval request maps to `HumanApproval` with an `ApprovalRequest` built from the pending call; `Resume(Approve())` replays the model call carrying the approval item under the same `CallKey`.
@@ -358,7 +358,7 @@ ID: `tools.provider-result-origin`
 #### Scenario: unknown reconciled
 ID: `tools.verify-reconciles-unknown`
 - WHEN a `SideEffect` call times out with `Outcome: Unknown` and the tool declares `Verify` that finds the booking exists
-- THEN the journal entry becomes `Succeeded`, the model receives the verified result, and `Done.Uncertain` is empty
+- THEN the entry's recorded result becomes `Outcome: Succeeded`, the model receives the verified result, and `Done.Uncertain` is empty
 
 #### Scenario: verify on recover
 ID: `tools.verify-on-recover`

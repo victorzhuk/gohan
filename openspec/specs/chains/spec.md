@@ -90,7 +90,7 @@ Model:
       per endpoint:
       → breaker            circuit breaker per endpoint (opens on error-rate / consecutive RateLimited+Transient)
       → limiter            rate + in-flight bulkhead (MaxInFlight)
-      → retry              class-based, only before first chunk; Retry-After aware
+      → retry              class-based, only before first chunk; waits `ModelError.RetryAfter` when a retried class carries one (`ClassRateLimited` is never retried)
       → [user: inner]     kind: User
       → provider
 ```
@@ -100,11 +100,12 @@ Model error classes and default policy (`errors.go`):
 | `ModelError.Class` | Retry (same endpoint) | Fallback (next endpoint) | Surface |
 |---|---|---|---|
 | `ClassRateLimited` | never | immediately | if all endpoints exhausted |
-| `ClassTransient` (5xx, timeouts, connection) | yes, bounded, backoff | after retries | if exhausted |
+| `ClassTransient` (5xx, `Connect`/`FirstChunk` timeouts, connection) | yes, bounded, backoff | after retries | if exhausted; an `Idle` expiry after the first chunk is `Permanent` for that call (`model`) |
 | `ClassContextOverflow` | once, after `ContextPolicy` (projections, then compaction) against the same profile | yes, re-fit against target | if still overflowing |
 | `ClassContentPolicy` | never | never | always, as the `gohan.content_policy` problem from `ModelError{Class: ClassContentPolicy}` |
 | `ClassDeprecated` | never | to `Successor` only | if no successor; never as a fallback message |
 | `ClassAuth`, `ClassPermanent` | never | never | always |
+| `ClassVersionDrift` (`Caps.StrictVersion`) | never | immediately | if every endpoint drifted |
 
 Providers normalize their errors into these classes; the conformance suite checks the mapping with recorded fixtures. Breaker state and every failover decision are recorded as span events and `gohan.model.failover` metrics.
 

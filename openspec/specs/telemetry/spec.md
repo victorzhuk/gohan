@@ -49,7 +49,7 @@ type Prompt struct {
 
 `AgentSpec.Instruction` may be a literal or `gohan.PromptRef{Name, Label}` resolved through the `PromptSource` at run start (cached with TTL; embedded fallback text is required so an unavailable source never blocks a request). The resolved `Version` is stamped on the run span, the audit record and, for A/B, chosen by a sticky selector (`Decider` over session hash). `adapter/langfuse` implements `PromptSource` over the prompt-management API, an `evals.Sink` for scores via the ingestion API, and a dataset provider.
 
-Spans (OTel GenAI semantic conventions where defined, *verify* current names): `invoke_agent` / `gohan.flow` (run), `chat` (model call), `execute_tool` (tool call), `gohan.guard` (guard evaluation), `gohan.suspend`, `gohan.resume`.
+Spans (OTel GenAI semantic conventions where defined, *verify* current names): `invoke_agent` / `gohan.flow` (run), `invoke_workflow` (graph/workflow flow), `chat` (model call), `plan` (router/decider), `execute_tool` (tool call), `retrieval` (tool call returning `Document` blocks), `gohan.guard` (guard evaluation), `gohan.suspend`, `gohan.resume`.
 
 Canonical attribute keys (core emits these; the `Convention` layer maps them to `gen_ai.*` where a semantic convention exists):
 
@@ -66,7 +66,7 @@ Canonical attribute keys (core emits these; the `Convention` layer maps them to 
 | `gohan.approver`, `gohan.suspend.reason` | suspend/resume spans | — |
 | `gohan.notice.kind` | notice delivery span | — |
 
-Metric labels are an allow-list enforced by `std/telemetry` at registration: `flow`, `tool`, `profile`, `class`, `release`, `variant`, `stage`, `reason`, `kind`, `lifecycle`, `source`, `judge`; `tenant` only with `WithTenantLabel()`; `session_id`, `run_id`, `subject`, `approver` never. A metric registered with any other label fails `Build`.
+Metric labels are an allow-list enforced by `std/telemetry` at registration: `flow`, `tool`, `profile`, `class`, `release`, `variant`, `mode`, `stage`, `reason`, `kind`, `limit`, `lifecycle`, `source`, `judge`, `name`, `target`, `provider`, `notes`, `from`, `to`; `tenant` only with `WithTenantLabel()`; `session_id`, `run_id`, `subject`, `approver` never. A metric registered with any other label fails `Build`.
 
 Logging contract: core takes `WithLogger(*slog.Logger)` (default `slog.Default()`) and derives a per-run logger with the attribute keys above as `slog.Attr`s. Levels: run start, finish, suspend, resume and `Recover` actions at `Info`; per-step and per-tool records at `Debug`; `Build` warnings at `Warn`; model and tool errors at `Debug` (they are events, metrics and spans, not log noise); nothing at `Error` except store failures that abort a run. Message content, tool arguments and results, prompts, credentials and `Raw` values are never logged at any level; the only content-bearing sink is span content capture behind the `Redactor`.
 
@@ -80,7 +80,7 @@ Metrics:
 | `gohan.model.tpot` histogram | decode-bound detection; agentic UX |
 | `gohan.model.inflight` gauge, `gohan.model.queue_wait` histogram | bulkhead saturation vs engine throughput |
 | `gohan.model.tokens` counter (input, cached_input, output) | prefix-cache effectiveness, cost |
-| `gohan.cost` counter by tenant/flow | budgets, billing |
+| `gohan.cost` counter by flow (a `tenant` label needs `WithTenantLabel()`) | budgets, billing |
 | `gohan.tool.calls` / `gohan.tool.errors` by tool | tool scoping decisions |
 | `gohan.loop.detected`, `gohan.max_turns.reached` | non-terminating agents |
 | `gohan.guard.blocked` by stage, `gohan.fallback.used` | guardrail health |
@@ -95,7 +95,7 @@ Metrics:
 | `gohan.output.stored` by tool | context pressure from large outputs |
 | `gohan.guard.context_rejected` by provider/notes | memory poisoning attempts |
 | `gohan.sandbox.seconds` by lifecycle, `gohan.sandbox.opens`, `gohan.sandbox.cold_start`, `gohan.sandbox.secret_leak`, `gohan.sandbox.egress_denied` | sandbox cost, warm-pool health, containment |
-| `gohan.taint.denied{tool}`, `gohan.taint.asked{tool}`, `gohan.build.trifecta{flow}` | information-flow enforcement, exposure surface |
+| `gohan.taint.denied{tool}`, `gohan.taint.asked{tool}`, `gohan.taint.post_hoc{tool}`, `gohan.taint.window_truncated`, `gohan.build.trifecta{flow}` | information-flow enforcement, exposure surface |
 | `gohan.eval.score{flow, variant, judge}`, `gohan.eval.unstable`, `gohan.shadow.runs`, `gohan.shadow.suppressed{tool}`; every `gohan.*` metric carries `release` and `variant` | release gating, canary slicing |
 | `gohan.skill.loaded{name}`, `gohan.skill.rejected{reason}`, `gohan.skill.resource_reads` | skill usage and containment |
 | `gohan.tool.manifest_drift` by source | imported tool definition changed under a pinned manifest (rug pull) |
@@ -145,7 +145,7 @@ ID: `telemetry.loop-detection`
 #### Scenario: canonical keys on spans
 ID: `telemetry.canonical-keys`
 - WHEN a run executes one model call and one tool call
-- THEN the run, model and tool spans carry the keys of the attribute table, and the `GenAI` convention maps `gohan.model.profile` to `gen_ai.request.model`
+- THEN every span carries the keys the attribute table places on it, the run, model and tool spans carry `gohan.flow`, `gohan.session_id`, `gohan.run_id`, `gohan.root_run_id`, `gohan.parent_run_id` and `gohan.turn`, and the `GenAI` convention maps `gohan.model.profile` to `gen_ai.request.model`
 
 #### Scenario: forbidden label rejected
 ID: `telemetry.forbidden-label`
@@ -161,7 +161,7 @@ ID: `telemetry.no-content-in-logs`
 
 #### Scenario: rename is config
 ID: `telemetry.rename-is-config`
-- WHEN the `GenAI` convention maps `gohan.model.provider` to a new attribute name
+- WHEN the `GenAI` convention maps `gohan.model.version` to a new attribute name
 - THEN no core package changes and existing spans carry the new name after redeploy
 
 #### Scenario: Langfuse preset

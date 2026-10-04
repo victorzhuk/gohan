@@ -17,7 +17,7 @@ The reference machine is the CI runner class (`ubuntu-latest`, 4 vCPU, amd64) on
 
 | Path | Budget (initial) |
 |---|---|
-| taint match per tool call, 64 KiB untrusted window, 8 string args | ≤ 50 µs, index build ≤ 2 ms per turn |
+| taint match per tool call over the `MaxWindowBytes` window (default 256 KiB), 8 string args | ≤ 50 µs, index build ≤ 2 ms per turn |
 | Chain overhead per `ReadOnly` tool call over the raw call | ≤ 20 µs, ≤ 8 allocations |
 | Chain overhead per model call, excluding I/O | ≤ 50 µs |
 | Assembler prefix build for an unchanged prefix | 0 allocations |

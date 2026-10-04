@@ -18,10 +18,17 @@ See `docs/overview.md` for how `structured-output` fits the architecture. Out of
 
 ### Partial results
 
-`Extract[Out]` and a typed `Conversation` emit `ResultDelta` (`streams`) for the JSON text as it streams. `std/structured.Partial[Out]` parses the accumulated text into a deep-partial view (tolerant `jsontext` mode: unterminated strings and containers are closed, the trailing incomplete value is dropped) for clients that render as the object fills. Partial values are never validated, returned or stored: `Done.Result` is the only validated value.
+`Extract[Out]` and a typed `Conversation` emit `ResultDelta` (`streams`) for the JSON text as it streams. Two entry points read the accumulated text: `std/structured.Partial[Out]` parses it into the declared type `Out` and validates it, and `std/structured.PartialView` parses it into a deep-partial view (`PartialValue`, tolerant `jsontext` mode: unterminated strings and containers are closed) for clients that render as the object fills. `PartialView` values are never validated, returned or stored: `Done.Result` is the only validated value, and it is produced by `Extract`, never by `PartialView`.
 
 ```go
+// PartialValue is the deep-partial view: containers closed, values unvalidated.
+type PartialValue map[string]any
+
+// Partial parses the accumulated text into the declared type and validates it.
 func Partial[Out any](acc string) (Out, error)
+
+// PartialView parses the accumulated text into an unvalidated deep-partial view.
+func PartialView(acc string) (PartialValue, error)
 ```
 
 ## Requirements
@@ -43,7 +50,7 @@ ID: `structured-output.validate-and-repair`
 #### Scenario: result delta partial
 ID: `structured-output.result-delta-partial`
 - WHEN `Extract[Invoice]` streams `{"total": 12, "lines": [{"sku": "A"`
-- THEN `Partial[Invoice]` over the accumulated deltas yields `Total: 12` and one line with `SKU: "A"`
+- THEN `PartialView` over the accumulated deltas yields `Total: 12` and one line with `SKU: "A"`
 
 #### Scenario: partial never validated
 ID: `structured-output.partial-never-validated`

@@ -106,8 +106,8 @@ Resume strategies:
 **Per step** (inside `Drive`, one effect boundary for `native`):
 
 1. Build `AssembleInput` (run info, profile, system blocks, tools after `ToolFilter`, history at `State.HistoryVersion`, providers by slot); apply `ContextPolicy` projections; `Assemble`.
-2. Model chain call; deltas stream through the sink; on completion append the assistant message (`expectedVersion` check); advance `HistoryVersion`.
-3. The turn's `ToolUse` blocks form one **batch** executed by the batch protocol below; results for the batch are appended in one `Append` at step end; a crash before that append is recovered from the journal (`recovery.pod-dies-inside-a-side-effect`).
+2. Model chain call; deltas stream through the sink; on completion pick the turn's append shape (`recovery`): a turn with no tool calls or only `ReadOnly` calls appends the assistant message and its results in one `Append` at step end; a turn carrying `Idempotent`/`SideEffect` calls appends the assistant message with its pending calls before the batch executes. Either way the `expectedVersion` check applies and `HistoryVersion` advances per `Append`.
+3. The turn's `ToolUse` blocks form one **batch** executed by the batch protocol below; results for the batch are appended in one `Append` at step end, merged with the assistant message when the turn carried no or only `ReadOnly` calls; a crash before that append is recovered from the journal (`recovery.pod-dies-inside-a-side-effect`).
 
    **Batch protocol** (native runtime; behaviour derives from `Effect`, there is no scheduling option):
 
@@ -118,7 +118,7 @@ Resume strategies:
    5. *Provider hint.* When `Caps.ParallelTools` is false or the flow is built with `agent.SequentialTools()`, the adapter requests single-call turns (`disable_parallel_tool_use` / `parallel_tool_calls: false`); a multi-call response is still handled by rules 1–4. Foreign runtimes schedule their own calls; governed components still pass the gate per call.
 4. `Runs.Heartbeat` at least every `HeartbeatEvery` from the run's heartbeat goroutine (`streams` *Slow consumers*), never from the step itself; `RunLimits` checked after every effect; `LimitWarning` at `SoftRatio`.
 5. Events of the step written to `EventLog` in `Seq` order before the next step begins.
-6. **Mailbox.** `Runs.Drain(lease)` at every safe point (after the batch results are appended, and before `Finish`). `SignalCancel` → the run stops here with `Done{Reason: cancelled}`. Each `SignalSteer` is appended to `SessionLog` as an `OriginUser` message in arrival order and `SteerApplied{MessageID}` emitted; the next step's assembly includes them. A model reply with no tool calls followed by a `Finish` that returns `ErrSignalsPending` drains again and runs one more turn. Only the root run drains steers; `FlowAsTool` children and `MapReduce` items never do, and a steer posted to a child's session id is `ErrRunNotActive`.
+6. **Mailbox.** `Runs.Drain(lease)` at every safe point (after the batch results are appended, and before `Finish`). `SignalCancel` → the run stops here with `Done{Reason: cancelled}`. Each `SignalSteer` is appended to `SessionLog` as an `OriginUser` message in arrival order and `SteerApplied{MessageID}` emitted; the next step's assembly includes them. A model reply with no tool calls followed by a `Finish` that returns `ErrSignalsPending` drains again and runs one more turn, unless `MaxTurns` is already reached, in which case the run ends with `Done{Reason: StopLimit}`. Only the root run drains steers; `FlowAsTool` children and `MapReduce` items never do, and a steer posted to a child's session id is `ErrRunNotActive`.
 
 **On suspend**:
 
@@ -186,7 +186,7 @@ ID: `runtime.suspend-order`
 #### Scenario: append before tool
 ID: `runtime.append-before-tool`
 - WHEN the model returns a `ToolUse`
-- THEN the assistant message is appended and `HistoryVersion` advanced before the gate runs
+- THEN, when the call is `Idempotent`/`SideEffect`, the assistant message with its pending calls is appended and `HistoryVersion` advanced before the gate runs; a `ReadOnly` call is appended together with its result at step end (`recovery`)
 
 #### Scenario: done after finish
 ID: `runtime.done-after-finish`
@@ -288,7 +288,7 @@ ID: `runtime.sequential-tools-hint`
 #### Scenario: plain answer
 ID: `runtime.plain-answer`
 - WHEN the scripted model returns "hi"
-- THEN events are `TextDelta*`, `AssistantMessage("hi")`, `Done(end_turn)`; `SessionLog` holds user + assistant
+- THEN events are `TextDelta*`, `AssistantMessage("hi")`, `Done(StopCompleted)`; `SessionLog` holds user + assistant
 
 #### Scenario: tool round trip
 ID: `runtime.tool-round-trip`
@@ -303,7 +303,7 @@ ID: `runtime.parallel-calls-ordering`
 #### Scenario: max turns
 ID: `runtime.max-turns`
 - WHEN the model calls a tool every turn and `MaxTurns=3`
-- THEN `Done(max_turns)` after 3 model calls and `gohan.max_turns.reached` increments
+- THEN `Done(StopLimit)` after 3 model calls and `gohan.max_turns.reached` increments
 
 #### Scenario: cancellation
 ID: `runtime.cancellation`
