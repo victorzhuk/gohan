@@ -61,6 +61,10 @@ const (
 	GranularityTurn
 )
 
+// EffectFunc is one governed effect boundary a driver supplies: it runs the
+// model or tool phase and returns the advanced state and status.
+type EffectFunc func(ctx context.Context, st State) (State, []types.Event, Status, error)
+
 // AgentRun is the per-run wiring Drive hands a runtime. Model and Tools are
 // already governed when the runtime sees them.
 type AgentRun struct {
@@ -70,5 +74,8 @@ type AgentRun struct {
 	History  stores.History
 	Input    []types.Message
 	Save     func(ctx context.Context, cp stores.Checkpoint) (types.ResumeToken, error)
-	Mode     types.RunMode
+	// ModelEffect and BatchEffect are the driver-supplied effect boundaries.
+	ModelEffect EffectFunc
+	BatchEffect EffectFunc
+	Mode        types.RunMode
 }
