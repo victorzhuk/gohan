@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -20,6 +21,10 @@ type NativeSpec struct {
 	Assemble    func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error)
 	ModelChain  chains.ModelChain
 	ToolChain   chains.ToolChain
+	// Decider states the flow's own tool policy. The batch gate consults
+	// it before any call executes; a nil Decider keeps the core defaults
+	// (read-only and idempotent calls pass, side effects ask).
+	Decider types.Decider[*permission.ToolInvocation, permission.Verdict]
 }
 
 // WithNativeAgent registers a native flow definition before Build runs, so

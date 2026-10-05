@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -23,6 +24,7 @@ type resolvedNativeConfig struct {
 	modelChain  chains.ModelChain
 	toolChain   chains.ToolChain
 	limits      types.RunLimits
+	decider     types.Decider[*permission.ToolInvocation, permission.Verdict]
 }
 
 // resolvedNative returns the resolved configuration Build computed for the
@@ -75,6 +77,7 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			modelChain:  modelChainWithMiddleware(spec.ModelChain, s.middleware),
 			toolChain:   spec.ToolChain,
 			limits:      limits,
+			decider:     spec.Decider,
 		}
 	}
 	s.native = resolved
