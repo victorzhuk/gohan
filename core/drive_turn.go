@@ -2,6 +2,8 @@ package gohan
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"math"
 	"slices"
 	"strconv"
@@ -26,6 +28,19 @@ type turnConfig struct {
 	maxTokens int
 	gate      runtime.BatchGate
 	limits    types.RunLimits
+	// scheduler carries the resolved batch strategy. A zero value runs
+	// every call sequentially.
+	scheduler runtime.SchedulerConfig
+	// exec is the governed call path for one batch call: the tool chain
+	// around CallTool with the call's original identity. nil uses the
+	// direct CallTool path.
+	exec func(context.Context, types.ToolUse) (types.ToolResult, error)
+	// reserve reserves the batch's whole call set against the run ledger
+	// before any tool executes; the returned context carries the
+	// reservation, so the batch's executions consume it instead of
+	// charging again, and the returned func refunds the reservation when
+	// the batch is refused. The ledger stays outside core.
+	reserve func(ctx context.Context, n int) (context.Context, func(), error)
 
 	// onTruncated decides the retry turn a truncated tool call earns. It
 	// returns the larger output allowance for the retry and the truncation
@@ -181,6 +196,11 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
 	env := turnEnvFrom(ctx)
 	c := env.c
+	if notes := steerNotesFrom(ctx); notes != nil {
+		// The steers the lifecycle drained at its safe point enter the
+		// working history here, so the next request carries them.
+		env.msgs = append(env.msgs, notes.take()...)
+	}
 	req, err := c.assemble(ctx, types.AssembleInput{History: env.msgs})
 	if err != nil {
 		return st, nil, runtime.Continue, err
@@ -189,6 +209,15 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 		req.Options.MaxTokens = env.maxTokens
 	}
 	env.turn++
+	n := 0
+	for _, msg := range env.msgs {
+		for _, b := range msg.Blocks {
+			if _, ok := b.(types.ToolResult); ok {
+				n++
+			}
+		}
+	}
+	fmt.Println("DBG modelEffect results", n, "msgs", len(env.msgs))
 	st.Turn = env.turn
 
 	var sb strings.Builder
@@ -300,6 +329,31 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	return st, []types.Event{ev, types.Done{Reason: types.StopCompleted}}, runtime.DoneStatus, nil
 }
 
+type replayKey struct{}
+
+// withPendingReplay marks a drive that re-enters the batch phase with a
+// decision already applied to its state: its pending calls replay from the
+// state instead of the per-run scope a model turn parks.
+func withPendingReplay(ctx context.Context) context.Context {
+	return context.WithValue(ctx, replayKey{}, true)
+}
+
+func pendingReplayFrom(ctx context.Context) bool {
+	v, _ := ctx.Value(replayKey{}).(bool)
+	return v
+}
+
+type appenderKey struct{}
+
+func withHistoryAppender(ctx context.Context, h HistoryAppender) context.Context {
+	return context.WithValue(ctx, appenderKey{}, h)
+}
+
+func historyAppenderFrom(ctx context.Context) (HistoryAppender, bool) {
+	h, ok := ctx.Value(appenderKey{}).(HistoryAppender)
+	return h, ok
+}
+
 // batchEffect settles one turn's batch under the batch protocol: the gate
 // decides every call before the first one executes, allowed calls run in
 // call order through the scheduler, denials render as Failed(Permanent)
@@ -315,6 +369,18 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	c := env.c
 	turn := env.turn
 	calls := env.calls
+	if len(calls) == 0 && len(st.Pending) > 0 && pendingReplayFrom(ctx) {
+		// A resumed or recovered drive re-enters the batch phase from the
+		// checkpointed state alone: the per-run scope that parks a model
+		// turn's calls is gone, so the pending calls replay from the state.
+		calls = st.Pending
+		env.calls = calls
+	}
+	if len(calls) == 0 {
+		// The batch already settled before the suspension (delivered or
+		// rejected pending calls): nothing to gate or execute.
+		return st, nil, runtime.Continue, nil
+	}
 	msgs := &env.msgs
 	used := env.used
 	limits := c.limits
@@ -334,11 +400,35 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	}
 	*msgs = append(*msgs, asst)
 
+	if h, ok := historyAppenderFrom(ctx); ok {
+		v, aerr := AppendBeforeBatch(ctx, h, st.HistoryVersion, asst)
+		if aerr != nil {
+			return st, nil, runtime.Continue, aerr
+		}
+		st.HistoryVersion = v
+	}
+
+	refund := func() {}
+	if c.reserve != nil {
+		rctx, r, err := c.reserve(ctx, len(calls))
+		if err != nil {
+			return st, nil, runtime.Continue, err
+		}
+		ctx, refund = rctx, r
+	}
+	exec := c.exec
+	if exec == nil {
+		exec = func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+			return CallTool(ctx, c.tools, call.Name, call.Args)
+		}
+	}
+
 	report, err := runtime.Batch{
-		Calls:  calls,
-		Limits: limits,
-		Used:   used,
-		Gate:   gate,
+		Calls:     calls,
+		Limits:    limits,
+		Used:      used,
+		Gate:      gate,
+		Scheduler: c.scheduler,
 		Exec: func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
 			if res, ok := validateCompletion(call); !ok {
 				return res, nil
@@ -349,11 +439,14 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 			tctx, endTool := startSpan(ctx, telemetryFrom(ctx), SpanTool,
 				types.String(types.KeyToolName, call.Name),
 			)
-			res, err := CallTool(tctx, c.tools, call.Name, call.Args)
+			res, err := exec(tctx, call)
 			endTool(types.String(types.KeyToolOutcome, outcomeName(res)))
 			if err != nil {
 				if ctx.Err() != nil {
 					return types.ToolResult{}, ctx.Err()
+				}
+				if isControlError(err) {
+					return types.ToolResult{}, err
 				}
 				res = types.ToolResult{
 					ID:    call.ID,
@@ -365,6 +458,7 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 		},
 	}.Run(ctx)
 	if err != nil {
+		refund()
 		return st, nil, runtime.Continue, err
 	}
 
@@ -390,7 +484,15 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	*msgs = append(*msgs, results)
 	env.used += report.Spent
 	if report.Suspend != nil {
+		st.Pending = report.Suspend.Pending
 		return st, nil, runtime.SuspendedStatus, &types.SuspendError{Reason: types.AwaitingBatch, Payload: *report.Suspend}
+	}
+	if h, ok := historyAppenderFrom(ctx); ok {
+		v, aerr := h.Append(ctx, st.HistoryVersion, results)
+		if aerr != nil {
+			return st, nil, runtime.Continue, aerr
+		}
+		st.HistoryVersion = v
 	}
 	env.calls = nil
 	if c.poll == nil {
@@ -400,6 +502,19 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 		return st, []types.Event{types.Done{Reason: stop}}, runtime.DoneStatus, nil
 	}
 	return st, nil, runtime.Continue, nil
+}
+
+// isControlError reports the errors that steer the run — cancellation,
+// suspension, abort and limit termination — which must never render as an
+// ordinary tool failure.
+func isControlError(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	var suspend *types.SuspendError
+	var abort *types.AbortError
+	var limit *types.LimitExceededError
+	return errors.As(err, &suspend) || errors.As(err, &abort) || errors.As(err, &limit)
 }
 
 func truncatedTurn(tu types.ToolUse, res types.ToolResult, turn int) types.Message {

@@ -6,13 +6,48 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"sync"
 	"time"
 
+	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
+
+// steerNotes carries the steers a safe point drained to the next model
+// effect, which folds them into its working history. The lifecycle owns
+// the mailbox; the effect owns the history it assembles from.
+type steerNotes struct {
+	mu   sync.Mutex
+	msgs []types.Message
+}
+
+func (n *steerNotes) add(m types.Message) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.msgs = append(n.msgs, m)
+}
+
+func (n *steerNotes) take() []types.Message {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	msgs := n.msgs
+	n.msgs = nil
+	return msgs
+}
+
+type steerNotesKey struct{}
+
+func withSteerNotes(ctx context.Context, n *steerNotes) context.Context {
+	return context.WithValue(ctx, steerNotesKey{}, n)
+}
+
+func steerNotesFrom(ctx context.Context) *steerNotes {
+	n, _ := ctx.Value(steerNotesKey{}).(*steerNotes)
+	return n
+}
 
 // HistoryAppender is the append port a turn uses, with the session id
 // already bound. expectedVersion is mandatory: an append against a stale
@@ -85,11 +120,13 @@ type Lifecycle struct {
 	telemetry   types.Telemetry
 	reason      types.SuspendReason
 	appender    HistoryAppender
+	histVersion int64
 	uncertain   func(runtime.State) []types.CallKey
 	verify      func(ctx context.Context, keys []types.CallKey) ([]types.CallKey, error)
 	maxTurns    int
 	resultRef   string
 	waker       Waker
+	ledger      *chains.LimitsState
 	approval    permission.ApprovalPolicySource
 	toolLookup  func(name string) (types.ToolSpec, bool)
 }
@@ -141,6 +178,12 @@ func WithLifecycleAppender(h HistoryAppender) LifecycleOption {
 	return func(lc *Lifecycle) { lc.appender = h }
 }
 
+// WithLifecycleHistoryVersion sets the history version the session log
+// holds when the drive starts, so the first turn append expects it.
+func WithLifecycleHistoryVersion(v int64) LifecycleOption {
+	return func(lc *Lifecycle) { lc.histVersion = v }
+}
+
 // WithLifecycleUncertain injects the collector for the journal keys whose
 // outcome is still unknown at the end of the run.
 func WithLifecycleUncertain(fn func(runtime.State) []types.CallKey) LifecycleOption {
@@ -175,6 +218,14 @@ func WithLifecycleSuspendReason(r types.SuspendReason) LifecycleOption {
 // governed counters record through. A lifecycle without one emits nothing.
 func WithLifecycleTelemetry(t types.Telemetry) LifecycleOption {
 	return func(lc *Lifecycle) { lc.telemetry = t }
+}
+
+// WithLifecycleLedger binds the run's accounting ledger. DriveLifecycle
+// carries it in the context every effect runs under, so a resumed or
+// recovered run charges the cost it already spent instead of a fresh
+// ledger, and the terminal Done projects the accrued cost.
+func WithLifecycleLedger(s *chains.LimitsState) LifecycleOption {
+	return func(lc *Lifecycle) { lc.ledger = s }
 }
 
 // WithLifecycleApprovalPolicy binds the source the suspension resolves each
@@ -212,6 +263,11 @@ func DriveLifecycle(ctx context.Context, lc *Lifecycle, rt runtime.Runtime, r ru
 		}
 		ctx, endSpan := startRunSpan(ctx, lc.telemetry)
 		defer endSpan()
+		if lc.ledger != nil {
+			// The ledger travels in the run context for the whole run, so
+			// the effects charge the same ledger a resume restored.
+			ctx = chains.WithLimitsState(ctx, lc.ledger)
+		}
 		st, err := rt.Start(ctx, r)
 		if err != nil {
 			// The conversation already holds the lease; the lifecycle
@@ -222,6 +278,12 @@ func DriveLifecycle(ctx context.Context, lc *Lifecycle, rt runtime.Runtime, r ru
 		}
 		if lc.resumeState != nil {
 			st = copyResumeState(*lc.resumeState)
+		}
+		if lc.appender != nil {
+			ctx = withHistoryAppender(ctx, lc.appender)
+		}
+		if lc.histVersion > st.HistoryVersion {
+			st.HistoryVersion = lc.histVersion
 		}
 		if lc.runs != nil {
 			// The heartbeat starts as soon as the lifecycle holds the
@@ -281,6 +343,8 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 		relay.next = prev
 	}
 	sctx := types.WithSink(hbCtx, relay)
+	notes := &steerNotes{}
+	sctx = withSteerNotes(sctx, notes)
 	for {
 		if err := hbCtx.Err(); err != nil {
 			yield(nil, err)
@@ -361,7 +425,63 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 			lc.stopHeartbeat()
 			return
 		}
+		if nextPhaseIsModel(st.Backend) {
+			// A batch just settled: reach the same safe point the loop
+			// reaches between turns, so a suspension or a steer that
+			// arrived during the batch is observed before the next model
+			// effect instead of after it.
+			var evs []types.Event
+			var terminal bool
+			st, evs, terminal, err = lc.safePoint(sctx, st)
+			for _, e := range evs {
+				if !yield(e, nil) {
+					return
+				}
+			}
+			if err != nil || terminal {
+				if err != nil {
+					lc.stopHeartbeat()
+					yield(nil, err)
+				}
+				return
+			}
+		}
 	}
+}
+
+// nextPhaseIsModel reports whether the state a step returned carries the
+// model phase, which under the effect-granular native runtime means the
+// step that produced it settled a batch.
+func nextPhaseIsModel(backend []byte) bool {
+	var p struct {
+		Phase string `json:"phase"`
+	}
+	if err := json.Unmarshal(backend, &p); err != nil {
+		return false
+	}
+	return p.Phase == "model"
+}
+
+// safePoint drains the mailbox and acts on what it holds: a cancel or a
+// steer past MaxTurns ends the run with its terminal transition and Done,
+// a steer otherwise reaches the next model request. It refuses to start
+// further work when the lease is lost.
+func (lc *Lifecycle) safePoint(ctx context.Context, st runtime.State) (runtime.State, []types.Event, bool, error) {
+	if err := lc.heartbeatErr(); err != nil {
+		return st, nil, true, err
+	}
+	if lc.runs == nil {
+		return st, nil, false, nil
+	}
+	sigs, err := lc.runs.Drain(ctx, lc.lease)
+	if err != nil {
+		return st, nil, true, err
+	}
+	st, terminal, _, evs, err := lc.applySignals(ctx, st, sigs)
+	if err != nil {
+		return st, nil, true, err
+	}
+	return st, evs, terminal, nil
 }
 
 // suspend persists the checkpoint, releases the lease and only then emits
@@ -533,6 +653,9 @@ func (lc *Lifecycle) applySignals(ctx context.Context, st runtime.State, sigs []
 			// A drive-only lifecycle has no session history to append to;
 			// the steer still reaches the next assembly, without the
 			// SteerApplied acknowledgement.
+			if n := steerNotesFrom(ctx); n != nil {
+				n.add(sig.Message)
+			}
 			steered = true
 			continue
 		}
@@ -541,6 +664,9 @@ func (lc *Lifecycle) applySignals(ctx context.Context, st runtime.State, sigs []
 			return st, false, false, nil, aerr
 		}
 		st.HistoryVersion = v
+		if n := steerNotesFrom(ctx); n != nil {
+			n.add(sig.Message)
+		}
 		evs = append(evs, types.SteerApplied{MessageID: sig.Message.ID})
 		steered = true
 	}
@@ -573,5 +699,9 @@ func (lc *Lifecycle) callKeys(st runtime.State) []types.CallKey {
 }
 
 func (lc *Lifecycle) done(st runtime.State, uncertain []types.CallKey, reason types.StopReason) types.Event {
-	return types.Done{Reason: reason, Usage: st.Usage, Uncertain: uncertain}
+	d := types.Done{Reason: reason, Usage: st.Usage, Uncertain: uncertain}
+	if lc.ledger != nil {
+		d.Cost = lc.ledger.TreeCost()
+	}
+	return d
 }

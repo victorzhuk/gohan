@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
@@ -47,17 +48,25 @@ var (
 )
 
 type conversation struct {
-	spec      string
-	rt        runtime.Runtime
-	log       stores.SessionLog
-	runs      stores.Runs
-	events    stores.EventLog
-	cps       stores.Checkpoints
-	creds     types.CredentialSource
-	policySrc permission.ApprovalPolicySource
-	toolSpecs func(name string) (types.ToolSpec, bool)
-	detached  bool
-	wall      time.Duration
+	spec string
+	rt   runtime.Runtime
+	// newRun builds one run's native runtime and effect pair after the
+	// run's lease is acquired; nil keeps the fixed foreign runtime.
+	newRun func(ctx context.Context, sessionID string, lease stores.Lease, input []Message) (context.Context, runtime.AgentRun, error)
+	// newResumeRun builds the same governed pair for a resumed run: a
+	// fresh runtime over the resolved configuration, the restored
+	// history and a ledger seeded from what the run record reports as
+	// spent. nil keeps the fixed foreign runtime.
+	newResumeRun func(ctx context.Context, sessionID string, hist stores.History, seed float64) (context.Context, runtime.Runtime, runtime.AgentRun, *chains.LimitsState, error)
+	log          stores.SessionLog
+	runs         stores.Runs
+	events       stores.EventLog
+	cps          stores.Checkpoints
+	creds        types.CredentialSource
+	policySrc    permission.ApprovalPolicySource
+	toolSpecs    func(name string) (types.ToolSpec, bool)
+	detached     bool
+	wall         time.Duration
 
 	allowAnonymous bool
 
@@ -322,13 +331,34 @@ func (c *conversation) stream(ctx context.Context, lease stores.Lease, sessionID
 		opts = append(opts, WithLifecycleOriginator(p))
 	}
 	lc := NewLifecycle(opts...)
+	rt := c.rt
 	ag := runtime.AgentRun{Input: input}
+	runCtx := ctx
+	if c.newRun != nil {
+		rt = runtime.NewNative()
+		rctx, run, err := c.newRun(ctx, sessionID, lease, input)
+		if err != nil {
+			// The run is already acquired: close it as Failed so the
+			// lease never dangles behind the error tuple.
+			if ferr := lc.finishRun(ctx, runtime.State{}, stores.Failed, nil); ferr != nil {
+				yield(nil, ferr)
+				return
+			}
+			yield(nil, err)
+			return
+		}
+		runCtx, ag = rctx, run
+		if ag.History.Version > 0 {
+			opts = append(opts, WithLifecycleHistoryVersion(ag.History.Version))
+			lc = NewLifecycle(opts...)
+		}
+	}
 	if c.cps != nil {
 		// Suspension persists through the conversation's checkpoints
 		// store; without one the runtime cannot suspend.
 		ag.Save = c.cps.Put
 	}
-	for ev, err := range DriveLifecycle(ctx, lc, c.rt, ag) {
+	for ev, err := range DriveLifecycle(runCtx, lc, rt, ag) {
 		if err != nil {
 			var gb *types.GuardBlockedError
 			if errors.As(err, &gb) {

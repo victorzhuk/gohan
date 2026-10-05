@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
@@ -195,7 +196,11 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			yield(nil, err)
 			return
 		}
-		env, st, err := decodeCheckpoint(cp, c.rt, c.spec)
+		decodeRT := c.rt
+		if c.newResumeRun != nil {
+			decodeRT = runtime.NewNative()
+		}
+		env, st, err := decodeCheckpoint(cp, decodeRT, c.spec)
 		if err != nil {
 			yield(nil, err)
 			return
@@ -306,12 +311,63 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			yield(nil, err)
 			return
 		}
+		// The resumed run drives a fresh runtime over the resolved
+		// configuration; the phase it advances from lives in the
+		// checkpointed state, never in a reused runtime.
+		rt := c.rt
+		ag := runtime.AgentRun{}
+		runCtx := credCtx
+		// The decision mutates st first: WithLifecycleResumeState copies
+		// the state, so options built before applyResume would replay the
+		// undelivered pending calls and never advance. The results append
+		// after the session head: a suspension checkpoint can carry a
+		// version older than what the session log holds by then.
+		if h.Version > st.HistoryVersion {
+			st.HistoryVersion = h.Version
+		}
+		if r.Verdict == stores.VerdictApprove && cp.Reason == types.HumanApproval {
+			if aerr := appendReceipts(credCtx, c.log, h, consumed.RunID, env, &st); aerr != nil {
+				yield(nil, aerr)
+				return
+			}
+		}
+		if aerr := applyResume(credCtx, c.log, cp.SessionID, &st, r); aerr != nil {
+			yield(nil, aerr)
+			return
+		}
+		runCtx = types.WithApproval(runCtx, types.Approval{Approver: approver, At: time.Now().UTC()})
+		var ledger *chains.LimitsState
+		if c.newResumeRun != nil {
+			// The drive's working history is reloaded after the decision:
+			// it must carry the results the decision appended, or the
+			// resumed model turn re-issues settled calls.
+			hDrive, derr := authorizeResume(ctx, c.log, cp.SessionID, approver)
+			if derr != nil {
+				yield(nil, derr)
+				return
+			}
+			var seed float64
+			if rf, ok := c.runs.(runFinder); ok {
+				if run, ferr := rf.ByID(ctx, consumed.RunID); ferr == nil {
+					seed = run.Cost
+				}
+			}
+			rctx, nrt, nag, nled, berr := c.newResumeRun(credCtx, cp.SessionID, hDrive, seed)
+			if berr != nil {
+				yield(nil, berr)
+				return
+			}
+			runCtx, rt, ag, ledger = rctx, nrt, nag, nled
+		}
 		opts := []LifecycleOption{
 			WithLifecycleRuns(c.runs, lease),
 			WithLifecycleSession(cp.SessionID),
 			WithLifecycleFlow(c.spec),
 			WithLifecycleOriginator(cp.Originator),
 			WithLifecycleResumeState(st),
+		}
+		if ledger != nil {
+			opts = append(opts, WithLifecycleLedger(ledger))
 		}
 		if c.policySrc != nil {
 			opts = append(opts, WithLifecycleApprovalPolicy(c.policySrc))
@@ -324,27 +380,16 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 				return c.log.Append(ctx, cp.SessionID, expected, msgs...)
 			})))
 		}
-		ag := runtime.AgentRun{}
 		if c.cps != nil {
 			ag.Save = c.cps.Put
 		}
+		if len(st.Pending) > 0 {
+			runCtx = withPendingReplay(runCtx)
+		}
 		lc := NewLifecycle(opts...)
-		ctx = credCtx
-		if r.Verdict == stores.VerdictApprove && cp.Reason == types.HumanApproval {
-			if aerr := appendReceipts(ctx, c.log, h, consumed.RunID, env, &st); aerr != nil {
-				yield(nil, aerr)
-				return
-			}
-		}
-		if aerr := applyResume(ctx, c.log, cp.SessionID, &st, r); aerr != nil {
-			yield(nil, aerr)
-			return
-		}
-		ctx = types.WithApproval(ctx, types.Approval{Approver: approver, At: time.Now().UTC()})
 		// The resumed run's events are recorded like a Send's, so Attach
-		// replays them and waiters wake at the end.
 		defer c.markRunEnded(consumed.RunID)
-		for ev, err := range DriveLifecycle(ctx, lc, c.rt, ag) {
+		for ev, err := range DriveLifecycle(runCtx, lc, rt, ag) {
 			if err != nil {
 				yield(nil, err)
 				return
@@ -516,6 +561,9 @@ func appendResumeResults(ctx context.Context, log stores.SessionLog, sessionID s
 		return err
 	}
 	st.HistoryVersion = ver
+	// The pending calls settled into results; a replay that kept them
+	// would execute them a second time.
+	st.Pending = nil
 	return nil
 }
 

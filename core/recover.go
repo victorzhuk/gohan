@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
@@ -175,7 +176,37 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 		opts = append(opts, WithLifecycleAppender(app))
 	}
 	lc := NewLifecycle(opts...)
+	// A registered native flow re-drives through the governed path built
+	// from its resolved configuration: a fresh runtime, the batch gate
+	// and reservation seam, and a ledger seeded from what the run record
+	// reports as spent. The re-drive can suspend again through the same
+	// effects a live run uses.
 	ag := runtime.AgentRun{Save: s.stores.Checkpoints.Put}
+	if cfg, ok := s.resolvedNative(run.Flow); ok {
+		ledger := chains.NewLimitsStateSeeded(run.Cost)
+		ctx = chains.WithLimitsState(ctx, ledger)
+		tc := s.nativeTurnConfig(cfg)
+		tc.gate = nativeBatchGate(cfg)
+		tc.reserve = func(ctx context.Context, n int) (context.Context, func(), error) {
+			return ledger.ReserveBatch(ctx, cfg.limits, n)
+		}
+		var hist stores.History
+		if s.stores.SessionLog != nil {
+			if h, err := s.stores.SessionLog.Load(ctx, run.SessionID); err == nil {
+				hist = h
+			}
+		}
+		native := nativeRun(tc, hist.Messages, nil)
+		native.Model = cfg.model
+		native.Tools = cfg.tools
+		native.Assemble = tc.assemble
+		native.History = hist
+		native.Save = s.stores.Checkpoints.Put
+		ag = native
+		rt = runtime.NewNative()
+		opts = append(opts, WithLifecycleLedger(ledger))
+		lc = NewLifecycle(opts...)
+	}
 	for _, err := range DriveLifecycle(ctx, lc, rt, ag) {
 		if err != nil {
 			break
