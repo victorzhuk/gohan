@@ -44,10 +44,10 @@ A task is done when its `verify:` command is green and `task lint` and `task tes
 
 Each change below is implemented only after its package is authored and reviewed (task 7). Shared driver files — `core/permission`, `core/native_options.go`, `core/native_effects.go`, `core/tool.go` — are edited in dependency order, never concurrently merely because two change packages exist.
 
-1. [ ] `m1-egress-policy` — tools egress: `std/egress`, `std/tool/http`, `WithEgress`/`WithExfil`/`WithPrivateRead`, `Build` refusal and derivation.
-  - verify: `go test -short -timeout 2m ./... -run 'TestEgress'`; the six scenario subtests green; `task spec:gate GATE=M1`.
-2. [ ] `m1-taint-enforcement` — `std/taint` policy, matcher and `Default()`; `NativeSpec.TaintPolicy`; `Build` trifecta; gate wiring.
-  - verify: the eleven scenario subtests green; `task spec:gate GATE=M1`; a tainted argument into a side-effect tool suspends with `ApprovalRequest.ArgOrigins` populated.
+1. [x] `m1-egress-policy` — tools egress: `std/egress`, `std/tool/http`, `WithEgress`/`WithHTTP`/`WithExfil`/`WithPrivateRead`, `WithEgressClient`, `Build` refusal and derivation.
+  - observed: the five M1 subtests plus `tools.egress-policy-required` pass on the public path; `std/egress` carries the checked-address dial, per-hop revalidation, `Authorization` stripping and the size bound; a refusal is a typed `EgressDenied` that the classifier records as `egress_denied` with the host and reason only. Floor green: `task lint` 0 issues, `task test`, `task spec` (`missing_in_scope=0`), `task api:check`, `task examples:run`.
+2. [x] `m1-taint-enforcement` — `std/taint` policy, matcher and `Default()`; `NativeSpec.TaintPolicy` and `LiveDeny`; window binding at the effect boundary; `Build` trifecta; gate wiring; `ToolSpec.Trust` and its manifest hash input.
+  - observed: all eleven subtests pass; a tainted argument into a side-effect tool suspends with `ArgOrigins` populated; a live deny beats a taint `Ask` with no approval requested. Two production defects surfaced and are fixed: tool results reached history with the zero `Origin` (so the matcher skipped them and `std/guard` fencing was off for every tool result), and the approval path carried no argument origins. Floor green, `task spec:gate GATE=M1` down to `missing_in_scope=68` with only ids owned by other changes still open.
 3. [ ] `m1-verify-public-paths`, `m1-redaction-pipeline`, `m1-schema-read-paths`, `m1-provider-conformance-contract` — independent lanes.
 4. [ ] `m1-subject-memory` after taint; `m1-flags-control` after permission precedence; `m1-extraction-provenance` after the subflow conflict in `design.md` §2.3 is settled.
 5. [ ] `m1-openai-provider`, `m1-anthropic-provider` after the provider contract; `m1-provider-tool-governance` after the contract and taint.
