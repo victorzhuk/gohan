@@ -45,24 +45,30 @@ func (t *treeSpend) get() float64 {
 
 // Branch returns a state that charges the same tree budget as s: every
 // descendant's spend accumulates into one shared total, and the cost
-// checks on a branch see that total against the hub's MaxCost.
+// checks on a branch see that total against the hub's MaxCost. Branching
+// runs under the parent's lock, so two goroutines starting runs under one
+// tree share one tree spend, never two.
 func (s *LimitsState) Branch() *LimitsState {
+	s.mu.Lock()
 	t := s.tree
 	if t == nil {
 		t = &treeSpend{cost: s.cost}
 		s.tree = t
 	}
+	s.mu.Unlock()
 	return &LimitsState{tree: t}
 }
 
 // TreeCost reports the spend the whole run tree charged so far.
 func (s *LimitsState) TreeCost() float64 {
-	if s.tree != nil {
-		return s.tree.get()
-	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.cost
+	t := s.tree
+	cost := s.cost
+	s.mu.Unlock()
+	if t != nil {
+		return t.get()
+	}
+	return cost
 }
 
 // NewLimitsState returns the accumulator one run shares across its
@@ -81,6 +87,36 @@ func (s *LimitsState) Warnings() []types.LimitWarning {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]types.LimitWarning(nil), s.warnings...)
+}
+
+// AccountingSnapshot is a copy of one ledger's counters, free of its lock
+// and of the tree pointer: exactly what resume stores.
+type AccountingSnapshot struct {
+	Cost     float64
+	Start    time.Time
+	Turns    int
+	ToolUses int
+	Warnings []types.LimitWarning
+	TreeCost float64
+}
+
+// Snapshot reports the ledger's counters without mutating them.
+func (s *LimitsState) Snapshot() AccountingSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap := AccountingSnapshot{
+		Cost:     s.cost,
+		Start:    s.start,
+		Turns:    s.turns,
+		ToolUses: s.toolUses,
+		Warnings: append([]types.LimitWarning(nil), s.warnings...),
+	}
+	if s.tree != nil {
+		snap.TreeCost = s.tree.get()
+	} else {
+		snap.TreeCost = s.cost
+	}
+	return snap
 }
 
 // charge prices one usage record and adds it to the run's cost. Cache
@@ -175,6 +211,9 @@ func Limits(l types.RunLimits, p types.Pricing, st *LimitsState) types.ModelMidd
 	return func(next types.ModelFunc) types.ModelFunc {
 		return func(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
 			return func(yield func(types.ModelChunk, error) bool) {
+				if s, ok := LimitsStateFrom(ctx); ok {
+					st = s
+				}
 				remaining, err := st.preCall(l, time.Now())
 				if err != nil {
 					yield(types.ModelChunk{}, err)
@@ -239,6 +278,9 @@ func (s *LimitsState) preToolCall(l types.RunLimits, now time.Time) (time.Durati
 func ToolLimits(l types.RunLimits, st *LimitsState) types.ToolMiddleware {
 	return func(next ToolFunc) ToolFunc {
 		return func(ctx context.Context, call types.ToolUse) (res types.ToolResult, err error) {
+			if s, ok := LimitsStateFrom(ctx); ok {
+				st = s
+			}
 			remaining, err := st.preToolCall(l, time.Now())
 			if err != nil {
 				return types.ToolResult{}, err

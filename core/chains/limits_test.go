@@ -5,6 +5,7 @@ import (
 	"errors"
 	"iter"
 	"math"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -103,6 +104,83 @@ func TestChainLimits(t *testing.T) {
 		}
 		// Row 25 owns the root projection: Done.Cost on the root run must
 		// equal this sum once the tree accounting lands.
+	})
+
+	t.Run("context carries one ledger per run", func(t *testing.T) {
+		if _, ok := LimitsStateFrom(context.Background()); ok {
+			t.Fatal("LimitsStateFrom reports ok on a bare context")
+		}
+		st := NewLimitsState()
+		ctx := WithLimitsState(context.Background(), st)
+		got, ok := LimitsStateFrom(ctx)
+		if !ok || got != st {
+			t.Fatalf("LimitsStateFrom = %v, %v; want the set ledger", got, ok)
+		}
+	})
+
+	t.Run("the limit step reads the ledger from the context over the constructor's", func(t *testing.T) {
+		mine := NewLimitsState()
+		yours := NewLimitsState()
+		mw := Limits(limits(1.0), pending, mine)
+		ctx := WithLimitsState(context.Background(), yours)
+		spendCtx := func(ctx context.Context, _ types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+			return spend(1)(ctx, types.ModelRequest{})
+		}
+		if _, err := collect(mw(spendCtx)(ctx, types.ModelRequest{})); err != nil {
+			t.Fatalf("spend: %v", err)
+		}
+		if yours.Cost() == 0 {
+			t.Fatal("the context ledger went uncharged")
+		}
+		if mine.Cost() != 0 {
+			t.Fatalf("the constructor ledger charged %v, want 0", mine.Cost())
+		}
+	})
+
+	t.Run("snapshot reports counters without mutating them", func(t *testing.T) {
+		st := NewLimitsState()
+		mw := Limits(limits(0.10), pending, st)
+		if err := call(t, mw, spend(1)); err != nil {
+			t.Fatalf("spend: %v", err)
+		}
+		before := st.Snapshot()
+		if before.Cost != 0.04 || before.Turns != 1 || len(before.Warnings) != 0 {
+			t.Fatalf("snapshot = %+v, want one turn at 0.04 and no warnings", before)
+		}
+		if err := call(t, mw, spend(1)); err != nil {
+			t.Fatalf("second spend: %v", err)
+		}
+		after := st.Snapshot()
+		if after.Cost != 0.08 || after.Turns != 2 {
+			t.Fatalf("second snapshot = %+v, want two turns at 0.08", after)
+		}
+		before.Warnings = append(before.Warnings, types.LimitWarning{Limit: "MaxCost"})
+		if len(st.Snapshot().Warnings) != 0 {
+			t.Fatal("mutating a snapshot's warnings reached the ledger")
+		}
+	})
+
+	t.Run("branches started concurrently share one tree spend", func(t *testing.T) {
+		hub := NewLimitsState()
+		const n = 8
+		branches := make([]*LimitsState, n)
+		var wg sync.WaitGroup
+		wg.Add(n)
+		for i := range branches {
+			go func(i int) {
+				defer wg.Done()
+				branches[i] = hub.Branch()
+			}(i)
+		}
+		wg.Wait()
+		for _, b := range branches {
+			b.charge(types.Usage{InputTokens: 1}, pending)
+		}
+		for i, b := range branches {
+			if got := b.TreeCost(); got != float64(n)*pending.Input {
+				t.Fatalf("branch %d tree cost = %v, want %v", i, got, float64(n)*pending.Input)
+			}
+		}
 	})
 
 	t.Run("soft ratio does not abort", func(t *testing.T) {
