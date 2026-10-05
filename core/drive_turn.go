@@ -55,6 +55,64 @@ type turnConfig struct {
 	reasoningVisible bool
 }
 
+// turnEnv carries the per-run state the two effects share across their
+// boundaries: the loop position, the working history and the pending batch
+// the model effect hands to the batch effect. The runtime State only
+// carries what resume needs; this scope lives for one driveTurns call and
+// travels in the context.
+type turnEnv struct {
+	c         turnConfig
+	sink      types.Sink
+	msgs      []types.Message
+	turn      int
+	maxTokens int
+	truncated int
+	repaired  int
+	used      int
+	calls     []types.ToolUse
+	// reasoning is the provider reasoning the model effect streamed for the
+	// current turn; the batch effect retains it on the assistant message.
+	reasoning string
+}
+
+type turnEnvKey struct{}
+
+func withTurnEnv(ctx context.Context, env *turnEnv) context.Context {
+	return context.WithValue(ctx, turnEnvKey{}, env)
+}
+
+func turnEnvFrom(ctx context.Context) *turnEnv {
+	env, _ := ctx.Value(turnEnvKey{}).(*turnEnv)
+	return env
+}
+
+// emitDelta streams one preview delta; with a coalescer the fragment
+// feeds the open record and the closed records come back out.
+func (env *turnEnv) emitDelta(ctx context.Context, ev types.Event) {
+	if env.sink == nil {
+		return
+	}
+	if env.c.coalesce == nil {
+		env.sink.Emit(ctx, ev)
+		return
+	}
+	for _, e := range env.c.coalesce.Add(ev) {
+		env.sink.Emit(ctx, e)
+	}
+}
+
+// flushDeltas closes the open coalesced record before a non-delta event
+// or a terminal tuple, so the log never holds a partial call's fragments
+// behind the record that completes the call.
+func (env *turnEnv) flushDeltas(ctx context.Context) {
+	if env.sink == nil || env.c.coalesce == nil {
+		return
+	}
+	for _, e := range env.c.coalesce.Flush() {
+		env.sink.Emit(ctx, e)
+	}
+}
+
 // driveTurns runs one model call per turn, executes the turn's tool calls
 // in call order, appends the results in call order and counts MaxTurns over
 // model calls. A steer-drain turn counts too, because it is one more model
@@ -62,193 +120,203 @@ type turnConfig struct {
 // iterator carries the final assistant message, Done and errors.
 func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error) bool) {
 	sink, _ := types.SinkFrom(ctx)
-	msgs := slices.Clone(c.history)
+	env := &turnEnv{
+		c:         c,
+		sink:      sink,
+		msgs:      slices.Clone(c.history),
+		maxTokens: c.maxTokens,
+	}
 	if len(c.input) > 0 {
-		msgs = append(msgs, c.input...)
+		env.msgs = append(env.msgs, c.input...)
 	}
-	turn := 0
-	maxTokens := c.maxTokens
-	truncated, repaired := 0, 0
-	// emitDelta streams one preview delta; with a coalescer the fragment
-	// feeds the open record and the closed records come back out.
-	emitDelta := func(ev types.Event) {
-		if sink == nil {
-			return
-		}
-		if c.coalesce == nil {
-			sink.Emit(ctx, ev)
-			return
-		}
-		for _, e := range c.coalesce.Add(ev) {
-			sink.Emit(ctx, e)
-		}
-	}
-	// flushDeltas closes the open coalesced record before a non-delta event
-	// or a terminal tuple, so the log never holds a partial call's fragments
-	// behind the record that completes the call.
-	flushDeltas := func() {
-		if sink == nil || c.coalesce == nil {
-			return
-		}
-		for _, e := range c.coalesce.Flush() {
-			sink.Emit(ctx, e)
-		}
-	}
-	used := 0
+	ctx = withTurnEnv(ctx, env)
+	var st runtime.State
 	for {
-		if turn >= c.maxTurns {
-			flushDeltas()
+		if env.turn >= c.maxTurns {
+			env.flushDeltas(ctx)
 			yield(types.Done{Reason: types.StopLimit}, nil)
 			return
 		}
 		if err := ctx.Err(); err != nil {
-			flushDeltas()
+			env.flushDeltas(ctx)
 			yield(nil, err)
 			return
 		}
-		req, err := c.assemble(ctx, types.AssembleInput{History: msgs})
+		var events []types.Event
+		var status runtime.Status
+		var err error
+		st, events, status, err = modelEffect(ctx, st)
 		if err != nil {
 			yield(nil, err)
 			return
 		}
-		if maxTokens > 0 {
-			req.Options.MaxTokens = maxTokens
+		if status == runtime.DoneStatus {
+			for _, ev := range events {
+				yield(ev, nil)
+			}
+			return
 		}
-		turn++
-
-		var sb strings.Builder
-		var reasoning strings.Builder
-		var calls []types.ToolUse
-		finish := types.FinishStop
-		mctx, endChat := startSpan(ctx, telemetryFrom(ctx), SpanChat)
-		for chunk, err := range c.model(mctx, req) {
-			if err != nil {
-				if ctx.Err() != nil {
-					err = ctx.Err()
-				}
-				endChat(types.String(types.KeySuspendReason, "error"))
-				flushDeltas()
-				yield(nil, err)
-				return
-			}
-			switch chunk.Kind {
-			case types.DeltaText:
-				sb.WriteString(chunk.Delta)
-				emitDelta(types.TextDelta{Turn: turn, Delta: chunk.Delta})
-			case types.DeltaReasoning:
-				reasoning.WriteString(chunk.Delta)
-				if c.reasoningVisible {
-					emitDelta(types.ReasoningDelta{Turn: turn, Delta: chunk.Delta})
-				}
-			case types.DeltaToolArgs:
-				if chunk.ToolUse != nil {
-					// A fragment preview carries the call identity and the
-					// fragment text; the complete block carries Args and
-					// never streams a fragment of its own.
-					if chunk.Delta != "" {
-						emitDelta(types.ToolArgsDelta{Turn: turn, CallID: chunk.ToolUse.ID, Name: chunk.ToolUse.Name, Delta: chunk.Delta})
-					}
-					// Only the complete block enters the batch: a fragment
-					// is a preview, never an argument set to execute.
-					if len(chunk.ToolUse.Args) > 0 {
-						calls = append(calls, *chunk.ToolUse)
-					}
-				}
-			}
-			if chunk.ToolUse != nil && chunk.Kind != types.DeltaToolArgs && len(chunk.ToolUse.Args) > 0 {
-				calls = append(calls, *chunk.ToolUse)
-			}
-			if chunk.Finish != "" && chunk.Finish != types.FinishStop {
-				finish = chunk.Finish
-			}
-		}
-		endChat()
-
-		// A truncated finish earns a retry turn before anything executes:
-		// the pending calls are never run, the truncation result goes back
-		// to the model and the retry carries the larger allowance.
-		if finish == types.FinishMaxTokens && c.onTruncated != nil {
-			tu := types.ToolUse{}
-			if len(calls) > 0 {
-				tu = calls[len(calls)-1]
-			}
-			truncated++
-			retry, result, err := c.onTruncated(tu, finish, truncated)
+		if len(env.calls) > 0 {
+			_, events, status, err = batchEffect(ctx, st)
 			if err != nil {
 				yield(nil, err)
 				return
 			}
-			if retry > 0 {
-				maxTokens = retry
-				msgs = append(msgs, truncatedTurn(tu, *result, turn))
-				flushDeltas()
-				continue
-			}
-		}
-
-		if len(calls) > 0 {
-			flushDeltas()
-			stop, spent, callErr := runCalls(ctx, c, sink, turn, calls, &msgs, reasoning.String(), used)
-			used += spent
-			if callErr != nil {
-				yield(nil, callErr)
+			if status == runtime.DoneStatus {
+				for _, ev := range events {
+					yield(ev, nil)
+				}
 				return
 			}
-			if stop != "" {
-				yield(types.Done{Reason: stop}, nil)
-				return
-			}
-			continue
 		}
-
-		reply := sb.String()
-		if c.repair != nil {
-			repaired++
-			prompt, ok, err := c.repair(reply, repaired)
-			if err != nil {
-				flushDeltas()
-				yield(nil, err)
-				return
-			}
-			if ok {
-				asst := types.Message{ID: assistantID(turn), Role: types.RoleAssistant, Blocks: []types.Block{types.Text{Text: reply}}}
-				retainReasoning(&asst, reasoning.String())
-				msgs = append(msgs,
-					asst,
-					prompt)
-				flushDeltas()
-				continue
-			}
-		}
-		asst := types.Message{ID: assistantID(turn), Role: types.RoleAssistant, Blocks: []types.Block{types.Text{Text: reply}}}
-		retainReasoning(&asst, reasoning.String())
-		msgs = append(msgs, asst)
-		if c.resultPreview != nil {
-			for _, d := range c.resultPreview(asst) {
-				emitDelta(types.ResultDelta{Turn: turn, MessageID: asst.ID, Delta: d})
-			}
-		}
-		flushDeltas()
-		ev := types.AssistantMessage{Turn: turn, Message: asst}
-		if sink != nil {
-			sink.Emit(ctx, ev)
-		}
-		yield(ev, nil)
-		yield(types.Done{Reason: types.StopCompleted}, nil)
-		return
 	}
 }
 
-// runCalls settles the turn's batch under the batch protocol: the gate
+// modelEffect performs exactly one governed model invocation: assembly,
+// request preparation, streaming through the sink, parsing, truncated-call
+// repair and truncation handling. It advances the turn counter once and,
+// when the reply carries tool calls, parks them on the per-run scope for
+// the batch effect. A final answer returns the assistant message and Done
+// as the events a terminal status carries.
+func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+	env := turnEnvFrom(ctx)
+	c := env.c
+	req, err := c.assemble(ctx, types.AssembleInput{History: env.msgs})
+	if err != nil {
+		return st, nil, runtime.Continue, err
+	}
+	if env.maxTokens > 0 {
+		req.Options.MaxTokens = env.maxTokens
+	}
+	env.turn++
+	st.Turn = env.turn
+
+	var sb strings.Builder
+	var reasoning strings.Builder
+	var calls []types.ToolUse
+	finish := types.FinishStop
+	mctx, endChat := startSpan(ctx, telemetryFrom(ctx), SpanChat)
+	for chunk, err := range c.model(mctx, req) {
+		if err != nil {
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			}
+			endChat(types.String(types.KeySuspendReason, "error"))
+			env.flushDeltas(ctx)
+			return st, nil, runtime.Continue, err
+		}
+		switch chunk.Kind {
+		case types.DeltaText:
+			sb.WriteString(chunk.Delta)
+			env.emitDelta(ctx, types.TextDelta{Turn: env.turn, Delta: chunk.Delta})
+		case types.DeltaReasoning:
+			reasoning.WriteString(chunk.Delta)
+			if c.reasoningVisible {
+				env.emitDelta(ctx, types.ReasoningDelta{Turn: env.turn, Delta: chunk.Delta})
+			}
+		case types.DeltaToolArgs:
+			if chunk.ToolUse != nil {
+				// A fragment preview carries the call identity and the
+				// fragment text; the complete block carries Args and
+				// never streams a fragment of its own.
+				if chunk.Delta != "" {
+					env.emitDelta(ctx, types.ToolArgsDelta{Turn: env.turn, CallID: chunk.ToolUse.ID, Name: chunk.ToolUse.Name, Delta: chunk.Delta})
+				}
+				// Only the complete block enters the batch: a fragment
+				// is a preview, never an argument set to execute.
+				if len(chunk.ToolUse.Args) > 0 {
+					calls = append(calls, *chunk.ToolUse)
+				}
+			}
+		}
+		if chunk.ToolUse != nil && chunk.Kind != types.DeltaToolArgs && len(chunk.ToolUse.Args) > 0 {
+			calls = append(calls, *chunk.ToolUse)
+		}
+		if chunk.Finish != "" && chunk.Finish != types.FinishStop {
+			finish = chunk.Finish
+		}
+	}
+	endChat()
+
+	// A truncated finish earns a retry turn before anything executes:
+	// the pending calls are never run, the truncation result goes back
+	// to the model and the retry carries the larger allowance.
+	if finish == types.FinishMaxTokens && c.onTruncated != nil {
+		tu := types.ToolUse{}
+		if len(calls) > 0 {
+			tu = calls[len(calls)-1]
+		}
+		env.truncated++
+		retry, result, err := c.onTruncated(tu, finish, env.truncated)
+		if err != nil {
+			return st, nil, runtime.Continue, err
+		}
+		if retry > 0 {
+			env.maxTokens = retry
+			env.msgs = append(env.msgs, truncatedTurn(tu, *result, env.turn))
+			env.flushDeltas(ctx)
+			return st, nil, runtime.Continue, nil
+		}
+	}
+
+	if len(calls) > 0 {
+		env.flushDeltas(ctx)
+		env.reasoning = reasoning.String()
+		env.calls = calls
+		return st, nil, runtime.Continue, nil
+	}
+
+	reply := sb.String()
+	if c.repair != nil {
+		env.repaired++
+		prompt, ok, err := c.repair(reply, env.repaired)
+		if err != nil {
+			env.flushDeltas(ctx)
+			return st, nil, runtime.Continue, err
+		}
+		if ok {
+			asst := types.Message{ID: assistantID(env.turn), Role: types.RoleAssistant, Blocks: []types.Block{types.Text{Text: reply}}}
+			retainReasoning(&asst, reasoning.String())
+			env.msgs = append(env.msgs,
+				asst,
+				prompt)
+			env.flushDeltas(ctx)
+			return st, nil, runtime.Continue, nil
+		}
+	}
+	asst := types.Message{ID: assistantID(env.turn), Role: types.RoleAssistant, Blocks: []types.Block{types.Text{Text: reply}}}
+	retainReasoning(&asst, reasoning.String())
+	env.msgs = append(env.msgs, asst)
+	if c.resultPreview != nil {
+		for _, d := range c.resultPreview(asst) {
+			env.emitDelta(ctx, types.ResultDelta{Turn: env.turn, MessageID: asst.ID, Delta: d})
+		}
+	}
+	env.flushDeltas(ctx)
+	ev := types.AssistantMessage{Turn: env.turn, Message: asst}
+	if env.sink != nil {
+		env.sink.Emit(ctx, ev)
+	}
+	return st, []types.Event{ev, types.Done{Reason: types.StopCompleted}}, runtime.DoneStatus, nil
+}
+
+// batchEffect settles one turn's batch under the batch protocol: the gate
 // decides every call before the first one executes, allowed calls run in
 // call order through the scheduler, denials render as Failed(Permanent)
 // results at their index, and the first ask suspends the batch as a
 // SuspendError the caller persists — never an ordinary failed tool result.
 // It appends the assistant message with its calls and the settled results
-// in call order, and returns the batch's reservation spend. The batch runs
-// even when the context is already cancelled, so an in-flight side effect
-// finishes under the injected shield; after it the run stops.
-func runCalls(ctx context.Context, c turnConfig, sink types.Sink, turn int, calls []types.ToolUse, msgs *[]types.Message, reasoning string, used int) (types.StopReason, int, error) {
+// in call order, and adds the batch's reservation spend to the per-run
+// scope. The batch runs even when the context is already cancelled, so an
+// in-flight side effect finishes under the injected shield; after it the
+// run stops.
+func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+	env := turnEnvFrom(ctx)
+	c := env.c
+	turn := env.turn
+	calls := env.calls
+	msgs := &env.msgs
+	used := env.used
 	limits := c.limits
 	if limits.MaxToolCalls <= 0 {
 		limits.MaxToolCalls = math.MaxInt
@@ -260,7 +328,7 @@ func runCalls(ctx context.Context, c turnConfig, sink types.Sink, turn int, call
 		}
 	}
 	asst := types.Message{ID: assistantID(turn), Role: types.RoleAssistant}
-	retainReasoning(&asst, reasoning)
+	retainReasoning(&asst, env.reasoning)
 	for _, cu := range calls {
 		asst.Blocks = append(asst.Blocks, cu)
 	}
@@ -275,8 +343,8 @@ func runCalls(ctx context.Context, c turnConfig, sink types.Sink, turn int, call
 			if res, ok := validateCompletion(call); !ok {
 				return res, nil
 			}
-			if sink != nil {
-				sink.Emit(ctx, types.ToolStarted{Turn: turn, Call: call})
+			if env.sink != nil {
+				env.sink.Emit(ctx, types.ToolStarted{Turn: turn, Call: call})
 			}
 			tctx, endTool := startSpan(ctx, telemetryFrom(ctx), SpanTool,
 				types.String(types.KeyToolName, call.Name),
@@ -297,7 +365,7 @@ func runCalls(ctx context.Context, c turnConfig, sink types.Sink, turn int, call
 		},
 	}.Run(ctx)
 	if err != nil {
-		return "", 0, err
+		return st, nil, runtime.Continue, err
 	}
 
 	unsettled := map[string]bool{}
@@ -315,21 +383,23 @@ func runCalls(ctx context.Context, c turnConfig, sink types.Sink, turn int, call
 		res := br.Result
 		res.ID = br.Call.ID
 		results.Blocks = append(results.Blocks, res)
-		if sink != nil {
-			sink.Emit(ctx, types.ToolFinished{Turn: turn, Result: res})
+		if env.sink != nil {
+			env.sink.Emit(ctx, types.ToolFinished{Turn: turn, Result: res})
 		}
 	}
 	*msgs = append(*msgs, results)
+	env.used += report.Spent
 	if report.Suspend != nil {
-		return "", report.Spent, &types.SuspendError{Reason: types.AwaitingBatch, Payload: *report.Suspend}
+		return st, nil, runtime.SuspendedStatus, &types.SuspendError{Reason: types.AwaitingBatch, Payload: *report.Suspend}
 	}
+	env.calls = nil
 	if c.poll == nil {
-		return "", report.Spent, nil
+		return st, nil, runtime.Continue, nil
 	}
 	if stop := c.poll(); stop != "" && stop != types.StopCompleted {
-		return stop, report.Spent, nil
+		return st, []types.Event{types.Done{Reason: stop}}, runtime.DoneStatus, nil
 	}
-	return "", report.Spent, nil
+	return st, nil, runtime.Continue, nil
 }
 
 func truncatedTurn(tu types.ToolUse, res types.ToolResult, turn int) types.Message {
