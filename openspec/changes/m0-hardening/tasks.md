@@ -43,7 +43,7 @@ Independent, file-disjoint.
 ## Wave 2 — journal integrity, then the governed native path
 
 6. [x] `tools`: implement the documented `api:check` exit policy. `docs/design/compatibility.md` states it: CI fails on an incompatible change in any module at `v1` or later and only reports for `v0` modules. The tool currently exits 1 for every module, which is why the floor is red on five genuine pre-v1 changes. Report and exit 0 for a `v0` module, keep failing for `v1`, and keep printing every difference.
-  - verify result: `task api:check` exits 0 and still prints the five differences plus "module is pre-v1, reporting incompatible change(s) without failing"; `./tools/apicheck` green with the v0/v1 cases added.
+  - verify result: `task api:check` exits 0 and still prints the thirteen differences plus "module is pre-v1, reporting incompatible change(s) without failing"; `./tools/apicheck` green with the v0/v1 cases added.
   - files: `tools/apicheck/main.go`, `tools/apicheck/main_test.go`, `docs/design/api-review-m0-5.md`
   - scenarios: none
   - verify: `timeout 3m go test -timeout 2m ./tools/apicheck && timeout 3m task api:check`

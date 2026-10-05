@@ -1,6 +1,6 @@
 # gohan — overview
 
-Spec baseline v1.0 (restructured from gohan-spec v0.13 on 2026-09-29). This file is the map; it is not normative.
+The capability specs under `openspec/specs/` each carry their own version — from the `v1.0 baseline` specs restructured from gohan-spec v0.13 on 2026-09-29 to `stores` at v1.10 — and evolve independently through their ADRs. This file is the map; it is not normative.
 
 ## 1. Purpose
 
@@ -47,7 +47,7 @@ The design target is evolution without rewrites: a service starts as a small, cl
 | Path | Holds |
 |---|---|
 | `openspec/specs/<capability>/spec.md` | Normative contract and requirements per capability (below) |
-| `docs/adr/` | 146 architecture decision records, numbered 0001–0146 (D1–D89 from the monolith, 0090+ from later grill rounds) |
+| `docs/adr/` | 154 architecture decision records, numbered 0001–0154 (D1–D89 from the monolith, 0090+ from later grill rounds) |
 | `docs/design/types.md` | generated index of every normative type, function and sentinel error with its defining capability |
 | `docs/design/` | Architecture, module layout, Go baseline, compatibility policy (normative), adapter mappings, inference layer, reference scenarios, testing, evidence, risks |
 | `openspec/changes/` | Change proposals with task lists and design notes; `m0-core` is fully tasked, `m1`–`m4` are scope stubs |
@@ -83,8 +83,8 @@ The design target is evolution without rewrites: a service starts as a small, cl
 
 Capability freeze: no new capability specs until M0 ships; candidates go to `docs/backlog.md` (ADR-0098).
 | `build` | Strategies and Build | 6 |
-| `stores` | Store ports | 58 |
-| `recovery` | Crash recovery | 5 |
+| `stores` | Store ports | 60 |
+| `recovery` | Crash recovery | 6 |
 | `limits` | Run limits and uncertainty | 7 |
 | `runtime` | Runtimes and stepper | 27 |
 | `streams` | Events, cancellation and streams | 21 |
@@ -96,7 +96,7 @@ Capability freeze: no new capability specs until M0 ships; candidates go to `doc
 | `lifecycle` | Retirement, schema evolution and cost | 7 |
 | `performance` | Harness performance budgets | 3 |
 
-Total: 512 scenarios, each with a stable ID that is the name of the subtest covering it. `task spec:coverage` reports scenarios without tests and tests without scenarios.
+Total: 515 scenarios, each with a stable ID that is the name of the subtest covering it. `task spec:coverage` reports scenarios without tests and tests without scenarios.
 
 Each scenario also carries an `origin` label: a requirement heading of the archived v0.13 monolith (`R1`–`R14`, `R5a`–`R5y` — the archive is the only place those are written down) or the ADR that added the scenario (`ADR-NNNN`). Labels from later review rounds (`R35`–`R60`, `R52`, `RPERF`) name no written requirement list and are provenance only. Acceptance is `deferred_to` plus `task spec:coverage`; never the label.
 

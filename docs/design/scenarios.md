@@ -39,7 +39,7 @@ if err != nil {
 
 The S1 assistant is a native definition registered with the build option that takes a `NativeSpec`, and its handle is what the conversation is obtained from — the wiring is spelled out in §4.2b of `docs/design/architecture.md`. The definition carries the flow's name in its request, the model profile, the instruction blocks, the tools, the assembler, the two chains, the run limits and the flow's own tool decider.
 
-`std.Interactive()` is one exported function: it registers `std.ToolChain`, `std.ModelChain`, `std.DefaultPrompts`, the rule-based guards, `Windowed` output and default `RunLimits`, and `Options()` presents it as `Build` options. Its body is the documentation; `stack.Explain(conv)` prints the result. A team that wants less copies the function and deletes lines.
+`std.Interactive()` is one exported function: it returns a `Preset` whose fields are its name, `DefaultPrompts`, a tool chain holding a single `limits` step built from the class's `types.RunLimits` (`limit.ToolLimits`), and those `RunLimits` themselves. `Options()` emits `WithPrompts` and, when the chain carries a limits step, the model-chain limits middleware — nothing else. It registers no `std.ModelChain`, no rule-based guards and no output-window policy; a team that wants more composes them beside the preset. Its body is the documentation; `stack.Explain(conv)` prints the result. A team that wants less copies the function and deletes lines.
 
 The S1 assistant is a `Conversation`, so the use case streams events and maps a suspension:
 

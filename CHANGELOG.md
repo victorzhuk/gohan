@@ -12,6 +12,12 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 - A conversation that accepts approvals must be built with an approval policy source (`WithConversationApprovalPolicy`, with `std/permission.PolicySource` as the default) and a tool-spec lookup (`WithConversationToolSpecs`). Without them an approval decision is refused rather than granted, and a suspension that cannot resolve the pending call's declaration fails closed instead of persisting an incomplete approval.
 - The `Message.Meta` key `gohan.approval` is reserved for the harness's approval receipt; a caller appending it is refused, and the previous approved arguments for a request are read from that receipt instead of from the journal.
 - A session-owner exception no longer bypasses the `RiskHigh` approval scope.
+- `std.Preset.PromptMiddleware` is removed: a preset declares its prompt set through `gohan.WithPrompts`, and a model chain takes the renderer as `std.PromptMiddleware(promptSet)` (`std/prompts.go`).
+- `runtime.ErrBatchOverrun` is removed and moved to `types.ErrBatchOverrun`, so `core/chains` no longer depends on `core/runtime`; callers importing the sentinel from `runtime` must switch to `types`.
+- `gohan.FlowFunc` gained a variadic `...FlowOption` tail (`gohan.AllowAnonymousFlow` and friends). Existing positional call sites still compile; wrappers that pin the exact function type do not.
+- `std/flow.Extract` and `std/flow.Classify` now take the resolved `*gohan.Stack` and a profile name instead of a `types.Model`: `Extract[Out](stack, "cheap", opts...)` and `Classify[L](stack, "cheap", labels, opts...)`.
+- The `chains.Explanation`, `runtime.AgentRun` and `runtime.Batch` structs gained fields (`Explanation`: `Fallback`, `Granularity`, `Limits`, `Sample`, `Strategies`, `ToolSteps`; `AgentRun`: `ModelEffect`, `BatchEffect`; `Batch`: `Scheduler`). Unkeyed composite literals over these types break; keyed literals are unaffected.
+- The example-local shapes `examples/excursions.Trip` and `examples/temporal-travel`'s `(*LiveFlags).Snapshot` changed with the governed path; code copying those examples updates with them.
 
 ### Fixed
 
@@ -49,6 +55,21 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 - The assembly prefix memo applies only to an unfiltered build, so a per-turn tool filter is always evaluated and two filters from one factory can no longer share a cached request.
 - The scenario coverage gate counts only executed passing subtests: a skipped or failed test no longer satisfies its scenario.
 - The API comparison ignores a parameter rename while still reporting type, arity, variadic, result and method-set changes.
+- A native batch that asks for approval settles one ask at a time: each checkpoint carries exactly one active request, an approval, rejection or edit touches only the head of the durable ask queue, and no model call or tool reservation runs between asks. A queued fingerprint identical to an already-approved one still requires its own approval.
+- Results of calls already settled before an approval suspension survive the resume and the recovery: a mixed batch (allowed, denied, asked) keeps its completed results in history, and the final settlement appends only the results not already persisted, never a duplicate assistant call or result.
+- Turn accounting is authoritative: `State.Turn` counts one increment per permitted model call across resume and recovery, `MaxTurns` stops the run before the next model phase with one `Done{StopLimit}`, and a native batch overrun translates to `types.LimitExceededError` at the run boundary while low-level callers keep `types.ErrBatchOverrun`.
+- A run recovered in `Running` state reconstructs its phase from durable history — the latest assistant tool turn minus the recorded results — instead of failing to decode an empty backend, and replays without appending the same assistant calls or results twice; uncommitted read-only work may repeat, as documented.
+- Recovery refuses to execute when the checkpoint originator or stored session owner cannot be resolved: it fails the run through the abandon path instead of continuing under the ambient reaper's principal or credentials.
+- The assembler receives the resolved configuration — the registered instruction, profile, schemas, actual run identity and history — instead of only history, and the tool `Step.Applies` predicate is evaluated against that resolved spec snapshot before middleware execution, so execution and `Explain` agree.
+- A run reports its charged cost: the ledger is bound before the lifecycle is constructed for `Send`, `Continue` and resume, so the initial `Done.Cost` includes what the run actually spent.
+- Stream delivery uses one bounded handoff between the run worker and the consumer, so a fast producer can no longer queue an unbounded backlog; explicit abandonment wakes blocked empty/full waits even when `ConsumerStall` is zero, and a detached run stops retaining undelivered output while it keeps recording.
+- Stall detection arms only while a consumer callback is outstanding: a slow producer or a silent tool no longer preempts a draining consumer, and the deadline measures waiting-for-output as zero stall time.
+- A resumed run executes on the same private worker as an initial run — with the resolved `ConsumerStall` limit, the restored ledger bound before the lifecycle starts, and a post-acquisition preparation failure releasing the lease — and reports one durable failure terminal plus one live error tuple instead of failing silently.
+- `Attach` catches up across conversation instances over shared stores: a local waiter notification remains the fast path, and a replay poll observes another conversation writer's live records so an ordered tail arrives without duplicates.
+- The wrapped event ring expires in logical ring order: a saturated expiry preserves the retained payloads and their replay sequence instead of overwriting unread slots, keeps the per-run next sequence, and still refuses a stale cursor.
+- Untrusted ingress refuses the reserved `gohan.approval` metadata before any session append, control-human append, mailbox signal or operator mutation, and a shaped receipt without approvers grants nothing.
+- `Send` and `Continue` install the minted run identity — run id, session, flow, mode, principal — into the run record and the execution context before the run starts, so scope checks and journal keys never see an absent identity, and an ambient `RunInfo` cannot override the acquired run.
+- Resolution copies the resolved definition slices (`Tools`, `ToolChain`, `ModelChain`) instead of handing out caller-owned backing arrays, so a caller mutating a definition after registration cannot change execution.
 
 ### Added
 
@@ -58,6 +79,11 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 - `AllowAnonymous()`, a build option for unowned function-flow invocation; it invents no tenant and grants no access to an owned session.
 - Every shipped example builds its governed native path: all five example packages register a flow with `WithNativeAgent`, construct the handle with `NewNativeConversation` and drive it offline against the memory stores, with the excursions flow carrying its own decider so a denied booking executes nothing and its ordered `not_executed` result reaches the persisted history.
 - `task spec:gate` runs the scenario coverage gate over every module in the workspace, and `task spec` regenerates the type index before it.
+
+### Known limitations
+
+- A native approval checkpoint written by a build before the checkpoint-envelope format change is refused with `ErrCheckpointIncompatible` rather than migrated; the tokens it carries are preserved, and the run must be re-driven from its persisted history.
+- `Attach` still treats possession of a run identifier as sufficient to observe it: no ownership rule is specified for attach yet, so the repair records the boundary instead of silently introducing an access policy.
 
 ## [0.1.0] - 2026-10-05
 

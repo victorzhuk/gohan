@@ -4,7 +4,7 @@ Status: published 2026-10-05, after the three offline acceptance processes passe
 
 ## Gate evidence
 
-Run on 2026-10-05 against the working tree. The `api:check` evidence below is the **re-run** against the tags the `v0.1.0` cut left behind (`v0.1.0` for the root module, `adapter/otel/v0.1.0` for the adapter); the first run of the day, before those tags existed, skipped both modules and is recorded at the end of this section.
+Run on 2026-10-05 against the working tree **while the public-path repair waves were in flight**; the final-tree verification of this document lives in its own block at the end of this section. The `api:check` evidence below is the **re-run** against the tags the `v0.1.0` cut left behind (`v0.1.0` for the root module, `adapter/otel/v0.1.0` for the adapter); the first run of the day, before those tags existed, skipped both modules and is recorded at the end of this section.
 
 - `task examples:test` — all five example modules pass, including the three offline acceptance processes of ADR-0083/ADR-0136:
 
@@ -76,6 +76,16 @@ Run on 2026-10-05 against the working tree. The `api:check` evidence below is th
   api:check: github.com/victorzhuk/gohan: no tag yet, skipped (no baseline to diff against)
   api:check: github.com/victorzhuk/gohan/adapter/otel: no tag yet, skipped (no baseline to diff against)
   ```
+
+### Final-tree verification
+
+The runs above were captured while the repair waves ran. This block records the verification of the final tree, 2026-10-05:
+
+- `task lint` — zero issues, recorded at the M0.5 audit baseline and during the hardening waves (in-flight evidence); it was not re-run for this document and carries no final-tree verdict here.
+- `task spec` — `spec:types` regenerated the types index cleanly; `spec:gate` on the final tree printed `summary registered=515 subtests=1132 covered=285 missing=230 missing_in_scope=9 unregistered=0` and exited non-zero. The earlier gate verdict quoted in the change record (`missing_in_scope=0` at `subtests=1099`) therefore describes the pre-repair baseline, not this tree: nine registered scenarios in scope still lack a covering subtest while the public-path closure is in flight.
+- `task api:check` — exit 0 on the final tree, printing the same 13 incompatible changes against `v0.1.0` listed above and `module is pre-v1, reporting incompatible change(s) without failing`; `adapter/otel` remains compatible with `adapter/otel/v0.1.0`.
+
+The statements that still hold as limitations of the gate itself: a module with no tag is skipped and reports no incompatibility, and the gate's second clause — `api/gohan.yaml` diffed against a generated `adapter/httpapi` server — remains unexercisable because neither artifact exists (both are M4 deliverables).
 
 ### Adapter standalone release
 
