@@ -69,6 +69,7 @@ type StrategyPlan struct {
 // Stack is the configured runtime Build returns.
 type Stack struct {
 	logger           *slog.Logger
+	telemetry        types.Telemetry
 	models           []types.Model
 	middleware       []types.ModelMiddleware
 	estimator        types.TokenEstimator
@@ -119,6 +120,7 @@ func Build(opts ...Option) (*Stack, error) {
 	}
 	s := &Stack{
 		logger:           cfg.logger,
+		telemetry:        cfg.telemetry,
 		models:           cfg.models,
 		middleware:       cfg.middleware,
 		estimator:        cfg.estimator,

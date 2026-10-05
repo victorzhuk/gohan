@@ -22,6 +22,7 @@ type config struct {
 	keys             types.ProviderKeySource
 	credentials      types.CredentialSource
 	logger           *slog.Logger
+	telemetry        types.Telemetry
 	pinned           *types.PinnedManifest
 	prompts          chains.PromptSet
 	sequentialTools  bool
@@ -113,6 +114,16 @@ func WithLogger(l *slog.Logger) Option {
 			return errors.New("gohan: nil logger")
 		}
 		c.logger = l
+		return nil
+	}
+}
+
+// WithTelemetry sets the port the stack emits spans and metrics through.
+// The implementation lives outside core; a stack built without one emits
+// nothing.
+func WithTelemetry(t types.Telemetry) Option {
+	return func(c *config) error {
+		c.telemetry = t
 		return nil
 	}
 }

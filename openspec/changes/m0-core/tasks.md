@@ -814,27 +814,34 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
 
 ## F. Telemetry, tests, examples, performance
 
-28. [ ] `std/telemetry`: OTel spans (`invoke_agent`, `chat`, `execute_tool`, `gohan.guard`, `gohan.decide`), metrics incl. TTFT/TPOT, `Convention` layer with `GenAI` preset, `release`/`variant` attributes, loop-detection metric. — `telemetry.same-tree-on-all-backends`, `telemetry.ttft-and-tpot`, `telemetry.loop-detection`, `telemetry.rename-is-config`, `telemetry.canonical-keys`, `telemetry.forbidden-label`, `telemetry.no-content-in-logs`
+28. [x] `std/telemetry` and `adapter/otel`: OTel spans (`invoke_agent`, `chat`, `execute_tool`, `gohan.guard`, `gohan.decide`), metrics incl. TTFT/TPOT, `Convention` layer with `GenAI` preset, `release`/`variant` attributes, loop-detection metric. — `telemetry.same-tree-on-all-backends`, `telemetry.ttft-and-tpot`, `telemetry.loop-detection`, `telemetry.rename-is-config`, `telemetry.canonical-keys`, `telemetry.forbidden-label`, `telemetry.no-content-in-logs`
 
-- [ ] 28.1 `core`: Emit OTel `invoke_agent`, `chat`, `execute_tool`, `gohan.guard`, `gohan.decide` spans and canonical `gohan.*` keys from governed chains; expose the shared backend-tree fixture.
+- [x] 28.1 `core`: Emit OTel `invoke_agent`, `chat`, `execute_tool`, `gohan.guard`, `gohan.decide` spans and canonical `gohan.*` keys from governed chains; expose the shared backend-tree fixture.
   - files: `core/telemetry.go`, `core/telemetry_test.go`
   - scenarios: `telemetry.same-tree-on-all-backends`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestTelemetrySpanTree'`
+  - note: No telemetry seam exists in the tree - no tracer, counter or span port anywhere in `core/types` - so this chunk declares it, and the shape is frozen here because four later chunks compile against it. `core/types` gains the port and the attribute type with **no OTel types**: `type Telemetry interface { StartSpan(ctx context.Context, name string, attrs ...Attr) (context.Context, func(attrs ...Attr)); Count(ctx context.Context, name string, n int64, attrs ...Attr); Record(ctx context.Context, name string, v float64, attrs ...Attr) }` and `type Attr struct { Key string; Value any }` with `String`/`Int`/`Float`/`Bool` constructors, so no `attribute.KeyValue` leaks into the floor. The canonical keys are consts in that same floor file (`KeyFlow = "gohan.flow"`, `KeyRunID`, `KeyTurn`, and the rest of the spec's key table) - a const is declared in the floor and never re-exported from `gohan` (ADR-0139 rule 3). The driver gains `WithTelemetry(types.Telemetry) Option` beside the landed `WithLogger` (`core/build_options.go:110`). The precedent is `TaintHook` (`core/types/taint.go:37-40`): the port lives in core, the implementation lives outside it, and core imports neither `std` nor an adapter. Emission sites that already exist are yours to wire: the recovered and abandoned counters the recovery row recorded for this row, and the `gohan.flow` span - `core/flow_test.go:45` carries a pending-comment naming this row, and it must go: a comment referring to a plan row is not allowed in code at all.
 
-- [ ] 28.2 `std/telemetry`: Implement `Convention`, `ContentMapping`, `GenAI` and `Langfuse` presets; map core canonical keys without changing core when convention names change.
+- [x] 28.2 `std/telemetry`: Implement `Convention`, `ContentMapping`, `GenAI` and `Langfuse` presets; map core canonical keys without changing core when convention names change.
   - files: `std/telemetry/convention.go`, `std/telemetry/convention_test.go`
   - scenarios: `telemetry.canonical-keys`, `telemetry.rename-is-config`
   - verify: `go test -short -timeout 2m ./std/telemetry/ -run 'TestTelemetryConvention'`
 
-- [ ] 28.3 `std/telemetry`: Record TTFT/TPOT and loop-detection metrics with `release`/`variant`; enforce the metric-label allowlist and `WithTenantLabel()` at `Build`.
+- [x] 28.3 `std/telemetry`: Record TTFT/TPOT and loop-detection metrics with `release`/`variant`; enforce the metric-label allowlist and `WithTenantLabel()` at `Build`.
   - files: `std/telemetry/metrics.go`, `std/telemetry/metrics_test.go`
   - scenarios: `telemetry.ttft-and-tpot`, `telemetry.loop-detection`, `telemetry.forbidden-label`
   - verify: `go test -short -timeout 2m ./std/telemetry/ -run 'TestTelemetryMetrics'`
 
-- [ ] 28.4 `core`: Implement `WithLogger` and per-run canonical attributes; exclude content, credentials and `Raw` values at every log level.
+- [x] 28.4 `core`: Add per-run canonical attributes and content exclusion to the landed `WithLogger`; exclude content, credentials and `Raw` values at every log level.
   - files: `core/logging.go`, `core/logging_test.go`
   - scenarios: `telemetry.no-content-in-logs`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestTelemetryLogging'`
+
+- [x] 28.5 `adapter/otel`: a new module exporting the floor's telemetry port over OpenTelemetry, with its own `go.mod` and workspace wiring.
+  - files: `adapter/otel/go.mod`, `adapter/otel/otel.go`, `adapter/otel/otel_test.go`, `go.work`, `Taskfile.yml`, the CI workflow that runs `task test`
+  - scenarios: none
+  - verify: `go -C adapter/otel test -short -timeout 2m ./... -run 'TestOTelExporter' && task test`
+  - note: The repo rule puts any third-party dependency in `adapter/<name>/` as its own module, and `adapter/` does not exist while `go.work` lists only `use .`. This chunk establishes both: module `github.com/victorzhuk/gohan/adapter/otel` requiring `go.opentelemetry.io/otel` (plus the SDK and exporters its test needs), implementing `types.Telemetry` over a tracer, a counter and a histogram. `./...` from the root module does not reach another module, so the workspace entry and the `task test`/CI leg are part of this chunk - a module nothing runs is not wired. It is also what makes the spec's span names provable against a real tracer, so its test asserts the span tree and the canonical keys round-trip.
 
 29. [ ] `testkit/gohantest`: `ScriptedModel` (itself passing `conformance.Model`), `Recorder`/`Replayer` (`Strict`, `ByTurn`, `Rerecord`), fakes, fault injection, leak profile; `conformance` suites for runtime, chain, flow, model with the provider fixture set. — `telemetry.replay-strictness`, `runtime.foreign-tool-under-native`
 
@@ -847,6 +854,7 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - files: `testkit/gohantest/cassette.go`, `testkit/gohantest/cassette_test.go`
   - scenarios: `telemetry.replay-strictness`
   - verify: `go test -short -timeout 2m ./testkit/gohantest/ -run 'TestCassetteModes'`
+  - note: Both testkit packages are declared in the docs and absent from the tree (`testkit/gohantest` at `docs/design/testing.md:14`, `testkit/conformance` at `openspec/changes/m0-core/design.md:31`); only `testkit/storetest` exists (nine suite files). `conformance.Model` is spec-only today (`openspec/specs/model/spec.md:277`), so the requirement is implemented, not consumed. Three scripted fakes are already hand-rolled in the repo (`core/build_test.go:201`, `core/model_stream_test.go:22`, `std/route/route_test.go:14`): the shared testkit does not force their migration - they stay as local doubles, and this row adds the shared ones beside them.
 
 - [ ] 29.3 `testkit/gohantest`: Implement hand-written fakes, fault injection and the goroutine-leak profile used by conformance suites.
   - files: `testkit/gohantest/fakes.go`, `testkit/gohantest/fakes_test.go`, `testkit/gohantest/faults.go`, `testkit/gohantest/faults_test.go`
@@ -857,6 +865,7 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - files: `testkit/conformance/model.go`, `testkit/conformance/model_test.go`, `testkit/conformance/fixtures.go`, `testkit/conformance/fixtures_test.go`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./testkit/conformance/ -run 'TestModelConformance'`
+  - note: This package is `testkit/conformance` in the root module - it has no third-party dependency, so it is not a module of its own. It compiles against the testkit the 29.1-29.3 chunks land in this rung, which is why it sits in the second wave.
 
 - [ ] 29.5 `testkit/conformance`: Implement `Runtime` and `Chain` suites with leak checks and the imported eino `InvokableTool` fixture under native through the full governed tool chain.
   - files: `testkit/conformance/runtime.go`, `testkit/conformance/runtime_test.go`, `testkit/conformance/chain.go`, `testkit/conformance/chain_test.go`
@@ -1016,6 +1025,8 @@ The rows above keep their reviewed scope; these are the places the review correc
 - Row 27 and 27a, from the rung's two scouts. **The store half is already built**: `Runs.Stale`, `Runs.Reclaim` (atomic, exactly one racing reaper wins), the injectable memory clocks, checkpoint expiry in `Consume`, `PreemptedLister`, `RunState.Resuming` and `Checkpoints.PendingInput` all landed in rows 22-23, and `ErrShuttingDown`/`ErrShutdownIncomplete` with them. What is absent is the driver and the mechanism: no `Recover`, no `Inspect`, no read-by-id on `Runs` (only `ByOperation`), no re-drive from `Resuming`, no `Replay` on `Journal`, no `Shutdown`/`Ready`/`Health` on any receiver, no `StopPreempted`, no `Runs.Preempted`, no `ShutdownIncomplete`, and no build option binding stores at all (`stores.Stores` carries `SessionLog` alone while `architecture.md:37` lists six ports). **Two premises were wrong**: 27.2 promised "remaining limits" and `recovery/spec.md:24` forbids exactly that ("No limits-remaining value is returned"), and the `RunView` shape is normative there, not the chunk's to invent; 27.3's `core/stores/checkpoints_clock.go` never needed to exist, so the chunk becomes a proof chunk over landed seams. **Two scenarios had no owner**: `identity.nested-spans-and-recovery` - moved to row 27 by the row-25 note but claimed by no chunk - joins 27.1, with its span half deferred to row 28's telemetry; `recovery.no-double-run` was recorded as an open deferral from row 23 and now belongs to 27.1's proof. **Wave order is frozen by dependency**: 27a.2's preemption mechanism is what 27a.1's `Shutdown` drives, so 27a.2 lands first; 27.2 and 27a.3 both build on 27.1, and `core/stores/runs.go` has exactly one writer per wave (27.2).
 
 - Rows 27 and 27a, landing notes. **Two chunks were proofs, not builds**: 27.4 found the wall-clock budget already measured in elapsed monotonic time (`core/chains/limits.go:146`, `:229` - `now.Sub(s.start)` through Go's monotonic reading), and 27.3 found staleness, reclaim, expiry and the clock jump all landed, so it wrote `core/stores/clock_test.go` alone; the plan's `store_clock.go`/`checkpoints_clock.go` were both unnecessary. **One fix cycle per wave**: 27.1's re-drive subtest exposed a real defect - `replayState` derived `HistoryVersion` from `run.Seq` instead of the session log, which masked a wrong-version append behind the abandon path - and 27a.2 left the package unbuildable with a harness field the implementation never got plus a resumed drive that stepped forever; both were bounded fixes. **A deviation to carry**: 27a.1 put its in-flight run registry beside `Stack` in `core/shutdown.go` rather than on it, because `core/build.go` was another chunk's file this wave - fold those fields into `Stack` when the run entry point next changes. **File correction**: 27a.3's leaf half is `core/stores/runs_preempted.go` (the store type's method), not `core/store_runs_preempted.go`.
+
+- Rows 28 and 29, from the rung's two scouts, plus the dependency decision. **OTel cannot live in `std`**: the repo's core-budget rule puts a third-party dependency in `adapter/<name>/` as its own module, while `adapter/` does not exist and `go.work` lists only `use .`, so row 28 gains a fifth chunk (28.5) that establishes the module, the workspace entry and the test leg. Core keeps a dependency-free port - the landed `TaintHook` precedent (`core/types/taint.go:37-40`) - and `std/telemetry` keeps the convention and metrics layers with no OTel types, so the port shape (`Telemetry`, `Attr`, the canonical key consts, `WithTelemetry`) is frozen in 28.1's note before four chunks compile against it. **One premise had already landed**: 28.4 said "implement `WithLogger`" and it has existed since row 20 (`core/build_options.go:110`, `core/build.go:71,101,137-138`), so that chunk is the per-run attributes and the content exclusion. **No telemetry seam exists anywhere in core** - no tracer, counter or span - while the recovery row recorded the recovered and abandoned counters as this row's work, and `core/flow_test.go:45` still carries a pending-comment naming this row. **Row 29 is all-new packages**: both testkit packages are doc-declared and absent, `conformance.Model` is spec-only (`model/spec.md:277`), and the three hand-rolled scripted fakes stay local rather than migrating.
 
 ## Deferred
 

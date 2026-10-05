@@ -77,6 +77,7 @@ type Lifecycle struct {
 	runs      stores.Runs
 	lease     stores.Lease
 	sessionID string
+	telemetry types.Telemetry
 	reason    types.SuspendReason
 	appender  HistoryAppender
 	uncertain func(runtime.State) []types.CallKey
@@ -137,6 +138,12 @@ func WithLifecycleSuspendReason(r types.SuspendReason) LifecycleOption {
 	return func(lc *Lifecycle) { lc.reason = r }
 }
 
+// WithLifecycleTelemetry binds the emission port the run span and the
+// governed counters record through. A lifecycle without one emits nothing.
+func WithLifecycleTelemetry(t types.Telemetry) LifecycleOption {
+	return func(lc *Lifecycle) { lc.telemetry = t }
+}
+
 // NewLifecycle builds the driver-side lifecycle with its defaults.
 func NewLifecycle(opts ...LifecycleOption) *Lifecycle {
 	lc := &Lifecycle{reason: types.AwaitingTool}
@@ -156,6 +163,8 @@ func DriveLifecycle(ctx context.Context, lc *Lifecycle, rt runtime.Runtime, r ru
 		if lc == nil {
 			lc = NewLifecycle()
 		}
+		ctx, endSpan := startRunSpan(ctx, lc.telemetry)
+		defer endSpan()
 		st, err := rt.Start(ctx, r)
 		if err != nil {
 			yield(nil, err)

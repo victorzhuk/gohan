@@ -30,11 +30,13 @@ tasks:
     desc: Run short unit tests
     cmds:
       - go test -timeout 2m -short ./...
+      - go -C adapter/otel test -timeout 2m -short ./...
 
   test:race:
     desc: Run short unit tests with the race detector
     cmds:
       - go test -timeout 10m -race -short ./...
+      - go -C adapter/otel test -timeout 10m -race -short ./...
 
   bench:
     desc: Run benchmarks once each

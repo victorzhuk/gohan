@@ -31,8 +31,7 @@ const recoverStaleAfter = stores.LeaseTTL
 //
 // A run whose flow has no registered recovery runtime cannot be re-run
 // headlessly; it finishes Failed with Uncertain and gohan.run.abandoned
-// records the abandonment (the metric itself lands with telemetry,
-// row 28). The session stays consistent for the next Send.
+// records the abandonment. The session stays consistent for the next Send.
 func (s *Stack) Recover(ctx context.Context, limit int) error {
 	if s.stores.Runs == nil {
 		return errRecoverStoresRequired
@@ -94,6 +93,7 @@ func (s *Stack) recoverRun(ctx context.Context, run stores.Run) error {
 	if err := s.stores.Runs.Finish(ctx, lease, stores.Finished, run.Uncertain, ""); err != nil {
 		return fmt.Errorf("recover run: %w", err)
 	}
+	countRecovered(ctx, s.telemetry, run)
 	return nil
 }
 
@@ -171,9 +171,9 @@ func (s *Stack) recoveryContext(ctx context.Context, run stores.Run, st runtime.
 
 // abandonRun closes a run that cannot be re-driven headlessly as Failed
 // with Uncertain, leaving the session consistent for the next Send.
-// gohan.run.abandoned records the abandonment; the metric lands with
-// telemetry in row 28.
+// gohan.run.abandoned records the abandonment.
 func (s *Stack) abandonRun(ctx context.Context, lease stores.Lease, run stores.Run) error {
+	countAbandoned(ctx, s.telemetry, run)
 	if err := s.stores.Runs.Finish(ctx, lease, stores.Failed, run.Uncertain, ""); err != nil {
 		return fmt.Errorf("recover run: %w", err)
 	}

@@ -42,7 +42,6 @@ func TestFlowContract(t *testing.T) {
 		if out != "x:in" {
 			t.Fatalf("got %q, want %q", out, "x:in")
 		}
-		// gohan.flow span emission belongs to telemetry (row 28); pending.
 	})
 
 	t.Run("flow.not-suspendable", func(t *testing.T) {
