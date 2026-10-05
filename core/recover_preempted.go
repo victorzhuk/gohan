@@ -50,8 +50,11 @@ func (s *Stack) recoverPreemptedRun(ctx context.Context, run stores.Run) error {
 	if err != nil {
 		return s.abandonRun(ctx, lease, run)
 	}
-	rctx := s.recoveryContext(ctx, run, st, &cp)
-	return s.driveRecovered(rctx, lease, run, rt, st)
+	rctx, p, err := s.recoveryContext(ctx, run, st, &cp)
+	if err != nil {
+		return s.abandonWith(ctx, lease, run, err)
+	}
+	return s.driveRecovered(rctx, lease, run, rt, st, p)
 }
 
 // resumeConsumed reports whether a client decision is already recorded on

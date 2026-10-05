@@ -69,11 +69,9 @@ func (s *Stack) recoverConsumed(ctx context.Context, limit int) error {
 		return fmt.Errorf("recover run: %w", err)
 	}
 	for _, cp := range ready {
-		if cp.Reason == types.Preempted {
-			// A consumed Preempted token means the client owns the
-			// resume; recovery only re-drives harness-owned reasons.
-			continue
-		}
+		// The lease decides, not the reason: a live client holds it and
+		// wins the Resuming transition; a dead client left the run
+		// suspended with a consumed token, which recovery completes.
 		if err := s.recoverConsumedRun(ctx, cp); err != nil {
 			return err
 		}
@@ -104,8 +102,11 @@ func (s *Stack) recoverConsumedRun(ctx context.Context, cp stores.Checkpoint) er
 	if err != nil {
 		return s.abandonRun(ctx, lease, run)
 	}
-	rctx := s.recoveryContext(ctx, run, st, &cp)
-	return s.driveRecovered(rctx, lease, run, rt, st)
+	rctx, p, err := s.recoveryContext(ctx, run, st, &cp)
+	if err != nil {
+		return s.abandonWith(ctx, lease, run, err)
+	}
+	return s.driveRecovered(rctx, lease, run, rt, st, p)
 }
 
 // orderTreeRootsFirst lists depth-zero runs before their children, so a
@@ -138,8 +139,11 @@ func (s *Stack) recoverRun(ctx context.Context, run stores.Run) error {
 	if err != nil {
 		return s.abandonRun(ctx, lease, run)
 	}
-	rctx := s.recoveryContext(ctx, run, st, cp)
-	return s.driveRecovered(rctx, lease, run, rt, st)
+	rctx, p, err := s.recoveryContext(ctx, run, st, cp)
+	if err != nil {
+		return s.abandonWith(ctx, lease, run, err)
+	}
+	return s.driveRecovered(rctx, lease, run, rt, st, p)
 }
 
 // driveRecovered re-drives one recovered run through the shared lifecycle:
@@ -148,18 +152,31 @@ func (s *Stack) recoverRun(ctx context.Context, run stores.Run) error {
 // drive ends and the run is still Running or Resuming, nothing recorded a
 // terminal transition — the run is closed as failed instead of silently
 // left open.
-func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stores.Run, rt runtime.Runtime, st runtime.State) error {
+func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stores.Run, rt runtime.Runtime, st runtime.State, p types.Principal) error {
+	if s.stores.Checkpoints == nil {
+		// The re-drive can reach another suspension; without the
+		// checkpoint store it cannot park the run again.
+		return s.abandonWith(ctx, lease, run, fmt.Errorf("recover run %s: no checkpoint store to suspend through", run.RunID))
+	}
 	opts := []LifecycleOption{
 		WithLifecycleRuns(s.stores.Runs, lease),
 		WithLifecycleResumeState(st),
 		WithLifecycleSession(run.SessionID),
+		WithLifecycleFlow(run.Flow),
 		WithLifecycleTelemetry(s.telemetry),
+	}
+	if p.Subject != "" {
+		opts = append(opts, WithLifecycleOriginator(p))
+	}
+	if s.approvalPolicy != nil {
+		opts = append(opts, WithLifecycleApprovalPolicy(s.approvalPolicy))
 	}
 	if app := s.recoveryAppender(run); app != nil {
 		opts = append(opts, WithLifecycleAppender(app))
 	}
 	lc := NewLifecycle(opts...)
-	for _, err := range DriveLifecycle(ctx, lc, rt, runtime.AgentRun{}) {
+	ag := runtime.AgentRun{Save: s.stores.Checkpoints.Put}
+	for _, err := range DriveLifecycle(ctx, lc, rt, ag) {
 		if err != nil {
 			break
 		}
@@ -264,11 +281,35 @@ func (s *Stack) sessionVersion(ctx context.Context, sessionID string) int64 {
 	return h.Version
 }
 
-// recoveryContext re-issues the run's identity: the Resuming originator
-// comes from the checkpoint and travels through the credential source
-// before any tool executes (identity.credentials-on-recovery).
-func (s *Stack) recoveryContext(ctx context.Context, run stores.Run, st runtime.State, cp *stores.Checkpoint) context.Context {
-	info := types.RunInfo{
+// recoveryContext re-issues the run's identity from stored state: the
+// checkpoint's originator, or the session owner when no checkpoint
+// survived. The reaper's ambient principal never becomes the driver, and
+// the credential resolution happens before any tool executes; its failure
+// stops the recovery.
+func (s *Stack) recoveryContext(ctx context.Context, run stores.Run, st runtime.State, cp *stores.Checkpoint) (context.Context, types.Principal, error) {
+	var p types.Principal
+	resolved := false
+	if cp != nil {
+		p = cp.Originator
+		resolved = true
+	} else if s.stores.SessionLog != nil {
+		// A session row the log cannot produce leaves no stored owner;
+		// the reaper's ambient principal must not fill the gap.
+		if h, err := s.stores.SessionLog.Load(ctx, run.SessionID); err == nil {
+			p = types.Principal{Tenant: h.Owner.Tenant, Subject: h.Owner.Subject}
+			resolved = true
+		}
+	}
+	if !resolved {
+		ctx = types.WithRunInfo(ctx, types.RunInfo{
+			Flow: run.Flow, SessionID: run.SessionID, RunID: run.RunID,
+			RootRunID: run.RootRunID, ParentRunID: run.ParentRunID,
+			Turn: st.Turn, Depth: run.Depth, Mode: run.Mode,
+		})
+		return ctx, p, nil
+	}
+	ctx = types.WithPrincipal(ctx, p)
+	ctx = types.WithRunInfo(ctx, types.RunInfo{
 		Flow:        run.Flow,
 		SessionID:   run.SessionID,
 		RunID:       run.RunID,
@@ -277,17 +318,25 @@ func (s *Stack) recoveryContext(ctx context.Context, run stores.Run, st runtime.
 		Turn:        st.Turn,
 		Depth:       run.Depth,
 		Mode:        run.Mode,
-	}
-	ctx = types.WithRunInfo(ctx, info)
-	if cp != nil {
-		ctx = WithPrincipal(ctx, cp.Originator)
-		if s.credentials != nil {
-			if cred, cerr := s.credentials.Credentials(ctx, cp.Originator); cerr == nil {
-				ctx = WithCredential(ctx, cred)
-			}
+		Principal:   p,
+	})
+	if s.credentials != nil {
+		cred, err := s.credentials.Credentials(ctx, p)
+		if err != nil {
+			return ctx, p, fmt.Errorf("recover run %s: resolve credentials: %w", run.RunID, err)
 		}
+		ctx = WithCredential(ctx, cred)
 	}
-	return ctx
+	return ctx, p, nil
+}
+
+// abandonWith closes the run as Failed and reports the reason recovery
+// stopped driving it.
+func (s *Stack) abandonWith(ctx context.Context, lease stores.Lease, run stores.Run, cause error) error {
+	if err := s.abandonRun(ctx, lease, run); err != nil {
+		return err
+	}
+	return cause
 }
 
 // abandonRun closes a run that cannot be re-driven headlessly as Failed

@@ -1001,8 +1001,7 @@
   "build.opaque-compaction-fallback": {
     "capability": "build",
     "origin": "ADR-0090",
-    "title": "opaque compaction under cross-provider fallback",
-    "deferred_to": "M2"
+    "title": "opaque compaction under cross-provider fallback"
   },
   "subflows.fresh-history": {
     "capability": "subflows",
@@ -1409,8 +1408,7 @@
   "release.id-deterministic": {
     "capability": "release",
     "origin": "ADR-0096",
-    "title": "release id deterministic",
-    "deferred_to": "M3"
+    "title": "release id deterministic"
   },
   "release.run-attributes": {
     "capability": "release",
@@ -1727,8 +1725,7 @@
   "model.undeclared-fidelity": {
     "capability": "model",
     "origin": "ADR-0105",
-    "title": "undeclared fidelity fails build",
-    "deferred_to": "M1"
+    "title": "undeclared fidelity fails build"
   },
   "model.cache-explicit-breakpoints": {
     "capability": "model",
@@ -1898,6 +1895,11 @@
     "capability": "recovery",
     "origin": "R36",
     "title": "preempted resumed before stale"
+  },
+  "recovery.consumed-preempted-is-recoverable": {
+    "capability": "recovery",
+    "origin": "ADR-0146",
+    "title": "consumed preempted checkpoint is recoverable"
   },
   "stores.stale-by-store-clock": {
     "capability": "stores",

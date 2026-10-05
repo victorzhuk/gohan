@@ -18,7 +18,7 @@ The harness is stateless; every run is recoverable from `SessionLog` + `Journal`
 1. `Invoke`/`Send` → `Runs.Start` (lease) → per turn: when the turn has non-`ReadOnly` calls, `SessionLog.Append` the assistant message *before* executing them, then `Append` the results; otherwise one `Append` with message and results → `Runs.Finish`.
 2. A process that dies mid-turn leaves: a `Running` run with a stale heartbeat, an assistant message with pending calls, journal entries `Reserved` (unknown) or `Completed`.
 3. A reaper (user-owned cron/queue) calls `stack.Recover(ctx, limit)`: `Runs.Stale` → `Reclaim` → for each run, `Replay` from the last persisted turn: completed calls are replayed from the journal, reserved ones re-execute with their pinned key, never-started ones execute normally. Recovery honours the original `RunLimits` and principal (via `CredentialSource`).
-3a. Before stale runs, when `Runs` implements `PreemptedLister`, `Recover` lists `Preempted(ctx, limit)` and resumes each with `Continue()` (`Consume` → `Resuming`, no staleness wait); a token already consumed by the client is skipped silently. The deployment note is to call `Recover` once on pod start and then on the reaper cadence.
+3a. Before stale runs, when `Runs` implements `PreemptedLister`, `Recover` lists `Preempted(ctx, limit)` and resumes each with `Continue()` (`Consume` → `Resuming`, no staleness wait); a token already consumed by the client is skipped while that client's resume lease is live. A consumed checkpoint whose run holds no lease is recovered with its recorded input, so a client that dies between `Consume` and `Resuming` cannot strand the run (ADR-0146). The deployment note is to call `Recover` once on pod start and then on the reaper cadence.
 4. If the flow cannot be re-run headlessly (e.g. a `Conversation` whose client is gone), recovery finishes the run as `Failed{Uncertain}` and emits `gohan.run.abandoned`; the session remains consistent for the next `Send`.
 5. `Recover` is idempotent and safe to run on every pod.
 6. `stack.Inspect(ctx, runID) (RunView, error)` returns `RunView{Run, Input}`: the stored `Run` — current `Turn`, last `Seq`, pending tool calls and `Cost` so far — plus the `*ResumeInput` a suspended run waits for, from stores only, so any pod can answer it. No limits-remaining value is returned. `RunView` is declared by the driver package, which imports both leaves: `type RunView struct { stores.Run; Input *stores.ResumeInput }`.
@@ -49,6 +49,11 @@ ID: `recovery.no-double-run`
 ID: `recovery.preempted-before-stale`
 - WHEN a run was preempted by `Shutdown` on pod 1 two seconds ago and pod 2 calls `Recover`
 - THEN the run is resumed with `Continue()` without waiting for `LeaseTTL`, and `gohan.run.recovered` increments
+
+#### Scenario: consumed preempted checkpoint is recoverable
+ID: `recovery.consumed-preempted-is-recoverable`
+- WHEN a client consumes a preempted checkpoint and its process dies before `Runs.Resuming`
+- THEN `Recover` resumes the run with the recorded input, executes the remaining work exactly once and finishes the run
 
 #### Scenario: headless recovery impossible
 ID: `recovery.headless-recovery-impossible`
