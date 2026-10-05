@@ -4,6 +4,7 @@
 package permission
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/victorzhuk/gohan/core/permission"
@@ -43,6 +44,15 @@ func TierPolicy(tier types.RiskTier, tool string, irreversible bool) permission.
 	}
 }
 
+// PolicySource is the std default ApprovalPolicySource: it delegates to
+// TierPolicy and never errors. Override it in assembly to change the
+// policy the resume path resolves.
+type PolicySource struct{}
+
+func (PolicySource) ApprovalPolicy(_ context.Context, risk types.RiskTier, tool string, reversible bool) (permission.ApprovalPolicy, error) {
+	return TierPolicy(risk, tool, !reversible), nil
+}
+
 // Evaluator applies one tier's policy to the approval attempts of a single
 // pending request. A refused attempt changes no state, so the token stays
 // usable for an eligible approver.
@@ -67,9 +77,9 @@ func NewEvaluator(policy permission.ApprovalPolicy, tier types.RiskTier, owner, 
 }
 
 // Approve records one approver under the policy. It refuses with
-// ErrApproverNotEligible when the approver holds neither the session
-// ownership nor the policy's scope, and for the high tier when the
-// approver is the originator or already counted toward the quorum.
+// ErrApproverNotEligible when the approver holds neither the policy's scope
+// nor, outside the high tier, the session ownership, and for the high tier
+// when the approver is the originator or already counted toward the quorum.
 func (e *Evaluator) Approve(approver types.Principal) error {
 	if err := e.check(approver); err != nil {
 		return err
@@ -88,7 +98,10 @@ func (e *Evaluator) Satisfied() bool {
 }
 
 func (e *Evaluator) check(approver types.Principal) error {
-	eligible := approver.Subject == e.owner || has(approver.Scopes, e.policy.Scope)
+	eligible := has(approver.Scopes, e.policy.Scope)
+	if !eligible && e.tier != types.RiskHigh && approver.Subject == e.owner {
+		eligible = true
+	}
 	if !eligible {
 		return fmt.Errorf("%w: missing scope %q", permission.ErrApproverNotEligible, e.policy.Scope)
 	}

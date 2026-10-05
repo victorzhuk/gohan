@@ -145,3 +145,21 @@ func TestApprovalContract(t *testing.T) {
 		}
 	})
 }
+
+func TestApprovalPolicySource(t *testing.T) {
+	var _ ApprovalPolicySource = stubPolicySource{}
+	want := ApprovalPolicy{Scope: "approve:tool", Quorum: 2}
+	got, err := stubPolicySource{}.ApprovalPolicy(context.Background(), types.RiskHigh, "tool", false)
+	if err != nil {
+		t.Fatalf("ApprovalPolicy: %v", err)
+	}
+	if got.Scope != want.Scope || got.Quorum != want.Quorum {
+		t.Fatalf("policy = %+v, want %+v", got, want)
+	}
+}
+
+type stubPolicySource struct{}
+
+func (stubPolicySource) ApprovalPolicy(context.Context, types.RiskTier, string, bool) (ApprovalPolicy, error) {
+	return ApprovalPolicy{Scope: "approve:tool", Quorum: 2}, nil
+}

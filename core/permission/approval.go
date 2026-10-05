@@ -1,6 +1,7 @@
 package permission
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/json/jsontext"
 	"fmt"
@@ -50,6 +51,14 @@ type ApprovedVia struct {
 // The sentinel's home is the floor (types), so errors.Is matches the same
 // error whichever package declares the reference.
 var ErrApproverNotEligible = types.ErrApproverNotEligible
+
+// ApprovalPolicySource resolves the policy a request is judged by. The
+// consumer owns the interface; assembly supplies the implementation. The
+// policy is resolved when a request is created and again before an
+// approval or edit is accepted. An error never grants permission.
+type ApprovalPolicySource interface {
+	ApprovalPolicy(ctx context.Context, risk types.RiskTier, tool string, reversible bool) (ApprovalPolicy, error)
+}
 
 // ApprovalRequest is the payload a suspended call carries.
 type ApprovalRequest struct {

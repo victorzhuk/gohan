@@ -1,12 +1,70 @@
 package permission
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	corepermission "github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/types"
 )
+
+func TestPolicySource(t *testing.T) {
+	var src corepermission.ApprovalPolicySource = PolicySource{}
+
+	t.Run("delegates-to-tier-policy", func(t *testing.T) {
+		for _, tc := range []struct {
+			risk        types.RiskTier
+			tool        string
+			reversible  bool
+			wantScope   string
+			wantQuorum  int
+			wantSeparat bool
+		}{
+			{types.RiskHigh, "deploy_prod", true, "approve:deploy_prod", 1, true},
+			{types.RiskHigh, "wire_transfer", false, "approve:wire_transfer", 2, true},
+			{types.RiskMedium, "send_refund", true, "approve:send_refund", 0, false},
+			{types.RiskLow, "lookup", true, "session:write", 0, false},
+		} {
+			p, err := src.ApprovalPolicy(context.Background(), tc.risk, tc.tool, tc.reversible)
+			if err != nil {
+				t.Fatalf("%s policy: unexpected error %v", tc.tool, err)
+			}
+			if p.Scope != tc.wantScope || p.Quorum != tc.wantQuorum || p.SeparateFromOriginator != tc.wantSeparat {
+				t.Fatalf("%s policy = %+v, want scope %q quorum %d separate %v", tc.tool, p, tc.wantScope, tc.wantQuorum, tc.wantSeparat)
+			}
+			if p.MaxPending != DefaultMaxPending {
+				t.Fatalf("%s MaxPending = %d, want %d", tc.tool, p.MaxPending, DefaultMaxPending)
+			}
+		}
+	})
+
+	t.Run("high-risk-owner-still-needs-scope", func(t *testing.T) {
+		p, err := src.ApprovalPolicy(context.Background(), types.RiskHigh, "deploy_prod", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ev := NewEvaluator(p, types.RiskHigh, "owner", "op")
+		err = ev.Approve(types.Principal{Subject: "owner"})
+		if !errors.Is(err, corepermission.ErrApproverNotEligible) {
+			t.Fatalf("scope-less owner on high risk: got %v, want ErrApproverNotEligible", err)
+		}
+		if err := ev.Approve(types.Principal{Subject: "owner", Scopes: []string{"approve:deploy_prod"}}); err != nil {
+			t.Fatalf("scoped owner refused: %v", err)
+		}
+	})
+
+	t.Run("low-risk-owner-exception-holds", func(t *testing.T) {
+		p, err := src.ApprovalPolicy(context.Background(), types.RiskLow, "lookup", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ev := NewEvaluator(p, types.RiskLow, "owner", "op")
+		if err := ev.Approve(types.Principal{Subject: "owner"}); err != nil {
+			t.Fatalf("owner refused on low risk: %v", err)
+		}
+	})
+}
 
 func TestApprovalPolicy(t *testing.T) {
 	t.Run("permission.self-approval-refused-high-risk", func(t *testing.T) {
