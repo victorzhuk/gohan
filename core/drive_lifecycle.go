@@ -342,6 +342,8 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 	if prev, ok := types.SinkFrom(ctx); ok {
 		relay.next = prev
 	}
+	relay.cancel = cancel
+	relay.deliver = func(e types.Event) bool { return yield(e, nil) }
 	sctx := types.WithSink(hbCtx, relay)
 	notes := &steerNotes{}
 	sctx = withSteerNotes(sctx, notes)
@@ -350,23 +352,11 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 			yield(nil, err)
 			return
 		}
-		for _, e := range relay.take() {
-			if !yield(e, nil) {
-				return
-			}
-		}
 		next, evs, status, err := rt.Step(sctx, st)
-		for _, e := range relay.take() {
-			if !yield(e, nil) {
-				return
-			}
-		}
-		if status == runtime.DoneStatus && len(evs) > 0 {
-			// The terminal transition below owns the Done; the step's
-			// trailing copy would reach the caller twice.
-			if _, ok := evs[len(evs)-1].(types.Done); ok {
-				evs = evs[:len(evs)-1]
-			}
+		if relay.stopped {
+			// The consumer stopped taking events: the relay already
+			// cancelled cancellable work; deliver nothing further.
+			return
 		}
 		for _, e := range evs {
 			if !yield(e, nil) {

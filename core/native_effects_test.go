@@ -118,11 +118,11 @@ func TestNativeRunTurnSequence(t *testing.T) {
 	if err != nil || status != runtime.DoneStatus {
 		t.Fatalf("final model effect: status %v err %v", status, err)
 	}
-	if len(evs) != 2 {
-		t.Fatalf("events %v, want AssistantMessage and Done", evs)
+	if len(evs) != 1 {
+		t.Fatalf("events %v, want only the AssistantMessage", evs)
 	}
-	if done, ok := evs[1].(types.Done); !ok || done.Reason != types.StopCompleted {
-		t.Fatalf("last event %v, want Done completed", evs[1])
+	if _, ok := evs[0].(types.AssistantMessage); !ok {
+		t.Fatalf("first event %v, want AssistantMessage", evs[0])
 	}
 }
 

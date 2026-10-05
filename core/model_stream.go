@@ -99,10 +99,11 @@ func (s *ModelStream) Generate(ctx context.Context, req types.ModelRequest) iter
 		buf := NewStreamBuffer(DefaultStreamBuffer)
 		buf.onFull = func() { s.bufferFull.Add(1) }
 
-		// The reader owns the idle clock. It resets on each provider read
-		// and never while blocked on a full buffer, so consumer pacing can
-		// neither hold the clock down nor trip it.
+		// The reader owns the idle clock. It resets on each provider
+		// read and never while blocked on a full buffer, so consumer
+		// pacing can neither hold the clock down nor trip it.
 		expired := make(chan error, 1)
+		failed := make(chan error, 1)
 		go func() {
 			defer close(readerDone)
 			defer buf.close()
@@ -144,10 +145,22 @@ func (s *ModelStream) Generate(ctx context.Context, req types.ModelRequest) iter
 						default:
 						}
 					}
+					// A terminal provider read outranks the queued
+					// advisory chunks: it is reported without waiting
+					// behind them.
+					if p.err != nil {
+						select {
+						case failed <- p.err:
+						case <-done:
+						}
+						return
+					}
 					seenFirst = true
 					if !buf.send(p, done) {
 						return
 					}
+					// Held down through a blocked send so a full
+					// buffer cannot trip the idle clock.
 					timer.Reset(idle)
 				}
 			}
@@ -155,8 +168,17 @@ func (s *ModelStream) Generate(ctx context.Context, req types.ModelRequest) iter
 
 		for {
 			select {
+			case err := <-failed:
+				yield(types.ModelChunk{}, err)
+				return
+			default:
+			}
+			select {
 			case <-ctx.Done():
 				yield(types.ModelChunk{}, ctx.Err())
+				return
+			case err := <-failed:
+				yield(types.ModelChunk{}, err)
 				return
 			case err := <-expired:
 				yield(types.ModelChunk{}, err)

@@ -11,22 +11,31 @@ import (
 
 // sinkRelay forwards the component events a governed decorator emits during
 // a step to Drive's iterator, and to any sink the caller already attached.
+// The attached sink records first, then the event is delivered, so the
+// durable log never trails what a consumer has already seen. Delivery
+// happens synchronously while the effect runs: a consumer that stops
+// taking events stops the relay, which cancels the drive context and so
+// interrupts cancellable effect work; no event is delivered afterwards.
 type sinkRelay struct {
-	next types.Sink
-	seen []types.Event
+	next    types.Sink
+	deliver func(types.Event) bool
+	cancel  context.CancelFunc
+	stopped bool
 }
 
 func (r *sinkRelay) Emit(ctx context.Context, e types.Event) {
-	r.seen = append(r.seen, e)
+	if r.stopped {
+		return
+	}
 	if r.next != nil {
 		r.next.Emit(ctx, e)
 	}
-}
-
-func (r *sinkRelay) take() []types.Event {
-	evs := r.seen
-	r.seen = nil
-	return evs
+	if r.deliver != nil && !r.deliver(e) {
+		r.stopped = true
+		if r.cancel != nil {
+			r.cancel()
+		}
+	}
 }
 
 // Drive runs the effect loop over rt for r: it starts the stepper, installs

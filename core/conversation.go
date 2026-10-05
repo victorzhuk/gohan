@@ -67,6 +67,13 @@ type conversation struct {
 	toolSpecs    func(name string) (types.ToolSpec, bool)
 	detached     bool
 	wall         time.Duration
+	// stall bounds how long the attached consumer may take no event
+	// before the run preempts at its next safe point; zero disables
+	// detection.
+	stall time.Duration
+	// stallAction selects what a run does when the consumer stall guard
+	// fires; the zero action preempts.
+	stallAction StallAction
 
 	allowAnonymous bool
 
@@ -111,6 +118,14 @@ func WithConversationEventLog(l stores.EventLog) ConversationOption {
 	return func(c *conversation) { c.events = l }
 }
 
+// OnStall selects what a run does when its consumer takes no event for
+// RunLimits.ConsumerStall. The zero action preempts; StallDetach stops
+// attached delivery and continues the run detached, so it needs an event
+// log a reattaching client can read.
+func OnStall(action StallAction) ConversationOption {
+	return func(c *conversation) { c.stallAction = action }
+}
+
 // WithConversationToolSpecs binds the registered tool-spec lookup a
 // HumanApproval suspension resolves each pending call's declaration
 // through.
@@ -130,6 +145,7 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 		c.allowAnonymous = stack.allowAnonymous
 		if l, ok := stack.Limits(spec); ok {
 			c.wall = l.MaxWallClock
+			c.stall = l.ConsumerStall
 		}
 	}
 	for _, opt := range opts {
@@ -139,6 +155,9 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 		return nil, errConversationRuns
 	}
 	if c.detached && c.events == nil {
+		return nil, errDetachedNoLog
+	}
+	if c.stallAction == StallDetach && c.events == nil {
 		return nil, errDetachedNoLog
 	}
 	if c.events == nil {
@@ -305,84 +324,10 @@ func (c *conversation) find(ctx context.Context, sessionID string) (stores.Run, 
 }
 
 // stream drives the run under the lifecycle ordering, recording every
-// event in the run's log as it is yielded.
+// event in the run's log as it is delivered.
 func (c *conversation) stream(ctx context.Context, lease stores.Lease, sessionID string, input []Message, yield func(Event, error) bool) {
-	defer c.markRunEnded(lease.RunID)
-	opts := []LifecycleOption{
-		WithLifecycleRuns(c.runs, lease),
-		WithLifecycleSession(sessionID),
-		WithLifecycleFlow(c.spec),
-	}
-	if c.policySrc != nil {
-		opts = append(opts, WithLifecycleApprovalPolicy(c.policySrc))
-	}
-	if c.toolSpecs != nil {
-		opts = append(opts, WithLifecycleToolSpecs(c.toolSpecs))
-	}
-	if c.log != nil {
-		// The steers a drained mailbox carries are appended to history
-		// before SteerApplied acknowledges them; without the appender the
-		// signal path fails the step.
-		opts = append(opts, WithLifecycleAppender(AppendFunc(func(ctx context.Context, expected int64, msgs ...types.Message) (int64, error) {
-			return c.log.Append(ctx, sessionID, expected, msgs...)
-		})))
-	}
-	if p, ok := PrincipalFrom(ctx); ok {
-		opts = append(opts, WithLifecycleOriginator(p))
-	}
-	lc := NewLifecycle(opts...)
-	rt := c.rt
-	ag := runtime.AgentRun{Input: input}
-	runCtx := ctx
-	if c.newRun != nil {
-		rt = runtime.NewNative()
-		rctx, run, err := c.newRun(ctx, sessionID, lease, input)
-		if err != nil {
-			// The run is already acquired: close it as Failed so the
-			// lease never dangles behind the error tuple.
-			if ferr := lc.finishRun(ctx, runtime.State{}, stores.Failed, nil); ferr != nil {
-				yield(nil, ferr)
-				return
-			}
-			yield(nil, err)
-			return
-		}
-		runCtx, ag = rctx, run
-		if ag.History.Version > 0 {
-			opts = append(opts, WithLifecycleHistoryVersion(ag.History.Version))
-			lc = NewLifecycle(opts...)
-		}
-	}
-	if c.cps != nil {
-		// Suspension persists through the conversation's checkpoints
-		// store; without one the runtime cannot suspend.
-		ag.Save = c.cps.Put
-	}
-	for ev, err := range DriveLifecycle(runCtx, lc, rt, ag) {
-		if err != nil {
-			var gb *types.GuardBlockedError
-			if errors.As(err, &gb) {
-				gbEv := types.GuardBlocked{Stage: gb.Stage, Reason: gb.Reason}
-				if !c.relay(ctx, lease.RunID, gbEv, yield) {
-					return
-				}
-				if !yield(gbEv, nil) {
-					return
-				}
-				doneEv := types.Done{Reason: types.StopGuardBlocked}
-				if !c.relay(ctx, lease.RunID, doneEv, yield) {
-					return
-				}
-				yield(doneEv, nil)
-				return
-			}
-			yield(nil, err)
-			return
-		}
-		if !c.relay(ctx, lease.RunID, ev, yield) {
-			return
-		}
-		if !yield(ev, nil) {
+	for ev, err := range c.run(ctx, lease, sessionID, input) {
+		if !yield(ev, err) {
 			return
 		}
 	}

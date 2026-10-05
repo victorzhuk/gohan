@@ -161,6 +161,7 @@ func (g *StallGuard) Watch(ctx context.Context, run iter.Seq2[types.Event, error
 		g.take()
 		watched := make(chan struct{})
 		stop := make(chan struct{})
+		detached := make(chan struct{})
 		go func() {
 			defer close(watched)
 			tick := g.ticks
@@ -183,25 +184,44 @@ func (g *StallGuard) Watch(ctx context.Context, run iter.Seq2[types.Event, error
 				idle := time.Since(g.last)
 				g.mu.Unlock()
 				if idle >= g.limit && g.fire() {
+					if g.Action() == StallDetach {
+						close(detached)
+					}
 					return
 				}
 			}
 		}()
 
-		for t := range ch {
-			g.take()
-			if !yield(t.ev, t.err) {
-				// The consumer walked away. Under StallDetach the run
-				// continues into its EventLog; a reattaching client reads
-				// the events it missed through Attach.
-				close(gone)
-				if g.Action() == StallDetach {
-					go func() {
-						for range ch {
-						}
-					}()
+	loop:
+		for {
+			select {
+			case t, ok := <-ch:
+				if !ok {
+					break loop
 				}
-				break
+				g.take()
+				if !yield(t.ev, t.err) {
+					// The consumer walked away. Under StallDetach the run
+					// continues into its EventLog; a reattaching client
+					// reads the events it missed through Attach.
+					close(gone)
+					if g.Action() == StallDetach {
+						go func() {
+							for range ch {
+							}
+						}()
+					}
+					break loop
+				}
+			case <-detached:
+				// The guard detached the run while the consumer was
+				// still busy: the rest streams only into the log.
+				close(gone)
+				go func() {
+					for range ch {
+					}
+				}()
+				break loop
 			}
 		}
 		close(stop)

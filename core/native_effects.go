@@ -22,7 +22,9 @@ import (
 func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 	toolset := nativeToolset(cfg.tools)
 	return turnConfig{
-		model:    runModelChain(cfg.modelChain, cfg.model.Generate),
+		// Supervision wraps only the provider, so the chain steps and
+		// the middleware above it keep running on the caller's goroutine.
+		model:    runModelChain(cfg.modelChain, NewModelStream(cfg.model).Generate),
 		assemble: nativeAssemble(s.prompts, cfg.assemble),
 		tools:    toolset,
 		maxTurns: cfg.limits.MaxTurns,

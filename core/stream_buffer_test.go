@@ -2,6 +2,7 @@ package gohan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"sync/atomic"
@@ -68,6 +69,31 @@ func TestStreamBuffer(t *testing.T) {
 				if c.Delta != fmt.Sprintf("c%d", i) {
 					t.Fatalf("chunk %d = %q, want c%d", i, c.Delta, i)
 				}
+			}
+		})
+	})
+
+	t.Run("terminal provider error outranks queued chunks", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			var events []streamEvent
+			for i := range 10 {
+				events = append(events, textChunk(fmt.Sprintf("c%d", i)))
+			}
+			want := errors.New("boom")
+			events = append(events, streamEvent{err: want})
+			p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Minute, Idle: time.Minute}, events...)
+			s := NewModelStream(p)
+			next, stop := iter.Pull2(s.Generate(context.Background(), types.ModelRequest{}))
+			defer stop()
+
+			c, err, ok := next()
+			if err != nil || !ok {
+				t.Fatalf("first next = (%v, %v, %v), want a chunk", c, err, ok)
+			}
+			synctest.Wait()
+			// The error read jumped the chunks already buffered ahead of it.
+			if _, err, _ = next(); !errors.Is(err, want) {
+				t.Fatalf("second next err = %v, want %v", err, want)
 			}
 		})
 	})

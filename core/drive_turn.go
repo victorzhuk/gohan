@@ -168,6 +168,9 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 			for _, ev := range events {
 				yield(ev, nil)
 			}
+			// The loop owns the terminal transition: the model effect
+			// returns the assistant message only.
+			yield(types.Done{Reason: types.StopCompleted}, nil)
 			return
 		}
 		if len(env.calls) > 0 {
@@ -190,8 +193,8 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 // request preparation, streaming through the sink, parsing, truncated-call
 // repair and truncation handling. It advances the turn counter once and,
 // when the reply carries tool calls, parks them on the per-run scope for
-// the batch effect. A final answer returns the assistant message and Done
-// as the events a terminal status carries.
+// the batch effect. A final answer returns the assistant message as the
+// event a terminal status carries; the driver owns the terminal Done.
 func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
 	env := turnEnvFrom(ctx)
 	c := env.c
@@ -330,9 +333,11 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	env.flushDeltas(ctx)
 	// The iterator carries the terminal assistant message; emitting it
 	// through the sink too would deliver it twice wherever the driver
-	// merges the sink into the same stream.
+	// merges the sink into the same stream. The terminal transition
+	// belongs to the driver: the model effect returns the assistant
+	// message and its status only, so the run ends with one Done.
 	ev := types.AssistantMessage{Turn: env.turn, Message: asst}
-	return st, []types.Event{ev, types.Done{Reason: types.StopCompleted}}, runtime.DoneStatus, nil
+	return st, []types.Event{ev}, runtime.DoneStatus, nil
 }
 
 type replayKey struct{}
