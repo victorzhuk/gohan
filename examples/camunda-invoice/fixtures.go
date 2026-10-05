@@ -1,18 +1,21 @@
 // Package main composes an offline invoice job: an external work item is
-// fetched, a user task suspends the run for human approval, and the resume
-// path re-checks live control state before any side effect runs. Memory
-// stores and a fixed clock keep it offline: no network, no keys.
+// fetched, a user task suspends the governed run for human approval, and
+// the resume path re-checks live control state before any side effect
+// runs. Memory stores and a fixed clock keep it offline: no network, no
+// keys.
 package main
 
 import (
 	"context"
+	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
+	"iter"
 	"sync"
 	"time"
 
 	"github.com/victorzhuk/gohan/core/permission"
-	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -42,7 +45,7 @@ func newControlPlane(now time.Time) *controlPlane {
 }
 
 // KillOn reports the live kill flag and when control state was last seen.
-// An outage returns the error the resume path reads as stale control.
+// An outage returns the error the flow's decider reads as stale control.
 func (c *controlPlane) KillOn() (bool, time.Time, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -94,7 +97,7 @@ func (q *jobQueue) Fetch() (invoiceJob, bool) {
 	return j, true
 }
 
-// outcome records what the composition did with one job.
+// outcome records what the governed composition did with one job.
 type outcome struct {
 	suspended bool
 	reason    types.SuspendReason
@@ -102,146 +105,101 @@ type outcome struct {
 	executed  bool
 }
 
-// executed records the tools the composition actually ran, in order.
+// executed records the tools the batch actually ran, in order.
 var executed []string
 
 func recordExecution(tool string) { executed = append(executed, tool) }
 
-// startWorkerRun claims a lease for one worker on the job's operation.
-// The session and run ids carry the worker name, so two workers race on
-// the same OperationID and the store decides the winner.
-func startWorkerRun(ctx context.Context, runs *stores.MemoryRuns, job invoiceJob, worker string) (stores.Lease, stores.Run, error) {
-	run := stores.Run{
-		SessionID:   "invoice-" + job.OperationID + "-" + worker,
-		RunID:       "run-" + job.OperationID + "-" + worker,
-		RootRunID:   "run-" + job.OperationID,
-		OperationID: job.OperationID,
-		Flow:        "camunda-invoice",
-		Backend:     "scripted",
-		StartedAt:   time.Now(),
-		Heartbeat:   time.Now(),
-	}
-	lease, err := runs.Start(ctx, run, stores.LeaseTTL)
-	return lease, run, err
+// invoiceTool is the side-effecting fixture the scripted batch draws on.
+// It records every execution so the tests can count real side effects.
+type invoiceTool struct {
+	mu    sync.Mutex
+	calls []string
 }
 
-// startRun claims a lease for the job's operation. A second worker on the
-// same OperationID loses here: the store rejects it.
-func startRun(ctx context.Context, runs *stores.MemoryRuns, job invoiceJob) (stores.Lease, stores.Run, error) {
-	run := stores.Run{
-		SessionID:   "invoice-" + job.OperationID,
-		RunID:       "run-" + job.OperationID,
-		RootRunID:   "run-" + job.OperationID,
-		OperationID: job.OperationID,
-		Flow:        "camunda-invoice",
-		Backend:     "scripted",
-		StartedAt:   time.Now(),
-		Heartbeat:   time.Now(),
-	}
-	lease, err := runs.Start(ctx, run, stores.LeaseTTL)
-	return lease, run, err
-}
-
-// askApproval is the user task: the side-effecting call suspends the run
-// for a human, and the pending item rides the resume token.
-func askApproval(ctx context.Context, runs *stores.MemoryRuns, lease stores.Lease, token types.ResumeToken) error {
-	return runs.Suspend(ctx, lease, token)
-}
-
-// resumeKind is what the resume path decides about the pending call.
-type resumeKind int
-
-const (
-	resumeAllow resumeKind = iota
-	resumeSuspendControl
-	resumeDenyControlWait
-	resumeDenyKill
-	resumeDenyAuthority
-)
-
-// resume re-checks live state before the pending call executes. The
-// checks run in order: control freshness, control wait, the live kill
-// flag, then the originator's current scopes. A live denial wins even
-// after an approval arrived.
-func resume(ctx context.Context, cp *controlPlane, inv *permission.ToolInvocation, suspendedAt, now time.Time) (resumeKind, string) {
-	if now.Sub(suspendedAt) > MaxControlWait {
-		return resumeDenyControlWait, "control state unresolved past MaxControlWait"
-	}
-	if _, _, err := cp.KillOn(); err != nil {
-		return resumeSuspendControl, "flags provider unreachable within FreshnessLimit"
-	}
-	if missing := missingScopes(inv.Run.Principal.Scopes, inv.Spec.RequiredScopes); len(missing) > 0 {
-		return resumeDenyAuthority, "originator scope revoked while suspended"
-	}
-	d := permission.DecideCall(ctx, &killSwitchDecider{cp: cp}, inv)
-	if d.Verdict == permission.DenyVerdict {
-		return resumeDenyKill, d.Reason
-	}
-	return resumeAllow, ""
-}
-
-func missingScopes(have, want []string) []string {
-	var missing []string
-	for _, s := range want {
-		found := false
-		for _, h := range have {
-			if h == s {
-				found = true
-				break
-			}
-		}
-		if !found {
-			missing = append(missing, s)
-		}
-	}
-	return missing
-}
-
-// killSwitchDecider denies every call while the live kill flag is on, so
-// the live verdict outranks an approval granted before it.
-type killSwitchDecider struct {
-	cp *controlPlane
-}
-
-func (d *killSwitchDecider) Decide(context.Context, *permission.ToolInvocation) (types.Decision[permission.Verdict], error) {
-	if kill, _, _ := d.cp.KillOn(); kill {
-		return types.Decision[permission.Verdict]{
-			Value:      permission.DenyVerdict,
-			Confidence: 1,
-		}, nil
-	}
-	return types.Decision[permission.Verdict]{
-		Value:      permission.Allow,
-		Confidence: 1,
-	}, nil
-}
-
-// runInfo builds the gate's view of the run: the originator's current
-// scopes, so a revocation while suspended denies on resume.
-func runInfo(runID string, p types.Principal) types.RunInfo {
-	return types.RunInfo{
-		Flow:      "camunda-invoice",
-		RunID:     runID,
-		RootRunID: runID,
-		Principal: p,
-	}
-}
-
-func invoiceInvocation(job invoiceJob) *permission.ToolInvocation {
-	spec := types.ToolSpec{
+func (t *invoiceTool) Spec() types.ToolSpec {
+	return types.ToolSpec{
 		Name:           "invoice.send",
 		Description:    "send the invoice to the customer",
 		Effect:         types.SideEffect,
 		RequiredScopes: []string{sendScope},
 	}
-	return &permission.ToolInvocation{
-		Spec: spec,
-		Call: types.ToolUse{
-			ID:   "call-" + job.OperationID,
-			Name: spec.Name,
-			Args: []byte(fmt.Sprintf(`{"invoice":%q,"amount_cents":%d}`, job.Invoice, job.AmountCents)),
-		},
+}
+
+func (t *invoiceTool) Call(_ context.Context, args jsontext.Value) (types.ToolResult, error) {
+	var in invoiceJob
+	_ = json.Unmarshal(args, &in)
+	t.mu.Lock()
+	t.calls = append(t.calls, in.Invoice)
+	t.mu.Unlock()
+	recordExecution(t.Spec().Name)
+	return types.ToolResult{
+		Content: []types.Block{types.Text{Text: "invoice sent"}},
+		Outcome: types.Succeeded,
+	}, nil
+}
+
+func (t *invoiceTool) ran() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]string(nil), t.calls...)
+}
+
+// scriptedModel replays the flow: it calls invoice.send once per drive,
+// each turn under a fresh call id, then finishes once the call is answered
+// by an execution or a denial.
+type scriptedModel struct {
+	seq int
+}
+
+func (m *scriptedModel) Profile() types.ModelProfile {
+	return types.ModelProfile{Name: "scripted", Caps: types.Caps{Tools: true}}
+}
+
+func (m *scriptedModel) Generate(_ context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+	return func(yield func(types.ModelChunk, error) bool) {
+		for _, msg := range req.Messages {
+			for _, b := range msg.Blocks {
+				r, ok := b.(types.ToolResult)
+				if !ok {
+					continue
+				}
+				// A real execution answers "invoice sent"; a denial
+				// carries an error. A delivered approval settles the
+				// batch instead, so the call is re-issued on replay
+				// and the decider's live verdict decides it.
+				if r.Error != nil || resultText(r) == "invoice sent" {
+					yield(types.ModelChunk{Kind: types.DeltaText, Delta: "invoice handled."}, nil)
+					yield(types.ModelChunk{Finish: types.FinishStop}, nil)
+					return
+				}
+			}
+		}
+		m.seq++
+		yield(types.ModelChunk{Kind: types.DeltaToolArgs, ToolUse: &types.ToolUse{
+			ID:   fmt.Sprintf("call-invoice.send-%d", m.seq),
+			Name: "invoice.send",
+			Args: jsontext.Value(`{"OperationID":"INV-2026-0042","Invoice":"INV-2026-0042","AmountCents":149500}`),
+		}}, nil)
+		yield(types.ModelChunk{Finish: types.FinishToolUse}, nil)
 	}
+}
+
+func resultText(r types.ToolResult) string {
+	for _, b := range r.Content {
+		if t, ok := b.(types.Text); ok {
+			return t.Text
+		}
+	}
+	return ""
+}
+
+// approvalPolicy keeps the governed resume path permissive about who may
+// approve; the flow's decider still owns the live verdict.
+type approvalPolicy struct{}
+
+func (approvalPolicy) ApprovalPolicy(context.Context, types.RiskTier, string, bool) (permission.ApprovalPolicy, error) {
+	return permission.ApprovalPolicy{}, nil
 }
 
 func approverPrincipal(subject string, scopes ...string) types.Principal {

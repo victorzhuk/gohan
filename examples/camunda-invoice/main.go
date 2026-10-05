@@ -1,8 +1,9 @@
 // Command camunda-invoice walks one offline invoice job through the
 // composition an external workflow server would otherwise drive: fetch the
-// work item, claim a run, ask the user task for approval, and re-check
-// live control state on resume. Memory stores and a fake clock keep it
-// offline: no network, no keys.
+// work item, claim a governed run, let the user task suspend it for
+// approval, and re-check live control state on resume through the flow's
+// own decider. Memory stores and a fake clock keep it offline: no network,
+// no keys.
 package main
 
 import (
@@ -12,25 +13,41 @@ import (
 	"os"
 	"time"
 
+	gohan "github.com/victorzhuk/gohan/core"
+	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
-// approvalToken marks the user task's pending request.
-const approvalToken = types.ResumeToken("approval:invoice.send")
-
 // flow drives one job from fetch to verdict. The test fields shape the
 // world the resume path wakes up into.
 type flow struct {
-	runs    *stores.MemoryRuns
-	control *controlPlane
-	clock   *fakeClock
-	origin  types.Principal
+	runs        *stores.MemoryRuns
+	checkpoints *controlWaitCheckpoints
+	control     *controlPlane
+	clock       *fakeClock
+	origin      types.Principal
+	tool        *invoiceTool
+	sessions    *stores.MemorySessionLog
+	model       *scriptedModel
 
 	killOnResume   bool
 	outageOnResume bool
 	resumeScopes   []string
 	audit          []string
+
+	approved    bool
+	suspendedAt time.Time
+	token       gohan.ResumeToken
+	denial      string
+	conv        gohan.Conversation
+}
+
+// deciderFunc adapts the flow's policy function to the decider seam.
+type deciderFunc func(context.Context, *permission.ToolInvocation) (types.Decision[permission.Verdict], error)
+
+func (d deciderFunc) Decide(ctx context.Context, inv *permission.ToolInvocation) (types.Decision[permission.Verdict], error) {
+	return d(ctx, inv)
 }
 
 // fakeClock adapts the testkit clock to the store's clock option.
@@ -40,77 +57,223 @@ func (c *fakeClock) Now() time.Time          { return c.t }
 func (c *fakeClock) Advance(d time.Duration) { c.t = c.t.Add(d) }
 
 func newFlow(clock *fakeClock) *flow {
-	return &flow{
-		runs:    stores.NewMemoryRuns(stores.WithMemoryRunClock(clock.Now)),
-		control: newControlPlane(clock.Now()),
-		clock:   clock,
-		origin:  approverPrincipal("clerk", sendScope, approvalScope),
+	f := &flow{
+		runs: stores.NewMemoryRuns(
+			stores.WithMemoryRunClock(clock.Now),
+			stores.WithMemoryRunInfo(func(ctx context.Context) (types.RunInfo, bool) {
+				p, ok := types.PrincipalFrom(ctx)
+				return types.RunInfo{Principal: p}, ok
+			}),
+		),
+		control:  newControlPlane(clock.Now()),
+		clock:    clock,
+		origin:   approverPrincipal("clerk", sendScope, approvalScope),
+		tool:     &invoiceTool{},
+		sessions: stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom)),
+		model:    &scriptedModel{},
+		checkpoints: &controlWaitCheckpoints{
+			MemoryCheckpoints: stores.NewMemoryCheckpoints(stores.WithMemoryCheckpointClock(clock.Now), stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom)),
+			now:               clock.Now,
+		},
 	}
+	return f
 }
 
-// Process composes one job offline: start the run, run the user task
-// (the run suspends for approval), grant the approval, and resume. The
+// controlWaitCheckpoints keeps a suspension token alive past the flow's
+// MaxControlWait bound: a stale resume must be rejected by the flow's own
+// control-state rule, not by the store's token expiry, which otherwise
+// lapses with the suspension lease long before that bound.
+type controlWaitCheckpoints struct {
+	*stores.MemoryCheckpoints
+	now func() time.Time
+}
+
+func (s *controlWaitCheckpoints) Put(ctx context.Context, cp stores.Checkpoint) (types.ResumeToken, error) {
+	cp.ExpiresAt = s.now().Add(MaxControlWait + time.Hour)
+	return s.MemoryCheckpoints.Put(ctx, cp)
+}
+
+// conversationFor builds the governed native conversation for the flow
+// once and reuses it: a resume token is bound to the conversation that
+// minted it, so suspension and resume must drive the same instance. The
+// scripted definition is registered at build time with the flow's
+// decider, so every side effect is gated before it executes and nothing
+// here persists history or results by hand.
+func (f *flow) conversationFor() (gohan.Conversation, error) {
+	if f.conv != nil {
+		return f.conv, nil
+	}
+	stack, err := gohan.Build(
+		gohan.WithStores(stores.Stores{
+			SessionLog:  f.sessions,
+			Runs:        f.runs,
+			Checkpoints: f.checkpoints,
+		}),
+		gohan.WithModels(f.model),
+		gohan.WithNativeAgent(gohan.NativeSpec{
+			Request: gohan.FlowRequest{Name: "camunda-invoice"},
+			Profile: "scripted",
+			Tools:   []types.Tool{f.tool},
+			Assemble: func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+				msgs := append([]types.Message{}, in.History...)
+				return types.ModelRequest{Messages: append(msgs, in.Input...)}, nil
+			},
+			Decider: deciderFunc(f.decide),
+		}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	conv, err := gohan.NewNativeConversation(stack, "camunda-invoice",
+		gohan.WithConversationRuns(f.runs),
+		gohan.WithConversationEventLog(stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(f.clock.Now))),
+		gohan.WithConversationApprovalPolicy(approvalPolicy{}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	f.conv = conv
+	return conv, nil
+}
+
+// decide is the flow's tool policy and the user task in one: before the
+// approval arrives every side effect asks (the run suspends for the
+// human); after it, the live re-checks run in order — control wait, the
+// flags provider outage, the originator's current scopes, then the live
+// kill flag. A live denial wins even after an approval arrived.
+func (f *flow) decide(_ context.Context, inv *permission.ToolInvocation) (types.Decision[permission.Verdict], error) {
+	if !f.approved {
+		return types.Decision[permission.Verdict]{}, nil
+	}
+	if f.clock.Now().Sub(f.suspendedAt) > MaxControlWait {
+		f.denial = "control state unresolved past MaxControlWait"
+		return types.Decision[permission.Verdict]{Value: permission.DenyVerdict, Confidence: 1}, nil
+	}
+	if _, _, err := f.control.KillOn(); err != nil {
+		return types.Decision[permission.Verdict]{}, nil
+	}
+	if !f.authorised(inv) {
+		f.denial = "originator scope revoked while suspended"
+		return types.Decision[permission.Verdict]{Value: permission.DenyVerdict, Confidence: 1}, nil
+	}
+	if kill, _, _ := f.control.KillOn(); kill {
+		f.denial = "invoice send denied by the live kill flag"
+		return types.Decision[permission.Verdict]{Value: permission.DenyVerdict, Confidence: 1}, nil
+	}
+	return types.Decision[permission.Verdict]{Value: permission.Allow, Confidence: 1}, nil
+}
+
+// authorised compares the originator's current scopes against the pending
+// call's requirements, so a revocation while suspended denies on resume.
+func (f *flow) authorised(inv *permission.ToolInvocation) bool {
+	scopes := f.origin.Scopes
+	if f.resumeScopes != nil {
+		scopes = f.resumeScopes
+	}
+	for _, want := range inv.Spec.RequiredScopes {
+		found := false
+		for _, have := range scopes {
+			if have == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// suspendForApproval runs the user task: the governed send suspends the
+// run on the pending side effect and the token rides the suspension.
+func (f *flow) suspendForApproval(ctx context.Context, job invoiceJob) (bool, error) {
+	conv, err := f.conversationFor()
+	if err != nil {
+		return false, err
+	}
+	ctx = types.WithPrincipal(ctx, f.origin)
+	// The gate reads the run identity from the driver's context, and the
+	// idempotency key names the run's operation.
+	ctx = types.WithRunInfo(ctx, types.RunInfo{Flow: "camunda-invoice", Principal: f.origin})
+	ctx = types.WithIdempotencyKey(ctx, job.OperationID)
+	var suspended bool
+	for ev, err := range conv.Send(ctx, "invoice-"+job.OperationID, userTurn(job)) {
+		if err != nil {
+			return suspended, err
+		}
+		if s, ok := ev.(types.Suspended); ok {
+			suspended, f.token, f.suspendedAt = true, s.Token, f.clock.Now()
+		}
+	}
+	return suspended, nil
+}
+
+// Process composes one job offline: start the governed run, let the user
+// task suspend it for approval, grant the approval, and resume. The
 // resume path owns the final verdict.
 func (f *flow) Process(ctx context.Context, job invoiceJob) (outcome, error) {
-	lease, run, err := startRun(ctx, f.runs, job)
+	out := outcome{reason: types.SuspendReason("approval required")}
+	suspended, err := f.suspendForApproval(ctx, job)
 	if err != nil {
-		return outcome{}, fmt.Errorf("start run: %w", err)
+		return out, err
 	}
-	return f.Claimed(ctx, job, lease, run)
-}
-
-// Claimed runs the user task on a claimed lease and then the resume path.
-func (f *flow) Claimed(ctx context.Context, job invoiceJob, lease stores.Lease, run stores.Run) (outcome, error) {
-	if err := askApproval(ctx, f.runs, lease, approvalToken); err != nil {
-		return outcome{}, fmt.Errorf("user task suspend: %w", err)
+	out.suspended = suspended
+	if !suspended {
+		out.executed = len(f.tool.ran()) > 0
+		return out, nil
 	}
 	f.audit = append(f.audit, "approved")
-	return f.Resume(ctx, job, run)
+	return f.Resume(ctx, job)
 }
 
-// Resume runs the post-approval half: the live re-checks and the verdict.
-func (f *flow) Resume(ctx context.Context, job invoiceJob, run stores.Run) (outcome, error) {
-	suspendedAt := f.clock.Now()
-
+// Resume grants the pending approval and drives the post-approval half:
+// the decider's live re-checks and the verdict.
+func (f *flow) Resume(ctx context.Context, job invoiceJob) (outcome, error) {
+	conv, err := f.conversationFor()
+	if err != nil {
+		return outcome{}, err
+	}
+	f.approved = true
+	f.denial = ""
 	f.control.SetReachable(!f.outageOnResume)
 	f.control.SetKill(f.killOnResume)
 	if f.resumeScopes == nil {
 		f.resumeScopes = f.origin.Scopes
 	}
-	resumed := f.origin
-	resumed.Scopes = f.resumeScopes
 
-	inv := invoiceInvocation(job)
-	inv.Run = runInfo(run.RunID, resumed)
-
-	kind, reason := resume(ctx, f.control, inv, suspendedAt, f.clock.Now())
-	out := outcome{reason: types.SuspendReason(reason)}
-	switch kind {
-	case resumeSuspendControl:
-		out.suspended = true
-	case resumeDenyControlWait, resumeDenyKill, resumeDenyAuthority:
-		out.denied = true
-		if kind == resumeDenyKill {
-			f.audit = append(f.audit, "flag_denied")
-		}
-	case resumeAllow:
-		live, err := f.runs.Resuming(ctx, run.RunID, stores.LeaseTTL)
+	var out outcome
+	token := f.token
+	f.token = ""
+	// The batch ask suspends with reason awaiting_batch, and the seam
+	// refuses a delivery without data: the approval rides the delivery
+	// payload, the live re-checks still own the verdict on replay.
+	for ev, err := range conv.Resume(types.WithPrincipal(ctx, f.origin), token, stores.ResumeInput{Verdict: stores.VerdictApprove, Data: []byte("approved")}) {
 		if err != nil {
-			return out, fmt.Errorf("resume run: %w", err)
+			return out, err
 		}
-		recordExecution(inv.Spec.Name)
-		out.executed = true
-		if err := f.runs.Finish(ctx, live, stores.Finished, nil, ""); err != nil {
-			return out, fmt.Errorf("finish run: %w", err)
+		if s, ok := ev.(types.Suspended); ok {
+			out.suspended = true
+			out.reason = s.Reason
+			f.token, f.suspendedAt = s.Token, f.clock.Now()
 		}
 	}
+	if f.denial != "" {
+		out.denied = true
+		out.reason = types.SuspendReason(f.denial)
+		if f.killOnResume {
+			f.audit = append(f.audit, "flag_denied")
+		}
+	}
+	out.executed = len(f.tool.ran()) > 0
 	return out, nil
 }
 
-// duplicateWorker attempts to claim the same operation from a second
-// worker. The store decides the winner.
-func duplicateWorker(ctx context.Context, f *flow, job invoiceJob, worker string) (stores.Lease, stores.Run, error) {
-	return startWorkerRun(ctx, f.runs, job, worker)
+func userTurn(job invoiceJob) types.Message {
+	return types.Message{
+		Role:   types.RoleUser,
+		Blocks: []types.Block{types.Text{Text: "send invoice " + job.Invoice}},
+	}
 }
 
 // Run processes the first queued job end to end; main prints the verdict.

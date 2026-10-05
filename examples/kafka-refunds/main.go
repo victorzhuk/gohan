@@ -1,54 +1,37 @@
 // Command kafka-refunds demonstrates the engine-composition contract for
-// a Kafka-style consumer, offline: one delivered event drives one bounded
-// run, the refund side effect is journaled, and a redelivery of the same
-// message returns the recorded result instead of refunding twice. A live
-// kill flag consulted after approval denies the refund without executing
-// it. No Kafka client and no network: the fixture feeds the events.
+// a Kafka-style consumer over gohan's governed native conversation,
+// offline: one delivered event drives one bounded run, the governed path
+// journals the refund and persists the history, and a redelivery of the
+// same message returns the recorded result instead of refunding twice. A
+// live kill flag consulted after approval denies the refund without
+// executing it. No Kafka client and no network: the fixture feeds the
+// events.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"slices"
 
-	"github.com/victorzhuk/gohan/core"
+	gohan "github.com/victorzhuk/gohan/core"
+	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std"
 )
 
-// refundTool is the journaled side effect; a live refunding consumer would
-// call the payment provider here.
-type refundTool func(orderID string, cents int) (string, error)
-
-// consumer is the refunds worker. It owns the gohan concerns from the
-// engine contract: the run row (OperationID dedup), the journal (effect
-// replay) and the audit trail.
+// consumer is the refunds worker. The governed conversation owns the run
+// row, the journal and the persisted history; the consumer maps one
+// delivered message onto one send and reads the recorded result back from
+// the stores the governed path wrote.
 type consumer struct {
-	runs    *stores.MemoryRuns
-	journal *stores.MemoryJournal
-	audit   *stores.MemoryAuditLog
-	// kill refunds.live, read at effect time so an operator can flip it
-	// while a run is in flight.
-	kill func() bool
-	do   refundTool
-}
-
-func newConsumer(do refundTool, kill func() bool) *consumer {
-	runs := stores.NewMemoryRuns(stores.WithMemoryRunInfo(func(ctx context.Context) (types.RunInfo, bool) {
-		p, ok := types.PrincipalFrom(ctx)
-		if !ok {
-			return types.RunInfo{}, false
-		}
-		return types.RunInfo{Principal: p}, true
-	}))
-	return &consumer{
-		runs:    runs,
-		journal: stores.NewMemoryJournal(),
-		audit:   stores.NewMemoryAuditLog(),
-		kill:    kill,
-		do:      do,
-	}
+	conv     gohan.Conversation
+	runs     *stores.MemoryRuns
+	journal  *stores.MemoryJournal
+	sessions *stores.MemorySessionLog
+	audit    *stores.MemoryAuditLog
 }
 
 // ErrRedelivered reports that the operation id was already recorded and
@@ -62,100 +45,112 @@ func (e ErrRedelivered) Error() string {
 	return "gohan: operation id already recorded"
 }
 
-// handle processes one delivered message. A first delivery runs the flow:
-// approve, consult the kill flag, execute the refund once, journal it. A
-// redelivery of the same message key returns the recorded result and never
-// re-executes the effect.
-func (c *consumer) handle(ctx context.Context, ev RefundEvent) (result string, err error) {
+func newConsumer(do refundTool, kill func() bool) (*consumer, error) {
+	c := &consumer{
+		runs: stores.NewMemoryRuns(stores.WithMemoryRunInfo(func(ctx context.Context) (types.RunInfo, bool) {
+			p, ok := types.PrincipalFrom(ctx)
+			if !ok {
+				return types.RunInfo{}, false
+			}
+			return types.RunInfo{Principal: p}, true
+		})),
+		journal:  stores.NewMemoryJournal(),
+		sessions: stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom)),
+		audit:    stores.NewMemoryAuditLog(),
+	}
+	stack, err := gohan.Build(
+		gohan.WithStores(stores.Stores{SessionLog: c.sessions, Journal: c.journal}),
+		gohan.WithModels(&refundScript{}),
+		gohan.WithNativeAgent(gohan.NativeSpec{
+			Request: gohan.FlowRequest{Name: "refunds"},
+			Profile: "scripted",
+			Assemble: func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+				return types.ModelRequest{Messages: slices.Clone(in.History)}, nil
+			},
+			Tools: []types.Tool{refundCall{do: do}},
+			ToolChain: chains.ToolChain{{
+				Name: "journal",
+				Kind: chains.KindJournal,
+				Use: std.Journal(c.journal,
+					std.WithJournalSpecs(refundSpecLookup),
+					std.WithJournalSessionID(deliverySession),
+				),
+			}},
+			Decider: liveKillDecider{audit: c.audit, kill: kill},
+		}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	conv, err := gohan.NewNativeConversation(stack, "refunds",
+		gohan.WithConversationRuns(c.runs),
+		gohan.WithConversationEventLog(stores.NewMemoryEventLog()),
+	)
+	if err != nil {
+		return nil, err
+	}
+	c.conv = conv
+	return c, nil
+}
+
+// handle processes one delivered message. A first delivery sends the
+// message through the governed flow: approve, consult the live kill flag,
+// execute the refund once, journal it. A redelivery of the same message
+// key is refused off the run row before any component runs, and the
+// recorded result replays instead of the effect.
+func (c *consumer) handle(ctx context.Context, ev RefundEvent) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	// The message key is the OperationID (ADR-0077): identical business
-	// work carries an identical key across redeliveries.
-	lease, err := c.runs.Start(ctx, stores.Run{
-		SessionID:   ev.SessionID(),
-		RunID:       ev.RunID(),
-		Flow:        "refunds",
-		Backend:     "kafka",
-		OperationID: ev.Key,
-	}, stores.LeaseTTL)
+	// The message key is the OperationID: the run row is keyed by it, so
+	// identical business work across redeliveries resolves to one run.
+	if run, err := c.runs.ByOperation(ctx, ev.Tenant(), ev.Key); err == nil {
+		return c.recorded(ctx, ev), ErrRedelivered{RunID: run.RunID, Result: c.recorded(ctx, ev)}
+	} else if !errors.Is(err, stores.ErrRunNotFound) {
+		return "", err
+	}
+	ctx = types.WithPrincipal(ctx, types.Principal{
+		Tenant:  ev.Tenant(),
+		Subject: "refunds-worker",
+	})
+	ctx = types.WithIdempotencyKey(ctx, ev.Key)
+	ctx = withDelivery(ctx, ev)
+	for _, err := range c.conv.Send(ctx, ev.SessionID(), types.Message{
+		Role:   types.RoleUser,
+		Blocks: []types.Block{types.Text{Text: ev.request()}},
+	}) {
+		if err != nil {
+			return "", err
+		}
+	}
+	return c.recorded(ctx, ev), nil
+}
+
+// recorded reads back what the first delivery stored: a completed journal
+// entry for the refund call, or the not-executed result the governed path
+// persisted when the live flag denied the call.
+func (c *consumer) recorded(ctx context.Context, ev RefundEvent) string {
+	res, err := replayedResult(c.journal, ev)
+	if err != nil || res != "" {
+		return res
+	}
+	hist, err := c.sessions.Load(ctx, ev.SessionID())
 	if err != nil {
-		if dup, ok := errors.AsType[stores.OperationExistsError](err); ok {
-			run, opErr := c.runs.ByOperation(ctx, ev.Tenant(), ev.Key)
-			if opErr != nil {
-				return "", opErr
+		return ""
+	}
+	for _, m := range hist.Messages {
+		for _, b := range m.Blocks {
+			r, ok := b.(types.ToolResult)
+			if !ok || r.ID != "refund" {
+				continue
 			}
-			return run.ResultRef, ErrRedelivered{RunID: dup.RunID, Result: run.ResultRef}
+			if r.Error != nil {
+				return "denied: " + r.Error.Message
+			}
+			return resultText(r)
 		}
-		return "", err
 	}
-	defer func() { _ = c.runs.Finish(ctx, lease, stores.Finished, nil, result) }()
-
-	args, err := json.Marshal(map[string]any{"order_id": ev.OrderID, "amount_cents": ev.Cents})
-	if err != nil {
-		return "", err
-	}
-	key := types.CallKey{SessionID: ev.SessionID(), CallID: "refund"}
-	fp := gohan.ToolFingerprint(types.ToolSpec{Name: "refund"}, args)
-
-	// Inside the run, the journal fingerprints the call: a retried effect
-	// replays the recorded result instead of charging the card again.
-	entry, reserved, err := c.journal.Reserve(ctx, key, fp)
-	if err != nil {
-		return "", err
-	}
-	if !reserved {
-		if entry.State == stores.Completed {
-			return resultText(entry.Result), nil
-		}
-		return "", fmt.Errorf("refund call %v still reserved", key)
-	}
-
-	// Approval precedes the effect; the kill flag is consulted live, after
-	// the approval, so an operator can stop refunds between the two.
-	c.approve(ctx, ev)
-	if c.kill() {
-		c.decide(ctx, ev, "flag_denied")
-		return "denied: refunds.kill is on", nil
-	}
-	c.decide(ctx, ev, "allowed")
-
-	res, err := c.do(ev.OrderID, ev.Cents)
-	if err != nil {
-		return "", err
-	}
-	out := types.ToolResult{
-		ID:      key.CallID,
-		Content: []types.Block{types.Text{Text: res}},
-		Outcome: types.Succeeded,
-	}
-	if err := c.journal.Complete(ctx, key, out); err != nil {
-		return "", err
-	}
-	return res, nil
-}
-
-func (c *consumer) approve(ctx context.Context, ev RefundEvent) {
-	_ = c.audit.Append(ctx, stores.AuditRecord{
-		Kind:      stores.AuditApproval,
-		SessionID: ev.SessionID(),
-		RunID:     ev.RunID(),
-		Flow:      "refunds",
-		Tool:      "refund",
-		Approver:  "ops-oncall",
-		Verdict:   "approved",
-	})
-}
-
-func (c *consumer) decide(ctx context.Context, ev RefundEvent, decision string) {
-	_ = c.audit.Append(ctx, stores.AuditRecord{
-		Kind:      stores.AuditToolDecision,
-		SessionID: ev.SessionID(),
-		RunID:     ev.RunID(),
-		Flow:      "refunds",
-		Tool:      "refund",
-		Decision:  decision,
-	})
+	return ""
 }
 
 func resultText(res types.ToolResult) string {
@@ -165,4 +160,37 @@ func resultText(res types.ToolResult) string {
 		}
 	}
 	return ""
+}
+
+func main() {
+	d, err := newOfflineDeliverer(func() bool { return false })
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "kafka-refunds:", err)
+		os.Exit(1)
+	}
+	ev := RefundEvent{Key: "ord-42", OrderID: "ord-42", Cents: 2500}
+	first, err := d.deliver(ev)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "kafka-refunds: first delivery:", err)
+		os.Exit(1)
+	}
+	if d.executes(ev.OrderID) != 1 {
+		fmt.Fprintln(os.Stderr, "kafka-refunds: first delivery did not execute the refund exactly once")
+		os.Exit(1)
+	}
+	again, err := d.deliver(ev)
+	if _, ok := errors.AsType[ErrRedelivered](err); !ok {
+		fmt.Fprintln(os.Stderr, "kafka-refunds: redelivery error:", err)
+		os.Exit(1)
+	}
+	if again != first {
+		fmt.Fprintf(os.Stderr, "kafka-refunds: redelivery returned %q, want the recorded %q\n", again, first)
+		os.Exit(1)
+	}
+	if d.executes(ev.OrderID) != 1 {
+		fmt.Fprintln(os.Stderr, "kafka-refunds: redelivery executed the refund again")
+		os.Exit(1)
+	}
+	fmt.Printf("refund recorded: %s\n", first)
+	fmt.Printf("redelivery replayed the recorded result; refund executed %d time\n", d.executes(ev.OrderID))
 }

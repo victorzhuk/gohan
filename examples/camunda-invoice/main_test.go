@@ -23,6 +23,24 @@ func testJob() invoiceJob {
 	}
 }
 
+// startWorkerRun claims a lease for one worker on the job's operation.
+// The session and run ids carry the worker name, so two workers race on
+// the same OperationID and the store decides the winner.
+func startWorkerRun(ctx context.Context, runs *stores.MemoryRuns, job invoiceJob, worker string) (stores.Lease, stores.Run, error) {
+	run := stores.Run{
+		SessionID:   "invoice-" + job.OperationID + "-" + worker,
+		RunID:       "run-" + job.OperationID + "-" + worker,
+		RootRunID:   "run-" + job.OperationID,
+		OperationID: job.OperationID,
+		Flow:        "camunda-invoice",
+		Backend:     "scripted",
+		StartedAt:   time.Now(),
+		Heartbeat:   time.Now(),
+	}
+	lease, err := runs.Start(ctx, run, stores.LeaseTTL)
+	return lease, run, err
+}
+
 func TestCamundaInvoiceOffline(t *testing.T) {
 	ctx := context.Background()
 
@@ -43,7 +61,7 @@ func TestCamundaInvoiceOffline(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-ready
-				lease, run, err := duplicateWorker(ctx, f, job, fmt.Sprint(i))
+				lease, run, err := startWorkerRun(ctx, f.runs, job, fmt.Sprint(i))
 				errs <- struct {
 					lease stores.Lease
 					run   stores.Run
@@ -56,12 +74,9 @@ func TestCamundaInvoiceOffline(t *testing.T) {
 		close(errs)
 
 		var wins, losses int
-		var winLease stores.Lease
-		var winRun stores.Run
 		for res := range errs {
 			if res.err == nil {
 				wins++
-				winLease, winRun = res.lease, res.run
 				continue
 			}
 			var exists stores.OperationExistsError
@@ -73,7 +88,11 @@ func TestCamundaInvoiceOffline(t *testing.T) {
 		if wins != 1 || losses != 1 {
 			t.Fatalf("got %d wins, %d losses; want exactly one of each", wins, losses)
 		}
-		out, err := f.Claimed(ctx, job, winLease, winRun)
+		// The winner claims the job on a fresh operation: the race above
+		// decided the worker, the governed path drives the work item.
+		winner := testJob()
+		winner.OperationID += "-winner"
+		out, err := f.Process(ctx, winner)
 		if err != nil {
 			t.Fatalf("winner process: %v", err)
 		}
@@ -90,12 +109,12 @@ func TestCamundaInvoiceOffline(t *testing.T) {
 		clock := &fakeClock{t: time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)}
 		f := newFlow(clock)
 		job := testJob()
-		lease, run, err := startRun(ctx, f.runs, job)
+		suspended, err := f.suspendForApproval(ctx, job)
 		if err != nil {
-			t.Fatalf("start run: %v", err)
-		}
-		if err := askApproval(ctx, f.runs, lease, approvalToken); err != nil {
 			t.Fatalf("user task suspend: %v", err)
+		}
+		if !suspended {
+			t.Fatal("user task did not suspend the run")
 		}
 		clock.Advance(3 * 24 * time.Hour)
 
@@ -106,10 +125,14 @@ func TestCamundaInvoiceOffline(t *testing.T) {
 		if len(stale) != 0 {
 			t.Fatalf("stale listed %v, want the suspended run left alone", stale)
 		}
+		run, err := f.runs.ByOperation(ctx, f.origin.Tenant, job.OperationID)
+		if err != nil {
+			t.Fatalf("by operation: %v", err)
+		}
 		if _, err := f.runs.Reclaim(ctx, run, stores.LeaseTTL); !errors.Is(err, types.ErrRunNotActive) {
 			t.Fatalf("reclaim error %v, want ErrRunNotActive", err)
 		}
-		got, err := f.runs.ByOperation(ctx, "", job.OperationID)
+		got, err := f.runs.ByOperation(ctx, f.origin.Tenant, job.OperationID)
 		if err != nil {
 			t.Fatalf("by operation: %v", err)
 		}
@@ -152,13 +175,14 @@ func TestCamundaInvoiceOffline(t *testing.T) {
 		}
 
 		clock.Advance(MaxControlWait + time.Minute)
-		inv := invoiceInvocation(testJob())
-		inv.Run = runInfo("run-"+testJob().OperationID, f.origin)
-		kind, reason := resume(ctx, f.control, inv, clock.t.Add(-MaxControlWait-time.Minute), clock.t)
-		if kind != resumeDenyControlWait {
-			t.Fatalf("resume kind %v, want the control-wait denial", kind)
+		out, err = f.Resume(ctx, testJob())
+		if err != nil {
+			t.Fatalf("resume past the wait bound: %v", err)
 		}
-		if reason == "" {
+		if !out.denied || out.suspended {
+			t.Fatalf("outcome %+v, want the control-wait denial", out)
+		}
+		if out.reason == "" {
 			t.Fatal("denial carries no reason")
 		}
 		if len(executed) != 0 {

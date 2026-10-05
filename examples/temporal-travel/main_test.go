@@ -24,13 +24,14 @@ func TestTemporalTravelOffline(t *testing.T) {
 			t.Fatalf("signal: %v", err)
 		}
 		trip.crash()
+		searches := trip.rt.searches
 		if err := trip.RecoverReplay(ctx); err != nil {
 			t.Fatalf("recover: %v", err)
 		}
 		if trip.rt.bookings != 1 {
 			t.Fatalf("bookings after recovery = %d, want exactly 1", trip.rt.bookings)
 		}
-		if trip.rt.searches != 0 {
+		if trip.rt.searches != searches {
 			t.Fatalf("search re-executed after recovery, want journal replay")
 		}
 		if _, err := trip.Signal(ctx); !errors.Is(err, types.ErrTokenConsumed) {

@@ -12,7 +12,10 @@ func TestKafkaRefundsOffline(t *testing.T) {
 	ev := RefundEvent{Key: "ord-42", OrderID: "ord-42", Cents: 2500}
 
 	t.Run("engines.redelivery-returns-the-same-result", func(t *testing.T) {
-		d := newOfflineDeliverer(func() bool { return false })
+		d, err := newOfflineDeliverer(func() bool { return false })
+		if err != nil {
+			t.Fatalf("deliverer: %v", err)
+		}
 		first, err := d.deliver(ev)
 		if err != nil {
 			t.Fatalf("first delivery: %v", err)
@@ -25,8 +28,12 @@ func TestKafkaRefundsOffline(t *testing.T) {
 		if !ok {
 			t.Fatalf("redelivery error %v, want ErrRedelivered", err)
 		}
-		if redelivered.RunID != ev.RunID() {
-			t.Fatalf("redelivery run id %q, want %q", redelivered.RunID, ev.RunID())
+		recorded, rerr := d.c.runs.ByOperation(context.Background(), ev.Tenant(), ev.Key)
+		if rerr != nil {
+			t.Fatalf("recorded run: %v", rerr)
+		}
+		if redelivered.RunID != recorded.RunID {
+			t.Fatalf("redelivery run id %q, want the recorded %q", redelivered.RunID, recorded.RunID)
 		}
 		if again != first {
 			t.Fatalf("redelivery result %q, want the recorded %q", again, first)
@@ -38,7 +45,10 @@ func TestKafkaRefundsOffline(t *testing.T) {
 
 	t.Run("engines.live-deny-beats-approval", func(t *testing.T) {
 		killed := true
-		d := newOfflineDeliverer(func() bool { return killed })
+		d, err := newOfflineDeliverer(func() bool { return killed })
+		if err != nil {
+			t.Fatalf("deliverer: %v", err)
+		}
 		res, err := d.deliver(ev)
 		if err != nil {
 			t.Fatalf("delivery: %v", err)
@@ -75,7 +85,10 @@ func TestKafkaRefundsOffline(t *testing.T) {
 	})
 
 	t.Run("journal replay inside the run", func(t *testing.T) {
-		d := newOfflineDeliverer(func() bool { return false })
+		d, err := newOfflineDeliverer(func() bool { return false })
+		if err != nil {
+			t.Fatalf("deliverer: %v", err)
+		}
 		if _, err := d.deliver(ev); err != nil {
 			t.Fatalf("delivery: %v", err)
 		}
