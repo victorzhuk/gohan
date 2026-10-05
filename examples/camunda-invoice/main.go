@@ -150,7 +150,9 @@ func (f *flow) decide(_ context.Context, inv *permission.ToolInvocation) (types.
 		return types.Decision[permission.Verdict]{Value: permission.DenyVerdict, Confidence: 1}, nil
 	}
 	if _, _, err := f.control.KillOn(); err != nil {
-		return types.Decision[permission.Verdict]{}, nil
+		// Control state unreadable: the call cannot be cleared, so it
+		// asks again and the run suspends until control returns.
+		return types.Decision[permission.Verdict]{Value: permission.Ask, Confidence: 1}, nil
 	}
 	if !f.authorised(inv) {
 		f.denial = "originator scope revoked while suspended"
@@ -234,21 +236,30 @@ func (f *flow) Resume(ctx context.Context, job invoiceJob) (outcome, error) {
 	if err != nil {
 		return outcome{}, err
 	}
-	f.approved = true
-	f.denial = ""
+	var out outcome
+	token := f.token
+	if token == "" {
+		return out, errors.New("no suspension token to resume")
+	}
 	f.control.SetReachable(!f.outageOnResume)
 	f.control.SetKill(f.killOnResume)
+	// The engine holds the approval while live control state is
+	// unreadable: an approved call must not execute blind. Once the
+	// control wait bound passes, the approval goes through and the
+	// decider owns the denial.
+	if _, _, err := f.control.KillOn(); err != nil && f.clock.Now().Sub(f.suspendedAt) <= MaxControlWait {
+		return outcome{suspended: true, reason: "awaiting control state"}, nil
+	}
+	f.approved = true
+	f.denial = ""
 	if f.resumeScopes == nil {
 		f.resumeScopes = f.origin.Scopes
 	}
-
-	var out outcome
-	token := f.token
 	f.token = ""
-	// The batch ask suspends with reason awaiting_batch, and the seam
-	// refuses a delivery without data: the approval rides the delivery
-	// payload, the live re-checks still own the verdict on replay.
-	for ev, err := range conv.Resume(types.WithPrincipal(ctx, f.origin), token, stores.ResumeInput{Verdict: stores.VerdictApprove, Data: []byte("approved")}) {
+	// The ask suspends with reason HumanApproval, and the approval rides
+	// the decision, not a delivery payload: the live re-checks still own
+	// the verdict on replay.
+	for ev, err := range conv.Resume(types.WithPrincipal(ctx, f.origin), token, gohan.Approve()) {
 		if err != nil {
 			return out, err
 		}

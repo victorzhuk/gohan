@@ -100,6 +100,15 @@ func NewTrip(flags *LiveFlags) *Trip {
 	return t
 }
 
+// bookingApproval grants the booking ask to the traveler: one approval
+// from the session's owner settles it, the run's own tool policy still
+// gates the execution on replay.
+type bookingApproval struct{}
+
+func (bookingApproval) ApprovalPolicy(context.Context, types.RiskTier, string, bool) (permission.ApprovalPolicy, error) {
+	return permission.ApprovalPolicy{Quorum: 1}, nil
+}
+
 // start wires a fresh governed stack and conversation over the trip's
 // stores. Everything start builds lives in process memory only: a crash
 // drops it, and the next start rebuilds it from the same stores.
@@ -132,6 +141,7 @@ func (t *Trip) start() error {
 	conv, err := gohan.NewNativeConversation(stack, flowName,
 		gohan.WithConversationRuns(t.runs),
 		gohan.WithConversationEventLog(t.events),
+		gohan.WithConversationApprovalPolicy(bookingApproval{}),
 	)
 	if err != nil {
 		return err
@@ -196,15 +206,20 @@ func (t *Trip) Run(ctx context.Context) error {
 	}))
 }
 
-// Signal delivers the approval signal: it consumes the token with the
-// traveler's approval decision, exactly what an engine's signal handler
-// records. The approver travels with the input, so recovery can tell a
-// delivered approval from an untouched token.
-func (t *Trip) Signal(ctx context.Context) (stores.Checkpoint, error) {
-	return t.cps.Consume(t.ctx(ctx), t.token, stores.ResumeInput{
-		Verdict:  stores.VerdictApprove,
-		Approver: &types.Principal{Tenant: "local", Subject: "traveler"},
-	})
+// Signal records the traveler's approval decision: it consumes the
+// token with Approve and drives the run past the ask, exactly what an
+// engine's signal handler records. The decision is the client's; a
+// crash after it leaves recovery to replay the settled call.
+func (t *Trip) Signal(ctx context.Context) error {
+	for ev, err := range t.conv.Resume(t.ctx(ctx), t.token, gohan.Approve()) {
+		if err != nil {
+			return err
+		}
+		if s, ok := ev.(types.Suspended); ok {
+			t.token = s.Token
+		}
+	}
+	return nil
 }
 
 // RecoverReplay recovers the run after a crash: Stack.Recover finds the
@@ -214,13 +229,12 @@ func (t *Trip) RecoverReplay(ctx context.Context) error {
 	return t.stack.Recover(t.ctx(ctx), 8)
 }
 
-// ReplayStep re-executes the run's steps over the same session on fresh
-// live wiring, and reports whether the recorded step sequence up to the
-// suspension matches the first execution. The journal answers the
-// already-completed search, so the replay re-executes the step without
-// running the activity again.
+// ReplayStep re-enters the suspended run from fresh live wiring: a new
+// conversation over the same stores resumes the ask, the journal answers
+// the already-completed search, and the booking step re-executes exactly
+// once. It reports whether the replay advanced the run without repeating
+// the completed activity.
 func (t *Trip) ReplayStep(ctx context.Context) (bool, error) {
-	first := slices.Clone(t.rt.steps)
 	probe := &Trip{
 		rt:       t.rt,
 		flags:    t.flags,
@@ -233,11 +247,18 @@ func (t *Trip) ReplayStep(ctx context.Context) (bool, error) {
 	if err := probe.start(); err != nil {
 		return false, err
 	}
-	before := len(first)
-	if err := probe.Run(t.ctx(ctx)); err != nil {
-		return false, err
+	searches := t.rt.searches
+	bookings := t.rt.bookings
+	done := false
+	for ev, err := range probe.conv.Resume(probe.ctx(ctx), t.token, gohan.Approve()) {
+		if err != nil {
+			return false, err
+		}
+		if _, ok := ev.(types.Done); ok {
+			done = true
+		}
 	}
-	return slices.Equal(first, t.rt.steps[before:]), nil
+	return done && t.rt.bookings == bookings+1 && t.rt.searches == searches, nil
 }
 
 func (t *Trip) drive(ctx context.Context, seq iter.Seq2[types.Event, error]) error {
@@ -277,7 +298,7 @@ func runBooking(ctx context.Context) error {
 	if err := trip.Run(ctx); err != nil {
 		return err
 	}
-	if _, err := trip.Signal(ctx); err != nil {
+	if err := trip.Signal(ctx); err != nil {
 		return err
 	}
 	trip.crash()

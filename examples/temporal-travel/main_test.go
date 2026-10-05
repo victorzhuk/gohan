@@ -20,7 +20,7 @@ func TestTemporalTravelOffline(t *testing.T) {
 		if err := trip.Run(ctx); err != nil {
 			t.Fatalf("run to suspension: %v", err)
 		}
-		if _, err := trip.Signal(ctx); err != nil {
+		if err := trip.Signal(ctx); err != nil {
 			t.Fatalf("signal: %v", err)
 		}
 		trip.crash()
@@ -34,7 +34,7 @@ func TestTemporalTravelOffline(t *testing.T) {
 		if trip.rt.searches != searches {
 			t.Fatalf("search re-executed after recovery, want journal replay")
 		}
-		if _, err := trip.Signal(ctx); !errors.Is(err, types.ErrTokenConsumed) {
+		if err := trip.Signal(ctx); !errors.Is(err, types.ErrTokenConsumed) {
 			t.Fatalf("second consume = %v, want ErrTokenConsumed", err)
 		}
 		if err := trip.RecoverReplay(ctx); err != nil {
@@ -51,7 +51,7 @@ func TestTemporalTravelOffline(t *testing.T) {
 			t.Fatalf("run to suspension: %v", err)
 		}
 		trip.flags.Set("booking.online", false)
-		if _, err := trip.Signal(ctx); err != nil {
+		if err := trip.Signal(ctx); err != nil {
 			t.Fatalf("signal: %v", err)
 		}
 		trip.crash()
