@@ -15,7 +15,7 @@ The `limits` capability's own contract block declares those preset variables, so
 
 For M0, the executable limit middleware and the preset values stay where they are, and the exception is recorded rather than implied. `docs/design/architecture.md` § 4.2a names it.
 
-The reason is that the move is not a file shuffle: `LimitsState` is created per run and reached by middleware that must obtain it from the run context (see `openspec/changes/m0-hardening/design.md` D-per-run-accounting), and `core/chains` is where the model and tool chains consume it. Moving the middleware before that accounting change would create a second migration for the same code. The ownership migration is therefore sequenced after per-run accounting, not before it.
+The reason is that the move is not a file shuffle: `LimitsState` is created per run and reached by middleware that must obtain it from the run context (see `openspec/changes/m0-hardening/design.md` D-per-run-accounting), and `core/chains` is where the model and tool chains consume it. Moving the middleware before that accounting change would create a second migration for the same code. The ownership migration is therefore sequenced after per-run accounting, not before it. That accounting has since landed (ADR-0150 item 4, ADR-0151 item 4): the migration is additive in C10 and C11, and C17 deletes the legacy middleware with its ledger and context accessors, which is the step that closes this exception.
 
 ## Consequences
 

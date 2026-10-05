@@ -56,10 +56,10 @@ Independent, file-disjoint.
 
 8. [ ] `core`, `std`: the governed native path from `design-native-path.md`. Its 16 chunks and the wave order to land them:
   - **Wave 2a (dispatchable now, C01 sealed by ADR-0150):** C02 extract `modelEffect`/`batchEffect` from `core/drive_turn.go` without changing parsing, repair or truncation; C03 new `core/runtime/native.go` with serializable phase advancement and driver callbacks; C04 `core/chains/limits.go` per-run ledger reached from context, inert until C10.
-  - **Wave 2b:** C05 `NativeSpec` registration and immutable resolved configuration in `core/build*.go`; C06 `core/native_effects.go` binding effects to resolved assembly, original call identities and the scheduler.
+  - **Wave 2b:** C05 **done** — `NativeSpec` registration and the immutable resolved configuration in `core/build*.go`, `core/native_options.go`, `core/native_resolve.go`; C06 **next** — `core/native_effects.go` binding effects to resolved assembly, original call identities and the scheduler.
   - **Wave 2c:** C07 `NewNativeConversation` and invocation factories; C08 post-batch safe point and `Done.Cost` in `core/drive_lifecycle.go`; C09 fresh governed runtimes for resume and recovery.
-  - **Wave 2d:** C10 move executable limit policy to `std/limit` (the ADR-0148 migration, sequenced after C04); C11 prompts out of `std/presets.go`; C12 the recipe path; C13 `Explain`, manifest and startup projection.
-  - **Wave 3:** C14 quickstart, C15 excursions, C16 docs.
+  - **Wave 2d:** C10 **done** — executable limit policy in `std/limit` with its ledger and context accessors (landed early: it depended only on C04); C11 prompts out of `std/presets.go`; C12 the recipe path; C13 `Explain`, manifest and startup projection.
+  - **Wave 3:** C14 quickstart, C15 excursions, C16 docs; C17 delete the legacy `core/chains` limit middleware with its ledger and context accessors once C11 has migrated the preset callers — the step that closes ADR-0148.
   - Gaps C01 still owes before wave 2b/2d: the `ErrBatchOverrun`→`LimitExceededError` translation at the driver boundary (sealed by ADR-0150), what `Explain` may claim once arbitrary caller middleware is in the chain, where the durable accounting snapshot stops, and the sequential-tools option that has no `ModelOptions` field yet.
   - verify: `timeout 5m go test -timeout 2m ./core/... ./std/...`
 
