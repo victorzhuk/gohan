@@ -110,7 +110,7 @@ Default (**attached**): a run lives under the caller's `ctx`. Cancellation stops
 2. *Provider reads are decoupled.* The model chain reads the provider stream on a helper goroutine into a per-call buffer of `StreamBuffer` chunks (default 64) that `yield` drains; `ModelProfile.Timeout.Idle` is measured on the provider read, never on the consumer, so a slow client cannot cause an idle-timeout retry. When the buffer is full the provider read blocks; a provider that then closes the stream is not retried (the turn re-runs under rule 3), and `gohan.stream.buffer_full` increments.
 3. *A stalled consumer is a preemption.* When no event is taken for `RunLimits.ConsumerStall` (interactive 30 s, agentic 120 s, batch 0 = disabled), the run is preempted at its next safe point exactly as under `Stack.Shutdown` (`runtime`): `Suspended{Preempted, Token}` is the last event the consumer receives, the lease is released, and the client resumes with `Resume(token, Continue())`. A flow built with `agent.OnStall(Detach)` and an `EventLog` instead continues as `Detached` and the client reattaches from its last `Seq`. `gohan.stream.consumer_stalled{action}` counts both.
 
-Transports set a per-event write deadline equal to `ConsumerStall` when it is non-zero, so a stall surfaces as a failed write rather than a hung goroutine; with `ConsumerStall` 0 (stall-preemption disabled, e.g. `BatchLimits`) no per-event deadline is set (`examples/` SSE recipe).
+Transports set a per-event write deadline equal to `ConsumerStall` when it is non-zero, so a stall surfaces as a failed write rather than a hung goroutine; with `ConsumerStall` 0 (stall-preemption disabled, e.g. `BatchLimits`) no per-event deadline is set (`examples/` SSE recipe). These protections assume the run progresses while its consumer has stopped taking events, which the `model` iterator contract permits only through the single harness-owned run worker described there.
 
 **Detached** (`agent.Detached()` flow option): the run executes under a harness-owned ctx bounded by `RunLimits.MaxWallClock`; `Send` returns once the run is started, and clients consume events through:
 
@@ -124,7 +124,7 @@ type EventLog interface {
 func (c Conversation) Attach(ctx context.Context, runID string, afterSeq int64) iter.Seq2[Event, error]
 ```
 
-`Read` delivers persisted events in order, then live ones, with no gap or duplicate (single writer per run, guaranteed by the `Runs` lease). Implementations: memory ring buffer (core), Redis streams (`adapter/redis`). `Build` rejects `Detached` without an `EventLog`. Attached flows may also set an `EventLog` to enable `Attach` after a reconnect while the original run is still alive.
+`Read` delivers persisted events in order, then live ones, with no gap or duplicate (single writer per run, guaranteed by the `Runs` lease), as long as the requested cursor is still retained: an implementation whose retention is bounded must refuse a cursor older than what it retains rather than serve an overlapping window, so a client that reconnects past the window is told instead of silently given a gap. Implementations: memory ring buffer (core), Redis streams (`adapter/redis`). `Build` rejects `Detached` without an `EventLog`. Attached flows may also set an `EventLog` to enable `Attach` after a reconnect while the original run is still alive.
 
 
 ## Requirements
