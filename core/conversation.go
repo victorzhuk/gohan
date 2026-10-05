@@ -2,6 +2,8 @@ package gohan
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"iter"
@@ -63,7 +65,6 @@ type conversation struct {
 	live    map[string]string
 	waiters map[string]map[chan struct{}]struct{}
 	ended   map[string]bool
-	runID   int
 }
 
 // markRunEnded records that the run produced its last event and wakes any
@@ -177,7 +178,11 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 			return
 		}
 		key, _ := IdempotencyKey(ctx)
-		runID := c.nextRunID()
+		runID, rerr := newRunID()
+		if rerr != nil {
+			yield(nil, rerr)
+			return
+		}
 		lease, serr := c.runs.Start(ctx, stores.Run{
 			SessionID:   sessionID,
 			RunID:       runID,
@@ -248,6 +253,9 @@ func (c *conversation) Cancel(ctx context.Context, sessionID string) error {
 	if err := requirePrincipal(ctx, c.allowAnonymous); err != nil {
 		return err
 	}
+	if err := c.checkSteerOwner(ctx, sessionID); err != nil {
+		return err
+	}
 	run, live := c.find(ctx, sessionID)
 	if !live {
 		return types.ErrRunNotActive
@@ -301,6 +309,14 @@ func (c *conversation) stream(ctx context.Context, lease stores.Lease, sessionID
 	}
 	if c.toolSpecs != nil {
 		opts = append(opts, WithLifecycleToolSpecs(c.toolSpecs))
+	}
+	if c.log != nil {
+		// The steers a drained mailbox carries are appended to history
+		// before SteerApplied acknowledges them; without the appender the
+		// signal path fails the step.
+		opts = append(opts, WithLifecycleAppender(AppendFunc(func(ctx context.Context, expected int64, msgs ...types.Message) (int64, error) {
+			return c.log.Append(ctx, sessionID, expected, msgs...)
+		})))
 	}
 	if p, ok := PrincipalFrom(ctx); ok {
 		opts = append(opts, WithLifecycleOriginator(p))
@@ -393,9 +409,12 @@ func (c *conversation) untrack(sessionID string) {
 	c.mu.Unlock()
 }
 
-func (c *conversation) nextRunID() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.runID++
-	return fmt.Sprintf("run-%08x", c.runID)
+// newRunID mints a run id collision-resistant across processes: a
+// process-local counter collides between pods over one runs store.
+func newRunID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("mint run id: %w", err)
+	}
+	return "run-" + hex.EncodeToString(b[:]), nil
 }

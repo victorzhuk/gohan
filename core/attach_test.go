@@ -2,30 +2,25 @@ package gohan
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 )
 
 func TestAttach(t *testing.T) {
 	t.Run("ends after the run's done", func(t *testing.T) {
-		rt := &detRT{pre: 2}
+		rt := &detRT{pre: 2, entered: make(chan struct{}), gate: make(chan struct{})}
 		conv := streamSetup(t, rt)
 		ctx := context.Background()
 		start := make(chan streamResult, 1)
 		go func() { start <- collectStream(conv.Send(principalCtx(ctx), "s1", userMsg("hi"))) }()
-		// The run can finish before the poll sees it live; the counter
-		// names the run either way, so the id is read while it is known.
-		var runID string
-		waitFor(t, "run id known", func() bool {
-			conv.mu.Lock()
-			defer conv.mu.Unlock()
-			runID = conv.live["s1"]
-			if runID == "" && conv.runID > 0 {
-				runID = fmt.Sprintf("run-%08x", conv.runID)
-			}
-			return runID != ""
-		})
+		// The run stays live inside its gated step, so the id is read
+		// while the conversation still tracks it.
+		<-rt.entered
+		runID := liveRunID(conv, "s1")
+		if runID == "" {
+			t.Fatal("run id unknown")
+		}
+		close(rt.gate)
 		waitFor(t, "run done recorded", func() bool {
 			select {
 			case <-start:

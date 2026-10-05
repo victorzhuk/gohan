@@ -15,7 +15,7 @@ import (
 // steer makes the loop take one more turn, counted against MaxTurns the
 // way applySignals counts it, or ends the run with Done{StopLimit} when
 // the bound is spent.
-func (lc *Lifecycle) drainSafePoint(ctx context.Context, st runtime.State) (terminal, again bool, evs []types.Event, err error) {
+func (lc *Lifecycle) drainSafePoint(ctx context.Context, st runtime.State) (bool, bool, []types.Event, error) {
 	if lc.runs == nil {
 		return false, false, nil, nil
 	}
@@ -23,5 +23,6 @@ func (lc *Lifecycle) drainSafePoint(ctx context.Context, st runtime.State) (term
 	if err != nil {
 		return false, false, nil, err
 	}
-	return lc.applySignals(ctx, st, sigs)
+	_, terminal, again, evs, err := lc.applySignals(ctx, st, sigs)
+	return terminal, again, evs, err
 }

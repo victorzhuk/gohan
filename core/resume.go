@@ -341,9 +341,15 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			return
 		}
 		ctx = types.WithApproval(ctx, types.Approval{Approver: approver, At: time.Now().UTC()})
+		// The resumed run's events are recorded like a Send's, so Attach
+		// replays them and waiters wake at the end.
+		defer c.markRunEnded(consumed.RunID)
 		for ev, err := range DriveLifecycle(ctx, lc, c.rt, ag) {
 			if err != nil {
 				yield(nil, err)
+				return
+			}
+			if !c.relay(ctx, consumed.RunID, ev, yield) {
 				return
 			}
 			if !yield(ev, nil) {

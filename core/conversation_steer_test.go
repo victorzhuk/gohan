@@ -281,7 +281,7 @@ func TestConversationSteer(t *testing.T) {
 					driven <- fmt.Errorf("status after steer turn = %v, want done", status)
 					return
 				}
-				evs2, _, err := lc.finishTurn(ctx, st)
+				_, evs2, _, err := lc.finishTurn(ctx, st)
 				if err != nil {
 					driven <- err
 					return
@@ -435,7 +435,7 @@ func TestConversationSteer(t *testing.T) {
 		if status != runtime.DoneStatus {
 			t.Fatalf("status = %v, want done", status)
 		}
-		if _, again, err := lc.finishTurn(ctx, st); err != nil || !again {
+		if _, _, again, err := lc.finishTurn(ctx, st); err != nil || !again {
 			t.Fatalf("finishTurn again=%v err=%v, want one more turn", again, err)
 		}
 		if runs.finish != 1 {

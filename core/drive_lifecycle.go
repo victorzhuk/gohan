@@ -342,7 +342,7 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 			yield(ev, nil)
 			return
 		case runtime.DoneStatus:
-			evs, again, err := lc.finishTurn(sctx, st)
+			next, evs, again, err := lc.finishTurn(sctx, st)
 			for _, e := range evs {
 				if !yield(e, nil) {
 					return
@@ -353,6 +353,7 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 				yield(nil, err)
 				return
 			}
+			st = next
 			if again {
 				st.Turn++
 				continue
@@ -468,23 +469,24 @@ func (lc *Lifecycle) approvalsFor(ctx context.Context, r runtime.AgentRun, st ru
 // ErrSignalsPending drains the mailbox, appends the steers to history and
 // reports one more turn; when MaxTurns is already reached the run ends
 // with Done{StopLimit} instead, and a pending cancel stops it with
-// Done{cancelled}.
-func (lc *Lifecycle) finishTurn(ctx context.Context, st runtime.State) ([]types.Event, bool, error) {
+// Done{cancelled}. The returned state carries the history version the
+// drained steers advanced to, so the next step appends against it.
+func (lc *Lifecycle) finishTurn(ctx context.Context, st runtime.State) (runtime.State, []types.Event, bool, error) {
 	if lc.runs != nil {
 		sigs, err := lc.runs.Drain(ctx, lc.lease)
 		if err != nil {
-			return nil, false, err
+			return st, nil, false, err
 		}
-		terminal, again, evs, err := lc.applySignals(ctx, st, sigs)
+		st, terminal, again, evs, err := lc.applySignals(ctx, st, sigs)
 		if err != nil || terminal || again {
-			return evs, again, err
+			return st, evs, again, err
 		}
 	}
 	unknown := lc.callKeys(st)
 	if lc.verify != nil && len(unknown) > 0 {
 		rest, err := lc.verify(ctx, unknown)
 		if err != nil {
-			return nil, false, err
+			return st, nil, false, err
 		}
 		unknown = rest
 	}
@@ -493,59 +495,65 @@ func (lc *Lifecycle) finishTurn(ctx context.Context, st runtime.State) ([]types.
 		// A steer arrived between the safe point and Finish: drain it and
 		// run one more turn.
 		if lc.runs == nil {
-			return nil, false, fmt.Errorf("gohan: %w without a runs store", types.ErrSignalsPending)
+			return st, nil, false, fmt.Errorf("gohan: %w without a runs store", types.ErrSignalsPending)
 		}
 		sigs, derr := lc.runs.Drain(ctx, lc.lease)
 		if derr != nil {
-			return nil, false, derr
+			return st, nil, false, derr
 		}
-		terminal, again, evs, aerr := lc.applySignals(ctx, st, sigs)
+		st, terminal, again, evs, aerr := lc.applySignals(ctx, st, sigs)
 		if aerr != nil {
-			return nil, false, aerr
+			return st, nil, false, aerr
 		}
 		if !terminal && !again {
-			return nil, false, fmt.Errorf("gohan: %w reported but the mailbox drained empty", types.ErrSignalsPending)
+			return st, nil, false, fmt.Errorf("gohan: %w reported but the mailbox drained empty", types.ErrSignalsPending)
 		}
-		return evs, again, nil
+		return st, evs, again, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return st, nil, false, err
 	}
-	return []types.Event{lc.done(st, unknown, types.StopCompleted)}, false, nil
+	return st, []types.Event{lc.done(st, unknown, types.StopCompleted)}, false, nil
 }
 
 // applySignals acts on the drained mailbox. A cancel stops the run with
 // Done{cancelled}; drained steers are appended to history and, past
 // MaxTurns, end the run with Done{StopLimit} instead of another turn.
-func (lc *Lifecycle) applySignals(ctx context.Context, st runtime.State, sigs []stores.Signal) (terminal, again bool, evs []types.Event, err error) {
+func (lc *Lifecycle) applySignals(ctx context.Context, st runtime.State, sigs []stores.Signal) (runtime.State, bool, bool, []types.Event, error) {
+	var evs []types.Event
 	steered := false
 	for _, sig := range sigs {
 		if sig.Kind == stores.SignalCancel {
 			if err := lc.finishRun(ctx, st, stores.Finished, nil); err != nil {
-				return true, false, nil, err
+				return st, true, false, nil, err
 			}
-			return true, false, []types.Event{lc.done(st, nil, types.StopCancelled)}, nil
+			return st, true, false, []types.Event{lc.done(st, nil, types.StopCancelled)}, nil
 		}
-		if lc.appender != nil {
-			v, aerr := lc.appender.Append(ctx, st.HistoryVersion, sig.Message)
-			if aerr != nil {
-				return false, false, nil, aerr
-			}
-			st.HistoryVersion = v
+		if lc.appender == nil {
+			// A drive-only lifecycle has no session history to append to;
+			// the steer still reaches the next assembly, without the
+			// SteerApplied acknowledgement.
+			steered = true
+			continue
 		}
+		v, aerr := lc.appender.Append(ctx, st.HistoryVersion, sig.Message)
+		if aerr != nil {
+			return st, false, false, nil, aerr
+		}
+		st.HistoryVersion = v
 		evs = append(evs, types.SteerApplied{MessageID: sig.Message.ID})
 		steered = true
 	}
 	if !steered {
-		return false, false, nil, nil
+		return st, false, false, nil, nil
 	}
 	if lc.maxTurns > 0 && st.Turn >= lc.maxTurns {
 		if err := lc.finishRun(ctx, st, stores.Finished, lc.callKeys(st)); err != nil {
-			return true, false, nil, err
+			return st, true, false, nil, err
 		}
-		return true, false, append(evs, lc.done(st, nil, types.StopLimit)), nil
+		return st, true, false, append(evs, lc.done(st, nil, types.StopLimit)), nil
 	}
-	return false, true, evs, nil
+	return st, false, true, evs, nil
 }
 
 // finishRun closes the run with the given terminal state. A Finish refused

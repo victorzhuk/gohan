@@ -39,7 +39,11 @@ func (c *conversation) Continue(ctx context.Context, sessionID string) iter.Seq2
 			return
 		}
 		key, _ := IdempotencyKey(ctx)
-		runID := c.nextRunID()
+		runID, rerr := newRunID()
+		if rerr != nil {
+			yield(nil, rerr)
+			return
+		}
 		lease, serr := c.runs.Start(ctx, stores.Run{
 			SessionID:   sessionID,
 			RunID:       runID,
