@@ -2,10 +2,13 @@ package storetest
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/victorzhuk/gohan/core/stores"
 )
 
 type fakeEventLog struct {
@@ -43,8 +46,16 @@ func (f *fakeEventLog) Append(_ context.Context, runID string, e Event) error {
 func (f *fakeEventLog) Read(_ context.Context, runID string, afterSeq int64) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
 		f.mu.Lock()
+		oldest := f.next[runID] + 1
+		if len(f.runs[runID]) > 0 {
+			oldest = f.runs[runID][0].Meta.Seq
+		}
 		evts := append([]Event(nil), f.runs[runID]...)
 		f.mu.Unlock()
+		if afterSeq < oldest-1 {
+			yield(Event{}, fmt.Errorf("read from %d: %w", afterSeq, stores.ErrStaleCursor))
+			return
+		}
 		for _, e := range evts {
 			if e.Meta.Seq <= afterSeq {
 				continue

@@ -3,6 +3,7 @@ package gohan
 import (
 	"context"
 	"errors"
+	"fmt"
 	"iter"
 	"sync"
 	"time"
@@ -91,6 +92,20 @@ func (c *conversation) driveRun(ctx context.Context, lease stores.Lease, session
 		opts = append(opts, WithLifecycleOriginator(p))
 	}
 	lc := NewLifecycle(opts...)
+	// recorded counts the events relayed so far, so the terminal error can
+	// name the sequence a reattaching client resumes from.
+	var recorded int64
+	// fail ends a failed run: the failure is one recorded TerminalError
+	// payload and one (nil, err) tuple, never a Done.
+	fail := func(err error) {
+		if c.events != nil {
+			te := TerminalFailure(err, lease.RunID, recorded+2)
+			if aerr := c.events.Append(ctx, lease.RunID, stores.Event{Payload: te, Meta: types.EventMeta{RunID: lease.RunID}}); aerr != nil {
+				err = fmt.Errorf("record terminal error: %w", aerr)
+			}
+		}
+		emit(nil, err)
+	}
 	rt := c.rt
 	ag := runtime.AgentRun{Input: input}
 	runCtx := ctx
@@ -104,7 +119,7 @@ func (c *conversation) driveRun(ctx context.Context, lease stores.Lease, session
 				emit(nil, ferr)
 				return
 			}
-			emit(nil, err)
+			fail(err)
 			return
 		}
 		runCtx, ag = rctx, run
@@ -127,6 +142,7 @@ func (c *conversation) driveRun(ctx context.Context, lease stores.Lease, session
 				if !c.relay(ctx, lease.RunID, gbEv, emit) {
 					return
 				}
+				recorded++
 				if !emit(gbEv, nil) {
 					return
 				}
@@ -134,15 +150,17 @@ func (c *conversation) driveRun(ctx context.Context, lease stores.Lease, session
 				if !c.relay(ctx, lease.RunID, doneEv, emit) {
 					return
 				}
+				recorded++
 				emit(doneEv, nil)
 				return
 			}
-			emit(nil, err)
+			fail(err)
 			return
 		}
 		if !c.relay(ctx, lease.RunID, ev, emit) {
 			return
 		}
+		recorded++
 		if !emit(ev, nil) {
 			return
 		}

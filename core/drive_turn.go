@@ -195,6 +195,34 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 // when the reply carries tool calls, parks them on the per-run scope for
 // the batch effect. A final answer returns the assistant message as the
 // event a terminal status carries; the driver owns the terminal Done.
+// appendFailedPartial records an ordinary mid-stream provider failure: the
+// assistant content streamed so far appends to history carrying
+// FinishError, so a resumed session continues from the partial turn. A
+// controlled stop (cancellation, preemption) never reaches this; a failure
+// before any content streamed appends nothing.
+func appendFailedPartial(ctx context.Context, st runtime.State, env *turnEnv, reply, reasoning string, calls []types.ToolUse) error {
+	if reply == "" && reasoning == "" && len(calls) == 0 {
+		return nil
+	}
+	asst := types.Message{ID: assistantID(env.turn), Role: types.RoleAssistant, Meta: map[string]any{metaFinish: types.FinishError}}
+	if reply != "" {
+		asst.Blocks = append(asst.Blocks, types.Text{Text: reply})
+	}
+	for _, call := range calls {
+		asst.Blocks = append(asst.Blocks, call)
+	}
+	retainReasoning(&asst, reasoning)
+	env.msgs = append(env.msgs, asst)
+	if h, ok := historyAppenderFrom(ctx); ok {
+		v, err := h.Append(ctx, st.HistoryVersion, asst)
+		if err != nil {
+			return err
+		}
+		st.HistoryVersion = v
+	}
+	return nil
+}
+
 func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
 	env := turnEnvFrom(ctx)
 	c := env.c
@@ -228,11 +256,17 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	mctx, endChat := startSpan(ctx, telemetryFrom(ctx), SpanChat)
 	for chunk, err := range c.model(mctx, req) {
 		if err != nil {
-			if ctx.Err() != nil {
-				err = ctx.Err()
-			}
 			endChat(types.String(types.KeySuspendReason, "error"))
 			env.flushDeltas(ctx)
+			if ctx.Err() != nil {
+				// The run context was cancelled or preempted: this is a
+				// controlled stop, not an ordinary provider failure, so
+				// the partial turn appends nothing.
+				return st, nil, runtime.Continue, ctx.Err()
+			}
+			if aerr := appendFailedPartial(ctx, st, env, sb.String(), reasoning.String(), calls); aerr != nil {
+				err = aerr
+			}
 			return st, nil, runtime.Continue, err
 		}
 		switch chunk.Kind {

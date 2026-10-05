@@ -2,12 +2,30 @@ package storetest
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"testing"
 	"time"
 
+	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
+
+// refuseStale asserts the log refuses a cursor older than what it still
+// retains with an error wrapping stores.ErrStaleCursor.
+func refuseStale(t *testing.T, log EventLogStore, ctx context.Context, run string, after int64) {
+	t.Helper()
+	for _, err := range log.Read(ctx, run, after) {
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, stores.ErrStaleCursor) {
+			t.Fatalf("Read(%q, after=%d) = %v, want stores.ErrStaleCursor", run, after, err)
+		}
+		return
+	}
+	t.Fatalf("Read(%q, after=%d) served events, want a stale-cursor refusal", run, after)
+}
 
 // EventLogStore is the EventLog port as the conformance suite sees it.
 type EventLogStore interface {
@@ -206,9 +224,12 @@ func EventLog(t *testing.T, newLog EventLogFactory) {
 		// Only the events recorded at the later store time survive, in both
 		// runs, and each keeps its original Seq.
 		for _, run := range []string{"run-a", "run-b"} {
+			// A cursor below the retained window is refused, not served
+			// as an overlapping window.
+			refuseStale(t, log, ctx, run, 0)
 			want := []int64{3, 4}
 			var got []int64
-			for e, err := range log.Read(ctx, run, 0) {
+			for e, err := range log.Read(ctx, run, 2) {
 				if err != nil {
 					t.Fatalf("Read(%q): %v", run, err)
 				}
@@ -233,8 +254,15 @@ func EventLog(t *testing.T, newLog EventLogFactory) {
 			t.Fatalf("Expire: %v", err)
 		}
 		for _, run := range []string{"run-a", "run-b"} {
-			for range log.Read(ctx, run, 0) {
-				t.Fatalf("Read(%q) after full expiry delivered an event", run)
+			// Nothing is retained any more: any cursor below the next
+			// sequence is refused, a cursor at it serves nothing.
+			refuseStale(t, log, ctx, run, 0)
+			refuseStale(t, log, ctx, run, 3)
+			for e, err := range log.Read(ctx, run, 4) {
+				if err != nil {
+					t.Fatalf("Read(%q, after=4): %v", run, err)
+				}
+				t.Fatalf("Read(%q, after=4) delivered %T after full expiry", run, e.Payload)
 			}
 		}
 	})
@@ -254,8 +282,11 @@ func EventLog(t *testing.T, newLog EventLogFactory) {
 		// The two oldest are gone; what remains is ordered and gapless within
 		// the retained window, and the surviving Seq values show the store
 		// never restarted numbering.
+		// The window starts at seq 3: a cursor below it is refused.
+		refuseStale(t, log, ctx, "run", 0)
+		refuseStale(t, log, ctx, "run", 1)
 		var got []int64
-		for e, err := range log.Read(ctx, "run", 0) {
+		for e, err := range log.Read(ctx, "run", 2) {
 			if err != nil {
 				t.Fatalf("Read: %v", err)
 			}
@@ -310,8 +341,10 @@ func EventLog(t *testing.T, newLog EventLogFactory) {
 			return got
 		}
 
-		if got := readSeqs(0); len(got) != 3 || got[0] != 3 || got[1] != 4 || got[2] != 5 {
-			t.Fatalf("Read(after=0) after saturation got %v, want [3 4 5]", got)
+		refuseStale(t, log, ctx, "run", 0)
+		refuseStale(t, log, ctx, "run", 1)
+		if got := readSeqs(2); len(got) != 3 || got[0] != 3 || got[1] != 4 || got[2] != 5 {
+			t.Fatalf("Read(after=2) after saturation got %v, want [3 4 5]", got)
 		}
 		if got := readSeqs(4); len(got) != 1 || got[0] != 5 {
 			t.Fatalf("Read(after=4) after saturation got %v, want [5]", got)

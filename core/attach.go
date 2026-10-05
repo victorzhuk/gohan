@@ -7,8 +7,9 @@ import (
 
 // Attach streams one run's events from afterSeq onward: the events the log
 // already holds first, then live ones as the run records them, with no gap
-// or duplicate. The sequence ends after it has delivered the run's Done; a
-// cancelled context surfaces as a final context.Canceled tuple.
+// or duplicate. The sequence ends at the run's boundary: a Done, a
+// Suspended event or a TerminalError record; a cancelled context surfaces
+// as a final context.Canceled tuple.
 func (c *conversation) Attach(ctx context.Context, runID string, afterSeq int64) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
 		seq := afterSeq
@@ -58,7 +59,11 @@ func (c *conversation) replay(ctx context.Context, runID string, seq *int64, yie
 		}
 		*seq = e.Meta.Seq
 		advanced = true
-		if _, done := e.Payload.(Done); done {
+		switch e.Payload.(type) {
+		case Done, Suspended, TerminalError:
+			// A reattaching client stops at the run's boundary: after a
+			// Done, a suspension or the failure terminal it must not be
+			// handed records from beyond it in this invocation.
 			return true, true, true
 		}
 	}

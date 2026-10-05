@@ -1,6 +1,7 @@
 package stores
 
 import (
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -84,10 +85,19 @@ func TestEventLog(t *testing.T) {
 		if err := s.Expire(ctx, clock); err != nil {
 			t.Fatalf("expire: %v", err)
 		}
+		// Nothing is retained after the expiry: a cursor below the next
+		// sequence is refused instead of served an empty overlapping
+		// window, and a cursor at the next sequence serves nothing.
+		for _, err := range s.Read(ctx, "run-1", 0) {
+			if !errors.Is(err, ErrStaleCursor) {
+				t.Fatalf("read after expire at cursor 0 = %v, want ErrStaleCursor", err)
+			}
+			break
+		}
 		var remaining []int64
-		for e, err := range s.Read(ctx, "run-1", 0) {
+		for e, err := range s.Read(ctx, "run-1", n) {
 			if err != nil {
-				t.Fatalf("read after expire: %v", err)
+				t.Fatalf("read after expire at cursor %d: %v", n, err)
 			}
 			remaining = append(remaining, e.Meta.Seq)
 		}
@@ -98,7 +108,7 @@ func TestEventLog(t *testing.T) {
 		if err := s.Append(ctx, "run-1", Event{Payload: types.LimitWarning{Limit: "tokens"}}); err != nil {
 			t.Fatalf("append after expire: %v", err)
 		}
-		for e, err := range s.Read(ctx, "run-1", 0) {
+		for e, err := range s.Read(ctx, "run-1", n) {
 			if err != nil {
 				t.Fatalf("read refilled: %v", err)
 			}
