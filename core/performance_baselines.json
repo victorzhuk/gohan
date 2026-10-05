@@ -10,7 +10,9 @@
     "model_chain_overhead_us": 50
   },
   "gated": [
+    "BenchmarkToolCall_Raw",
     "BenchmarkToolChain_ReadOnly",
+    "BenchmarkModelCall_Raw",
     "BenchmarkModelChain"
   ],
   "measured_ratios": {

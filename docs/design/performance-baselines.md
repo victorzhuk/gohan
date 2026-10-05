@@ -23,32 +23,59 @@ file, and nothing gates on them.
 
 ## Runner-class expectations
 
-The absolute wall-clock budgets belong to the reference machine, the
-`ubuntu-latest` CI runner class (4 vCPU, amd64) that `.github/workflows/ci.yml`
-uses for its `bench` job and `Taskfile.yml` uses for `task bench`:
+The gate checks two different latency contracts on the reference machine.
+The absolute budgets are:
 
-- tool-chain overhead per read-only call: ≤ 20 µs (spec: ≤ 20 µs)
-- model-chain overhead per call excluding I/O: ≤ 50 µs (spec: ≤ 50 µs)
+- tool-chain overhead per read-only call: ≤ 20 µs
+- model-chain overhead per call excluding I/O: ≤ 50 µs
 
-No developer-machine microsecond number is frozen anywhere. On this
-workstation both paths run under 1 µs, far inside the runner-class budgets;
-the local advisory check in `TestChainPerformanceBudget` logs — never fails —
-when the tool-chain path drifts past 20 µs. The strict verdicts come from the
-CI gate on the reference runner (chunk 32.3, alternating base/head rounds,
-fastest of three, 5 % tolerance).
+The gate computes each overhead as the fastest head round of the chain
+benchmark minus the fastest head round of its raw comparator
+(`BenchmarkToolChain_ReadOnly` − `BenchmarkToolCall_Raw`,
+`BenchmarkModelChain` − `BenchmarkModelCall_Raw`) and holds it against the
+frozen budget from the JSON. Strict mode (`--latency`) enforces the budgets
+and the relative regression; a local run reports a budget miss as advisory
+and never fails.
 
-## What is gated
+The `ubuntu-latest` CI runner class (4 vCPU, amd64) supplies reference
+measurements. The `performance.yml` workflow runs the gate in strict mode on
+that class. The gate checks relative regressions separately: it compares the
+fastest of three alternating base/head rounds and allows 5% regression.
 
-`gated` in the JSON lists the benchmarks the CI gate drives:
-`BenchmarkToolChain_ReadOnly` and `BenchmarkModelChain`.
-`BenchmarkToolCall_Raw` is the reference baseline both budgets are deltas
-over, so it is measured but not itself a gate.
+Local latency is advisory. The local run does not enforce latency budgets.
+`TestChainPerformanceBudget` enforces allocation counts locally and reports
+tool-chain timing as advisory data. It does not prove reference-runner
+latency. An advisory PASS never satisfies a strict run: the latency mode is
+part of the verdict cache identity, so a strict run of the same commit pair
+re-measures.
+
+## Verdict cache identity
+
+The gate caches verdicts under a versioned identity (`schema2`): full commit
+SHAs, benchmark selector, effective benchtime, inner test timeout, round
+count (3), tolerance, latency mode, the SHA256 digest of the validated
+baselines file, Go version, GOOS/GOARCH/GOMAXPROCS, and runner identity. A
+cache entry is reused only when every field matches; entries from earlier
+schemas are ignored. The CI cache key in `.github/workflows/performance.yml`
+encodes the schema, toolchain (`go.mod`), baseline digest, runner class, and
+the full base/head commit pair. The baselines file is loaded and validated
+before the cache is consulted: the gated set must be nonempty and both
+latency budgets must be positive.
+
+## Required measurements
+
+The `gated` list in the JSON names required benchmarks, including raw
+comparators. The performance gate must fail when any required benchmark lacks
+a nonempty sample on either side, when fewer than three rounds produced
+samples, or when a round reports a zero ns/op sample; the failure names the
+benchmark.
 
 Re-freezing: run
 
 ```
-go test -timeout 3m -run '^$' -bench 'BenchmarkToolChain_ReadOnly|BenchmarkToolCall_Raw|BenchmarkModelChain' -benchtime 100000x ./core/
+go test -timeout 3m -run '^$' -bench 'BenchmarkToolChain_ReadOnly|BenchmarkToolCall_Raw|BenchmarkModelChain|BenchmarkModelCall_Raw' -benchtime 100000x ./core/
 ```
 
-update the allocation counts in `core/performance_baselines.json`, and keep
-the ratio class label honest.
+Update the allocation counts in `core/performance_baselines.json`. Keep the
+ratio class label accurate.
+

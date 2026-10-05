@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"iter"
+	"math"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func rawModelCall(_ context.Context, _ types.ModelRequest) iter.Seq2[types.Model
 // the limits step the driver installs and one pass-through guard step.
 func readOnlyToolChain(st *chains.LimitsState) chains.ToolChain {
 	return chains.ToolChain{
-		{Name: "limits", Kind: chains.KindLimit, Use: chains.ToolLimits(types.RunLimits{MaxToolCalls: 1 << 20, MaxWallClock: time.Hour}, st)},
+		{Name: "limits", Kind: chains.KindLimit, Use: chains.ToolLimits(types.RunLimits{MaxToolCalls: math.MaxInt64, MaxWallClock: time.Hour}, st)},
 		{Name: "guard", Kind: chains.KindGuard, Use: nil},
 	}
 }
@@ -129,6 +130,27 @@ func BenchmarkModelChain(b *testing.B) {
 	}
 }
 
+func BenchmarkModelCall_Raw(b *testing.B) {
+	ctx := context.Background()
+	req := types.ModelRequest{}
+	for range 3 {
+		for _, err := range rawModelCall(ctx, req) {
+			_ = err
+		}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		for chunk, err := range rawModelCall(ctx, req) {
+			if err != nil {
+				b.Fatal(err)
+			}
+			if chunk.Delta != "" {
+				benchChunks++
+			}
+		}
+	}
+}
+
 type perfBaselines struct {
 	RunnerClass struct {
 		Name string `json:"name"`
@@ -162,46 +184,44 @@ func loadBaselines(t testing.TB) perfBaselines {
 // (≤ 20 µs tool-chain overhead, ≤ 50 µs model-chain overhead) belong to the
 // reference runner gate on ubuntu-latest; locally they are advisory only.
 func TestChainPerformanceBudget(t *testing.T) {
-	if testing.Short() {
-		t.Log("short mode: wall-clock checks skipped; allocation contracts still run")
-	}
-	bl := loadBaselines(t)
-
-	ctx := context.Background()
-	const samples = 1000
-	rawAllocs := testing.AllocsPerRun(samples, func() {
-		_, _ = rawToolCall(ctx, types.ToolUse{})
-	})
-	st := chains.NewLimitsState()
-	ch := readOnlyToolChain(st)
-	chainAllocs := testing.AllocsPerRun(samples, func() {
-		_, _ = chains.RunToolChain(ctx, ch, rawToolCall)
-	})
-	mch := modelChainForBench(chains.NewLimitsState())
-	call := composeModel(mch, rawModelCall)
-	req := types.ModelRequest{}
-	modelAllocs := testing.AllocsPerRun(samples, func() {
-		for _, err := range call(ctx, req) {
-			_ = err
-		}
-	})
-
-	if overhead := int(chainAllocs) - int(rawAllocs); overhead > bl.ToolChain.OverheadAllocs {
-		t.Errorf("tool-chain overhead %d allocs > frozen budget %d (chain %v vs raw %v)", overhead, bl.ToolChain.OverheadAllocs, chainAllocs, rawAllocs)
-	}
-	if total := int(modelAllocs); total > bl.ModelChain.AllocsPerOp {
-		t.Errorf("model-chain %d allocs/op > frozen budget %d", total, bl.ModelChain.AllocsPerOp)
-	}
-
-	if !testing.Short() {
-		start := time.Now()
-		const wallSamples = 100000
-		for range wallSamples {
+	t.Run("performance.chain-overhead-within-budget", func(t *testing.T) {
+		bl := loadBaselines(t)
+		ctx := context.Background()
+		const samples = 1000
+		rawAllocs := testing.AllocsPerRun(samples, func() {
+			_, _ = rawToolCall(ctx, types.ToolUse{})
+		})
+		st := chains.NewLimitsState()
+		ch := readOnlyToolChain(st)
+		chainAllocs := testing.AllocsPerRun(samples, func() {
 			_, _ = chains.RunToolChain(ctx, ch, rawToolCall)
+		})
+		mch := modelChainForBench(chains.NewLimitsState())
+		call := composeModel(mch, rawModelCall)
+		req := types.ModelRequest{}
+		modelAllocs := testing.AllocsPerRun(samples, func() {
+			for _, err := range call(ctx, req) {
+				_ = err
 		}
-		chainPerOp := time.Since(start) / wallSamples
-		if chainPerOp > 20*time.Microsecond {
-			t.Logf("ADVISORY: tool-chain per-op %v exceeds the 20µs reference-runner budget; local runs never fail", chainPerOp)
+		})
+
+		if overhead := int(chainAllocs) - int(rawAllocs); overhead > bl.ToolChain.OverheadAllocs {
+			t.Errorf("tool-chain overhead %d allocs > frozen budget %d (chain %v vs raw %v)", overhead, bl.ToolChain.OverheadAllocs, chainAllocs, rawAllocs)
 		}
-	}
+		if total := int(modelAllocs); total > bl.ModelChain.AllocsPerOp {
+			t.Errorf("model-chain %d allocs/op > frozen budget %d", total, bl.ModelChain.AllocsPerOp)
+		}
+
+		if !testing.Short() {
+			start := time.Now()
+			const wallSamples = 100000
+			for range wallSamples {
+				_, _ = chains.RunToolChain(ctx, ch, rawToolCall)
+			}
+			chainPerOp := time.Since(start) / wallSamples
+			if chainPerOp > 20*time.Microsecond {
+				t.Logf("ADVISORY: tool-chain per-op %v exceeds the 20µs reference-runner budget; local runs never fail", chainPerOp)
+			}
+		}
+	})
 }
