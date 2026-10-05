@@ -35,7 +35,7 @@ func TestFlowContract(t *testing.T) {
 		f := FlowFunc[string, string]("echo", func(_ context.Context, in string) (string, error) {
 			return "x:" + in, nil
 		})
-		out, err := f.Invoke(context.Background(), "in")
+		out, err := f.Invoke(WithPrincipal(context.Background(), types.Principal{Subject: "u"}), "in")
 		if err != nil {
 			t.Fatalf("Invoke: %v", err)
 		}
@@ -159,7 +159,7 @@ func TestFlowContract(t *testing.T) {
 			t.Fatalf("got %v, want boom", lastErr)
 		}
 		f := FlowFunc[string, string]("fail", step.fn)
-		_, ierr := f.Invoke(context.Background(), "in")
+		_, ierr := f.Invoke(WithPrincipal(context.Background(), types.Principal{Subject: "u"}), "in")
 		if !errors.Is(ierr, boom) {
 			t.Fatalf("Invoke got %v, want boom", ierr)
 		}

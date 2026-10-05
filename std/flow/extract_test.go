@@ -61,7 +61,7 @@ func TestFlowRecipes(t *testing.T) {
 	t.Run("flow.extract-recipe", func(t *testing.T) {
 		m := newTextModel("cheap", `{"total": 12}`)
 		f := Extract[invoice](m)
-		got, err := f.Invoke(context.Background(), []types.Block{types.Text{Text: "invoice for June"}})
+		got, err := f.Invoke(gohanctx(), []types.Block{types.Text{Text: "invoice for June"}})
 		if err != nil {
 			t.Fatalf("Invoke: %v", err)
 		}
@@ -82,7 +82,7 @@ func TestFlowRecipes(t *testing.T) {
 
 	t.Run("validation-failure-refused", func(t *testing.T) {
 		m := newTextModel("cheap", `{"total": 0}`)
-		got, err := Extract[invoice](m).Invoke(context.Background(), []types.Block{types.Text{Text: "invoice"}})
+		got, err := Extract[invoice](m).Invoke(gohanctx(), []types.Block{types.Text{Text: "invoice"}})
 		if !errors.Is(err, types.ErrStructuredOutput) {
 			t.Fatalf("err = %v, want ErrStructuredOutput", err)
 		}
@@ -93,7 +93,7 @@ func TestFlowRecipes(t *testing.T) {
 
 	t.Run("no-tool-offered", func(t *testing.T) {
 		m := newTextModel("cheap", `{"total": 3}`)
-		if _, err := Extract[invoice](m).Invoke(context.Background(), nil); err != nil {
+		if _, err := Extract[invoice](m).Invoke(gohanctx(), nil); err != nil {
 			t.Fatalf("extract Invoke: %v", err)
 		}
 		m2 := &scriptedModel{profile: types.ModelProfile{Name: "cheap"}}

@@ -20,17 +20,42 @@ type Flow[In, Out any] interface {
 // FlowFunc wraps a plain Go function as a Flow. The invocation runs through
 // the runtime stepper, so the same Drive loop that governs an agent run
 // governs a plain function: one Step, then Done.
-func FlowFunc[In, Out any](name string, fn func(context.Context, In) (Out, error)) Flow[In, Out] {
-	return &flowFunc[In, Out]{name: name, fn: fn}
+func FlowFunc[In, Out any](name string, fn func(context.Context, In) (Out, error), opts ...FlowOption) Flow[In, Out] {
+	f := &flowFunc[In, Out]{name: name, fn: fn}
+	var o flowOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	f.anonymous = o.allowAnonymous
+	return f
+}
+
+// FlowOption adjusts a FlowFunc.
+type FlowOption func(*flowOptions)
+
+type flowOptions struct {
+	allowAnonymous bool
+}
+
+// AllowAnonymousFlow permits invoking the flow without a principal. It
+// applies only to this unowned function flow; it grants no session access.
+func AllowAnonymousFlow() FlowOption {
+	return func(o *flowOptions) { o.allowAnonymous = true }
 }
 
 type flowFunc[In, Out any] struct {
 	name string
 	fn   func(context.Context, In) (Out, error)
 	last In
+
+	anonymous bool
 }
 
 func (f *flowFunc[In, Out]) Invoke(ctx context.Context, in In) (Out, error) {
+	if err := requirePrincipal(ctx, f.anonymous); err != nil {
+		var out Out
+		return out, err
+	}
 	f.last = in
 	step := &flowStep[In, Out]{fn: f.fn, in: in}
 	var out Out

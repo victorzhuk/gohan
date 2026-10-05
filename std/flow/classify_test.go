@@ -1,7 +1,6 @@
 package flow
 
 import (
-	"context"
 	"errors"
 	"testing"
 
@@ -19,7 +18,7 @@ func classifyCall(t *testing.T, m *scriptedModel, texts ...string) (label, error
 		m.streams = append(m.streams, []streamItem{{chunk: types.ModelChunk{Kind: types.DeltaText, Delta: x}}})
 	}
 	labels := []label{"refund", "billing", "other"}
-	got, err := Classify(m, labels).Invoke(context.Background(), []types.Block{types.Text{Text: "where do I upload?"}})
+	got, err := Classify(m, labels).Invoke(gohanctx(), []types.Block{types.Text{Text: "where do I upload?"}})
 	return label(got), err
 }
 

@@ -40,10 +40,10 @@ func (s *Stack) Inspect(ctx context.Context, runID string) (RunView, error) {
 	if !ok {
 		return RunView{}, errInspectStoresRequired
 	}
-	p, ok := types.PrincipalFrom(ctx)
-	if !ok {
-		return RunView{}, types.ErrNoPrincipal
+	if err := requirePrincipal(ctx, s.allowAnonymous); err != nil {
+		return RunView{}, err
 	}
+	p, _ := types.PrincipalFrom(ctx)
 	run, err := byID.ByID(ctx, runID)
 	if err != nil {
 		return RunView{}, fmt.Errorf("inspect run %s: %w", runID, err)

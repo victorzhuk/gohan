@@ -15,6 +15,7 @@ import (
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
+	stdpermission "github.com/victorzhuk/gohan/std/permission"
 	"github.com/victorzhuk/gohan/testkit/gohantest"
 )
 
@@ -219,6 +220,7 @@ func NewFlowFixture(t *testing.T, suspendAt int, turns ...gohantest.Turn) *FlowF
 		gohan.WithConversationRuns(runs),
 		gohan.WithConversationEventLog(events),
 		gohan.WithConversationCheckpoints(cps),
+		gohan.WithConversationApprovalPolicy(stdpermission.PolicySource{}),
 	)
 	if err != nil {
 		t.Fatalf("new conversation: %v", err)
