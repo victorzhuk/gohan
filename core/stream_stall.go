@@ -37,9 +37,10 @@ func (a StallAction) String() string {
 }
 
 // StallGuard enforces RunLimits.ConsumerStall over one run's event stream.
-// The run's events pass through Watch, which measures the interval between
-// the consumer's takes; a gap past the limit counts the run stalled, counts
-// MetricConsumerStalled and acts:
+// Watch measures how long the consumer stays inside one yield callback; a
+// callback outstanding past the limit counts the run stalled, counts
+// MetricConsumerStalled and acts. Waiting for producer output is never a
+// stall:
 //
 //   - StallPreempt cancels the run context, so the drive loop stops at its
 //     next safe point and the landed lifecycle suspends the run Preempted
@@ -59,7 +60,8 @@ type StallGuard struct {
 	ticks  <-chan time.Time
 
 	mu       sync.Mutex
-	last     time.Time
+	armed    bool
+	started  time.Time
 	fired    bool
 	preempts atomic.Int64
 	detaches atomic.Int64
@@ -120,45 +122,44 @@ func (g *StallGuard) fire() bool {
 	return true
 }
 
-// take records that the consumer just took an event.
-func (g *StallGuard) take() {
+// arm marks the consumer inside a yield callback; the stall clock runs
+// only from here.
+func (g *StallGuard) arm() {
 	g.mu.Lock()
-	g.last = time.Now()
+	g.armed = true
+	g.started = time.Now()
 	g.mu.Unlock()
 }
 
-type stallTuple struct {
-	ev  types.Event
-	err error
+// disarm marks the callback done; waiting for producer output is not
+// measured.
+func (g *StallGuard) disarm() {
+	g.mu.Lock()
+	g.armed = false
+	g.mu.Unlock()
+}
+
+func (g *StallGuard) outstanding() (bool, time.Duration) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.armed {
+		return false, 0
+	}
+	return true, time.Since(g.started)
 }
 
 // Watch wraps one run's sequence with the stall measurement. Events still
 // reach the consumer in order; a stalled consumer only changes what the
 // run does at its next boundary. The watcher goroutine ends when the run
 // ends, when the run context is cancelled or when the consumer breaks, so
-// no helper outlives the stream.
+// no helper outlives the stream. A consumer that breaks out walks away from
+// the wrapped sequence, whose own abandonment path then detaches the run's
+// handoff and applies the run's stall action.
 func (g *StallGuard) Watch(ctx context.Context, run iter.Seq2[types.Event, error]) iter.Seq2[types.Event, error] {
 	if g == nil || g.limit <= 0 {
 		return run
 	}
 	return func(yield func(types.Event, error) bool) {
-		ch := make(chan stallTuple)
-		produced := make(chan struct{})
-		gone := make(chan struct{})
-		go func() {
-			defer close(produced)
-			defer close(ch)
-			for ev, err := range run {
-				t := stallTuple{ev, err}
-				select {
-				case ch <- t:
-				case <-gone:
-					return
-				}
-			}
-		}()
-
-		g.take()
 		watched := make(chan struct{})
 		stop := make(chan struct{})
 		detached := make(chan struct{})
@@ -172,18 +173,14 @@ func (g *StallGuard) Watch(ctx context.Context, run iter.Seq2[types.Event, error
 			}
 			for {
 				select {
-				case <-produced:
-					return
 				case <-ctx.Done():
 					return
 				case <-stop:
 					return
 				case <-tick:
 				}
-				g.mu.Lock()
-				idle := time.Since(g.last)
-				g.mu.Unlock()
-				if idle >= g.limit && g.fire() {
+				armed, held := g.outstanding()
+				if armed && held >= g.limit && g.fire() {
 					if g.Action() == StallDetach {
 						close(detached)
 					}
@@ -191,40 +188,21 @@ func (g *StallGuard) Watch(ctx context.Context, run iter.Seq2[types.Event, error
 				}
 			}
 		}()
+		defer func() { <-watched }()
+		defer close(stop)
 
-	loop:
-		for {
+		for ev, err := range run {
+			g.arm()
+			if !yield(ev, err) {
+				g.disarm()
+				return
+			}
+			g.disarm()
 			select {
-			case t, ok := <-ch:
-				if !ok {
-					break loop
-				}
-				g.take()
-				if !yield(t.ev, t.err) {
-					// The consumer walked away. Under StallDetach the run
-					// continues into its EventLog; a reattaching client
-					// reads the events it missed through Attach.
-					close(gone)
-					if g.Action() == StallDetach {
-						go func() {
-							for range ch {
-							}
-						}()
-					}
-					break loop
-				}
 			case <-detached:
-				// The guard detached the run while the consumer was
-				// still busy: the rest streams only into the log.
-				close(gone)
-				go func() {
-					for range ch {
-					}
-				}()
-				break loop
+				return
+			default:
 			}
 		}
-		close(stop)
-		<-watched
 	}
 }

@@ -63,6 +63,9 @@ func TestNativeBatchGateSessionGrant(t *testing.T) {
 			CallID: "c1",
 			Tool:   "wipe",
 			Args:   json.RawMessage(args),
+			Approvers: []types.Principal{
+				{Subject: "op", Tenant: "t1"},
+			},
 		})
 		if err != nil {
 			t.Fatal(err)

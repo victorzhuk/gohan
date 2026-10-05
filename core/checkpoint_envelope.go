@@ -13,7 +13,7 @@ import (
 	"github.com/victorzhuk/gohan/core/types"
 )
 
-const checkpointEnvelopeVersion = 1
+const checkpointEnvelopeVersion = 2
 
 type checkpointEnvelope struct {
 	Version    int                  `json:"version"`
@@ -94,7 +94,7 @@ func decodeEnvelope(cp stores.Checkpoint, rt runtime.Runtime, spec string) (chec
 	if err := jsonv2.Unmarshal(cp.Data, &env); err != nil {
 		return checkpointEnvelope{}, runtime.State{}, fmt.Errorf("%w: malformed envelope: %s", types.ErrCheckpointIncompatible, err)
 	}
-	if env.Version != checkpointEnvelopeVersion {
+	if env.Version != 1 && env.Version != checkpointEnvelopeVersion {
 		return checkpointEnvelope{}, runtime.State{}, fmt.Errorf("%w: unsupported envelope version %d", types.ErrCheckpointIncompatible, env.Version)
 	}
 	if env.Run.RunID == "" || env.Run.RunID != cp.RunID {
@@ -118,7 +118,55 @@ func decodeEnvelope(cp stores.Checkpoint, rt runtime.Runtime, spec string) (chec
 	if err := validatePending(env.State.Pending, env.Approvals); err != nil {
 		return checkpointEnvelope{}, runtime.State{}, err
 	}
+	switch env.Version {
+	case 1:
+		// Version 1 recorded checkpoint-wide approvals and, for native,
+		// no reservation or settled-result evidence, so honouring it would
+		// fabricate both authority and accounting. Accepted v1 envelopes
+		// normalise to version 2 on the next write.
+		if cp.Backend == "native" && (cp.Reason == types.HumanApproval || cp.Reason == types.AwaitingBatch) {
+			return checkpointEnvelope{}, runtime.State{}, fmt.Errorf("%w: version 1 native %s checkpoint carries no approval evidence", types.ErrCheckpointIncompatible, cp.Reason)
+		}
+		if len(env.Approvals) > 1 {
+			return checkpointEnvelope{}, runtime.State{}, fmt.Errorf("%w: version 1 envelope carries more than one approval", types.ErrCheckpointIncompatible)
+		}
+		if len(env.Approvals) > 0 && len(env.State.Pending) > 1 {
+			return checkpointEnvelope{}, runtime.State{}, fmt.Errorf("%w: version 1 envelope approves one call among several pending", types.ErrCheckpointIncompatible)
+		}
+	case checkpointEnvelopeVersion:
+		if cp.Backend == "native" && cp.Reason == types.HumanApproval {
+			if err := validateNativeApprovalState(env.State, env.Approvals); err != nil {
+				return checkpointEnvelope{}, runtime.State{}, err
+			}
+		}
+	}
 	return env, env.State, nil
+}
+
+// validateNativeApprovalState requires a native approval checkpoint to
+// prove its one active ask: a nonempty pending queue, exactly one approval
+// matching the head call, and a driver record whose batch covers the ask
+// in an unresolved slot.
+func validateNativeApprovalState(st runtime.State, approvals []checkpointApproval) error {
+	if len(st.Pending) == 0 {
+		return fmt.Errorf("%w: native approval checkpoint without a pending call", types.ErrCheckpointIncompatible)
+	}
+	if len(approvals) != 1 {
+		return fmt.Errorf("%w: native approval checkpoint carries %d approvals, want 1", types.ErrCheckpointIncompatible, len(approvals))
+	}
+	head := st.Pending[0]
+	ap := approvals[0].Call
+	if ap.ID != head.ID || ap.Name != head.Name || !bytes.Equal(ap.Args, head.Args) {
+		return fmt.Errorf("%w: approval does not match the pending head call", types.ErrCheckpointIncompatible)
+	}
+	b, err := decodeNativeBackend(st)
+	if err != nil {
+		return err
+	}
+	if b.Driver == nil {
+		return fmt.Errorf("%w: native approval checkpoint without a driver record", types.ErrCheckpointIncompatible)
+	}
+	return validateNativeContinuation(b.Driver, st.Pending)
 }
 
 func validatePending(pending []types.ToolUse, approvals []checkpointApproval) error {

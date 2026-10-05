@@ -1,6 +1,6 @@
 # 0152. Stream ownership, buffering, and the run worker
 
-Status: accepted
+Status: accepted · Amended by ADR-0153 (the conversation owns one bounded worker-to-consumer handoff, stall arming follows the consumer callback, and resumed runs share the worker)
 
 ## Context
 

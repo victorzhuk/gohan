@@ -177,6 +177,10 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 			yield(nil, err)
 			return
 		}
+		if err := rejectReservedMeta([]types.Message{msg}); err != nil {
+			yield(nil, err)
+			return
+		}
 		if err := c.checkAnonymousSession(ctx, sessionID); err != nil {
 			yield(nil, err)
 			return
@@ -227,6 +231,7 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 			return
 		}
 		c.track(sessionID, runID)
+		ctx = c.runIdentityCtx(ctx, runID, sessionID)
 		if !c.appendInput(ctx, lease, sessionID, msg, yield) {
 			return
 		}
@@ -242,6 +247,24 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 		defer c.untrack(sessionID)
 		c.stream(ctx, lease, sessionID, []Message{msg}, yield)
 	}
+}
+
+// runIdentityCtx replaces the drive context's run identity with the run
+// the conversation just acquired: the gate and journal read it from the
+// context, and a caller-supplied ambient RunInfo must not survive. Send
+// starts an independent root, so RootRunID is the acquired run itself.
+func (c *conversation) runIdentityCtx(ctx context.Context, runID, sessionID string) context.Context {
+	info := types.RunInfo{
+		Flow:      c.spec,
+		SessionID: sessionID,
+		RunID:     runID,
+		RootRunID: runID,
+		Mode:      types.Primary,
+	}
+	if p, ok := types.PrincipalFrom(ctx); ok {
+		info.Principal = p
+	}
+	return types.WithRunInfo(ctx, info)
 }
 
 // appendInput loads the history and appends the acquired run's input under

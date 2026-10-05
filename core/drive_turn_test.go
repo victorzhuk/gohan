@@ -483,28 +483,21 @@ func TestRuntimeBatchTurn(t *testing.T) {
 		if !errors.As(err, &susp) {
 			t.Fatalf("err = %v, want SuspendError", err)
 		}
-		if susp.Reason != types.AwaitingBatch {
-			t.Fatalf("reason = %v, want AwaitingBatch", susp.Reason)
+		if susp.Reason != types.HumanApproval {
+			t.Fatalf("reason = %v, want HumanApproval", susp.Reason)
+		}
+		if susp.Payload != nil {
+			t.Fatalf("payload = %v, want none: the lifecycle owns the approval payload", susp.Payload)
 		}
 		if echo.ran != 2 {
 			t.Fatalf("read-only tool ran %d times, want 2", echo.ran)
-		}
-		if ask.ran != 0 {
-			t.Fatalf("asked tool executed before approval")
 		}
 		// The gate settled all three calls before anything executed.
 		if decisions != 3 {
 			t.Fatalf("gate decisions = %d, want 3", decisions)
 		}
-		payload, ok := susp.Payload.(runtime.BatchSuspend)
-		if !ok {
-			t.Fatalf("payload %T, want BatchSuspend", susp.Payload)
-		}
-		if payload.Call.ID != "c2" {
-			t.Fatalf("suspend call = %+v, want c2", payload.Call)
-		}
-		if len(payload.Pending) != 1 || payload.Pending[0].ID != "c2" {
-			t.Fatalf("pending = %+v, want the one ask of the turn, c2, in call order", payload.Pending)
+		if ask.ran != 0 {
+			t.Fatalf("asked tool executed before approval")
 		}
 
 		// Resume with the approval in place: only the asked call executes.

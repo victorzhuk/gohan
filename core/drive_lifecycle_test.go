@@ -748,17 +748,20 @@ func TestLifecycleApprovalEnvelope(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(env.Approvals) != 2 {
-			t.Fatalf("approvals: %+v, want one per pending call", env.Approvals)
+		// Only the active ask, the head of the pending queue, is a
+		// persisted approval; the queued tail asks when it becomes the
+		// head.
+		if len(env.Approvals) != 1 || env.Approvals[0].Call.ID != "c1" {
+			t.Fatalf("approvals: %+v, want one for the active ask c1", env.Approvals)
 		}
-		if src.calls != 2 {
-			t.Errorf("policy resolutions: %d, want 2", src.calls)
+		if src.calls != 1 {
+			t.Errorf("policy resolutions: %d, want 1", src.calls)
 		}
-		if env.Approvals[0].Reversible || !env.Approvals[1].Reversible {
-			t.Errorf("reversible flags: %v, %v, want false then true", env.Approvals[0].Reversible, env.Approvals[1].Reversible)
+		if env.Approvals[0].Reversible {
+			t.Errorf("reversible: true, want false for the side effect")
 		}
-		if env.Approvals[0].Risk != types.RiskHigh || env.Approvals[1].Risk != types.RiskLow {
-			t.Errorf("risks: %v, %v, want high then low", env.Approvals[0].Risk, env.Approvals[1].Risk)
+		if env.Approvals[0].Risk != types.RiskHigh {
+			t.Errorf("risk: %v, want high", env.Approvals[0].Risk)
 		}
 	})
 

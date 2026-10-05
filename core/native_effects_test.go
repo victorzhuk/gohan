@@ -143,7 +143,7 @@ func TestNativeToolIdentityPreserved(t *testing.T) {
 	stack := nativeStack(chains.PromptSet{})
 	tc, cfg := nativeConfig(stack, &echoTool{})
 	cfg.toolChain = chain
-	tc.exec = governedToolExec(chain, nativeToolset(cfg.tools))
+	tc.exec = governedToolExec(chain, nativeToolset(cfg.tools), specLookup(cfg.specs))
 
 	m := &scriptTurns{turns: [][]types.ModelChunk{
 		{toolCall("c1", "echo"), {Finish: types.FinishToolUse}},
@@ -200,7 +200,7 @@ func TestNativeControlErrorsStayControlErrors(t *testing.T) {
 			stack := nativeStack(chains.PromptSet{})
 			bound, cfg := nativeConfig(stack, tc.tool)
 			cfg.toolChain = tc.chain
-			bound.exec = governedToolExec(tc.chain, nativeToolset(cfg.tools))
+			bound.exec = governedToolExec(tc.chain, nativeToolset(cfg.tools), specLookup(cfg.specs))
 
 			m := &scriptTurns{turns: [][]types.ModelChunk{
 				{toolCall("c1", tc.tool.Spec().Name), {Finish: types.FinishToolUse}},
@@ -264,8 +264,11 @@ func TestNativeReservationOrderAndRefund(t *testing.T) {
 	}}
 	bound.limits.MaxToolCalls = 8
 	ctx2 := types.WithSink(withTurnEnv(context.Background(), env2), sinkInto(nil))
-	if _, _, _, err := batchEffect(ctx2, runtime.State{}); !errors.Is(err, types.ErrBatchOverrun) {
-		t.Fatalf("error %v, want ErrBatchOverrun", err)
+	if _, _, _, err := batchEffect(ctx2, runtime.State{}); err != nil {
+		var over *types.LimitExceededError
+		if !errors.As(err, &over) || over.Limit != "MaxToolCalls" || over.Value != 9 {
+			t.Fatalf("error %v, want LimitExceededError{MaxToolCalls, 9}", err)
+		}
 	}
 	mu.Lock()
 	got = strings.Join(order, ",")

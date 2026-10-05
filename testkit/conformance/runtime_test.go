@@ -4,11 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"slices"
-	"strings"
 	"testing"
 
-	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/types"
 	"github.com/victorzhuk/gohan/testkit/gohantest"
 )
@@ -73,25 +70,6 @@ func (panicTool) Call(context.Context, json.RawMessage) (types.ToolResult, error
 	panic(errToolDenied)
 }
 
-// eventSink collects the events a run emits through the context sink.
-type eventSink struct{ evs *[]types.Event }
-
-func (s eventSink) Emit(_ context.Context, e types.Event) { *s.evs = append(*s.evs, e) }
-
-// nativeHarness is the native runtime under test: a scripted stepper that
-// assembles the request, streams the model, and drives tool calls through
-// the governed chain, recording what each governed seam saw.
-type nativeHarness struct {
-	scenario Scenario
-	model    *gohantest.ScriptedModel
-	tool     types.Tool
-	obs      Observations
-}
-
-func newNativeHarness(sc Scenario) Harness {
-	return &nativeHarness{scenario: sc, model: gohantest.NewScriptedModel(confProfile, nativeTurns(sc)...), tool: nativeTool(sc)}
-}
-
 // nativeTool maps a scenario onto its governed tool: the foreign tool for
 // the round trip, the panicking one for the step-error case.
 func nativeTool(sc Scenario) types.Tool {
@@ -105,7 +83,7 @@ func nativeTool(sc Scenario) types.Tool {
 }
 
 func newForeignHarness(echo *foreignEcho) Harness {
-	return &nativeHarness{
+	return &nativeRuntimeHarness{
 		scenario: ScenarioToolRoundTrip,
 		model:    gohantest.NewScriptedModel(confProfile, nativeTurns(ScenarioToolRoundTrip)...),
 		tool:     foreignToolAdapter{inner: echo},
@@ -120,64 +98,6 @@ func nativeTurns(sc Scenario) []gohantest.Turn {
 		gohantest.ToolCall("echo", map[string]string{"say": "hi"}),
 		gohantest.Text("done"),
 	}
-}
-
-func (h *nativeHarness) Run(ctx context.Context, input []types.Message) ([]types.Event, error) {
-	h.obs.Steps = append(h.obs.Steps, StepGuard)
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	var evs []types.Event
-	ctx = types.WithSink(ctx, eventSink{evs: &evs})
-	req := types.ModelRequest{Messages: slices.Clone(input)}
-	var call *types.ToolUse
-	for turn := 0; ; turn++ {
-		var text []string
-		for chunk, err := range h.model.Generate(ctx, req) {
-			if err != nil {
-				return evs, err
-			}
-			if err := ctx.Err(); err != nil {
-				return evs, err
-			}
-			switch {
-			case chunk.ToolUse != nil:
-				call = chunk.ToolUse
-			case chunk.Kind == types.DeltaText:
-				text = append(text, chunk.Delta)
-				evs = append(evs, types.TextDelta{Turn: turn, MessageID: "assistant-1", Delta: chunk.Delta})
-			}
-		}
-		if call == nil {
-			msg := types.Message{
-				ID:     "assistant-1",
-				Role:   types.RoleAssistant,
-				Blocks: []types.Block{types.Text{Text: strings.Join(text, "")}},
-			}
-			evs = append(evs, types.AssistantMessage{Turn: turn, Message: msg})
-			evs = append(evs, types.Done{Reason: types.StopCompleted})
-			return evs, nil
-		}
-		if err := ctx.Err(); err != nil {
-			return evs, err
-		}
-		h.obs.ToolCalls = append(h.obs.ToolCalls, call.Name)
-		if _, err := chains.RunToolChain(ctx, governedChain(&h.obs, h.tool), h.invoke); err != nil {
-			return evs, err
-		}
-		call = nil
-	}
-}
-
-func (h *nativeHarness) invoke(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
-	if h.scenario == ScenarioToolError {
-		panic(errToolDenied)
-	}
-	return h.tool.Call(ctx, []byte(call.Args))
-}
-
-func (h *nativeHarness) Observed() Observations {
-	return Observations{Steps: slices.Clone(h.obs.Steps), ToolCalls: slices.Clone(h.obs.ToolCalls)}
 }
 
 // leakingHarness spawns a goroutine that outlives its run until released.
@@ -200,10 +120,10 @@ func (h *leakingHarness) Run(context.Context, []types.Message) ([]types.Event, e
 func (h *leakingHarness) Observed() Observations { return Observations{} }
 
 // TestRuntimeAndChainConformance runs the Runtime and Chain suites against
-// the native harness, including the foreign-tool scenario and the negative
-// leak and cancellation cases.
+// the shipped native runtime, including the foreign-tool scenario and the
+// negative leak and cancellation cases.
 func TestRuntimeAndChainConformance(t *testing.T) {
-	newNative := newNativeHarness
+	newNative := newNativeRuntimeHarness
 
 	t.Run("runtime.foreign-tool-under-native", func(t *testing.T) {
 		capture := &captureTB{}
@@ -219,11 +139,11 @@ func TestRuntimeAndChainConformance(t *testing.T) {
 		}
 	})
 
-	t.Run("runtime suite passes for the native runtime", func(t *testing.T) {
+	t.Run("runtime suite passes for the shipped native runtime", func(t *testing.T) {
 		Runtime(t, newNative)
 	})
 
-	t.Run("chain suite passes for the native chain", func(t *testing.T) {
+	t.Run("chain suite passes for the shipped native chain", func(t *testing.T) {
 		Chain(t, newNative)
 	})
 

@@ -179,6 +179,7 @@ func (s *MemoryEventLog) Expire(ctx context.Context, olderThan time.Time) error 
 
 	for runID, ring := range s.rings {
 		kept := 0
+		write := ring.head
 		for i := range ring.count {
 			idx := (ring.head + i) % s.capacity
 			e := ring.slots[idx]
@@ -186,19 +187,22 @@ func (s *MemoryEventLog) Expire(ctx context.Context, olderThan time.Time) error 
 				ring.slots[idx] = Event{}
 				continue
 			}
-			if idx != kept {
-				ring.slots[kept] = e
+			if idx != write {
+				ring.slots[write] = e
 				ring.slots[idx] = Event{}
 			}
 			kept++
+			write = (write + 1) % s.capacity
 		}
-		ring.head = 0
+		for i := kept; i < ring.count; i++ {
+			ring.slots[(ring.head+i)%s.capacity] = Event{}
+		}
 		ring.count = kept
 		if kept == 0 {
 			delete(s.rings, runID)
 			continue
 		}
-		ring.first = ring.slots[0].Meta.Seq
+		ring.first = ring.slots[ring.head].Meta.Seq
 	}
 	return nil
 }

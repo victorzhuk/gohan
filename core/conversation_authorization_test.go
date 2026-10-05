@@ -66,7 +66,7 @@ func TestConversationCancelAuthorization(t *testing.T) {
 		return c, runs, &clock
 	}
 
-	t.Run("identity.sessions-owner-checked", func(t *testing.T) {
+	t.Run("foreign cancel is refused", func(t *testing.T) {
 		c, runs, _ := setup(t)
 		err := c.Cancel(types.WithPrincipal(context.Background(), foreign), sid)
 		if !errors.Is(err, types.ErrSessionForbidden) {
@@ -89,4 +89,45 @@ func TestConversationCancelAuthorization(t *testing.T) {
 			t.Fatalf("owner cancel posted %d signals, want 1", runs.signals)
 		}
 	})
+}
+
+func TestSessionsListingOwnerScoped(t *testing.T) {
+	owner := types.Principal{Tenant: "t-a", Subject: "u1"}
+	other := types.Principal{Tenant: "t-a", Subject: "u2"}
+	bg := context.Background()
+	log := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
+	if _, err := log.Append(types.WithPrincipal(bg, owner), "s-owner", 0, userMsg("hi")); err != nil {
+		t.Fatalf("seed owner session: %v", err)
+	}
+	if _, err := log.Append(types.WithPrincipal(bg, other), "s-other", 0, userMsg("hi")); err != nil {
+		t.Fatalf("seed other session: %v", err)
+	}
+	stack, err := Build(WithStores(stores.Stores{SessionLog: log}))
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, _, err := stack.Sessions(bg, stores.SessionQuery{}); !errors.Is(err, types.ErrNoPrincipal) {
+		t.Fatalf("listing without principal = %v, want ErrNoPrincipal", err)
+	}
+	wantOwner := types.SessionOwner{Tenant: "t-a", Subject: "u1"}
+	list := func(p types.Principal) map[string]types.SessionOwner {
+		t.Helper()
+		metas, _, err := stack.Sessions(types.WithPrincipal(bg, p), stores.SessionQuery{})
+		if err != nil {
+			t.Fatalf("sessions for %s: %v", p.Subject, err)
+		}
+		out := make(map[string]types.SessionOwner, len(metas))
+		for _, m := range metas {
+			out[m.ID] = m.Owner
+		}
+		return out
+	}
+	mine := list(owner)
+	if len(mine) != 1 || mine["s-owner"] != wantOwner {
+		t.Fatalf("owner listing = %v, want only s-owner owned by u1", mine)
+	}
+	foreign := list(other)
+	if len(foreign) != 1 || foreign["s-other"] != (types.SessionOwner{Tenant: "t-a", Subject: "u2"}) {
+		t.Fatalf("other-subject listing = %v, want only s-other owned by u2", foreign)
+	}
 }

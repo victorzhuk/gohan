@@ -180,7 +180,7 @@ func (n *nrrNoteTool) ran() []string {
 	return append([]string(nil), n.ranID...)
 }
 
-func nrrStack(t *testing.T, model *nrrModel, book *bookTool, note *nrrNoteTool, mw *costRecordingMW, runs stores.Runs, extra ...Option) (*Stack, Conversation) {
+func nrrStack(t *testing.T, model types.Model, book *bookTool, note *nrrNoteTool, mw *costRecordingMW, runs stores.Runs, extra ...Option) (*Stack, Conversation) {
 	t.Helper()
 	if runs == nil {
 		runs = stores.NewMemoryRuns(
@@ -250,66 +250,61 @@ func nrrNote(id string) types.ToolUse {
 	return types.ToolUse{ID: id, Name: "note", Args: jsontext.Value(`{"id":"` + id + `"}`)}
 }
 
-// A resumed run drives a fresh governed runtime over the resolved
-// configuration: it advances from the persisted phase, the run suspends
-// again on the next side-effecting call, an allowed tool executes once
-// across the resume, and the second delivery finishes the run.
+// A single ask suspends as a human approval carrying the persisted
+// request: a fresh conversation over the same stores approves it, the
+// tool executes exactly once, and the run finishes. Delivered bytes no
+// longer stand in for an approval.
 func TestNativeResumeSuspendsAgain(t *testing.T) {
 	model := &nrrModel{}
 	book := &bookTool{}
 	note := &nrrNoteTool{}
-	_, conv := nrrStack(t, model, book, note, nil, nil)
-	model.reset(nrrBook("c1"), nrrNote("n1"), nrrBook("c2"))
+	stack, conv := nrrStack(t, model, book, note, nil, nil)
+	model.reset(nrrBook("c1"))
 
-	var token ResumeToken
+	var susp types.Suspended
 	for ev, err := range conv.Send(nrrCtx(), "s1", nlUser("go")) {
 		if err != nil {
 			t.Fatalf("Send: %v", err)
 		}
 		if s, ok := ev.(types.Suspended); ok {
-			token = s.Token
+			susp = s
 		}
 	}
-	if token == "" {
+	if susp.Token == "" {
 		t.Fatal("Send: no suspension")
 	}
-	if ran := book.ran(); len(ran) != 0 {
-		t.Fatalf("tool ran before delivery: %v", ran)
+	if susp.Reason != types.HumanApproval {
+		t.Fatalf("reason = %v, want HumanApproval", susp.Reason)
 	}
-
-	var second ResumeToken
-	for ev, err := range conv.Resume(nrrCtx(), token, nrrDeliver()) {
-		if err != nil {
-			t.Fatalf("first Resume: %v", err)
-		}
-		if s, ok := ev.(types.Suspended); ok {
-			second = s.Token
-		}
-	}
-	if second == "" {
-		t.Fatal("first Resume: run did not suspend again")
-	}
-	if ran := note.ran(); len(ran) != 1 || ran[0] != "n1" {
-		t.Fatalf("note executions after first resume: %v, want [n1] once", ran)
+	if _, ok := susp.Payload.(permission.ApprovalRequest); !ok {
+		t.Fatalf("payload %T, want permission.ApprovalRequest", susp.Payload)
 	}
 	if ran := book.ran(); len(ran) != 0 {
-		t.Fatalf("book executions: %v, want none", ran)
+		t.Fatalf("tool ran before approval: %v", ran)
 	}
 
+	second, err := NewNativeConversation(stack, "chat",
+		WithConversationRuns(stack.stores.Runs),
+		WithConversationEventLog(stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))),
+		WithConversationApprovalPolicy(nrrAllowPolicy{}),
+	)
+	if err != nil {
+		t.Fatalf("second conversation: %v", err)
+	}
 	var done bool
-	for ev, err := range conv.Resume(nrrCtx(), second, nrrDeliver()) {
+	for ev, err := range second.Resume(nrrCtx(), susp.Token, Approve()) {
 		if err != nil {
-			t.Fatalf("second Resume: %v", err)
+			t.Fatalf("Resume: %v", err)
 		}
 		if _, ok := ev.(types.Done); ok {
 			done = true
 		}
 	}
 	if !done {
-		t.Error("second Resume: no Done event")
+		t.Error("Resume: no Done event")
 	}
-	if ran := note.ran(); len(ran) != 1 {
-		t.Fatalf("note executions after second resume: %v, want still [n1] once", ran)
+	if ran := book.ran(); len(ran) != 1 || ran[0] != "c1" {
+		t.Fatalf("book executions after approval: %v, want [c1] once", ran)
 	}
 }
 
@@ -368,17 +363,11 @@ func TestNativeResumeEmptyRecordStartsEmptyLedger(t *testing.T) {
 	}
 }
 
-// nrrDeliver is the wake the AwaitingBatch suspension resumes with: the
-// delivered bytes become the pending calls' tool result.
-func nrrDeliver() stores.ResumeInput {
-	return Deliver(json.RawMessage(`approved`))
-}
-
 func errors_Resume(ctx context.Context, conv Conversation, token ResumeToken) <-chan error {
 	ch := make(chan error, 8)
 	go func() {
 		defer close(ch)
-		for _, err := range conv.Resume(ctx, token, nrrDeliver()) {
+		for _, err := range conv.Resume(ctx, token, Approve()) {
 			if err != nil {
 				ch <- err
 			}
@@ -424,7 +413,7 @@ func TestNativeResumeRestoresRunIdentity(t *testing.T) {
 	}
 
 	var done bool
-	for ev, err := range conv.Resume(nrrCtx(), token, nrrDeliver()) {
+	for ev, err := range conv.Resume(nrrCtx(), token, Approve()) {
 		if err != nil {
 			t.Fatalf("Resume: %v", err)
 		}
@@ -472,7 +461,7 @@ func TestNativeResumeUnscopedOriginatorDenies(t *testing.T) {
 		t.Fatal("Send: no suspension")
 	}
 
-	for ev, err := range conv.Resume(nrrCtx(), token, nrrDeliver()) {
+	for ev, err := range conv.Resume(nrrCtx(), token, Approve()) {
 		if err != nil {
 			t.Fatalf("Resume: %v", err)
 		}

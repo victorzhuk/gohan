@@ -220,17 +220,16 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 				yield(nil, fmt.Errorf("resume: no approval policy wired: %w", types.ErrApproverNotEligible))
 				return
 			}
-			if len(env.Approvals) != len(st.Pending) {
-				yield(nil, fmt.Errorf("resume: approvals do not cover every pending call: %w", types.ErrCheckpointIncompatible))
+			if len(st.Pending) == 0 {
+				// An empty queue legitimately carries no approvals; the
+				// suspension settles the batch without an active ask.
+			} else if len(env.Approvals) != 1 {
+				yield(nil, fmt.Errorf("resume: approvals do not cover the active ask: %w", types.ErrCheckpointIncompatible))
 				return
 			}
-			pending := map[string]bool{}
-			for _, call := range st.Pending {
-				pending[call.ID] = true
-			}
-			pols = make([]permission.ApprovalPolicy, len(env.Approvals))
-			for i, ap := range env.Approvals {
-				if !pending[ap.Call.ID] {
+			if len(st.Pending) > 0 {
+				ap := env.Approvals[0]
+				if ap.Call.ID != st.Pending[0].ID {
 					yield(nil, fmt.Errorf("resume: approval for unknown call %q: %w", ap.Call.ID, types.ErrCheckpointIncompatible))
 					return
 				}
@@ -239,7 +238,7 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 					yield(nil, fmt.Errorf("resume: resolve approval policy: %w", types.ErrApproverNotEligible))
 					return
 				}
-				pols[i] = pol
+				pols = []permission.ApprovalPolicy{pol}
 				if err := checkpointEligibility(ap, pol, approver, cp.Originator); err != nil {
 					yield(nil, err)
 					return
@@ -305,11 +304,24 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 					env.Approvals[i].ApprovedBy = append(slices.Clone(env.Approvals[i].ApprovedBy), approver)
 				}
 			}
+			if rerr := markAskReady(&st); rerr != nil {
+				yield(nil, rerr)
+				return
+			}
 		}
 		lease, err := c.runs.Resuming(credCtx, consumed.RunID, resumeLeaseTTL)
 		if err != nil {
 			yield(nil, err)
 			return
+		}
+		// A preparation failure past this point never reaches the drive, so
+		// nothing else will release the lease: the run finishes Failed
+		// instead of sitting Resuming behind a live lease.
+		prepFail := func(err error) {
+			if ferr := c.runs.Finish(credCtx, lease, stores.Failed, nil, ""); ferr != nil {
+				err = fmt.Errorf("release resumed lease: %w", errors.Join(err, ferr))
+			}
+			yield(nil, err)
 		}
 		// The resumed run drives a fresh runtime over the resolved
 		// configuration; the phase it advances from lives in the
@@ -327,12 +339,12 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 		}
 		if r.Verdict == stores.VerdictApprove && cp.Reason == types.HumanApproval {
 			if aerr := appendReceipts(credCtx, c.log, h, consumed.RunID, env, &st); aerr != nil {
-				yield(nil, aerr)
+				prepFail(aerr)
 				return
 			}
 		}
 		if aerr := applyResume(credCtx, c.log, cp.SessionID, &st, r); aerr != nil {
-			yield(nil, aerr)
+			prepFail(aerr)
 			return
 		}
 		runCtx = types.WithApproval(runCtx, types.Approval{Approver: approver, At: time.Now().UTC()})
@@ -343,7 +355,7 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			// resumed model turn re-issues settled calls.
 			hDrive, derr := authorizeResume(ctx, c.log, cp.SessionID, approver)
 			if derr != nil {
-				yield(nil, derr)
+				prepFail(derr)
 				return
 			}
 			var seed float64
@@ -354,7 +366,7 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			}
 			rctx, nrt, nag, nled, berr := c.newResumeRun(credCtx, cp.SessionID, hDrive, seed)
 			if berr != nil {
-				yield(nil, berr)
+				prepFail(berr)
 				return
 			}
 			runCtx, rt, ag, ledger = rctx, nrt, nag, nled
@@ -408,38 +420,31 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			runCtx = withPendingReplay(runCtx)
 		}
 		lc := NewLifecycle(opts...)
-		// The resumed run's events are recorded like a Send's, so Attach
-		defer c.markRunEnded(consumed.RunID)
-		for ev, err := range DriveLifecycle(runCtx, lc, rt, ag) {
-			if err != nil {
-				yield(nil, err)
-				return
-			}
-			if !c.relay(ctx, consumed.RunID, ev, yield) {
-				return
-			}
-			if !yield(ev, nil) {
+		for ev, err := range c.runPrepared(runCtx, lease, lc, rt, ag, NewPreemptor()) {
+			if !yield(ev, err) {
 				return
 			}
 		}
 	}
 }
 
-// applyEdit builds the edited pending request: arguments replaced, the
-// argument generation advanced once, every recorded approval cleared. The
-// editing principal must submit a separate approval for the new generation.
+// applyEdit builds the edited active request: arguments replaced, the
+// argument generation advanced once, its recorded approvals cleared. The
+// editing principal must submit a separate approval for the new generation,
+// and the queue tail keeps its arguments and results.
 func applyEdit(env checkpointEnvelope, cp stores.Checkpoint, r stores.ResumeInput) (stores.Checkpoint, error) {
 	if env.Generation == ^uint64(0) {
 		return stores.Checkpoint{}, fmt.Errorf("resume: argument generation exhausted: %w", types.ErrCheckpointIncompatible)
 	}
+	if len(env.Approvals) == 0 || len(env.State.Pending) == 0 {
+		return stores.Checkpoint{}, fmt.Errorf("resume: edit without an active ask: %w", types.ErrCheckpointIncompatible)
+	}
 	env.Generation++
-	for i := range env.Approvals {
-		env.Approvals[i].Call.Args = json.RawMessage(r.Args)
-		env.Approvals[i].ApprovedBy = nil
-	}
-	for i := range env.State.Pending {
-		env.State.Pending[i].Args = json.RawMessage(r.Args)
-	}
+	env.Approvals[0].Call.Args = json.RawMessage(r.Args)
+	env.Approvals[0].ApprovedBy = nil
+	head := env.State.Pending[0]
+	head.Args = json.RawMessage(r.Args)
+	env.State.Pending[0] = head
 	data, err := encodeCheckpoint(env)
 	if err != nil {
 		return stores.Checkpoint{}, err
@@ -450,22 +455,24 @@ func applyEdit(env checkpointEnvelope, cp stores.Checkpoint, r stores.ResumeInpu
 }
 
 // approvalCompletes reports whether this approval, added to the recorded
-// ones, brings every request to the quorum the current policy sets.
+// ones, brings the active ask to the quorum the current policy sets.
 func approvalCompletes(env checkpointEnvelope, pols []permission.ApprovalPolicy, approver types.Principal) bool {
-	for i, ap := range env.Approvals {
-		var pol permission.ApprovalPolicy
-		if i < len(pols) {
-			pol = pols[i]
-		}
-		count := len(ap.ApprovedBy)
-		if !approverRecorded(ap, approver) {
-			count++
-		}
-		if count < approveQuorum(ap, pol) {
-			return false
-		}
+	if len(env.Approvals) == 0 {
+		// No persisted approvals means no active ask: the checkpoint
+		// suspends without approval-controlled calls, so any approval
+		// decision consumes it.
+		return true
 	}
-	return true
+	ap := env.Approvals[0]
+	var pol permission.ApprovalPolicy
+	if len(pols) > 0 {
+		pol = pols[0]
+	}
+	count := len(ap.ApprovedBy)
+	if !approverRecorded(ap, approver) {
+		count++
+	}
+	return count >= approveQuorum(ap, pol)
 }
 
 // cloneCheckpoint copies a checkpoint snapshot so a pending update never
@@ -542,12 +549,30 @@ func applyResume(ctx context.Context, log stores.SessionLog, sessionID string, s
 		if r.Approver != nil {
 			subject = r.Approver.Subject
 		}
+		if len(st.Pending) == 0 {
+			return nil
+		}
 		res := types.ToolResult{
 			Outcome: types.Failed,
 			Error: &types.ToolError{
 				Kind:    types.Permanent,
 				Message: runtime.NotExecutedPrefix + "rejected by " + subject,
 			},
+		}
+		// A native driver record carries the batch slots, so only the
+		// active ask settles and the queue tail keeps its own decision.
+		// A backend without one rejects the whole queue as before.
+		if b, derr := decodeNativeBackend(*st); derr == nil && b.Driver != nil && b.Driver.Batch != nil {
+			res.ID = st.Pending[0].ID
+			if log != nil {
+				msg := types.Message{ID: resultID(st.Turn) + "-" + res.ID, Role: types.RoleUser, Blocks: []types.Block{res}}
+				ver, err := log.Append(ctx, sessionID, st.HistoryVersion, msg)
+				if err != nil {
+					return err
+				}
+				st.HistoryVersion = ver
+			}
+			return settleNativePending(st, res)
 		}
 		return appendResumeResults(ctx, log, sessionID, st, res)
 	case r.Verdict == stores.VerdictEdit && len(r.Args) > 0:

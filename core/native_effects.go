@@ -24,17 +24,20 @@ func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 	return turnConfig{
 		// Supervision wraps only the provider, so the chain steps and
 		// the middleware above it keep running on the caller's goroutine.
-		model:    runModelChain(cfg.modelChain, NewModelStream(cfg.model).Generate),
-		assemble: nativeAssemble(s.prompts, cfg.assemble),
-		tools:    toolset,
-		maxTurns: cfg.limits.MaxTurns,
-		limits:   cfg.limits,
+		model:       runModelChain(cfg.modelChain, NewModelStream(cfg.model).Generate),
+		assemble:    nativeAssemble(s.prompts, cfg.assemble),
+		tools:       toolset,
+		maxTurns:    cfg.limits.MaxTurns,
+		limits:      cfg.limits,
+		profile:     cfg.profile,
+		specs:       cfg.specs,
+		instruction: cloneBlocks(cfg.instruction),
 		scheduler: runtime.SchedulerConfig{
 			EffectOf:    nativeEffectOf(cfg.tools),
 			Parallel:    cfg.plan.ParallelTools,
 			MaxParallel: cfg.plan.MaxParallelTools,
 		},
-		exec: governedToolExec(cfg.toolChain, toolset),
+		exec: governedToolExec(cfg.toolChain, toolset, specLookup(cfg.specs)),
 	}
 }
 
@@ -101,17 +104,25 @@ func runModelChain(ch chains.ModelChain, next types.ModelFunc) types.ModelFunc {
 
 // governedToolExec runs one call through the resolved tool chain with the
 // call's original identity: the chain steps and CallTool never see a zero
-// ToolUse.
-func governedToolExec(ch chains.ToolChain, set ToolSet) func(context.Context, types.ToolUse) (types.ToolResult, error) {
+// ToolUse. Each step's Applies predicate is evaluated against the call's
+// resolved spec; a step that does not govern the call composes over it
+// without running. A nil Applies, or an unresolved tool name, keeps the
+// step in the composition.
+func governedToolExec(ch chains.ToolChain, set ToolSet, lookup func(string) (types.ToolSpec, bool)) func(context.Context, types.ToolUse) (types.ToolResult, error) {
 	return func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+		spec, haveSpec := lookup(call.Name)
 		next := func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
 			return CallTool(ctx, set, call.Name, call.Args)
 		}
 		for i := len(ch) - 1; i >= 0; i-- {
 			step := ch[i]
 			use := step.Use
+			skip := use != nil && step.Applies != nil && haveSpec && !step.Applies(spec)
 			inner := next
 			next = func(ctx context.Context, call types.ToolUse) (res types.ToolResult, err error) {
+				if skip {
+					return inner(ctx, call)
+				}
 				defer func() {
 					r := recover()
 					if r == nil {
@@ -130,6 +141,23 @@ func governedToolExec(ch chains.ToolChain, set ToolSet) func(context.Context, ty
 			}
 		}
 		return next(ctx, call)
+	}
+}
+
+// assemblyInput builds the request input one model invocation hands the
+// assembler: the resolved instruction, profile and registered tool specs,
+// the run identity from the context and the loaded history. The turn input
+// stays empty: the native wiring already loaded the input into the
+// history. Providers and Filter stay unset; the native path has neither
+// capability.
+func (env *turnEnv) assemblyInput(ctx context.Context, history []types.Message) types.AssembleInput {
+	ri, _ := types.RunInfoFrom(ctx)
+	return types.AssembleInput{
+		Run:     ri,
+		Profile: env.c.profile,
+		System:  env.c.instruction,
+		Tools:   env.c.specs,
+		History: history,
 	}
 }
 

@@ -118,3 +118,88 @@ func TestEventLog(t *testing.T) {
 		}
 	})
 }
+
+func TestEventLogExpireWrappedRing(t *testing.T) {
+	ctx := t.Context()
+	base := time.Unix(1700000000, 0)
+	clock := base
+	s := NewMemoryEventLog(
+		WithMemoryEventLogClock(func() time.Time { return clock }),
+		WithMemoryEventLogCapacity(4),
+	)
+
+	const n = 6
+	for i := range n {
+		clock = base.Add(time.Duration(i+1) * time.Minute)
+		payload := types.LimitWarning{Limit: "tokens", Ratio: float64(i + 1)}
+		if err := s.Append(ctx, "run-1", Event{Payload: payload}); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+
+	collect := func(after int64) ([]int64, []float64, error) {
+		var seqs []int64
+		var ratios []float64
+		for e, err := range s.Read(ctx, "run-1", after) {
+			if err != nil {
+				return nil, nil, err
+			}
+			w, ok := e.Payload.(types.LimitWarning)
+			if !ok {
+				t.Fatalf("event %d payload = %T, want types.LimitWarning", e.Meta.Seq, e.Payload)
+			}
+			seqs = append(seqs, e.Meta.Seq)
+			ratios = append(ratios, w.Ratio)
+		}
+		return seqs, ratios, nil
+	}
+
+	// Cutoff older than everything removes nothing.
+	if err := s.Expire(ctx, base); err != nil {
+		t.Fatalf("expire no-op: %v", err)
+	}
+	seqs, ratios, err := collect(2)
+	if err != nil {
+		t.Fatalf("read after no-op expire: %v", err)
+	}
+	if !slices.Equal(seqs, []int64{3, 4, 5, 6}) {
+		t.Fatalf("seqs after no-op expire = %v, want [3 4 5 6]", seqs)
+	}
+	if !slices.Equal(ratios, []float64{3, 4, 5, 6}) {
+		t.Fatalf("ratios after no-op expire = %v, want [3 4 5 6]", ratios)
+	}
+
+	// Cutoff between seq 4 and seq 5 removes the retained prefix.
+	if err := s.Expire(ctx, base.Add(5*time.Minute)); err != nil {
+		t.Fatalf("expire prefix: %v", err)
+	}
+	seqs, ratios, err = collect(4)
+	if err != nil {
+		t.Fatalf("read after prefix expire: %v", err)
+	}
+	if !slices.Equal(seqs, []int64{5, 6}) {
+		t.Fatalf("seqs after prefix expire = %v, want [5 6]", seqs)
+	}
+	if !slices.Equal(ratios, []float64{5, 6}) {
+		t.Fatalf("ratios after prefix expire = %v, want [5 6]", ratios)
+	}
+
+	if _, _, err := collect(3); !errors.Is(err, ErrStaleCursor) {
+		t.Fatalf("read at cursor 3 = %v, want ErrStaleCursor", err)
+	}
+
+	clock = base.Add(time.Hour)
+	if err := s.Append(ctx, "run-1", Event{Payload: types.LimitWarning{Limit: "tokens", Ratio: 7}}); err != nil {
+		t.Fatalf("append after expire: %v", err)
+	}
+	seqs, ratios, err = collect(4)
+	if err != nil {
+		t.Fatalf("read after append: %v", err)
+	}
+	if !slices.Equal(seqs, []int64{5, 6, 7}) {
+		t.Fatalf("seqs after append = %v, want [5 6 7]", seqs)
+	}
+	if !slices.Equal(ratios, []float64{5, 6, 7}) {
+		t.Fatalf("ratios after append = %v, want [5 6 7]", ratios)
+	}
+}

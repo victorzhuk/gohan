@@ -64,6 +64,7 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			return fmt.Errorf("flow %q: tool chain: %w", name, err)
 		}
 		limits, _ := s.Limits(name)
+		modelChain := modelChainWithMiddleware(spec.ModelChain, s.middleware)
 		resolved[name] = &resolvedNativeConfig{
 			flow:        name,
 			model:       model,
@@ -71,11 +72,11 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			plan:        plan,
 			request:     req,
 			instruction: cloneBlocks(spec.Instruction),
-			tools:       spec.Tools,
+			tools:       cloneTools(spec.Tools),
 			specs:       req.Tools,
 			assemble:    spec.Assemble,
-			modelChain:  modelChainWithMiddleware(spec.ModelChain, s.middleware),
-			toolChain:   spec.ToolChain,
+			modelChain:  cloneModelChain(modelChain),
+			toolChain:   cloneToolChain(spec.ToolChain),
 			limits:      limits,
 			decider:     spec.Decider,
 		}
@@ -126,5 +127,35 @@ func cloneBlocks(blocks []types.Block) []types.Block {
 	}
 	out := make([]types.Block, len(blocks))
 	copy(out, blocks)
+	return out
+}
+
+// cloneTools, cloneToolChain, and cloneModelChain give the resolved
+// configuration its own slice containers so caller-side element mutation
+// after Build cannot alter execution or Explain.
+func cloneTools(tools []types.Tool) []types.Tool {
+	if tools == nil {
+		return nil
+	}
+	out := make([]types.Tool, len(tools))
+	copy(out, tools)
+	return out
+}
+
+func cloneToolChain(ch chains.ToolChain) chains.ToolChain {
+	if ch == nil {
+		return nil
+	}
+	out := make(chains.ToolChain, len(ch))
+	copy(out, ch)
+	return out
+}
+
+func cloneModelChain(ch chains.ModelChain) chains.ModelChain {
+	if ch == nil {
+		return nil
+	}
+	out := make(chains.ModelChain, len(ch))
+	copy(out, ch)
 	return out
 }

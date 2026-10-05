@@ -60,6 +60,7 @@ func (c *conversation) Continue(ctx context.Context, sessionID string) iter.Seq2
 			return
 		}
 		c.track(sessionID, runID)
+		ctx = c.runIdentityCtx(ctx, runID, sessionID)
 		hist, err := c.load(ctx, sessionID)
 		if err == nil && len(hist.Messages) == 0 {
 			err = types.ErrEmptyHistory

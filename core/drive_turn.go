@@ -2,7 +2,9 @@ package gohan
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"slices"
 	"strconv"
@@ -67,6 +69,13 @@ type turnConfig struct {
 	// consumer as ReasoningDelta; opaque reasoning is retained on the
 	// assistant message at completion either way.
 	reasoningVisible bool
+	// profile, specs and instruction carry the resolved configuration the
+	// assembler reads: the selected model profile, the registered tool
+	// specs and the instruction blocks. The native wiring binds all three;
+	// a run without a resolution leaves them unset.
+	profile     types.ModelProfile
+	specs       []types.ToolSpec
+	instruction []types.Block
 }
 
 // turnEnv carries the per-run state the two effects share across their
@@ -75,15 +84,16 @@ type turnConfig struct {
 // carries what resume needs; this scope lives for one driveTurns call and
 // travels in the context.
 type turnEnv struct {
-	c         turnConfig
-	sink      types.Sink
-	msgs      []types.Message
-	turn      int
-	maxTokens int
-	truncated int
-	repaired  int
-	used      int
-	calls     []types.ToolUse
+	c          turnConfig
+	sink       types.Sink
+	msgs       []types.Message
+	turn       int
+	turnSeeded bool
+	maxTokens  int
+	truncated  int
+	repaired   int
+	used       int
+	calls      []types.ToolUse
 	// reasoning is the provider reasoning the model effect streamed for the
 	// current turn; the batch effect retains it on the assistant message.
 	reasoning string
@@ -165,12 +175,18 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 			return
 		}
 		if status == runtime.DoneStatus {
+			terminated := false
 			for _, ev := range events {
+				if _, ok := ev.(types.Done); ok {
+					terminated = true
+				}
 				yield(ev, nil)
 			}
-			// The loop owns the terminal transition: the model effect
-			// returns the assistant message only.
-			yield(types.Done{Reason: types.StopCompleted}, nil)
+			if !terminated {
+				// The loop owns the terminal transition: the model effect
+				// returns the assistant message only.
+				yield(types.Done{Reason: types.StopCompleted}, nil)
+			}
 			return
 		}
 		if len(env.calls) > 0 {
@@ -226,12 +242,20 @@ func appendFailedPartial(ctx context.Context, st runtime.State, env *turnEnv, re
 func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
 	env := turnEnvFrom(ctx)
 	c := env.c
+	if !env.turnSeeded {
+		env.turn = st.Turn
+		env.turnSeeded = true
+	}
+	if c.maxTurns > 0 && env.turn >= c.maxTurns {
+		env.flushDeltas(ctx)
+		return st, []types.Event{types.Done{Reason: types.StopLimit}}, runtime.DoneStatus, nil
+	}
 	if notes := steerNotesFrom(ctx); notes != nil {
 		// The steers the lifecycle drained at its safe point enter the
 		// working history here, so the next request carries them.
 		env.msgs = append(env.msgs, notes.take()...)
 	}
-	req, err := c.assemble(ctx, types.AssembleInput{History: env.msgs})
+	req, err := c.assemble(ctx, env.assemblyInput(ctx, env.msgs))
 	if err != nil {
 		return st, nil, runtime.Continue, err
 	}
@@ -374,6 +398,107 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	return st, []types.Event{ev}, runtime.DoneStatus, nil
 }
 
+// nativeProgressVersion is the driver record format the batch effect
+// writes; a decode refusing unknown versions lets newer records fail
+// closed instead of misreading older accounting.
+const nativeProgressVersion = 1
+
+// nativeProgress is the durable driver record. Calls holds the original
+// batch in original order; Results is index-aligned with Calls, so an
+// empty Results[i].ID means the call at that index is still unresolved.
+// ToolCalls is the admitted total the reservations restore from.
+type nativeProgress struct {
+	Version   int                      `json:"version"`
+	ToolCalls int                      `json:"tool_calls"`
+	Batch     *nativeBatchContinuation `json:"batch,omitempty"`
+}
+
+type nativeBatchContinuation struct {
+	Calls   []types.ToolUse    `json:"calls"`
+	Results []types.ToolResult `json:"results"`
+	Ready   bool               `json:"ready,omitempty"`
+}
+
+type nativeBackend struct {
+	Phase  string          `json:"phase"`
+	Driver *nativeProgress `json:"driver,omitempty"`
+}
+
+// decodeNativeBackend parses the durable native record. An empty backend
+// yields a zero record, because a state from before any batch ran carries
+// no driver evidence; malformed bytes refuse rather than invent progress.
+func decodeNativeBackend(st runtime.State) (nativeBackend, error) {
+	if len(st.Backend) == 0 {
+		return nativeBackend{}, nil
+	}
+	var b nativeBackend
+	if err := json.Unmarshal(st.Backend, &b); err != nil {
+		return nativeBackend{}, fmt.Errorf("%w: malformed native backend record: %s", types.ErrCheckpointIncompatible, err)
+	}
+	return b, nil
+}
+
+func encodeNativeBackend(b nativeBackend) (json.RawMessage, error) {
+	enc, err := json.Marshal(b)
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode native backend record: %s", types.ErrCheckpointIncompatible, err)
+	}
+	return enc, nil
+}
+
+// validateNativeContinuation refuses a driver record a resume cannot
+// honour: unknown versions, a batch whose settled slots contradict their
+// calls, or a pending ask without its own unresolved slot. A populated
+// result ID must name its own call, so a result can never be attached to
+// a different call across a checkpoint.
+func validateNativeContinuation(p *nativeProgress, pending []types.ToolUse) error {
+	if p == nil {
+		return nil
+	}
+	if p.Version != nativeProgressVersion {
+		return fmt.Errorf("%w: unsupported native driver record version %d", types.ErrCheckpointIncompatible, p.Version)
+	}
+	if p.ToolCalls < 0 {
+		return fmt.Errorf("%w: negative native driver tool call total", types.ErrCheckpointIncompatible)
+	}
+	if p.Batch == nil {
+		if len(pending) > 0 {
+			return fmt.Errorf("%w: pending calls without a batch continuation", types.ErrCheckpointIncompatible)
+		}
+		return nil
+	}
+	if p.ToolCalls < len(p.Batch.Calls) {
+		return fmt.Errorf("%w: native driver tool call total below the recorded batch", types.ErrCheckpointIncompatible)
+	}
+	if len(p.Batch.Calls) != len(p.Batch.Results) {
+		return fmt.Errorf("%w: native batch calls and results lengths differ", types.ErrCheckpointIncompatible)
+	}
+	seen := map[string]bool{}
+	for i, cu := range p.Batch.Calls {
+		if cu.ID == "" {
+			return fmt.Errorf("%w: native batch call %d missing id", types.ErrCheckpointIncompatible, i)
+		}
+		if seen[cu.ID] {
+			return fmt.Errorf("%w: duplicate native batch call id %q", types.ErrCheckpointIncompatible, cu.ID)
+		}
+		seen[cu.ID] = true
+		if id := p.Batch.Results[i].ID; id != "" && id != cu.ID {
+			return fmt.Errorf("%w: native batch result %d names call %q, want %q", types.ErrCheckpointIncompatible, i, id, cu.ID)
+		}
+	}
+	slot := map[string]int{}
+	for i, cu := range p.Batch.Calls {
+		slot[cu.ID] = i
+	}
+	for _, pu := range pending {
+		i, ok := slot[pu.ID]
+		if !ok || p.Batch.Results[i].ID != "" {
+			return fmt.Errorf("%w: pending call %q has no unresolved batch slot", types.ErrCheckpointIncompatible, pu.ID)
+		}
+	}
+	return nil
+}
+
 type replayKey struct{}
 
 // withPendingReplay marks a drive that re-enters the batch phase with a
@@ -399,14 +524,31 @@ func historyAppenderFrom(ctx context.Context) (HistoryAppender, bool) {
 	return h, ok
 }
 
+// admittedToolKey carries the tool-call total a run already admitted from
+// its durable driver record to the reservation seam, so a re-entered drive
+// re-admits that many slots before any new batch.
+type admittedToolKey struct{}
+
+func withAdmittedToolTotal(ctx context.Context, total int) context.Context {
+	return context.WithValue(ctx, admittedToolKey{}, total)
+}
+
+func admittedToolTotalFrom(ctx context.Context) (int, bool) {
+	v, ok := ctx.Value(admittedToolKey{}).(int)
+	return v, ok
+}
+
 // batchEffect settles one turn's batch under the batch protocol: the gate
 // decides every call before the first one executes, allowed calls run in
 // call order through the scheduler, denials render as Failed(Permanent)
 // results at their index, and the first ask suspends the batch as a
 // SuspendError the caller persists — never an ordinary failed tool result.
 // It appends the assistant message with its calls and the settled results
-// in call order, and adds the batch's reservation spend to the per-run
-// scope. The batch runs even when the context is already cancelled, so an
+// in call order. A turn with any committed call appends before execution;
+// a read-only turn joins the assistant message and its results into one
+// append at settlement. It adds the batch's reservation spend to the
+// per-run scope. The batch runs even when the context is already
+// cancelled, so an
 // in-flight side effect finishes under the injected shield; after it the
 // run stops.
 func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
@@ -416,8 +558,16 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	calls := env.calls
 	if len(calls) == 0 && len(st.Pending) > 0 && pendingReplayFrom(ctx) {
 		// A resumed or recovered drive re-enters the batch phase from the
-		// checkpointed state alone: the per-run scope that parks a model
-		// turn's calls is gone, so the pending calls replay from the state.
+		// checkpointed state alone. With a driver record only the active
+		// ask replays; without one the pending calls replay as one gated
+		// batch, because nothing names the queue head as decided.
+		b, derr := decodeNativeBackend(st)
+		if derr != nil {
+			return st, nil, runtime.Continue, derr
+		}
+		if b.Driver != nil && b.Driver.Batch != nil {
+			return replayAskEffect(ctx, st)
+		}
 		calls = st.Pending
 		env.calls = calls
 	}
@@ -443,18 +593,37 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	for _, cu := range calls {
 		asst.Blocks = append(asst.Blocks, cu)
 	}
+	effects := make([]types.Effect, len(calls))
+	for i, call := range calls {
+		e := types.SideEffect
+		if c.scheduler.EffectOf != nil {
+			switch got := c.scheduler.EffectOf(call); got {
+			case types.ReadOnly, types.Idempotent, types.SideEffect:
+				e = got
+			}
+		}
+		effects[i] = e
+	}
+	shape := ShapeFor(effects...)
 	*msgs = append(*msgs, asst)
 
-	if h, ok := historyAppenderFrom(ctx); ok {
-		v, aerr := AppendBeforeBatch(ctx, h, st.HistoryVersion, asst)
-		if aerr != nil {
-			return st, nil, runtime.Continue, aerr
+	if shape == ShapeBeforeBatch {
+		if h, ok := historyAppenderFrom(ctx); ok {
+			v, aerr := AppendBeforeBatch(ctx, h, st.HistoryVersion, asst)
+			if aerr != nil {
+				return st, nil, runtime.Continue, aerr
+			}
+			st.HistoryVersion = v
 		}
-		st.HistoryVersion = v
 	}
 
 	refund := func() {}
 	if c.reserve != nil {
+		historical := 0
+		if b, derr := decodeNativeBackend(st); derr == nil && b.Driver != nil {
+			historical = b.Driver.ToolCalls
+		}
+		ctx = withAdmittedToolTotal(ctx, historical)
 		rctx, r, err := c.reserve(ctx, len(calls))
 		if err != nil {
 			return st, nil, runtime.Continue, err
@@ -475,35 +644,17 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 		Gate:      gate,
 		Scheduler: c.scheduler,
 		Exec: func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
-			if res, ok := validateCompletion(call); !ok {
-				return res, nil
-			}
-			if env.sink != nil {
-				env.sink.Emit(ctx, types.ToolStarted{Turn: turn, Call: call})
-			}
-			tctx, endTool := startSpan(ctx, telemetryFrom(ctx), SpanTool,
-				types.String(types.KeyToolName, call.Name),
-			)
-			res, err := exec(tctx, call)
-			endTool(types.String(types.KeyToolOutcome, outcomeName(res)))
-			if err != nil {
-				if ctx.Err() != nil {
-					return types.ToolResult{}, ctx.Err()
-				}
-				if isControlError(err) {
-					return types.ToolResult{}, err
-				}
-				res = types.ToolResult{
-					ID:    call.ID,
-					Error: &types.ToolError{Kind: types.Permanent, Message: runtime.NotExecutedPrefix + err.Error()},
-				}
-			}
-			res.ID = call.ID
-			return res, nil
+			return governedAskExec(ctx, env, exec, call)
 		},
 	}.Run(ctx)
 	if err != nil {
 		refund()
+		if errors.Is(err, types.ErrBatchOverrun) {
+			return st, nil, runtime.Continue, &types.LimitExceededError{
+				Limit: "MaxToolCalls",
+				Value: float64(used + len(calls)),
+			}
+		}
 		return st, nil, runtime.Continue, err
 	}
 
@@ -514,30 +665,74 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 			unsettled[p.ID] = true
 		}
 	}
-	results := types.Message{ID: resultID(turn), Role: types.RoleUser}
+	index := make(map[string]int, len(calls))
+	for i, cu := range calls {
+		index[cu.ID] = i
+	}
+	// The continuation is index-aligned with the gated batch: an
+	// unsettled ask keeps its empty-ID slot so the record can name it as
+	// the one active ask on resume.
+	aligned := make([]types.ToolResult, len(calls))
+	settled := make([]types.ToolResult, 0, len(calls))
 	for _, br := range report.Results {
 		if unsettled[br.Call.ID] {
 			continue
 		}
+		i, ok := index[br.Call.ID]
+		if !ok {
+			continue
+		}
 		res := br.Result
 		res.ID = br.Call.ID
+		aligned[i] = res
+		settled = append(settled, res)
+	}
+	results := types.Message{ID: resultID(turn), Role: types.RoleUser}
+	for _, res := range settled {
 		results.Blocks = append(results.Blocks, res)
-		if env.sink != nil {
-			env.sink.Emit(ctx, types.ToolFinished{Turn: turn, Result: res})
-		}
 	}
 	*msgs = append(*msgs, results)
-	env.used += report.Spent
-	if report.Suspend != nil {
-		st.Pending = report.Suspend.Pending
-		return st, nil, runtime.SuspendedStatus, &types.SuspendError{Reason: types.AwaitingBatch, Payload: *report.Suspend}
-	}
+	// Results persist before any acknowledgement or suspension: a result
+	// a resume cannot find in the session log was never settled. A
+	// step-end turn joins the assistant message and the results into one
+	// append.
 	if h, ok := historyAppenderFrom(ctx); ok {
-		v, aerr := h.Append(ctx, st.HistoryVersion, results)
+		var v int64
+		var aerr error
+		if shape == ShapeBeforeBatch {
+			v, aerr = h.Append(ctx, st.HistoryVersion, results)
+		} else {
+			v, aerr = AppendStepEnd(ctx, h, st.HistoryVersion, asst, results)
+		}
 		if aerr != nil {
 			return st, nil, runtime.Continue, aerr
 		}
 		st.HistoryVersion = v
+	}
+	if env.sink != nil {
+		for _, res := range settled {
+			env.sink.Emit(ctx, types.ToolFinished{Turn: turn, Result: res})
+		}
+	}
+	// The batch phase marker is a string literal: the runtime's phase
+	// constants are unexported there. ToolCalls uses the gated batch size
+	// until the reservation hook reports the admitted ledger total.
+	enc, err := encodeNativeBackend(nativeBackend{
+		Phase: "batch",
+		Driver: &nativeProgress{
+			Version:   nativeProgressVersion,
+			ToolCalls: len(calls),
+			Batch:     &nativeBatchContinuation{Calls: calls, Results: aligned},
+		},
+	})
+	if err != nil {
+		return st, nil, runtime.Continue, err
+	}
+	st.Backend = enc
+	env.used += report.Spent
+	if report.Suspend != nil {
+		st.Pending = report.Suspend.Pending
+		return st, nil, runtime.SuspendedStatus, &types.SuspendError{Reason: types.HumanApproval}
 	}
 	env.calls = nil
 	if c.poll == nil {
@@ -547,6 +742,230 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 		return st, []types.Event{types.Done{Reason: stop}}, runtime.DoneStatus, nil
 	}
 	return st, nil, runtime.Continue, nil
+}
+
+// replayAskEffect settles one active ask when a drive re-enters the batch
+// phase from the checkpointed state. Only Pending[0] is active: the queue
+// tail stays pending until it becomes the head, and no model call or new
+// reservation runs between asks. An undecided ask suspends the head again;
+// a decided ask re-consults the gate — a live Deny or taint denial still
+// wins — executes the one allowed call through the governed path under a
+// prepaid one-call batch, or settles the denial. The result persists
+// before any acknowledgement, and a remaining queue suspends the next ask
+// immediately.
+func replayAskEffect(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+	env := turnEnvFrom(ctx)
+	c := env.c
+	b, err := decodeNativeBackend(st)
+	if err != nil {
+		return st, nil, runtime.Continue, err
+	}
+	if b.Driver == nil || b.Driver.Batch == nil {
+		return st, nil, runtime.Continue, fmt.Errorf("%w: pending calls without a batch continuation", types.ErrCheckpointIncompatible)
+	}
+	head := st.Pending[0]
+	slot := -1
+	for i, cu := range b.Driver.Batch.Calls {
+		if cu.ID == head.ID {
+			slot = i
+			break
+		}
+	}
+	if slot < 0 {
+		return st, nil, runtime.Continue, fmt.Errorf("%w: pending call %q has no batch slot", types.ErrCheckpointIncompatible, head.ID)
+	}
+	if !b.Driver.Batch.Ready {
+		// The client never decided, or decided without reaching quorum:
+		// the same head asks again under a fresh token.
+		return st, nil, runtime.SuspendedStatus, &types.SuspendError{Reason: types.HumanApproval}
+	}
+	gate := c.gate
+	if gate == nil {
+		gate = func(context.Context, types.ToolUse) runtime.BatchDecision {
+			return runtime.BatchDecision{Outcome: runtime.BatchAllow}
+		}
+	}
+	var res types.ToolResult
+	switch d := gate(ctx, head); d.Outcome {
+	case runtime.BatchAsk:
+		b.Driver.Batch.Ready = false
+		enc, cerr := encodeNativeBackend(b)
+		if cerr != nil {
+			return st, nil, runtime.Continue, cerr
+		}
+		st.Backend = enc
+		return st, nil, runtime.SuspendedStatus, &types.SuspendError{Reason: types.HumanApproval}
+	case runtime.BatchDeny, runtime.BatchTaintDenied:
+		res = types.ToolResult{
+			ID:      head.ID,
+			Outcome: types.Failed,
+			Error:   &types.ToolError{Kind: types.Permanent, Message: runtime.NotExecutedPrefix + d.Reason},
+		}
+	default:
+		res, err = runApprovedAsk(ctx, env, head)
+		if err != nil {
+			return st, nil, runtime.Continue, err
+		}
+	}
+	if err := persistAskResult(ctx, &st, res); err != nil {
+		return st, nil, runtime.Continue, err
+	}
+	if err := settleNativePending(&st, res); err != nil {
+		return st, nil, runtime.Continue, err
+	}
+	if env.sink != nil {
+		env.sink.Emit(ctx, types.ToolFinished{Turn: env.turn, Result: res})
+	}
+	if len(st.Pending) > 0 {
+		return st, nil, runtime.SuspendedStatus, &types.SuspendError{Reason: types.HumanApproval}
+	}
+	env.calls = nil
+	if c.poll == nil {
+		return st, nil, runtime.Continue, nil
+	}
+	if stop := c.poll(); stop != "" && stop != types.StopCompleted {
+		return st, []types.Event{types.Done{Reason: stop}}, runtime.DoneStatus, nil
+	}
+	return st, nil, runtime.Continue, nil
+}
+
+// runApprovedAsk executes the one decided call through the governed call
+// path under a prepaid one-call batch: the slot was authorized when the
+// batch was first admitted, so the local bound caps the single execution
+// and the report's spend never re-charges the run.
+func runApprovedAsk(ctx context.Context, env *turnEnv, call types.ToolUse) (types.ToolResult, error) {
+	exec := env.c.exec
+	if exec == nil {
+		exec = func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+			return CallTool(ctx, env.c.tools, call.Name, call.Args)
+		}
+	}
+	report, err := runtime.Batch{
+		Calls:  []types.ToolUse{call},
+		Limits: types.RunLimits{MaxToolCalls: 1},
+		Gate: func(context.Context, types.ToolUse) runtime.BatchDecision {
+			return runtime.BatchDecision{Outcome: runtime.BatchAllow}
+		},
+		Exec: func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+			return governedAskExec(ctx, env, exec, call)
+		},
+	}.Run(ctx)
+	if err != nil {
+		return types.ToolResult{}, err
+	}
+	if len(report.Results) == 0 {
+		return types.ToolResult{}, fmt.Errorf("%w: approved ask %q produced no result", types.ErrCheckpointIncompatible, call.ID)
+	}
+	res := report.Results[0].Result
+	res.ID = call.ID
+	return res, nil
+}
+
+// governedAskExec runs one call through the governed path with its
+// original identity, streaming the start and outcome and rendering an
+// ordinary failure as a permanent not-executed result.
+func governedAskExec(ctx context.Context, env *turnEnv, exec func(context.Context, types.ToolUse) (types.ToolResult, error), call types.ToolUse) (types.ToolResult, error) {
+	if res, ok := validateCompletion(call); !ok {
+		return res, nil
+	}
+	if env.sink != nil {
+		env.sink.Emit(ctx, types.ToolStarted{Turn: env.turn, Call: call})
+	}
+	tctx, endTool := startSpan(ctx, telemetryFrom(ctx), SpanTool,
+		types.String(types.KeyToolName, call.Name),
+	)
+	res, err := exec(tctx, call)
+	endTool(types.String(types.KeyToolOutcome, outcomeName(res)))
+	if err != nil {
+		if ctx.Err() != nil {
+			return types.ToolResult{}, ctx.Err()
+		}
+		if isControlError(err) {
+			return types.ToolResult{}, err
+		}
+		res = types.ToolResult{
+			ID:    call.ID,
+			Error: &types.ToolError{Kind: types.Permanent, Message: runtime.NotExecutedPrefix + err.Error()},
+		}
+	}
+	res.ID = call.ID
+	return res, nil
+}
+
+// persistAskResult appends the settled active ask's result in one append
+// before any acknowledgement, so the record's populated slot and the
+// session log agree on what is durable.
+func persistAskResult(ctx context.Context, st *runtime.State, res types.ToolResult) error {
+	msg := types.Message{ID: resultID(st.Turn) + "-" + res.ID, Role: types.RoleUser, Blocks: []types.Block{res}}
+	if h, ok := historyAppenderFrom(ctx); ok {
+		v, err := h.Append(ctx, st.HistoryVersion, msg)
+		if err != nil {
+			return err
+		}
+		st.HistoryVersion = v
+	}
+	if env := turnEnvFrom(ctx); env != nil {
+		env.msgs = append(env.msgs, msg)
+	}
+	return nil
+}
+
+// settleNativePending fills the active ask's index-aligned slot with its
+// result, removes only the head from the pending queue and clears Ready,
+// then writes the updated driver record back into the state. It appends
+// no history: the caller persists the result first.
+func settleNativePending(st *runtime.State, res types.ToolResult) error {
+	b, err := decodeNativeBackend(*st)
+	if err != nil {
+		return err
+	}
+	if b.Driver == nil || b.Driver.Batch == nil || len(st.Pending) == 0 {
+		return fmt.Errorf("%w: settling without an active ask", types.ErrCheckpointIncompatible)
+	}
+	head := st.Pending[0]
+	settled := false
+	for i, cu := range b.Driver.Batch.Calls {
+		if cu.ID != head.ID {
+			continue
+		}
+		if b.Driver.Batch.Results[i].ID != "" {
+			return fmt.Errorf("%w: batch slot for %q is already settled", types.ErrCheckpointIncompatible, head.ID)
+		}
+		b.Driver.Batch.Results[i] = res
+		settled = true
+		break
+	}
+	if !settled {
+		return fmt.Errorf("%w: pending call %q has no batch slot", types.ErrCheckpointIncompatible, head.ID)
+	}
+	st.Pending = st.Pending[1:]
+	b.Driver.Batch.Ready = false
+	enc, err := encodeNativeBackend(b)
+	if err != nil {
+		return err
+	}
+	st.Backend = enc
+	return nil
+}
+
+// markAskReady records in the restored state that the active ask was
+// decided: the replayed batch phase may attempt the head. A backend
+// without a driver record has nothing to mark.
+func markAskReady(st *runtime.State) error {
+	b, err := decodeNativeBackend(*st)
+	if err != nil {
+		return err
+	}
+	if b.Driver == nil || b.Driver.Batch == nil {
+		return nil
+	}
+	b.Driver.Batch.Ready = true
+	enc, err := encodeNativeBackend(b)
+	if err != nil {
+		return err
+	}
+	st.Backend = enc
+	return nil
 }
 
 // isControlError reports the errors that steer the run — cancellation,

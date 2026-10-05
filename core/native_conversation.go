@@ -32,6 +32,7 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 	c.allowAnonymous = stack.allowAnonymous
 	if l, ok := stack.Limits(name); ok {
 		c.wall = l.MaxWallClock
+		c.stall = l.ConsumerStall
 	}
 	c.toolSpecs = specLookup(cfg.specs)
 	c.newRun = func(ctx context.Context, sessionID string, lease stores.Lease, input []Message) (context.Context, runtime.AgentRun, error) {
@@ -45,7 +46,19 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 
 		tc := stack.nativeTurnConfig(cfg)
 		tc.gate = nativeBatchGate(cfg, hist)
+		restored := false
 		tc.reserve = func(ctx context.Context, n int) (context.Context, func(), error) {
+			if !restored {
+				restored = true
+				if u, ok := admittedToolTotalFrom(ctx); ok && u > 0 {
+					if _, _, err := ledger.ReserveBatch(ctx, types.RunLimits{}, u); err != nil {
+						return ctx, func() {}, err
+					}
+				}
+			}
+			if n == 0 {
+				return ctx, func() {}, nil
+			}
 			return ledger.ReserveBatch(ctx, cfg.limits, n)
 		}
 
@@ -63,7 +76,19 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 
 		tc := stack.nativeTurnConfig(cfg)
 		tc.gate = nativeBatchGate(cfg, hist)
+		restored := false
 		tc.reserve = func(ctx context.Context, n int) (context.Context, func(), error) {
+			if !restored {
+				restored = true
+				if u, ok := admittedToolTotalFrom(ctx); ok && u > 0 {
+					if _, _, err := ledger.ReserveBatch(ctx, types.RunLimits{}, u); err != nil {
+						return ctx, func() {}, err
+					}
+				}
+			}
+			if n == 0 {
+				return ctx, func() {}, nil
+			}
 			return ledger.ReserveBatch(ctx, cfg.limits, n)
 		}
 

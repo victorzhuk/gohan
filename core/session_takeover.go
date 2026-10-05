@@ -119,6 +119,9 @@ func (c *conversation) OperatorSend(ctx context.Context, sessionID string, opera
 	if operator.Subject == "" {
 		return nil, types.ErrNoPrincipal
 	}
+	if err := rejectReservedMeta([]types.Message{msg}); err != nil {
+		return nil, err
+	}
 	msg.Role = types.RoleAssistant
 	msg.Blocks = operatorBlocks(msg.Blocks, operator.Subject)
 	h, err := c.load(ctx, sessionID)

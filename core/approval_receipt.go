@@ -13,6 +13,11 @@ import (
 
 const ApprovalReceiptKey = "gohan.approval"
 
+// approvalReceiptVersion is independent of the checkpoint envelope
+// version: receipts already recorded in session history must keep
+// decoding while the envelope format moves on.
+const approvalReceiptVersion = 1
+
 type approvalReceipt struct {
 	Version    int               `json:"version"`
 	RunID      string            `json:"run_id"`
@@ -28,7 +33,7 @@ func receiptDedupKey(rc approvalReceipt) string {
 }
 
 func approvalReceiptMessage(rc approvalReceipt) (types.Message, error) {
-	rc.Version = checkpointEnvelopeVersion
+	rc.Version = approvalReceiptVersion
 	if rc.RunID == "" || rc.CallID == "" || rc.Tool == "" || len(rc.Args) == 0 {
 		return types.Message{}, fmt.Errorf("%w: incomplete approval receipt", types.ErrInputInvalid)
 	}
@@ -77,11 +82,14 @@ func decodeReceipt(value any) (approvalReceipt, error) {
 	if err := jsonv2.Unmarshal(raw, &rc); err != nil {
 		return approvalReceipt{}, fmt.Errorf("%w: malformed approval receipt: %s", types.ErrInputInvalid, err)
 	}
-	if rc.Version != checkpointEnvelopeVersion {
+	if rc.Version != approvalReceiptVersion {
 		return approvalReceipt{}, fmt.Errorf("%w: unsupported approval receipt version %d", types.ErrInputInvalid, rc.Version)
 	}
 	if rc.RunID == "" || rc.CallID == "" || rc.Tool == "" || len(rc.Args) == 0 {
 		return approvalReceipt{}, fmt.Errorf("%w: incomplete approval receipt", types.ErrInputInvalid)
+	}
+	if len(rc.Approvers) == 0 {
+		return approvalReceipt{}, fmt.Errorf("%w: approval receipt without approvers", types.ErrInputInvalid)
 	}
 	return rc, nil
 }

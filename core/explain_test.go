@@ -176,3 +176,50 @@ func TestBuildResolvedMatrixNativeEntries(t *testing.T) {
 		}
 	}
 }
+
+func TestExplainEmptyChains(t *testing.T) {
+	t.Run("chains.empty-chains", func(t *testing.T) {
+		var got *types.ModelRequest
+		gen := func(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+			got = &req
+			return func(yield func(types.ModelChunk, error) bool) {
+				yield(types.ModelChunk{Kind: types.DeltaText, Delta: "hi"}, nil)
+				yield(types.ModelChunk{Finish: types.FinishStop}, nil)
+			}
+		}
+		stack := nativeConvStack(t, gen, nil, types.RunLimits{})
+		ex := stack.Explain("chat")
+		if len(ex.Steps) != 0 {
+			t.Fatalf("model steps = %d, want zero for an empty chain", len(ex.Steps))
+		}
+		if len(ex.ToolSteps) != 0 {
+			t.Fatalf("tool steps = %d, want zero for an empty chain", len(ex.ToolSteps))
+		}
+		for _, b := range ex.Sample.System {
+			if txt, ok := b.(types.Text); ok && txt.Text != "" {
+				t.Errorf("empty-chain sample system block %q adds prompt text", txt.Text)
+			}
+		}
+		for _, m := range ex.Sample.Messages {
+			for _, b := range m.Blocks {
+				if txt, ok := b.(types.Text); ok && txt.Text != "" && m.Role != types.RoleUser {
+					t.Errorf("empty-chain sample message %s adds %q", m.Role, txt.Text)
+				}
+			}
+		}
+		conv := nativeConv(t, stack)
+		res := collectStream(conv.Send(types.WithPrincipal(context.Background(), types.Principal{Tenant: "t", Subject: "u1"}), "s-empty", userMsg("hello")))
+		if res.err != nil {
+			t.Fatalf("send: %v", res.err)
+		}
+		if got == nil {
+			t.Fatal("the model received no assembled request")
+		}
+		if len(got.System) != 0 {
+			t.Fatalf("system blocks = %v, want none: the flow declares no instruction", got.System)
+		}
+		if len(got.Messages) != 1 || got.Messages[0].Role != types.RoleUser {
+			t.Fatalf("messages = %v, want the user input alone", got.Messages)
+		}
+	})
+}

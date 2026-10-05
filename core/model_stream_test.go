@@ -212,3 +212,82 @@ func TestModelStream(t *testing.T) {
 		}
 	})
 }
+
+func TestModelStreamClosedBufferPreservesTerminalError(t *testing.T) {
+	req := types.ModelRequest{}
+	failErr := errors.New("provider gone")
+
+	type tuple struct {
+		chunk types.ModelChunk
+		err   error
+	}
+	drain := func(s *ModelStream, ctx context.Context) []tuple {
+		var got []tuple
+		for c, err := range s.Generate(ctx, req) {
+			got = append(got, tuple{c, err})
+		}
+		return got
+	}
+	assertTerminal := func(t *testing.T, got []tuple) {
+		t.Helper()
+		if len(got) == 0 {
+			t.Fatalf("no tuples yielded")
+		}
+		last := got[len(got)-1]
+		if last.err == nil {
+			t.Fatalf("stream completed cleanly after %d chunks", len(got)-1)
+		}
+		if last.chunk != (types.ModelChunk{}) {
+			t.Fatalf("terminal tuple carries chunk %+v", last.chunk)
+		}
+		for _, tr := range got[:len(got)-1] {
+			if tr.err != nil {
+				t.Fatalf("error tuple before terminal: %v", tr.err)
+			}
+		}
+	}
+
+	builders := map[string]func() (*ModelStream, context.Context, context.CancelFunc){
+		"provider-failure": func() (*ModelStream, context.Context, context.CancelFunc) {
+			// Many yield boundaries per iteration: the closed-buffer
+			// versus terminal-error window is the consumer's re-entry
+			// into the main select, so every returned chunk is one
+			// sample of it.
+			events := make([]streamEvent, 0, 2001)
+			for i := 0; i < 2000; i++ {
+				events = append(events, textChunk("a"))
+			}
+			events = append(events, streamEvent{err: failErr})
+			p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Minute, Idle: time.Minute},
+				events...)
+			return NewModelStream(p), context.Background(), func() {}
+		},
+		"first-chunk-expiry": func() (*ModelStream, context.Context, context.CancelFunc) {
+			p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Millisecond, Idle: time.Minute})
+			return NewModelStream(p), context.Background(), func() {}
+		},
+		"idle-expiry": func() (*ModelStream, context.Context, context.CancelFunc) {
+			p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Minute, Idle: time.Millisecond},
+				textChunk("a"))
+			return NewModelStream(p), context.Background(), func() {}
+		},
+		"cancellation": func() (*ModelStream, context.Context, context.CancelFunc) {
+			p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Minute, Idle: time.Minute},
+				textChunk("a"))
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return NewModelStream(p), ctx, cancel
+		},
+	}
+
+	for name, build := range builders {
+		t.Run(name, func(t *testing.T) {
+			for i := 0; i < 200; i++ {
+				s, ctx, cancel := build()
+				got := drain(s, ctx)
+				cancel()
+				assertTerminal(t, got)
+			}
+		})
+	}
+}

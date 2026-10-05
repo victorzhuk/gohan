@@ -186,9 +186,14 @@ func TestNativeLifecycleResumeKeepsSpentCost(t *testing.T) {
 		return types.ResumeToken("t"), nil
 	}
 
+	noopSpec := func(string) (types.ToolSpec, bool) {
+		return types.ToolSpec{Name: "noop", Effect: types.SideEffect}, true
+	}
 	lc1 := NewLifecycle(
 		WithLifecycleLease(stores.Lease{RunID: "run-1"}),
 		WithLifecycleLedger(ledger),
+		WithLifecycleToolSpecs(noopSpec),
+		WithLifecycleApprovalPolicy(&authPolicySource{}),
 	)
 	var suspended bool
 	for _, err := range DriveLifecycle(context.Background(), lc1, runtime.NewNative(), ag) {
@@ -209,6 +214,8 @@ func TestNativeLifecycleResumeKeepsSpentCost(t *testing.T) {
 	lc2 := NewLifecycle(
 		WithLifecycleLease(stores.Lease{RunID: "run-1"}),
 		WithLifecycleLedger(ledger),
+		WithLifecycleToolSpecs(noopSpec),
+		WithLifecycleApprovalPolicy(&authPolicySource{}),
 		WithLifecycleResumeState(resumed),
 	)
 	tc2 := turnConfig{

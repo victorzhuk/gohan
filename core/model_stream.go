@@ -166,31 +166,50 @@ func (s *ModelStream) Generate(ctx context.Context, req types.ModelRequest) iter
 			}
 		}()
 
+		delivered := false
 		for {
-			select {
-			case err := <-failed:
-				yield(types.ModelChunk{}, err)
-				return
-			default:
-			}
 			select {
 			case <-ctx.Done():
 				yield(types.ModelChunk{}, ctx.Err())
 				return
-			case err := <-failed:
-				yield(types.ModelChunk{}, err)
-				return
-			case err := <-expired:
-				yield(types.ModelChunk{}, err)
-				return
 			case p, ok := <-buf.ch:
 				if !ok {
+					<-readerDone
+					// A closed buffer joins the reader and then
+					// reports its verdict: provider failure, expiry,
+					// cancellation, and only then exhaustion.
+					select {
+					case err := <-failed:
+						yield(types.ModelChunk{}, err)
+						return
+					default:
+					}
+					select {
+					case err := <-expired:
+						yield(types.ModelChunk{}, err)
+						return
+					default:
+					}
+					if err := ctx.Err(); err != nil {
+						yield(types.ModelChunk{}, err)
+						return
+					}
 					return
 				}
-				if p.err != nil {
-					yield(types.ModelChunk{}, p.err)
-					return
+				// After the first chunk is out, a terminal verdict
+				// jumps the chunks still buffered ahead of it.
+				if delivered {
+					select {
+					case err := <-failed:
+						yield(types.ModelChunk{}, err)
+						return
+					case err := <-expired:
+						yield(types.ModelChunk{}, err)
+						return
+					default:
+					}
 				}
+				delivered = true
 				if !yield(p.chunk, nil) {
 					return
 				}

@@ -33,8 +33,12 @@ const (
 	phaseBatch = "batch"
 )
 
+// nativePhase is the durable phase marker. Driver carries opaque driver
+// state across the phase flip: an effect writes it, the next Step keeps
+// the bytes and rewrites only Phase.
 type nativePhase struct {
-	Phase string `json:"phase"`
+	Phase  string          `json:"phase"`
+	Driver json.RawMessage `json:"driver,omitempty"`
 }
 
 var errMissingEffect = errors.New("gohan: native runtime phase has no effect callback")
@@ -76,7 +80,16 @@ func (n *Native) Step(ctx context.Context, st State) (State, []types.Event, Stat
 	if err != nil {
 		return out, events, status, err
 	}
-	enc, err := json.Marshal(nativePhase{Phase: next})
+	var advanced nativePhase
+	if len(out.Backend) > 0 && json.Unmarshal(out.Backend, &advanced) == nil {
+		// The effect produced a native record: keep its driver bytes and
+		// rewrite only the phase, so driver state survives the flip.
+		advanced.Phase = next
+	} else {
+		// An effect is allowed to return a state with no native record.
+		advanced = nativePhase{Phase: next}
+	}
+	enc, err := json.Marshal(advanced)
 	if err != nil {
 		return out, events, status, fmt.Errorf("gohan: encode native phase: %w", err)
 	}

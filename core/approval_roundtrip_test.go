@@ -177,17 +177,20 @@ func TestApprovalRoundtrip(t *testing.T) {
 		h := newRoundtripHarness(t, rt, specs)
 		token := h.send(t)
 		env := h.envelope(t, token)
-		if len(env.Approvals) != 2 {
-			t.Fatalf("approvals: %+v, want one per pending call", env.Approvals)
+		// Only the active ask, the head of the pending queue, is a
+		// persisted approval; the queued tail asks when it becomes the
+		// head.
+		if len(env.Approvals) != 1 || env.Approvals[0].Call.ID != "c1" {
+			t.Fatalf("approvals: %+v, want one for the active ask c1", env.Approvals)
 		}
-		if h.pol.resolved != 2 {
-			t.Errorf("policy resolutions: %d, want 2", h.pol.resolved)
+		if h.pol.resolved != 1 {
+			t.Errorf("policy resolutions: %d, want 1", h.pol.resolved)
 		}
-		if env.Approvals[0].Reversible || !env.Approvals[1].Reversible {
-			t.Errorf("reversible flags: %v, %v, want false then true", env.Approvals[0].Reversible, env.Approvals[1].Reversible)
+		if env.Approvals[0].Reversible {
+			t.Errorf("reversible: true, want false for the side effect")
 		}
-		if env.Approvals[0].Risk != types.RiskHigh || env.Approvals[1].Risk != types.RiskLow {
-			t.Errorf("risks: %v, %v, want high then low", env.Approvals[0].Risk, env.Approvals[1].Risk)
+		if env.Approvals[0].Risk != types.RiskHigh {
+			t.Errorf("risk: %v, want high", env.Approvals[0].Risk)
 		}
 		if env.Approvals[0].Eligible.Quorum != 1 {
 			t.Errorf("quorum: %d, want 1", env.Approvals[0].Eligible.Quorum)

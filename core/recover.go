@@ -195,6 +195,7 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 	if len(st.Pending) > 0 {
 		ctx = withPendingReplay(ctx)
 	}
+	var driveErr error
 	if cfg, ok := s.resolvedNative(run.Flow); ok {
 		ledger := chains.NewLimitsStateSeeded(run.Cost)
 		ctx = chains.WithLimitsState(ctx, ledger)
@@ -206,7 +207,19 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 		}
 		tc := s.nativeTurnConfig(cfg)
 		tc.gate = nativeBatchGate(cfg, hist)
+		restored := false
 		tc.reserve = func(ctx context.Context, n int) (context.Context, func(), error) {
+			if !restored {
+				restored = true
+				if u, ok := admittedToolTotalFrom(ctx); ok && u > 0 {
+					if _, _, err := ledger.ReserveBatch(ctx, types.RunLimits{}, u); err != nil {
+						return ctx, func() {}, err
+					}
+				}
+			}
+			if n == 0 {
+				return ctx, func() {}, nil
+			}
 			return ledger.ReserveBatch(ctx, cfg.limits, n)
 		}
 		native := nativeRun(tc, hist.Messages, nil)
@@ -222,6 +235,7 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 	}
 	for _, err := range DriveLifecycle(ctx, lc, rt, ag) {
 		if err != nil {
+			driveErr = fmt.Errorf("recover run %s: %w", run.RunID, err)
 			break
 		}
 	}
@@ -232,7 +246,7 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 	if state == stores.Finished {
 		countRecovered(ctx, s.telemetry, run)
 	}
-	return nil
+	return driveErr
 }
 
 // terminalRun reports the run's stored state when the store can answer it.
@@ -397,13 +411,88 @@ func (s *Stack) replayState(ctx context.Context, run stores.Run, rt runtime.Runt
 		}
 		return st, &cp, in, nil
 	}
-	return runtime.State{
-		Turn:    run.Turn,
-		Pending: run.Pending,
+	st = runtime.State{
+		Turn: run.Turn,
 		// The re-drive appends where the crash left the log: the pending
 		// calls' results land after whatever the session already carries.
 		HistoryVersion: s.sessionVersion(ctx, run.SessionID),
-	}, nil, stores.ResumeInput{}, nil
+	}
+	if _, ok := s.resolvedNative(run.Flow); ok {
+		if err := s.reconstructNativeRunning(ctx, run, &st); err != nil {
+			return st, nil, stores.ResumeInput{}, fmt.Errorf("recover run: %w", err)
+		}
+	} else {
+		st.Pending = run.Pending
+	}
+	return st, nil, stores.ResumeInput{}, nil
+}
+
+// reconstructNativeRunning rebuilds the phase a crash left behind from the
+// durable history instead of handing the drive an empty backend: the latest
+// assistant turn names the batch, the recorded results name the calls that
+// settled, and the unresolved remainder re-enters the batch phase as
+// pending calls. The driver record carries the admitted total so the
+// reservation seam restores it once; a turn with nothing unresolved
+// re-enters the model phase.
+func (s *Stack) reconstructNativeRunning(ctx context.Context, run stores.Run, st *runtime.State) error {
+	if s.stores.SessionLog == nil {
+		return nil
+	}
+	h, err := s.stores.SessionLog.Load(ctx, run.SessionID)
+	if err != nil {
+		// No readable history: the drive falls back to the record's own
+		// state, and stored-authority resolution decides below whether
+		// the re-drive may run at all.
+		return nil
+	}
+	var calls []types.ToolUse
+	for i := len(h.Messages) - 1; i >= 0 && len(calls) == 0; i-- {
+		msg := h.Messages[i]
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		for _, b := range msg.Blocks {
+			if tu, ok := b.(types.ToolUse); ok {
+				calls = append(calls, tu)
+			}
+		}
+	}
+	if len(calls) == 0 {
+		enc, encErr := encodeNativeBackend(nativeBackend{Phase: "model"})
+		if encErr != nil {
+			return encErr
+		}
+		st.Backend = enc
+		return nil
+	}
+	settled := map[string]bool{}
+	for _, msg := range h.Messages {
+		for _, b := range msg.Blocks {
+			if tr, ok := b.(types.ToolResult); ok && tr.ID != "" {
+				settled[tr.ID] = true
+			}
+		}
+	}
+	var pending []types.ToolUse
+	for _, c := range calls {
+		if !settled[c.ID] {
+			pending = append(pending, c)
+		}
+	}
+	st.Pending = pending
+	phase := "batch"
+	if len(pending) == 0 {
+		phase = "model"
+	}
+	enc, encErr := encodeNativeBackend(nativeBackend{
+		Phase:  phase,
+		Driver: &nativeProgress{Version: nativeProgressVersion, ToolCalls: len(calls)},
+	})
+	if encErr != nil {
+		return encErr
+	}
+	st.Backend = enc
+	return nil
 }
 
 // sessionVersion reports the history version a replay appends at; a
@@ -439,12 +528,9 @@ func (s *Stack) recoveryContext(ctx context.Context, run stores.Run, st runtime.
 		}
 	}
 	if !resolved {
-		ctx = types.WithRunInfo(ctx, types.RunInfo{
-			Flow: run.Flow, SessionID: run.SessionID, RunID: run.RunID,
-			RootRunID: run.RootRunID, ParentRunID: run.ParentRunID,
-			Turn: st.Turn, Depth: run.Depth, Mode: run.Mode,
-		})
-		return ctx, p, nil
+		// No stored authority to drive with: the reaper's ambient
+		// principal and credentials must never fill the gap.
+		return ctx, p, fmt.Errorf("recover run %s: stored authority unresolved: %w", run.RunID, types.ErrSessionForbidden)
 	}
 	ctx = types.WithPrincipal(ctx, p)
 	ctx = types.WithRunInfo(ctx, types.RunInfo{

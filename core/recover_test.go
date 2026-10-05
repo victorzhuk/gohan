@@ -234,7 +234,8 @@ func TestRecover(t *testing.T) {
 		if _, _, err := f.jnl.Reserve(t.Context(), k, stores.Fingerprint("fp-c1")); err != nil {
 			t.Fatal(err)
 		}
-		f.seedRun(t, stores.Run{SessionID: "s1", RunID: "r1", Flow: "agent", State: stores.Running, Turn: 1, Seq: 2, Pending: pendingCalls("c1")})
+		f.seedHistory(t, 1)
+		f.seedRun(t, stores.Run{SessionID: "s1", RunID: "r1", Flow: "agent", State: stores.Running, Turn: 1, Seq: 1, Pending: pendingCalls("c1")})
 		f.expire()
 
 		if err := f.stack.Recover(ctx, 10); err != nil {
@@ -299,6 +300,10 @@ func TestRecover(t *testing.T) {
 		ctx := f.reaperCtx()
 		f.seedRun(t, stores.Run{SessionID: "s1", RunID: "root", Flow: "agent", State: stores.Running, Turn: 1, Seq: 1})
 		f.seedRun(t, stores.Run{SessionID: "s1/child", RunID: "child", RootRunID: "root", ParentRunID: "root", Depth: 1, Flow: "agent", State: stores.Running, Turn: 1, Seq: 1})
+		f.seedHistory(t, 1)
+		if _, err := f.log.Append(ctx, "s1/child", 0, types.Message{Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: "m"}}}); err != nil {
+			t.Fatal(err)
+		}
 		f.expire()
 
 		if err := f.stack.Recover(ctx, 10); err != nil {
@@ -319,6 +324,7 @@ func TestRecover(t *testing.T) {
 
 	t.Run("recovery.no-double-run", func(t *testing.T) {
 		f := newRecoverFixture(t, "agent")
+		f.seedHistory(t, 1)
 		f.seedRun(t, stores.Run{SessionID: "s1", RunID: "r1", Flow: "agent", State: stores.Running, Turn: 1, Seq: 1})
 		f.expire()
 
@@ -328,7 +334,7 @@ func TestRecover(t *testing.T) {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				errs[i] = f.stack.Recover(t.Context(), 10)
+				errs[i] = f.stack.Recover(f.reaperCtx(), 10)
 			}(i)
 		}
 		wg.Wait()
@@ -345,6 +351,7 @@ func TestRecover(t *testing.T) {
 	t.Run("second recover after a completed one is a no-op", func(t *testing.T) {
 		f := newRecoverFixture(t, "agent")
 		ctx := f.reaperCtx()
+		f.seedHistory(t, 1)
 		f.seedRun(t, stores.Run{SessionID: "s1", RunID: "r1", Flow: "agent", State: stores.Running, Turn: 1, Seq: 1})
 		f.expire()
 		if err := f.stack.Recover(ctx, 10); err != nil {
@@ -403,6 +410,7 @@ func TestRecover(t *testing.T) {
 
 	t.Run("drive without terminal transition fails the run", func(t *testing.T) {
 		f := newRecoverFixture(t, "agent")
+		f.seedHistory(t, 1)
 		f.seedRun(t, stores.Run{SessionID: "s1", RunID: "r1", Flow: "agent", State: stores.Running, Turn: 1, Seq: 1})
 		f.expire()
 		f.rt.block = make(chan struct{})

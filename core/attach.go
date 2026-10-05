@@ -3,6 +3,7 @@ package gohan
 import (
 	"context"
 	"iter"
+	"time"
 )
 
 // Attach streams one run's events from afterSeq onward: the events the log
@@ -13,6 +14,10 @@ import (
 func (c *conversation) Attach(ctx context.Context, runID string, afterSeq int64) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
 		seq := afterSeq
+		// Local wakeups only reach same-instance waiters; the ticker makes
+		// a second conversation over the shared event log catch up too.
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
 		for {
 			wake, stop := c.subscribe(runID)
 			terminal, advanced, ok := c.replay(ctx, runID, &seq, yield)
@@ -35,6 +40,8 @@ func (c *conversation) Attach(ctx context.Context, runID string, afterSeq int64)
 			// and the sequence would sleep past the run's end.
 			select {
 			case <-wake:
+				stop()
+			case <-ticker.C:
 				stop()
 			case <-ctx.Done():
 				stop()

@@ -19,6 +19,9 @@ func (c *conversation) Steer(ctx context.Context, sessionID string, msg Message)
 	if err := c.checkSteerOwner(ctx, sessionID); err != nil {
 		return err
 	}
+	if err := rejectReservedMeta([]types.Message{msg}); err != nil {
+		return err
+	}
 	run, live := c.find(ctx, sessionID)
 	if !live {
 		return types.ErrRunNotActive

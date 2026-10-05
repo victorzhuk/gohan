@@ -2,6 +2,7 @@ package gohan
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"sync"
 	"sync/atomic"
@@ -124,15 +125,6 @@ func stallConversation(t *testing.T, rt runtime.Runtime, opts ...ConversationOpt
 }
 
 func TestStreamStall(t *testing.T) {
-	// runStall guards run at a nominal limit with a channel-driven clock:
-	// every take resets the guard, and the test's first tick then shows an
-	// idle gap longer than the limit.
-	runStall := func(g *StallGuard) *StallGuard {
-		g.limit = time.Nanosecond
-		return g
-	}
-	ticks := func() chan time.Time { return make(chan time.Time, 4) }
-
 	t.Run("streams.slow-consumer-no-idle-retry", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			p := &countedStallProvider{fakeProvider: newFakeProvider(
@@ -380,54 +372,364 @@ func TestStreamStall(t *testing.T) {
 	})
 
 	t.Run("stalled-consumer-gets-no-model-retry", func(t *testing.T) {
-		rt := &stallTestRT{gate: make(chan struct{}), done: make(chan struct{})}
-		conv, _, _ := stallConversation(t, rt)
-		tk := ticks()
-		fired := make(chan struct{})
-		ctx, cancel := context.WithCancel(principalCtx(context.Background()))
-		defer cancel()
-		g := runStall(NewStallGuard(time.Minute, StallPreempt, func() {
-			cancel()
-			close(fired)
-		}))
-		g.ticks = tk
+		const stall = 10 * time.Millisecond
+		inSecond := make(chan struct{})
+		rt := &stallTestRT{}
+		rt.steps = []func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error){
+			func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+				return st, []types.Event{types.TextDelta{Turn: 0, Delta: "one"}}, runtime.Continue, nil
+			},
+			func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+				// The run is now provably inside its second step: a stall
+				// action from here lands as a safe-point preemption, never
+				// as a client disconnect.
+				close(inSecond)
+				<-ctx.Done()
+				return st, nil, runtime.Continue, &types.SuspendError{Reason: types.Preempted}
+			},
+		}
+		runs := &stallRuns{MemoryRuns: stores.NewMemoryRuns()}
+		events := stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))
+		log := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
+		stack := &Stack{
+			stores: stores.Stores{SessionLog: log},
+			limits: map[string]types.RunLimits{"chat": {ConsumerStall: stall}},
+		}
+		conv, err := NewConversation(stack, "chat", rt,
+			WithConversationRuns(runs),
+			WithConversationEventLog(events),
+			WithConversationCheckpoints(stores.NewMemoryCheckpoints()),
+		)
+		if err != nil {
+			t.Fatalf("new conversation: %v", err)
+		}
+		ctx := principalCtx(context.Background())
 
-		stalled := make(chan struct{})
-		preempted := make(chan struct{})
-		seq := g.Watch(ctx, conv.Send(ctx, "sess-1", userMsg("hi")))
+		release := make(chan struct{})
 		streamDone := make(chan struct{})
+		var got []types.Event
 		go func() {
 			defer close(streamDone)
-			first := true
-			for _, err := range seq {
+			for ev, err := range conv.Send(ctx, "sess-1", userMsg("hi")) {
 				if err != nil {
 					t.Errorf("stream: %v", err)
 					return
 				}
-				if first {
-					first = false
-					close(stalled)
-					<-preempted
+				got = append(got, ev)
+				if len(got) == 1 {
+					// The consumer holds the callback while the run parks
+					// in its second step: the stall fires on a busy
+					// consumer, and the run preempts through the runtime's
+					// own preemption path.
+					<-release
 				}
 			}
 		}()
+		<-inSecond
+		stallWait(t, "preemption persisted", func() bool {
+			runs.mu.Lock()
+			defer runs.mu.Unlock()
+			return len(runs.suspended) == 1
+		})
+		close(release)
+		<-streamDone
+
+		if len(got) != 2 {
+			t.Fatalf("got %d events, want the delta and the suspension", len(got))
+		}
+		if _, ok := got[0].(types.TextDelta); !ok {
+			t.Fatalf("first event %T, want TextDelta", got[0])
+		}
+		s, ok := got[1].(types.Suspended)
+		if !ok {
+			t.Fatalf("last event %T, want Suspended", got[1])
+		}
+		if s.Reason != types.Preempted || s.Token == "" {
+			t.Fatalf("suspension reason %q token %q, want preempted with a token", s.Reason, s.Token)
+		}
+		if calls := rt.calls(); calls != 2 {
+			t.Fatalf("run took %d model calls, want 2 (one per step, no retry)", calls)
+		}
+		if runs.SessionLeaseActive(ctx, "sess-1") {
+			t.Fatal("lease still active after suspension")
+		}
+		for ev, err := range conv.Attach(ctx, runs.runID, 0) {
+			if err != nil {
+				t.Fatalf("attach: %v", err)
+			}
+			if _, failed := ev.(types.TerminalError); failed {
+				t.Fatalf("log holds a failure terminal for a preempted run: %v", ev)
+			}
+		}
+	})
+
+	t.Run("streams.stream-buffer-bound", func(t *testing.T) {
+		const backlog = DefaultStreamBuffer + 10
+		taken := make(chan struct{}, backlog)
+		rt := &stallTestRT{}
+		next := 0
+		step := func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+			if next >= backlog {
+				return st, nil, runtime.DoneStatus, nil
+			}
+			i := next
+			next++
+			if i >= DefaultStreamBuffer {
+				// The handoff is full: the worker must block until
+				// the consumer takes one tuple, never drop or
+				// overwrite.
+				<-taken
+			}
+			return st, []types.Event{types.TextDelta{Turn: 0, Delta: fmt.Sprintf("d%d", i)}}, runtime.Continue, nil
+		}
+		rt.steps = make([]func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error), backlog+1)
+		for i := range rt.steps {
+			rt.steps[i] = step
+		}
+		conv, _, _ := stallConversation(t, rt)
+		ctx := principalCtx(context.Background())
+
+		var got []string
+		for ev, err := range conv.Send(ctx, "sess-1", userMsg("hi")) {
+			if err != nil {
+				t.Fatalf("stream: %v", err)
+			}
+			if d, ok := ev.(types.TextDelta); ok {
+				got = append(got, d.Delta)
+				taken <- struct{}{}
+			}
+		}
+		if len(got) != backlog {
+			t.Fatalf("got %d deltas, want %d with nothing dropped", len(got), backlog)
+		}
+		for i, d := range got {
+			if d != fmt.Sprintf("d%d", i) {
+				t.Fatalf("delta %d = %q, want d%d (order preserved)", i, d, i)
+			}
+		}
+	})
+
+	t.Run("detached-delivery-does-not-retain-backlog", func(t *testing.T) {
+		rt := &stallTestRT{}
+		rt.steps = []func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error){
+			func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+				return st, []types.Event{
+					types.TextDelta{Turn: 0, Delta: "one"},
+					types.TextDelta{Turn: 0, Delta: "two"},
+					types.TextDelta{Turn: 0, Delta: "three"},
+				}, runtime.Continue, nil
+			},
+		}
+		conv, runs, _ := stallConversation(t, rt, OnStall(StallDetach))
+		ctx := principalCtx(context.Background())
+
+		streamDone := make(chan struct{})
 		go func() {
-			<-stalled
-			tk <- time.Time{}
-			tk <- time.Time{}
-			<-fired
-			close(rt.gate)
-			close(preempted)
+			defer close(streamDone)
+			n := 0
+			for range conv.Send(ctx, "sess-1", userMsg("hi")) {
+				n++
+				if n == 1 {
+					// The consumer walks away: retention stops, the run
+					// keeps recording into its log.
+					return
+				}
+			}
 		}()
 		<-streamDone
 
-		// The stall preempted the run instead of re-running the turn: the
-		// model call happened once per turn and the run holds no lease.
-		if calls := rt.calls(); calls != 2 {
-			t.Fatalf("run took %d model calls, want 2 (one per turn, no retry)", calls)
+		stallWait(t, "run end", func() bool {
+			return !runs.SessionLeaseActive(ctx, "sess-1")
+		})
+		runs.mu.Lock()
+		suspended := len(runs.suspended)
+		runs.mu.Unlock()
+		if suspended != 0 {
+			t.Fatalf("run suspended %d times, want 0", suspended)
 		}
-		if got := g.Preempts(); got != 1 {
-			t.Fatalf("preempts = %d, want 1", got)
+		var seen []types.Event
+		dones := 0
+		for ev, err := range conv.Attach(ctx, runs.runID, 0) {
+			if err != nil {
+				t.Fatalf("attach: %v", err)
+			}
+			if _, ok := ev.(types.Done); ok {
+				dones++
+			}
+			seen = append(seen, ev)
+		}
+		if len(seen) != 4 || dones != 1 {
+			t.Fatalf("log holds %d events with %d dones, want the three deltas and one Done", len(seen), dones)
+		}
+	})
+
+	t.Run("stream-stall-does-not-preempt-waiting-consumer", func(t *testing.T) {
+		const stall = 10 * time.Millisecond
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		rt := &stallTestRT{}
+		rt.steps = []func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error){
+			func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+				return st, []types.Event{types.TextDelta{Turn: 0, Delta: "one"}}, runtime.Continue, nil
+			},
+			func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+				// The producer stays silent until the release, so the
+				// consumer spends the whole stall limit waiting for output
+				// rather than holding an event.
+				close(entered)
+				<-release
+				return st, []types.Event{types.TextDelta{Turn: 1, Delta: "two"}}, runtime.Continue, nil
+			},
+			func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+				return st, nil, runtime.DoneStatus, nil
+			},
+		}
+		runs := &stallRuns{MemoryRuns: stores.NewMemoryRuns()}
+		events := stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))
+		log := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
+		stack := &Stack{
+			stores: stores.Stores{SessionLog: log},
+			limits: map[string]types.RunLimits{"chat": {ConsumerStall: stall}},
+		}
+		conv, err := NewConversation(stack, "chat", rt,
+			WithConversationRuns(runs),
+			WithConversationEventLog(events),
+			WithConversationCheckpoints(stores.NewMemoryCheckpoints()),
+		)
+		if err != nil {
+			t.Fatalf("new conversation: %v", err)
+		}
+		ctx := principalCtx(context.Background())
+
+		streamDone := make(chan struct{})
+		var got []types.Event
+		go func() {
+			defer close(streamDone)
+			for ev, err := range conv.Send(ctx, "sess-1", userMsg("hi")) {
+				if err != nil {
+					t.Errorf("stream: %v", err)
+					return
+				}
+				got = append(got, ev)
+			}
+		}()
+		<-entered
+		// The consumer keeps taking events past the stall limit; a run
+		// that never stops reading is never stalled.
+		time.Sleep(4 * stall)
+		close(release)
+		<-streamDone
+
+		deltas, dones := 0, 0
+		for _, ev := range got {
+			switch ev.(type) {
+			case types.TextDelta:
+				deltas++
+			case types.Done:
+				dones++
+			case types.Suspended:
+				t.Fatalf("run suspended while the consumer kept draining: %v", ev)
+			}
+		}
+		if deltas != 2 || dones != 1 {
+			t.Fatalf("got %d deltas and %d dones, want 2 and 1", deltas, dones)
+		}
+		runs.mu.Lock()
+		suspended := len(runs.suspended)
+		runs.mu.Unlock()
+		if suspended != 0 {
+			t.Fatalf("run suspended %d times, want 0", suspended)
+		}
+	})
+
+	t.Run("stream-stall-does-not-preempt-silent-tool", func(t *testing.T) {
+		const stall = 10 * time.Millisecond
+		quiet := make(chan struct{})
+		rt := &stallTestRT{}
+		rt.steps = []func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error){
+			func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+				return st, []types.Event{types.TextDelta{Turn: 0, Delta: "one"}}, runtime.Continue, nil
+			},
+			func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+				// A silent step longer than the stall limit: waiting for
+				// producer output is not a consumer stall.
+				close(quiet)
+				time.Sleep(4 * stall)
+				return st, nil, runtime.DoneStatus, nil
+			},
+		}
+		runs := &stallRuns{MemoryRuns: stores.NewMemoryRuns()}
+		events := stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))
+		log := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
+		stack := &Stack{
+			stores: stores.Stores{SessionLog: log},
+			limits: map[string]types.RunLimits{"chat": {ConsumerStall: stall}},
+		}
+		conv, err := NewConversation(stack, "chat", rt,
+			WithConversationRuns(runs),
+			WithConversationEventLog(events),
+			WithConversationCheckpoints(stores.NewMemoryCheckpoints()),
+		)
+		if err != nil {
+			t.Fatalf("new conversation: %v", err)
+		}
+		ctx := principalCtx(context.Background())
+		n := 0
+		for ev, err := range conv.Send(ctx, "sess-1", userMsg("hi")) {
+			if err != nil {
+				t.Fatalf("stream: %v", err)
+			}
+			n++
+			if _, ok := ev.(types.Done); ok && n < 2 {
+				t.Fatal("Done delivered without the delta")
+			}
+		}
+		<-quiet
+		if n != 2 {
+			t.Fatalf("got %d events, want the delta and the Done", n)
+		}
+		runs.mu.Lock()
+		suspended := len(runs.suspended)
+		runs.mu.Unlock()
+		if suspended != 0 {
+			t.Fatalf("run suspended %d times, want 0", suspended)
+		}
+	})
+
+	t.Run("early-break-applies-stall-action-at-zero-limit", func(t *testing.T) {
+		rt := &stallTestRT{}
+		rt.steps = []func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error){
+			func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+				return st, []types.Event{types.TextDelta{Turn: 0, Delta: "one"}}, runtime.Continue, nil
+			},
+			func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+				<-ctx.Done()
+				return st, nil, runtime.Continue, &types.SuspendError{Reason: types.Preempted}
+			},
+		}
+		conv, runs, _ := stallConversation(t, rt)
+		ctx := principalCtx(context.Background())
+
+		streamDone := make(chan struct{})
+		go func() {
+			defer close(streamDone)
+			n := 0
+			for range conv.Send(ctx, "sess-1", userMsg("hi")) {
+				n++
+				if n == 1 {
+					return
+				}
+			}
+		}()
+		<-streamDone
+
+		stallWait(t, "preemption persisted", func() bool {
+			runs.mu.Lock()
+			defer runs.mu.Unlock()
+			return len(runs.suspended) == 1
+		})
+		if runs.SessionLeaseActive(ctx, "sess-1") {
+			t.Fatal("lease still active after abandonment preemption")
 		}
 	})
 }

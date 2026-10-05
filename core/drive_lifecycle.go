@@ -358,6 +358,11 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 			// cancelled cancellable work; deliver nothing further.
 			return
 		}
+		var carried types.Done
+		hasCarried := false
+		if status == runtime.DoneStatus {
+			evs, carried, hasCarried = splitStepDone(evs)
+		}
 		for _, e := range evs {
 			if !yield(e, nil) {
 				return
@@ -404,6 +409,12 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 			return
 		case runtime.DoneStatus:
 			next, evs, again, err := lc.finishTurn(sctx, st)
+			if hasCarried && !again {
+				if lc.ledger != nil {
+					carried.Cost = lc.ledger.TreeCost()
+				}
+				evs = withCarriedDone(evs, carried)
+			}
 			for _, e := range evs {
 				if !yield(e, nil) {
 					return
@@ -444,6 +455,31 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 			}
 		}
 	}
+}
+
+// splitStepDone lifts a Done the step returned ahead of the terminal
+// handling, so the run yields that one Done instead of the driver appending
+// a second terminal after it.
+func splitStepDone(evs []types.Event) ([]types.Event, types.Done, bool) {
+	for i, e := range evs {
+		if d, ok := e.(types.Done); ok {
+			rest := append(evs[:i:i], evs[i+1:]...)
+			return rest, d, true
+		}
+	}
+	return evs, types.Done{}, false
+}
+
+// withCarriedDone puts the carried Done in place of the terminal the
+// turn end produced, or appends it when the turn end emitted none.
+func withCarriedDone(evs []types.Event, d types.Done) []types.Event {
+	for i := len(evs) - 1; i >= 0; i-- {
+		if _, ok := evs[i].(types.Done); ok {
+			evs[i] = d
+			return evs
+		}
+	}
+	return append(evs, d)
 }
 
 // nextPhaseIsModel reports whether the state a step returned carries the
@@ -508,6 +544,17 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 			return nil, aerr
 		}
 		env.Approvals = aps
+		if len(aps) > 0 {
+			ap := aps[0]
+			payload = permission.ApprovalRequest{
+				Tool:        lc.specFor(r, ap.Call.Name),
+				Call:        ap.Call,
+				Fingerprint: ap.Fingerprint,
+				Risk:        ap.Risk,
+				Reversible:  ap.Reversible,
+				Eligible:    ap.Eligible,
+			}
+		}
 	}
 	data, err := encodeCheckpoint(env)
 	if err != nil {
@@ -540,9 +587,26 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 	return types.Suspended{Token: token, Reason: reason, Payload: payload, WakeAt: wakeAt}, nil
 }
 
-// approvalsFor builds one persisted approval request per approval-controlled
-// pending call. A missing tool spec or an unresolvable policy refuses the
-// suspension instead of persisting a partial approvals list.
+// specFor resolves one registered tool spec the way approvalsFor does:
+// the lifecycle lookup first, then the run's carried tools.
+func (lc *Lifecycle) specFor(r runtime.AgentRun, name string) types.ToolSpec {
+	if lc.toolLookup != nil {
+		if s, ok := lc.toolLookup(name); ok {
+			return s
+		}
+	}
+	for _, t := range r.Tools {
+		if s := t.Spec(); s.Name == name {
+			return s
+		}
+	}
+	return types.ToolSpec{}
+}
+
+// approvalsFor builds the persisted approval request for the active ask,
+// the head of the pending queue. A missing tool spec or an unresolvable
+// policy refuses the suspension instead of persisting a partial approvals
+// list.
 func (lc *Lifecycle) approvalsFor(ctx context.Context, r runtime.AgentRun, st runtime.State) ([]checkpointApproval, error) {
 	specs := make(map[string]types.ToolSpec, len(r.Tools))
 	for _, t := range r.Tools {
@@ -552,8 +616,11 @@ func (lc *Lifecycle) approvalsFor(ctx context.Context, r runtime.AgentRun, st ru
 	if lookup == nil {
 		lookup = func(name string) (types.ToolSpec, bool) { s, ok := specs[name]; return s, ok }
 	}
-	aps := make([]checkpointApproval, 0, len(st.Pending))
-	for _, call := range st.Pending {
+	aps := make([]checkpointApproval, 0, 1)
+	if len(st.Pending) == 0 {
+		return nil, nil
+	}
+	for _, call := range st.Pending[:1] {
 		spec, ok := lookup(call.Name)
 		if !ok {
 			return nil, fmt.Errorf("%w: pending call %q has no registered tool", types.ErrCheckpointIncompatible, call.Name)
@@ -566,7 +633,10 @@ func (lc *Lifecycle) approvalsFor(ctx context.Context, r runtime.AgentRun, st ru
 		if err != nil {
 			return nil, fmt.Errorf("%w: resolve approval policy: %s", types.ErrApproverNotEligible, err)
 		}
-		elig := permission.Eligibility{Scopes: []string{pol.Scope}, Quorum: pol.Quorum}
+		elig := permission.Eligibility{Quorum: pol.Quorum}
+		if pol.Scope != "" {
+			elig.Scopes = []string{pol.Scope}
+		}
 		if pol.SeparateFromOriginator {
 			elig.ExcludeSubjects = []string{lc.originator.Subject}
 		}
