@@ -5,6 +5,7 @@ import (
 	"errors"
 	"iter"
 
+	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -16,13 +17,12 @@ import (
 // without messages refuses with ErrEmptyHistory.
 func (c *conversation) Continue(ctx context.Context, sessionID string) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
-		p, ok := PrincipalFrom(ctx)
-		if !ok {
-			yield(nil, types.ErrNoPrincipal)
+		if err := requirePrincipal(ctx, c.allowAnonymous); err != nil {
+			yield(nil, err)
 			return
 		}
-		if h, ok := c.runs.(stores.SessionLeaseHolder); ok && h.SessionLeaseActive(ctx, sessionID) {
-			yield(nil, types.ErrRunActive)
+		if err := c.checkAnonymousSession(ctx, sessionID); err != nil {
+			yield(nil, err)
 			return
 		}
 		ctrl := stores.ControlAgent
@@ -38,25 +38,7 @@ func (c *conversation) Continue(ctx context.Context, sessionID string) iter.Seq2
 			yield(nil, types.ErrSessionHandedOff)
 			return
 		}
-		hist, err := c.load(ctx, sessionID)
-		if err != nil {
-			yield(nil, err)
-			return
-		}
-		if len(hist.Messages) == 0 {
-			yield(nil, types.ErrEmptyHistory)
-			return
-		}
 		key, _ := IdempotencyKey(ctx)
-		if key != "" {
-			if run, berr := c.runs.ByOperation(ctx, p.Tenant, key); berr == nil {
-				c.reattach(ctx, run.RunID, yield)
-				return
-			} else if !errors.Is(berr, stores.ErrRunNotFound) {
-				yield(nil, berr)
-				return
-			}
-		}
 		runID := c.nextRunID()
 		lease, serr := c.runs.Start(ctx, stores.Run{
 			SessionID:   sessionID,
@@ -74,6 +56,20 @@ func (c *conversation) Continue(ctx context.Context, sessionID string) iter.Seq2
 			return
 		}
 		c.track(sessionID, runID)
+		hist, err := c.load(ctx, sessionID)
+		if err == nil && len(hist.Messages) == 0 {
+			err = types.ErrEmptyHistory
+		}
+		if err != nil {
+			lc := NewLifecycle(WithLifecycleRuns(c.runs, lease), WithLifecycleApprovalPolicy(c.policySrc), WithLifecycleToolSpecs(c.toolSpecs))
+			if ferr := lc.finishRun(ctx, runtime.State{}, stores.Failed, nil); ferr != nil {
+				yield(nil, ferr)
+				return
+			}
+			c.untrack(sessionID)
+			yield(nil, err)
+			return
+		}
 		defer c.untrack(sessionID)
 		c.stream(ctx, lease, sessionID, nil, yield)
 	}

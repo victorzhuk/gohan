@@ -12,7 +12,6 @@ import (
 	"github.com/victorzhuk/gohan/core/types"
 )
 
-
 // RunInfoSource reports the run info in ctx. Consumer-owned: the harness
 // injects the seam's extractor; the store never reads identity context
 // itself.
@@ -144,7 +143,6 @@ func (s *MemoryCheckpoints) PendingInput(ctx context.Context, runID string) (Che
 	rec := s.toks[t]
 	return cloneCheckpoint(rec.cp), cloneResumeInput(rec.input), nil
 }
-
 
 func (s *MemoryCheckpoints) Peek(ctx context.Context, t types.ResumeToken) (Checkpoint, error) {
 	s.mu.Lock()

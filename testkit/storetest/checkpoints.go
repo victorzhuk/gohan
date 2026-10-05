@@ -332,16 +332,18 @@ func CheckpointsResumer(t *testing.T, factory CheckpointResumerFactory) {
 			t.Fatalf("UpdatePending: %v", err)
 		}
 		mutations := map[string]func(*Checkpoint){
-			"session":          func(c *Checkpoint) { c.SessionID = "other" },
-			"flow":             func(c *Checkpoint) { c.Flow = "other" },
-			"backend":          func(c *Checkpoint) { c.Backend = "other" },
-			"backend version":  func(c *Checkpoint) { c.BackendVersion = "other" },
-			"reason":           func(c *Checkpoint) { c.Reason = types.SuspendReason("other") },
-			"originator scope": func(c *Checkpoint) { c.Originator.Scopes = append(append([]string(nil), c.Originator.Scopes...), "extra") },
-			"data":             func(c *Checkpoint) { c.Data = []byte(`{"state":"v9"}`) },
-			"workspace":        func(c *Checkpoint) { c.Workspace = "other" },
-			"child":            func(c *Checkpoint) { c.Child = types.ResumeToken("cp_other") },
-			"expiry":           func(c *Checkpoint) { c.ExpiresAt = c.ExpiresAt.Add(time.Minute) },
+			"session":         func(c *Checkpoint) { c.SessionID = "other" },
+			"flow":            func(c *Checkpoint) { c.Flow = "other" },
+			"backend":         func(c *Checkpoint) { c.Backend = "other" },
+			"backend version": func(c *Checkpoint) { c.BackendVersion = "other" },
+			"reason":          func(c *Checkpoint) { c.Reason = types.SuspendReason("other") },
+			"originator scope": func(c *Checkpoint) {
+				c.Originator.Scopes = append(append([]string(nil), c.Originator.Scopes...), "extra")
+			},
+			"data":      func(c *Checkpoint) { c.Data = []byte(`{"state":"v9"}`) },
+			"workspace": func(c *Checkpoint) { c.Workspace = "other" },
+			"child":     func(c *Checkpoint) { c.Child = types.ResumeToken("cp_other") },
+			"expiry":    func(c *Checkpoint) { c.ExpiresAt = c.ExpiresAt.Add(time.Minute) },
 		}
 		for name, mutate := range mutations {
 			stale := moved

@@ -19,9 +19,9 @@ func (s *MemoryRuns) Heartbeat(ctx context.Context, l Lease) (Lease, error) {
 	}
 	now := s.now()
 
+	rec.run.Heartbeat = now
 	rec.lease = Lease{RunID: rec.run.RunID, Generation: l.Generation, Expires: now.Add(rec.ttl)}
 	return rec.lease, nil
-
 }
 
 // Reclaim takes a fresh lease on a run that Stale listed: state Running or

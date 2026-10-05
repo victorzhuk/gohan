@@ -61,7 +61,40 @@ func TestRunsLeasesStaleGeneration(t *testing.T) {
 		t.Fatalf("Finish on reclaimed lease err = %v", err)
 	}
 
+}
 
+func TestHeartbeatRefreshesStaleness(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	s := NewMemoryRuns(WithMemoryRunClock(func() time.Time { return now }))
+	ctx := context.Background()
+
+	l, err := s.Start(ctx, Run{RunID: "run-hb1", SessionID: "s-hb1"}, LeaseTTL)
+	if err != nil {
+		t.Fatalf("Start err = %v", err)
+	}
+
+	now = now.Add(HeartbeatEvery)
+	next, err := s.Heartbeat(ctx, l)
+	if err != nil {
+		t.Fatalf("Heartbeat err = %v", err)
+	}
+	if next.Generation != l.Generation {
+		t.Fatalf("Heartbeat generation = %d, want same %d", next.Generation, l.Generation)
+	}
+	if !next.Expires.After(l.Expires) {
+		t.Fatalf("Heartbeat expiry %v not after %v", next.Expires, l.Expires)
+	}
+
+	stale, err := s.Stale(ctx, LeaseTTL, 10)
+	if err != nil {
+		t.Fatalf("Stale err = %v", err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("Stale listed %d runs after heartbeat, want 0", len(stale))
+	}
+	if err := s.Finish(ctx, next, Finished, nil, ""); err != nil {
+		t.Fatalf("Finish on refreshed lease err = %v", err)
+	}
 }
 
 func TestRunsLeases(t *testing.T) {

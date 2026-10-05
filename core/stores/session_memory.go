@@ -564,4 +564,3 @@ func (s *MemorySessionLog) SetSharedStateMeta(ctx context.Context, sessionID str
 	rec.state.version = expectedVersion + 1
 	return rec.state.version, nil
 }
-

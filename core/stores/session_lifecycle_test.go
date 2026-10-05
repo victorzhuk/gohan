@@ -193,7 +193,7 @@ func TestSessionLifecycle(t *testing.T) {
 			t.Fatalf("post-fork writes share a message id %s; sessions must be isolated", parentHist.Messages[2].ID)
 		}
 	})
-	t.Run("identity.owner-requires-authorized-metadata-access", func(t *testing.T) {
+	t.Run("owner requires authorized metadata access", func(t *testing.T) {
 		now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 		store, _, _ := sessionTestStore(&now)
 		if _, err := store.Append(withTestPrincipal(context.Background(), ownerTenantA), "owner", 0, types.Message{Role: types.RoleUser}); err != nil {

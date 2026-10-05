@@ -13,8 +13,8 @@ import (
 // refuses with ErrRunNotActive and the client falls back to Send; a
 // mailbox at MaxPendingSignals refuses with ErrMailboxFull.
 func (c *conversation) Steer(ctx context.Context, sessionID string, msg Message) error {
-	if _, ok := PrincipalFrom(ctx); !ok {
-		return types.ErrNoPrincipal
+	if err := requirePrincipal(ctx, c.allowAnonymous); err != nil {
+		return err
 	}
 	if err := c.checkSteerOwner(ctx, sessionID); err != nil {
 		return err

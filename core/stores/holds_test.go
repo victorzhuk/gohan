@@ -66,7 +66,7 @@ func TestSessionHold(t *testing.T) {
 			t.Fatalf("audit kinds = %v, want [hold_set hold_cleared]", kinds)
 		}
 	})
-	t.Run("stores.hold-audit-failure-is-atomic", func(t *testing.T) {
+	t.Run("hold audit failure is atomic", func(t *testing.T) {
 		now := start
 		audit := NewMemoryAuditLog()
 		store, _, _ := sessionTestStore(&now)

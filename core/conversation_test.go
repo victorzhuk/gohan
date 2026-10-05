@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"iter"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -63,12 +64,10 @@ type runsFixture struct {
 }
 
 func (f *runsFixture) Start(ctx context.Context, r stores.Run, ttl time.Duration) (stores.Lease, error) {
-	f.mu.Lock()
-	f.starts++
-	f.mu.Unlock()
 	l, err := f.MemoryRuns.Start(ctx, r, ttl)
 	if err == nil {
 		f.mu.Lock()
+		f.starts++
 		f.onSess[r.SessionID] = r.RunID
 		f.mu.Unlock()
 	}
@@ -160,6 +159,121 @@ func collectStream(seq iter.Seq2[types.Event, error]) streamResult {
 		res.evs = append(res.evs, e)
 	}
 	return res
+}
+
+// failingEventLog fails the failAt-th Append.
+type failingEventLog struct {
+	stores.EventLog
+	failAt int
+	n      int
+}
+
+var errRecordFailed = errors.New("event log unavailable")
+
+func (l *failingEventLog) Append(ctx context.Context, runID string, e stores.Event) error {
+	l.n++
+	if l.n == l.failAt {
+		return errRecordFailed
+	}
+	return l.EventLog.Append(ctx, runID, e)
+}
+
+// finishCountRuns counts the Finish calls the conversation makes.
+type finishCountRuns struct {
+	*runsFixture
+	finishes int
+}
+
+func (f *finishCountRuns) Finish(ctx context.Context, l stores.Lease, st stores.RunState, uncertain []types.CallKey, ref string) error {
+	f.finishes++
+	return f.MemoryRuns.Finish(ctx, l, st, uncertain, ref)
+}
+
+func convWithLog(t *testing.T, rt *convRT, runs stores.Runs, log stores.EventLog) Conversation {
+	t.Helper()
+	stack, err := Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	stack.stores = stores.Stores{SessionLog: stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))}
+	conv, err := NewConversation(stack, "chat", rt,
+		WithConversationRuns(runs),
+		WithConversationEventLog(log),
+	)
+	if err != nil {
+		t.Fatalf("new conversation: %v", err)
+	}
+	return conv
+}
+
+func TestConversationStreamEventOrdering(t *testing.T) {
+	ctx := principalCtx(context.Background())
+	sid := "sess-1"
+
+	t.Run("streams.error-tuple-terminal", func(t *testing.T) {
+		log := &failingEventLog{EventLog: stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now)), failAt: 1}
+		runs := &runsFixture{MemoryRuns: stores.NewMemoryRuns(stores.WithMemoryRunClock(time.Now)), onSess: map[string]string{}}
+		conv := convWithLog(t, &convRT{steps: 0}, runs, log)
+		var tuples int
+		for ev, err := range conv.Send(ctx, sid, userMsg("hi")) {
+			tuples++
+			if tuples > 1 {
+				t.Fatalf("tuple %d after the terminal error tuple: ev=%v err=%v", tuples, ev, err)
+			}
+			if err == nil {
+				t.Fatalf("delivered %+v after the append failure; want only the error tuple", ev)
+			}
+			if !errors.Is(err, errRecordFailed) {
+				t.Fatalf("err = %v, want the record failure", err)
+			}
+		}
+		if tuples != 1 {
+			t.Fatalf("tuples = %d, want exactly the one error tuple", tuples)
+		}
+	})
+
+	t.Run("guard blocked append failure ends the stream", func(t *testing.T) {
+		log := &failingEventLog{EventLog: stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now)), failAt: 1}
+		runs := &runsFixture{MemoryRuns: stores.NewMemoryRuns(stores.WithMemoryRunClock(time.Now)), onSess: map[string]string{}}
+		rt := &convRT{startErr: &types.GuardBlockedError{Stage: types.StageOutput, Reason: "blocked"}}
+		conv := convWithLog(t, rt, runs, log)
+		var tuples int
+		for ev, err := range conv.Send(ctx, sid, userMsg("hi")) {
+			tuples++
+			if tuples > 1 {
+				t.Fatalf("tuple %d after the terminal error tuple: ev=%v err=%v", tuples, ev, err)
+			}
+			if ev != nil {
+				t.Fatalf("delivered %+v after the append failure; want only the error tuple", ev)
+			}
+			if !errors.Is(err, errRecordFailed) {
+				t.Fatalf("err = %v, want the record failure", err)
+			}
+		}
+		if tuples != 1 {
+			t.Fatalf("tuples = %d, want exactly the one error tuple", tuples)
+		}
+	})
+
+	t.Run("lifecycle owns the terminal transition", func(t *testing.T) {
+		inner := &runsFixture{MemoryRuns: stores.NewMemoryRuns(stores.WithMemoryRunClock(time.Now)), onSess: map[string]string{}}
+		runs := &finishCountRuns{runsFixture: inner}
+		log := stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))
+		rt := &convRT{startErr: errors.New("model down")}
+		conv := convWithLog(t, rt, runs, log)
+		var got error
+		for _, err := range conv.Send(ctx, sid, userMsg("hi")) {
+			if err != nil {
+				got = err
+			}
+		}
+		if got == nil || !strings.Contains(got.Error(), "model down") {
+			t.Fatalf("err = %v, want the run failure", got)
+		}
+		if runs.finishes != 1 {
+			t.Fatalf("Finish called %d times, want exactly the lifecycle's one", runs.finishes)
+		}
+	})
 }
 
 func TestConversationSend(t *testing.T) {

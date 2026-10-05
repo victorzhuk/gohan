@@ -73,8 +73,9 @@ func TestRunsState(t *testing.T) {
 		}
 		before := runState(t, s, ctx, "op1")
 		_, err := startRun(s, ctx, "s1", "op1")
-		if !errors.Is(err, types.ErrRunActive) {
-			t.Fatalf("second Start err = %v, want ErrRunActive", err)
+		var dup OperationExistsError
+		if !errors.As(err, &dup) || dup.RunID != "run-s1" {
+			t.Fatalf("second Start err = %v, want OperationExistsError{run-s1}", err)
 		}
 		if after := runState(t, s, ctx, "op1"); after.State != before.State || !after.StartedAt.Equal(before.StartedAt) {
 			t.Fatalf("state changed on refused Start: %+v -> %+v", before, after)

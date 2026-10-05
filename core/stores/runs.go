@@ -79,7 +79,6 @@ type Lease struct {
 	Expires    time.Time
 }
 
-
 // Runs persists run rows and their leases. Heartbeat, Reclaim, the signal
 // mailbox (Signal, Drain) and the notice outbox (Notices, AckNotice) are
 // sibling concerns layered on the same store.
@@ -149,7 +148,6 @@ type MemoryRuns struct {
 	noticeSeq uint64
 }
 
-
 type MemoryRunOption func(*MemoryRuns)
 
 // WithMemoryRunClock replaces the store clock. Leases, staleness and the
@@ -212,15 +210,17 @@ func (s *MemoryRuns) Start(ctx context.Context, r Run, ttl time.Duration) (Lease
 	defer s.mu.Unlock()
 	tenant := s.tenant(ctx)
 	now := s.now()
-	if runID, ok := s.onSess[r.SessionID]; ok {
-		if rec := s.runs[runID]; rec != nil && rec.active(now) {
-			return Lease{}, fmt.Errorf("%w: run %s", types.ErrRunActive, runID)
-		}
-	}
+	// A duplicate operation id wins over the active-session refusal: the
+	// caller reattaches to the recorded run instead of being refused.
 	opKey := tenant + "\x00" + r.OperationID
 	if r.OperationID != "" {
 		if runID, ok := s.byOp[opKey]; ok {
 			return Lease{}, OperationExistsError{RunID: runID}
+		}
+	}
+	if runID, ok := s.onSess[r.SessionID]; ok {
+		if rec := s.runs[runID]; rec != nil && rec.active(now) {
+			return Lease{}, fmt.Errorf("%w: run %s", types.ErrRunActive, runID)
 		}
 	}
 	generation, err := s.nextGenerationLocked()

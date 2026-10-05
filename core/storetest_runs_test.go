@@ -18,25 +18,25 @@ type runsBinding struct {
 
 func (b runsBinding) Start(ctx context.Context, r storetest.RunRow, ttl time.Duration) (storetest.Lease, error) {
 	l, err := b.s.Start(ctx, toStoreRun(r), ttl)
-	return storetest.Lease{RunID: l.RunID}, err
+	return storetest.Lease{RunID: l.RunID, Generation: l.Generation}, err
 }
 
 func (b runsBinding) Heartbeat(ctx context.Context, l storetest.Lease) (storetest.Lease, error) {
-	got, err := b.s.Heartbeat(ctx, stores.Lease{RunID: l.RunID})
-	return storetest.Lease{RunID: got.RunID}, err
+	got, err := b.s.Heartbeat(ctx, stores.Lease{RunID: l.RunID, Generation: l.Generation})
+	return storetest.Lease{RunID: got.RunID, Generation: got.Generation}, err
 }
 
 func (b runsBinding) Suspend(ctx context.Context, l storetest.Lease, token types.ResumeToken) error {
-	return b.s.Suspend(ctx, stores.Lease{RunID: l.RunID}, token)
+	return b.s.Suspend(ctx, stores.Lease{RunID: l.RunID, Generation: l.Generation}, token)
 }
 
 func (b runsBinding) Resuming(ctx context.Context, runID string, ttl time.Duration) (storetest.Lease, error) {
 	l, err := b.s.Resuming(ctx, runID, ttl)
-	return storetest.Lease{RunID: l.RunID}, err
+	return storetest.Lease{RunID: l.RunID, Generation: l.Generation}, err
 }
 
 func (b runsBinding) Finish(ctx context.Context, l storetest.Lease, state storetest.RunState, uncertain []types.CallKey, resultRef string) error {
-	return b.s.Finish(ctx, stores.Lease{RunID: l.RunID}, stores.RunState(state), uncertain, resultRef)
+	return b.s.Finish(ctx, stores.Lease{RunID: l.RunID, Generation: l.Generation}, stores.RunState(state), uncertain, resultRef)
 }
 
 func (b runsBinding) ByOperation(ctx context.Context, tenant, operationID string) (storetest.RunRow, error) {
@@ -61,7 +61,7 @@ func (b runsBinding) Stale(ctx context.Context, staleAfter time.Duration, limit 
 
 func (b runsBinding) Reclaim(ctx context.Context, r storetest.RunRow, ttl time.Duration) (storetest.Lease, error) {
 	l, err := b.s.Reclaim(ctx, toStoreRun(r), ttl)
-	return storetest.Lease{RunID: l.RunID}, err
+	return storetest.Lease{RunID: l.RunID, Generation: l.Generation}, err
 }
 
 func (b runsBinding) Signal(ctx context.Context, runID string, s storetest.Signal) error {
@@ -69,7 +69,7 @@ func (b runsBinding) Signal(ctx context.Context, runID string, s storetest.Signa
 }
 
 func (b runsBinding) Drain(ctx context.Context, l storetest.Lease) ([]storetest.Signal, error) {
-	sigs, err := b.s.Drain(ctx, stores.Lease{RunID: l.RunID})
+	sigs, err := b.s.Drain(ctx, stores.Lease{RunID: l.RunID, Generation: l.Generation})
 	if err != nil {
 		return nil, err
 	}

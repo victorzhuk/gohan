@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
@@ -44,15 +45,19 @@ var (
 )
 
 type conversation struct {
-	spec     string
-	rt       runtime.Runtime
-	log      stores.SessionLog
-	runs     stores.Runs
-	events   stores.EventLog
-	cps      stores.Checkpoints
-	creds    types.CredentialSource
-	detached bool
-	wall     time.Duration
+	spec      string
+	rt        runtime.Runtime
+	log       stores.SessionLog
+	runs      stores.Runs
+	events    stores.EventLog
+	cps       stores.Checkpoints
+	creds     types.CredentialSource
+	policySrc permission.ApprovalPolicySource
+	toolSpecs func(name string) (types.ToolSpec, bool)
+	detached  bool
+	wall      time.Duration
+
+	allowAnonymous bool
 
 	mu      sync.Mutex
 	live    map[string]string
@@ -96,6 +101,13 @@ func WithConversationEventLog(l stores.EventLog) ConversationOption {
 	return func(c *conversation) { c.events = l }
 }
 
+// WithConversationToolSpecs binds the registered tool-spec lookup a
+// HumanApproval suspension resolves each pending call's declaration
+// through.
+func WithConversationToolSpecs(lookup func(name string) (types.ToolSpec, bool)) ConversationOption {
+	return func(c *conversation) { c.toolSpecs = lookup }
+}
+
 // NewConversation builds the streaming conversation for spec over rt.
 // The flow spec names this constructor agent.NewConversation; no agent
 // package exists in the M0 package table, so the driver freezes the name.
@@ -104,6 +116,8 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 	if stack != nil {
 		c.log = stack.stores.SessionLog
 		c.creds = stack.credentials
+		c.policySrc = stack.approvalPolicy
+		c.allowAnonymous = stack.allowAnonymous
 		if l, ok := stack.Limits(spec); ok {
 			c.wall = l.MaxWallClock
 		}
@@ -123,18 +137,19 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 	return c, nil
 }
 
-// Send appends the user message and streams one run. A live lease refuses
-// before anything is appended, a session under human control costs no run,
-// and an idempotency key reattaches to the recorded run's events.
+// Send appends the user message and streams one run. The run's lease is
+// acquired before history loads or the input is appended, so a refused
+// send costs no append and a duplicate operation id reattaches to the
+// recorded run's events. A session under human control appends without
+// acquiring a run.
 func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
-		p, ok := PrincipalFrom(ctx)
-		if !ok {
-			yield(nil, types.ErrNoPrincipal)
+		if err := requirePrincipal(ctx, c.allowAnonymous); err != nil {
+			yield(nil, err)
 			return
 		}
-		if h, ok := c.runs.(stores.SessionLeaseHolder); ok && h.SessionLeaseActive(ctx, sessionID) {
-			yield(nil, types.ErrRunActive)
+		if err := c.checkAnonymousSession(ctx, sessionID); err != nil {
+			yield(nil, err)
 			return
 		}
 		// The control state is read before Runs.Start, or a session under
@@ -148,12 +163,12 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 			}
 			ctrl = v
 		}
-		hist, err := c.load(ctx, sessionID)
-		if err != nil {
-			yield(nil, err)
-			return
-		}
 		if ctrl == stores.ControlHuman {
+			hist, err := c.load(ctx, sessionID)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
 			if _, aerr := c.log.Append(ctx, sessionID, hist.Version, msg); aerr != nil {
 				yield(nil, aerr)
 				return
@@ -162,19 +177,6 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 			return
 		}
 		key, _ := IdempotencyKey(ctx)
-		if key != "" {
-			if run, berr := c.runs.ByOperation(ctx, p.Tenant, key); berr == nil {
-				c.reattach(ctx, run.RunID, yield)
-				return
-			} else if !errors.Is(berr, stores.ErrRunNotFound) {
-				yield(nil, berr)
-				return
-			}
-		}
-		if _, aerr := c.log.Append(ctx, sessionID, hist.Version, msg); aerr != nil {
-			yield(nil, aerr)
-			return
-		}
 		runID := c.nextRunID()
 		lease, serr := c.runs.Start(ctx, stores.Run{
 			SessionID:   sessionID,
@@ -192,6 +194,9 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 			return
 		}
 		c.track(sessionID, runID)
+		if !c.appendInput(ctx, lease, sessionID, msg, yield) {
+			return
+		}
 		if c.detached {
 			runCtx, cancel := detachedContext(ctx, c.wall)
 			go func() {
@@ -206,11 +211,42 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 	}
 }
 
+// appendInput loads the history and appends the acquired run's input under
+// the lease it holds. A load or append failure closes the acquired run as
+// Failed, so the caller never leaks an active lease, and reports false
+// once the terminal error tuple is delivered.
+func (c *conversation) appendInput(ctx context.Context, lease stores.Lease, sessionID string, msg Message, yield func(Event, error) bool) bool {
+	hist, err := c.load(ctx, sessionID)
+	if err == nil {
+		_, err = c.log.Append(ctx, sessionID, hist.Version, msg)
+	}
+	if err != nil {
+		lc := NewLifecycle(WithLifecycleRuns(c.runs, lease), WithLifecycleApprovalPolicy(c.policySrc), WithLifecycleToolSpecs(c.toolSpecs))
+		if ferr := lc.finishRun(ctx, runtime.State{}, stores.Failed, nil); ferr != nil {
+			yield(nil, ferr)
+			return false
+		}
+		c.untrack(sessionID)
+		yield(nil, err)
+		return false
+	}
+	return true
+}
+
+// checkAnonymousSession keeps anonymous invocation off the session face:
+// spec rule 1 permits it only for unowned function flows.
+func (c *conversation) checkAnonymousSession(ctx context.Context, sessionID string) error {
+	if _, ok := PrincipalFrom(ctx); ok {
+		return nil
+	}
+	return fmt.Errorf("anonymous invocation: session %s: %w", sessionID, types.ErrSessionForbidden)
+}
+
 // Cancel posts SignalCancel to the session's run and returns once the runs
 // store shows the run finished or the lease TTL elapsed.
 func (c *conversation) Cancel(ctx context.Context, sessionID string) error {
-	if _, ok := PrincipalFrom(ctx); !ok {
-		return types.ErrNoPrincipal
+	if err := requirePrincipal(ctx, c.allowAnonymous); err != nil {
+		return err
 	}
 	run, live := c.find(ctx, sessionID)
 	if !live {
@@ -255,10 +291,21 @@ func (c *conversation) find(ctx context.Context, sessionID string) (stores.Run, 
 // event in the run's log as it is yielded.
 func (c *conversation) stream(ctx context.Context, lease stores.Lease, sessionID string, input []Message, yield func(Event, error) bool) {
 	defer c.markRunEnded(lease.RunID)
-	lc := NewLifecycle(
+	opts := []LifecycleOption{
 		WithLifecycleRuns(c.runs, lease),
 		WithLifecycleSession(sessionID),
-	)
+		WithLifecycleFlow(c.spec),
+	}
+	if c.policySrc != nil {
+		opts = append(opts, WithLifecycleApprovalPolicy(c.policySrc))
+	}
+	if c.toolSpecs != nil {
+		opts = append(opts, WithLifecycleToolSpecs(c.toolSpecs))
+	}
+	if p, ok := PrincipalFrom(ctx); ok {
+		opts = append(opts, WithLifecycleOriginator(p))
+	}
+	lc := NewLifecycle(opts...)
 	ag := runtime.AgentRun{Input: input}
 	if c.cps != nil {
 		// Suspension persists through the conversation's checkpoints
@@ -270,41 +317,42 @@ func (c *conversation) stream(ctx context.Context, lease stores.Lease, sessionID
 			var gb *types.GuardBlockedError
 			if errors.As(err, &gb) {
 				gbEv := types.GuardBlocked{Stage: gb.Stage, Reason: gb.Reason}
-				c.relay(ctx, lease.RunID, gbEv, yield)
+				if !c.relay(ctx, lease.RunID, gbEv, yield) {
+					return
+				}
 				if !yield(gbEv, nil) {
 					return
 				}
 				doneEv := types.Done{Reason: types.StopGuardBlocked}
-				c.relay(ctx, lease.RunID, doneEv, yield)
-				if !yield(doneEv, nil) {
+				if !c.relay(ctx, lease.RunID, doneEv, yield) {
 					return
 				}
-				c.finishQuietly(ctx, lease)
+				yield(doneEv, nil)
 				return
 			}
 			yield(nil, err)
-			c.finishQuietly(ctx, lease)
 			return
 		}
-		c.relay(ctx, lease.RunID, ev, yield)
+		if !c.relay(ctx, lease.RunID, ev, yield) {
+			return
+		}
 		if !yield(ev, nil) {
 			return
 		}
 	}
 }
 
-// relay records one event in the run's log; a record failure ends the
-// stream, since a caller reattaching later would otherwise miss it.
-func (c *conversation) relay(ctx context.Context, runID string, ev Event, yield func(Event, error) bool) {
+// relay records one event in the run's log before it is delivered. A record
+// failure ends the stream with one terminal error tuple: a caller
+// reattaching later would otherwise miss the event, and an error tuple is
+// never followed by another tuple.
+func (c *conversation) relay(ctx context.Context, runID string, ev Event, yield func(Event, error) bool) bool {
 	if err := c.events.Append(ctx, runID, stores.Event{Payload: ev, Meta: types.EventMeta{RunID: runID}}); err != nil {
 		yield(nil, fmt.Errorf("record event: %w", err))
-		return
+		return false
 	}
 	c.notify(runID)
-}
-
-func (c *conversation) finishQuietly(ctx context.Context, lease stores.Lease) {
-	_ = c.runs.Finish(ctx, lease, stores.Failed, nil, "")
+	return true
 }
 
 // reattach replays the recorded run's events from sequence 1.

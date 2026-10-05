@@ -61,7 +61,6 @@ type ResumeReadyLister interface {
 	ResumeReady(ctx context.Context, limit int) ([]Checkpoint, error)
 }
 
-
 // Checkpoints stores suspension checkpoints keyed by single-use resume
 // tokens. Consume is atomic: the second caller gets types.ErrTokenConsumed.
 type Checkpoints interface {
