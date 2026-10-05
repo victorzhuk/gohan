@@ -2,6 +2,7 @@ package gohan
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -43,6 +44,43 @@ func TestStreamHeartbeat(t *testing.T) {
 			if !last.Expires.After(started.Expires) {
 				t.Fatalf("stop lost the refreshed lease: %v", last.Expires)
 			}
+			live, err := s.ByID(ctx, "r1")
+			if err != nil {
+				t.Fatalf("ByID err = %v", err)
+			}
+			if live.State != stores.Running {
+				t.Fatalf("run state = %v, want Running", live.State)
+			}
 		})
 	})
+
+	t.Run("heartbeat failure surfaces to the driver", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			base := stores.NewMemoryRuns()
+			boom := errors.New("gohan: store closed")
+			s := &failingHeartbeatRuns{MemoryRuns: base, err: boom}
+			ctx := context.Background()
+			started, err := base.Start(ctx, stores.Run{SessionID: "s2", RunID: "r2"}, stores.LeaseTTL)
+			if err != nil {
+				t.Fatalf("Start err = %v", err)
+			}
+			hb := StartStreamHeartbeat(ctx, s, started, 0)
+			time.Sleep(stores.HeartbeatEvery)
+			synctest.Wait()
+
+			hb.Stop()
+			if !errors.Is(hb.Err(), boom) {
+				t.Fatalf("Err = %v, want %v", hb.Err(), boom)
+			}
+		})
+	})
+}
+
+type failingHeartbeatRuns struct {
+	*stores.MemoryRuns
+	err error
+}
+
+func (f *failingHeartbeatRuns) Heartbeat(ctx context.Context, l stores.Lease) (stores.Lease, error) {
+	return stores.Lease{}, f.err
 }

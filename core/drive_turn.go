@@ -2,6 +2,7 @@ package gohan
 
 import (
 	"context"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +24,8 @@ type turnConfig struct {
 	tools     ToolSet
 	maxTurns  int
 	maxTokens int
+	gate      runtime.BatchGate
+	limits    types.RunLimits
 
 	// onTruncated decides the retry turn a truncated tool call earns. It
 	// returns the larger output allowance for the retry and the truncation
@@ -91,6 +94,7 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 			sink.Emit(ctx, e)
 		}
 	}
+	used := 0
 	for {
 		if turn >= c.maxTurns {
 			flushDeltas()
@@ -116,11 +120,13 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 		var reasoning strings.Builder
 		var calls []types.ToolUse
 		finish := types.FinishStop
-		for chunk, err := range c.model(ctx, req) {
+		mctx, endChat := startSpan(ctx, telemetryFrom(ctx), SpanChat)
+		for chunk, err := range c.model(mctx, req) {
 			if err != nil {
 				if ctx.Err() != nil {
 					err = ctx.Err()
 				}
+				endChat(types.String(types.KeySuspendReason, "error"))
 				flushDeltas()
 				yield(nil, err)
 				return
@@ -156,6 +162,7 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 				finish = chunk.Finish
 			}
 		}
+		endChat()
 
 		// A truncated finish earns a retry turn before anything executes:
 		// the pending calls are never run, the truncation result goes back
@@ -181,7 +188,8 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 
 		if len(calls) > 0 {
 			flushDeltas()
-			stop, callErr := runCalls(ctx, c, sink, turn, calls, &msgs, reasoning.String())
+			stop, spent, callErr := runCalls(ctx, c, sink, turn, calls, &msgs, reasoning.String(), used)
+			used += spent
 			if callErr != nil {
 				yield(nil, callErr)
 				return
@@ -231,13 +239,26 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 	}
 }
 
-// runCalls executes the batch in call order and appends the assistant
-// message with its calls and one result per call. The batch runs even when
-// the context is already cancelled, so an in-flight side effect finishes
-// under the injected shield; after it the run stops. It returns a stop
-// reason when the safe point ends the run, the cancellation error when a
-// call observed it, or "" and nil when the loop continues.
-func runCalls(ctx context.Context, c turnConfig, sink types.Sink, turn int, calls []types.ToolUse, msgs *[]types.Message, reasoning string) (types.StopReason, error) {
+// runCalls settles the turn's batch under the batch protocol: the gate
+// decides every call before the first one executes, allowed calls run in
+// call order through the scheduler, denials render as Failed(Permanent)
+// results at their index, and the first ask suspends the batch as a
+// SuspendError the caller persists — never an ordinary failed tool result.
+// It appends the assistant message with its calls and the settled results
+// in call order, and returns the batch's reservation spend. The batch runs
+// even when the context is already cancelled, so an in-flight side effect
+// finishes under the injected shield; after it the run stops.
+func runCalls(ctx context.Context, c turnConfig, sink types.Sink, turn int, calls []types.ToolUse, msgs *[]types.Message, reasoning string, used int) (types.StopReason, int, error) {
+	limits := c.limits
+	if limits.MaxToolCalls <= 0 {
+		limits.MaxToolCalls = math.MaxInt
+	}
+	gate := c.gate
+	if gate == nil {
+		gate = func(context.Context, types.ToolUse) runtime.BatchDecision {
+			return runtime.BatchDecision{Outcome: runtime.BatchAllow}
+		}
+	}
 	asst := types.Message{ID: assistantID(turn), Role: types.RoleAssistant}
 	retainReasoning(&asst, reasoning)
 	for _, cu := range calls {
@@ -245,42 +266,70 @@ func runCalls(ctx context.Context, c turnConfig, sink types.Sink, turn int, call
 	}
 	*msgs = append(*msgs, asst)
 
-	results := types.Message{ID: resultID(turn), Role: types.RoleUser}
-	for _, cu := range calls {
-		if res, ok := validateCompletion(cu); !ok {
-			results.Blocks = append(results.Blocks, res)
-			if sink != nil {
-				sink.Emit(ctx, types.ToolFinished{Turn: turn, Result: res})
+	report, err := runtime.Batch{
+		Calls:  calls,
+		Limits: limits,
+		Used:   used,
+		Gate:   gate,
+		Exec: func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+			if res, ok := validateCompletion(call); !ok {
+				return res, nil
 			}
+			if sink != nil {
+				sink.Emit(ctx, types.ToolStarted{Turn: turn, Call: call})
+			}
+			tctx, endTool := startSpan(ctx, telemetryFrom(ctx), SpanTool,
+				types.String(types.KeyToolName, call.Name),
+			)
+			res, err := CallTool(tctx, c.tools, call.Name, call.Args)
+			endTool(types.String(types.KeyToolOutcome, outcomeName(res)))
+			if err != nil {
+				if ctx.Err() != nil {
+					return types.ToolResult{}, ctx.Err()
+				}
+				res = types.ToolResult{
+					ID:    call.ID,
+					Error: &types.ToolError{Kind: types.Permanent, Message: runtime.NotExecutedPrefix + err.Error()},
+				}
+			}
+			res.ID = call.ID
+			return res, nil
+		},
+	}.Run(ctx)
+	if err != nil {
+		return "", 0, err
+	}
+
+	unsettled := map[string]bool{}
+	if report.Suspend != nil {
+		unsettled[report.Suspend.Call.ID] = true
+		for _, p := range report.Suspend.Pending {
+			unsettled[p.ID] = true
+		}
+	}
+	results := types.Message{ID: resultID(turn), Role: types.RoleUser}
+	for _, br := range report.Results {
+		if unsettled[br.Call.ID] {
 			continue
 		}
-		if sink != nil {
-			sink.Emit(ctx, types.ToolStarted{Turn: turn, Call: cu})
-		}
-		res, err := CallTool(ctx, c.tools, cu.Name, cu.Args)
-		if err != nil {
-			if ctx.Err() != nil {
-				return "", ctx.Err()
-			}
-			res = types.ToolResult{
-				ID:      cu.ID,
-				Error:   &types.ToolError{Kind: types.Permanent, Message: runtime.NotExecutedPrefix + err.Error()},
-			}
-		}
-		res.ID = cu.ID
+		res := br.Result
+		res.ID = br.Call.ID
 		results.Blocks = append(results.Blocks, res)
 		if sink != nil {
 			sink.Emit(ctx, types.ToolFinished{Turn: turn, Result: res})
 		}
 	}
 	*msgs = append(*msgs, results)
+	if report.Suspend != nil {
+		return "", report.Spent, &types.SuspendError{Reason: types.AwaitingBatch, Payload: *report.Suspend}
+	}
 	if c.poll == nil {
-		return "", nil
+		return "", report.Spent, nil
 	}
 	if stop := c.poll(); stop != "" && stop != types.StopCompleted {
-		return stop, nil
+		return stop, report.Spent, nil
 	}
-	return "", nil
+	return "", report.Spent, nil
 }
 
 func truncatedTurn(tu types.ToolUse, res types.ToolResult, turn int) types.Message {

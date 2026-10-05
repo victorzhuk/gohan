@@ -196,12 +196,14 @@ func TestSafePointPreemption(t *testing.T) {
 		if saved.Reason != types.Preempted {
 			t.Fatalf("checkpoint reason %q, want preempted", saved.Reason)
 		}
-		var st runtime.State
-		if jerr := json.Unmarshal(saved.Data, &st); jerr != nil {
+		var raw struct {
+			State runtime.State `json:"state"`
+		}
+		if jerr := json.Unmarshal(saved.Data, &raw); jerr != nil {
 			t.Fatalf("checkpoint state: %v", jerr)
 		}
-		if st.Turn != 1 {
-			t.Fatalf("checkpoint turn %d, want 1", st.Turn)
+		if raw.State.Turn != 1 {
+			t.Fatalf("checkpoint turn %d, want 1", raw.State.Turn)
 		}
 		if runs.SessionLeaseActive(ctx, "s1") {
 			t.Fatal("lease still held after preemption")

@@ -92,13 +92,15 @@ func TestInspect(t *testing.T) {
 	t.Run("suspended run returns its input", func(t *testing.T) {
 		runs, log, cps := inspectStores(t)
 		inspectSeedSession(t, log, "s1")
-		inspectSeedRun(t, runs, stores.Run{SessionID: "s1", RunID: "r1", Flow: "f"})
+		lease, err := runs.Start(context.Background(), stores.Run{SessionID: "s1", RunID: "r1", Flow: "f"}, stores.LeaseTTL)
+		if err != nil {
+			t.Fatalf("seed run: %v", err)
+		}
 		putCtx := types.WithRunInfo(context.Background(), types.RunInfo{RunID: "r1"})
 		tok, err := cps.Put(putCtx, stores.Checkpoint{SessionID: "s1", Flow: "f"})
 		if err != nil {
 			t.Fatalf("put checkpoint: %v", err)
 		}
-		lease := stores.Lease{RunID: "r1"}
 		if err := runs.Suspend(context.Background(), lease, tok); err != nil {
 			t.Fatalf("suspend: %v", err)
 		}

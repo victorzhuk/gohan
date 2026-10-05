@@ -42,11 +42,11 @@ var ErrBatchOverrun = errors.New("gohan: tool batch exceeds MaxToolCalls")
 // Batch is one turn's tool calls under the batch protocol. Used is the
 // tool-call count the run already spent.
 type Batch struct {
-	Calls  []types.ToolUse
-	Limits types.RunLimits
-	Used   int
-	Gate   BatchGate
-	Exec   BatchExec
+	Calls     []types.ToolUse
+	Limits    types.RunLimits
+	Used      int
+	Gate      BatchGate
+	Exec      BatchExec
 	Scheduler SchedulerConfig
 }
 
@@ -56,8 +56,8 @@ type BatchResult struct {
 	Result types.ToolResult
 }
 
-// BatchSuspend reports the ask that suspended the batch. Its call and every
-// pending ask after it settle on resume, one at a time.
+// BatchSuspend reports the ask that suspended the batch. Pending lists every
+// ask in call order, starting with Call; they settle on resume, one at a time.
 type BatchSuspend struct {
 	Call    types.ToolUse
 	Pending []types.ToolUse
@@ -86,39 +86,31 @@ func (b Batch) Run(ctx context.Context) (BatchReport, error) {
 	for i, call := range b.Calls {
 		decisions[i] = b.Gate(ctx, call)
 	}
-	report := BatchReport{Results: make([]BatchResult, len(b.Calls)), Spent: len(b.Calls)}
+	report := BatchReport{Results: make([]BatchResult, 0, len(b.Calls)), Spent: len(b.Calls)}
 	allowed := make([]types.ToolUse, 0, len(b.Calls))
-	allowedIndexes := make([]int, 0, len(b.Calls))
-	firstAsk := -1
+	askCalls := make([]types.ToolUse, 0, len(b.Calls))
+	allowedSlots := make([]int, 0, len(b.Calls))
 	for i, call := range b.Calls {
-		report.Results[i].Call = call
 		switch decisions[i].Outcome {
 		case BatchDeny, BatchTaintDenied:
-			report.Results[i].Result = types.ToolResult{
+			report.Results = append(report.Results, BatchResult{Call: call, Result: types.ToolResult{
 				ID: call.ID, Outcome: types.Failed,
 				Error: &types.ToolError{Kind: types.Permanent, Message: NotExecutedPrefix + decisions[i].Reason},
-			}
+			}})
 		case BatchAsk:
-			if firstAsk < 0 {
-				firstAsk = i
-			}
+			askCalls = append(askCalls, call)
 		default:
+			allowedSlots = append(allowedSlots, len(report.Results))
+			report.Results = append(report.Results, BatchResult{Call: call})
 			allowed = append(allowed, call)
-			allowedIndexes = append(allowedIndexes, i)
 		}
 	}
-	if firstAsk >= 0 {
-		pending := make([]types.ToolUse, 0, len(b.Calls)-firstAsk-1)
-		for i := firstAsk + 1; i < len(b.Calls); i++ {
-			if decisions[i].Outcome == BatchAsk {
-				pending = append(pending, b.Calls[i])
-			}
-		}
-		report.Suspend = &BatchSuspend{Call: b.Calls[firstAsk], Pending: pending}
+	if len(askCalls) > 0 {
+		report.Suspend = &BatchSuspend{Call: askCalls[0], Pending: askCalls}
 	}
 	results, err := Schedule(ctx, allowed, ToolFunc(b.Exec), b.Scheduler)
 	for j, res := range results {
-		report.Results[allowedIndexes[j]].Result = res
+		report.Results[allowedSlots[j]].Result = res
 	}
 	if err != nil {
 		return report, err

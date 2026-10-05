@@ -134,8 +134,8 @@ func TestRuntimeBatchProtocol(t *testing.T) {
 		if report.Suspend == nil || report.Suspend.Call.Name != "confirm" {
 			t.Fatalf("Suspend = %v, want confirm", report.Suspend)
 		}
-		if len(report.Suspend.Pending) != 0 {
-			t.Fatalf("Pending = %v, want none", report.Suspend.Pending)
+		if len(report.Suspend.Pending) != 1 || report.Suspend.Pending[0].Name != "confirm" {
+			t.Fatalf("Pending = %v, want confirm", report.Suspend.Pending)
 		}
 		if len(rec.executed) != 1 || rec.executed[0] != "search" {
 			t.Fatalf("executed = %v, want only search", rec.executed)
@@ -144,7 +144,7 @@ func TestRuntimeBatchProtocol(t *testing.T) {
 			t.Fatalf("allowed result = %v, want %v", report.Results[0].Result.Outcome, types.Succeeded)
 		}
 	})
-	t.Run("runtime.batch-decisions-before-effects-after-ask", func(t *testing.T) {
+	t.Run("gates run before effects around an ask", func(t *testing.T) {
 		rec := &batchRecorder{}
 		report, err := rec.run(t, batchCalls("search", "confirm", "search", "wipe"), types.RunLimits{MaxToolCalls: 10}, 0)
 		if err != nil {
@@ -173,7 +173,7 @@ func TestRuntimeBatchProtocol(t *testing.T) {
 		}
 	})
 
-	t.Run("runtime.batch-overrun-has-zero-gates", func(t *testing.T) {
+	t.Run("overrun makes zero gates", func(t *testing.T) {
 		rec := &batchRecorder{}
 		_, err := rec.run(t, batchCalls("search", "wipe"), types.RunLimits{MaxToolCalls: 1}, 0)
 		if !errors.Is(err, runtime.ErrBatchOverrun) {

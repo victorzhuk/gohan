@@ -8,6 +8,7 @@ import (
 	"iter"
 	"time"
 
+	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
@@ -74,17 +75,23 @@ func AppendStepEnd(ctx context.Context, h HistoryAppender, expected int64, asst 
 // the lifecycle ordering runtime/spec.md fixes: history append before the
 // gate, Checkpoints.Put before Runs.Suspend, Runs.Finish before Done.
 type Lifecycle struct {
-	runs      stores.Runs
-	lease     stores.Lease
-	sessionID string
-	telemetry types.Telemetry
-	reason    types.SuspendReason
-	appender  HistoryAppender
-	uncertain func(runtime.State) []types.CallKey
-	verify    func(ctx context.Context, keys []types.CallKey) ([]types.CallKey, error)
-	maxTurns  int
-	resultRef string
-	waker     Waker
+	runs        stores.Runs
+	lease       stores.Lease
+	hb          *StreamHeartbeat
+	resumeState *runtime.State
+	sessionID   string
+	flow        string
+	originator  types.Principal
+	telemetry   types.Telemetry
+	reason      types.SuspendReason
+	appender    HistoryAppender
+	uncertain   func(runtime.State) []types.CallKey
+	verify      func(ctx context.Context, keys []types.CallKey) ([]types.CallKey, error)
+	maxTurns    int
+	resultRef   string
+	waker       Waker
+	approval    permission.ApprovalPolicySource
+	toolLookup  func(name string) (types.ToolSpec, bool)
 }
 
 // LifecycleOption configures a Lifecycle.
@@ -95,6 +102,32 @@ type LifecycleOption func(*Lifecycle)
 // orders events.
 func WithLifecycleRuns(r stores.Runs, l stores.Lease) LifecycleOption {
 	return func(lc *Lifecycle) { lc.runs, lc.lease = r, l }
+}
+
+// WithLifecycleResumeState drives the state a checkpoint carried instead of
+// the position Runtime.Start returns. Start still runs once to install the
+// per-run wiring; the saved state then replaces its initial position, so
+// initial effects never replay.
+func WithLifecycleResumeState(st runtime.State) LifecycleOption {
+	return func(lc *Lifecycle) { lc.resumeState = &st }
+}
+
+// WithLifecycleLease sets the externally acquired lease the lifecycle
+// holds: every Drain, Suspend, Finish and heartbeat refresh runs under it.
+// A later option replaces an earlier lease binding.
+func WithLifecycleLease(l stores.Lease) LifecycleOption {
+	return func(lc *Lifecycle) { lc.lease = l }
+}
+
+// WithLifecycleFlow sets the flow spec a suspended checkpoint records.
+func WithLifecycleFlow(flow string) LifecycleOption {
+	return func(lc *Lifecycle) { lc.flow = flow }
+}
+
+// WithLifecycleOriginator sets the principal a suspended checkpoint
+// restores its credentials for.
+func WithLifecycleOriginator(p types.Principal) LifecycleOption {
+	return func(lc *Lifecycle) { lc.originator = p }
 }
 
 // WithLifecycleSession sets the session id a checkpoint records.
@@ -144,6 +177,20 @@ func WithLifecycleTelemetry(t types.Telemetry) LifecycleOption {
 	return func(lc *Lifecycle) { lc.telemetry = t }
 }
 
+// WithLifecycleApprovalPolicy binds the source the suspension resolves each
+// pending request's approval policy through. A HumanApproval suspension
+// without one refuses the approval path.
+func WithLifecycleApprovalPolicy(src permission.ApprovalPolicySource) LifecycleOption {
+	return func(lc *Lifecycle) { lc.approval = src }
+}
+
+// WithLifecycleToolSpecs binds the registered tool-spec lookup a suspension
+// resolves each pending call's declaration through. It takes precedence
+// over the run's carried tools.
+func WithLifecycleToolSpecs(lookup func(name string) (types.ToolSpec, bool)) LifecycleOption {
+	return func(lc *Lifecycle) { lc.toolLookup = lookup }
+}
+
 // NewLifecycle builds the driver-side lifecycle with its defaults.
 func NewLifecycle(opts ...LifecycleOption) *Lifecycle {
 	lc := &Lifecycle{reason: types.AwaitingTool}
@@ -167,79 +214,151 @@ func DriveLifecycle(ctx context.Context, lc *Lifecycle, rt runtime.Runtime, r ru
 		defer endSpan()
 		st, err := rt.Start(ctx, r)
 		if err != nil {
+			// The conversation already holds the lease; the lifecycle
+			// owns the failed terminal transition for it.
+			_ = lc.finishRun(ctx, runtime.State{}, stores.Failed, nil)
 			yield(nil, err)
 			return
 		}
-		relay := &sinkRelay{}
-		if prev, ok := types.SinkFrom(ctx); ok {
-			relay.next = prev
+		if lc.resumeState != nil {
+			st = copyResumeState(*lc.resumeState)
 		}
-		sctx := types.WithSink(ctx, relay)
-		for {
-			if err := ctx.Err(); err != nil {
+		if lc.runs != nil {
+			// The heartbeat starts as soon as the lifecycle holds the
+			// lease and stops before the iterator returns.
+			lc.hb = StartStreamHeartbeat(ctx, lc.runs, lc.lease, 0)
+		}
+		lc.drive(ctx, rt, r, st, yield)
+	}
+}
+
+// copyResumeState copies the resumable mutable data of a saved state, so
+// the checkpoint bytes the caller keeps can never alias the driven state.
+func copyResumeState(st runtime.State) runtime.State {
+	st.Pending = append([]types.ToolUse(nil), st.Pending...)
+	st.ActiveTools = append([]string(nil), st.ActiveTools...)
+	st.Backend = append([]byte(nil), st.Backend...)
+	calib := make(map[string]float64, len(st.Calibration))
+	for k, v := range st.Calibration {
+		calib[k] = v
+	}
+	st.Calibration = calib
+	return st
+}
+
+// heartbeatErr reports a lost lease: the driver starts no further effect.
+func (lc *Lifecycle) heartbeatErr() error {
+	if lc.hb == nil {
+		return nil
+	}
+	if err := lc.hb.Err(); err != nil {
+		return fmt.Errorf("run lease lost: %w", err)
+	}
+	return nil
+}
+
+// stopHeartbeat joins the heartbeat helper and adopts the last lease it
+// held. Every terminal store transition runs after it.
+func (lc *Lifecycle) stopHeartbeat() {
+	if lc.hb == nil {
+		return
+	}
+	lc.lease = lc.hb.Stop()
+	lc.hb = nil
+}
+
+// drive is the one stepping loop Drive, DriveResume and DriveLifecycle
+// share: initial and resumed execution differ only in the state they enter
+// with.
+func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.AgentRun, st runtime.State, yield func(types.Event, error) bool) {
+	hbCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// Every exit stops the heartbeat; the terminal branches below stop it
+	// before their last event so no refresh follows a terminal write.
+	defer lc.stopHeartbeat()
+	relay := &sinkRelay{}
+	if prev, ok := types.SinkFrom(ctx); ok {
+		relay.next = prev
+	}
+	sctx := types.WithSink(hbCtx, relay)
+	for {
+		if err := hbCtx.Err(); err != nil {
+			yield(nil, err)
+			return
+		}
+		for _, e := range relay.take() {
+			if !yield(e, nil) {
+				return
+			}
+		}
+		next, evs, status, err := rt.Step(sctx, st)
+		for _, e := range relay.take() {
+			if !yield(e, nil) {
+				return
+			}
+		}
+		for _, e := range evs {
+			if !yield(e, nil) {
+				return
+			}
+		}
+		if hErr := lc.heartbeatErr(); hErr != nil {
+			// Ownership is gone: cancel cancellable work, record no
+			// terminal transition and run nothing further.
+			cancel()
+			lc.stopHeartbeat()
+			yield(nil, hErr)
+			return
+		}
+		if err != nil {
+			if se, ok := errors.AsType[*types.SuspendError](err); ok {
+				st = next
+				ev, serr := lc.suspend(sctx, rt, r, st, se)
+				lc.stopHeartbeat()
+				if serr != nil {
+					yield(nil, serr)
+					return
+				}
+				yield(ev, nil)
+				return
+			}
+			if ferr := lc.finishRun(sctx, st, stores.Failed, nil); ferr != nil {
+				yield(nil, ferr)
+				return
+			}
+			lc.stopHeartbeat()
+			yield(nil, err)
+			return
+		}
+		st = next
+		switch status {
+		case runtime.SuspendedStatus:
+			ev, err := lc.suspend(sctx, rt, r, st, nil)
+			lc.stopHeartbeat()
+			if err != nil {
 				yield(nil, err)
 				return
 			}
-			for _, e := range relay.take() {
-				if !yield(e, nil) {
-					return
-				}
-			}
-			next, evs, status, err := rt.Step(sctx, st)
-			for _, e := range relay.take() {
-				if !yield(e, nil) {
-					return
-				}
-			}
+			yield(ev, nil)
+			return
+		case runtime.DoneStatus:
+			evs, again, err := lc.finishTurn(sctx, st)
 			for _, e := range evs {
 				if !yield(e, nil) {
 					return
 				}
 			}
 			if err != nil {
-				if se, ok := errors.AsType[*types.SuspendError](err); ok {
-					ev, serr := lc.suspend(sctx, rt, r, st, se)
-					if serr != nil {
-						yield(nil, serr)
-						return
-					}
-					yield(ev, nil)
-					return
-				}
-				if ferr := lc.finishRun(sctx, st, stores.Failed, nil); ferr != nil {
-					yield(nil, ferr)
-					return
-				}
+				lc.stopHeartbeat()
 				yield(nil, err)
 				return
 			}
-			st = next
-			switch status {
-			case runtime.SuspendedStatus:
-				ev, err := lc.suspend(sctx, rt, r, st, nil)
-				if err != nil {
-					yield(nil, err)
-					return
-				}
-				yield(ev, nil)
-				return
-			case runtime.DoneStatus:
-				evs, again, err := lc.finishTurn(sctx, st)
-				for _, e := range evs {
-					if !yield(e, nil) {
-						return
-					}
-				}
-				if err != nil {
-					yield(nil, err)
-					return
-				}
-				if again {
-					st.Turn++
-					continue
-				}
-				return
+			if again {
+				st.Turn++
+				continue
 			}
+			lc.stopHeartbeat()
+			return
 		}
 	}
 }
@@ -255,15 +374,36 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 	if sig != nil {
 		reason, payload, wakeAt = sig.Reason, sig.Payload, sig.WakeAt
 	}
-	data, err := json.Marshal(st)
+	env := checkpointEnvelope{
+		Run: types.RunInfo{
+			Flow:      lc.flow,
+			SessionID: lc.sessionID,
+			RunID:     lc.lease.RunID,
+			Principal: lc.originator,
+		},
+		Generation: 1,
+		State:      st,
+	}
+	if reason == types.HumanApproval {
+		aps, aerr := lc.approvalsFor(ctx, r, st)
+		if aerr != nil {
+			return nil, aerr
+		}
+		env.Approvals = aps
+	}
+	data, err := encodeCheckpoint(env)
 	if err != nil {
-		return nil, fmt.Errorf("gohan: encode checkpoint: %w", err)
+		return nil, err
 	}
 	token, err := r.Save(ctx, stores.Checkpoint{
+		RunID:         lc.lease.RunID,
 		SchemaVersion: stores.CurrentSchemaVersion,
 		SessionID:     lc.sessionID,
+		Flow:          lc.flow,
 		Backend:       rt.Name(),
 		Reason:        reason,
+		Originator:    lc.originator,
+		ExpiresAt:     lc.lease.Expires,
 		Data:          data,
 	})
 	if err != nil {
@@ -280,6 +420,47 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 		}
 	}
 	return types.Suspended{Token: token, Reason: reason, Payload: payload, WakeAt: wakeAt}, nil
+}
+
+// approvalsFor builds one persisted approval request per approval-controlled
+// pending call. A missing tool spec or an unresolvable policy refuses the
+// suspension instead of persisting a partial approvals list.
+func (lc *Lifecycle) approvalsFor(ctx context.Context, r runtime.AgentRun, st runtime.State) ([]checkpointApproval, error) {
+	specs := make(map[string]types.ToolSpec, len(r.Tools))
+	for _, t := range r.Tools {
+		specs[t.Spec().Name] = t.Spec()
+	}
+	lookup := lc.toolLookup
+	if lookup == nil {
+		lookup = func(name string) (types.ToolSpec, bool) { s, ok := specs[name]; return s, ok }
+	}
+	aps := make([]checkpointApproval, 0, len(st.Pending))
+	for _, call := range st.Pending {
+		spec, ok := lookup(call.Name)
+		if !ok {
+			return nil, fmt.Errorf("%w: pending call %q has no registered tool", types.ErrCheckpointIncompatible, call.Name)
+		}
+		if lc.approval == nil {
+			return nil, fmt.Errorf("%w: no approval policy wired", types.ErrApproverNotEligible)
+		}
+		reversible := spec.Effect != types.SideEffect
+		pol, err := lc.approval.ApprovalPolicy(ctx, spec.Risk, call.Name, reversible)
+		if err != nil {
+			return nil, fmt.Errorf("%w: resolve approval policy: %s", types.ErrApproverNotEligible, err)
+		}
+		elig := permission.Eligibility{Scopes: []string{pol.Scope}, Quorum: pol.Quorum}
+		if pol.SeparateFromOriginator {
+			elig.ExcludeSubjects = []string{lc.originator.Subject}
+		}
+		aps = append(aps, checkpointApproval{
+			Call:        call,
+			Risk:        spec.Risk,
+			Fingerprint: ToolFingerprint(spec, json.RawMessage(call.Args)),
+			Reversible:  reversible,
+			Eligible:    elig,
+		})
+	}
+	return aps, nil
 }
 
 // finishTurn verifies every Uncertain entry, closes the run and returns
@@ -367,7 +548,8 @@ func (lc *Lifecycle) applySignals(ctx context.Context, st runtime.State, sigs []
 	return false, true, evs, nil
 }
 
-// finishRun closes the run with the given terminal state.
+// finishRun closes the run with the given terminal state. A Finish refused
+// with ErrSignalsPending keeps the run alive, so the heartbeat survives it.
 func (lc *Lifecycle) finishRun(ctx context.Context, st runtime.State, state stores.RunState, uncertain []types.CallKey) error {
 	if lc.runs == nil {
 		return nil

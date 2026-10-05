@@ -132,6 +132,7 @@ func (f *recoverFixture) seedPreempted(t *testing.T, runID string) types.ResumeT
 	}
 	ctx := types.WithRunInfo(f.reaperCtx(), types.RunInfo{SessionID: "s1", RunID: runID, Flow: "agent"})
 	tok, err := f.cps.Put(ctx, stores.Checkpoint{
+		RunID:      runID,
 		SessionID:  "s1",
 		Flow:       "agent",
 		Reason:     types.Preempted,

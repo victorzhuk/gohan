@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -419,6 +420,106 @@ func TestRuntimeTurns(t *testing.T) {
 		}
 		if prompt := last[len(last)-1]; prompt.ID != "repair-1" {
 			t.Fatalf("repair prompt %+v, want repair-1", prompt)
+		}
+	})
+}
+
+// askTool is a SideEffect tool the batch gate routes through an approval
+// ask until the gate allows it.
+type askTool struct {
+	ran int
+}
+
+func (t *askTool) Spec() types.ToolSpec {
+	return types.ToolSpec{Name: "ask_tool", Effect: types.SideEffect}
+}
+
+func (t *askTool) Call(_ context.Context, _ jsontext.Value) (types.ToolResult, error) {
+	t.ran++
+	return types.ToolResult{Content: []types.Block{types.Text{Text: "did it"}}, Outcome: types.Succeeded}, nil
+}
+
+func turnBatchGate(ask func(types.ToolUse) bool) runtime.BatchGate {
+	return func(_ context.Context, call types.ToolUse) runtime.BatchDecision {
+		if ask(call) {
+			return runtime.BatchDecision{Outcome: runtime.BatchAsk}
+		}
+		return runtime.BatchDecision{Outcome: runtime.BatchAllow}
+	}
+}
+
+func TestRuntimeBatchTurn(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("runtime.batch-ask-after-allowed", func(t *testing.T) {
+		m := &scriptTurns{turns: [][]types.ModelChunk{
+			{toolCall("c1", "echo"), toolCall("c2", "ask_tool"), toolCall("c3", "echo"), {Finish: types.FinishToolUse}},
+			{toolCall("c4", "ask_tool"), {Finish: types.FinishToolUse}},
+			{turnTextChunk("done")},
+		}}
+		echo := &echoTool{}
+		ask := &askTool{}
+		decisions := 0
+		askCount := 0
+		cfg := turnConfig{
+			model:    m.model(),
+			assemble: turnAssemble(nil),
+			tools:    turnToolset(echo, ask),
+			maxTurns: 6,
+			gate: turnBatchGate(func(call types.ToolUse) bool {
+				decisions++
+				if call.Name != "ask_tool" {
+					return false
+				}
+				askCount++
+				return askCount == 1
+			}),
+		}
+		var evs []types.Event
+		_, err := driveTurnCollect(func(y func(types.Event, error) bool) {
+			driveTurns(types.WithSink(ctx, sinkInto(&evs)), cfg, y)
+		})
+		var susp *types.SuspendError
+		if !errors.As(err, &susp) {
+			t.Fatalf("err = %v, want SuspendError", err)
+		}
+		if susp.Reason != types.AwaitingBatch {
+			t.Fatalf("reason = %v, want AwaitingBatch", susp.Reason)
+		}
+		if echo.ran != 2 {
+			t.Fatalf("read-only tool ran %d times, want 2", echo.ran)
+		}
+		if ask.ran != 0 {
+			t.Fatalf("asked tool executed before approval")
+		}
+		// The gate settled all three calls before anything executed.
+		if decisions != 3 {
+			t.Fatalf("gate decisions = %d, want 3", decisions)
+		}
+		payload, ok := susp.Payload.(runtime.BatchSuspend)
+		if !ok {
+			t.Fatalf("payload %T, want BatchSuspend", susp.Payload)
+		}
+		if payload.Call.ID != "c2" {
+			t.Fatalf("suspend call = %+v, want c2", payload.Call)
+		}
+		if len(payload.Pending) != 1 || payload.Pending[0].ID != "c2" {
+			t.Fatalf("pending = %+v, want the one ask of the turn, c2, in call order", payload.Pending)
+		}
+
+		// Resume with the approval in place: only the asked call executes.
+		evs, err = driveTurnCollect(func(y func(types.Event, error) bool) {
+			driveTurns(types.WithSink(ctx, sinkInto(&evs)), cfg, y)
+		})
+		if err != nil {
+			t.Fatalf("resume drive: %v", err)
+		}
+		if ask.ran != 1 {
+			t.Fatalf("asked tool ran %d times, want 1 after approval", ask.ran)
+		}
+		done, ok := evs[len(evs)-1].(types.Done)
+		if !ok || done.Reason != types.StopCompleted {
+			t.Fatalf("last event %v, want Done completed", evs[len(evs)-1])
 		}
 	})
 }

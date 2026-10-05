@@ -2,7 +2,6 @@ package gohan
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/victorzhuk/gohan/core/runtime"
@@ -51,7 +50,62 @@ func (s *Stack) Recover(ctx context.Context, limit int) error {
 			return err
 		}
 	}
+	return s.recoverConsumed(ctx, limit)
+}
+
+// recoverConsumed re-drives checkpoints whose token was consumed while the
+// run is still Suspended — the crash interval between a client decision and
+// Runs.Resuming. Exactly one driver wins the Resuming transition; a
+// Finished run is never re-executed. A checkpoint store without the lister
+// leaves this window to the stale pass, which covers only runs already
+// marked Resuming.
+func (s *Stack) recoverConsumed(ctx context.Context, limit int) error {
+	rl, ok := s.stores.Checkpoints.(stores.ResumeReadyLister)
+	if !ok {
+		return nil
+	}
+	ready, err := rl.ResumeReady(ctx, limit)
+	if err != nil {
+		return fmt.Errorf("recover run: %w", err)
+	}
+	for _, cp := range ready {
+		if cp.Reason == types.Preempted {
+			// A consumed Preempted token means the client owns the
+			// resume; recovery only re-drives harness-owned reasons.
+			continue
+		}
+		if err := s.recoverConsumedRun(ctx, cp); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func (s *Stack) recoverConsumedRun(ctx context.Context, cp stores.Checkpoint) error {
+	run, ok, err := s.runByID(ctx, cp.RunID)
+	if err != nil || !ok || run.State != stores.Suspended {
+		return err
+	}
+	rt, ok := s.recovery[run.Flow]
+	if !ok {
+		lease, lerr := s.stores.Runs.Resuming(ctx, run.RunID, stores.LeaseTTL)
+		if lerr != nil {
+			return nil
+		}
+		return s.abandonRun(ctx, lease, run)
+	}
+	lease, err := s.stores.Runs.Resuming(ctx, run.RunID, stores.LeaseTTL)
+	if err != nil {
+		// A racing driver won the run or it finished: driven exactly once.
+		return nil
+	}
+	run.State = stores.Resuming
+	st, _, _, err := s.replayState(ctx, run, rt)
+	if err != nil {
+		return s.abandonRun(ctx, lease, run)
+	}
+	rctx := s.recoveryContext(ctx, run, st, &cp)
+	return s.driveRecovered(rctx, lease, run, rt, st)
 }
 
 // orderTreeRootsFirst lists depth-zero runs before their children, so a
@@ -80,28 +134,91 @@ func (s *Stack) recoverRun(ctx context.Context, run stores.Run) error {
 	if !ok {
 		return s.abandonRun(ctx, lease, run)
 	}
-	st, cp, in, err := s.replayState(ctx, run)
+	st, cp, _, err := s.replayState(ctx, run, rt)
 	if err != nil {
 		return s.abandonRun(ctx, lease, run)
 	}
 	rctx := s.recoveryContext(ctx, run, st, cp)
-	for _, err := range DriveResume(rctx, rt, runtime.AgentRun{}, st, in) {
+	return s.driveRecovered(rctx, lease, run, rt, st)
+}
+
+// driveRecovered re-drives one recovered run through the shared lifecycle:
+// the lifecycle holds the lease, owns the heartbeat, suspension
+// persistence, terminal store transitions and failure cleanup. When the
+// drive ends and the run is still Running or Resuming, nothing recorded a
+// terminal transition — the run is closed as failed instead of silently
+// left open.
+func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stores.Run, rt runtime.Runtime, st runtime.State) error {
+	opts := []LifecycleOption{
+		WithLifecycleRuns(s.stores.Runs, lease),
+		WithLifecycleResumeState(st),
+		WithLifecycleSession(run.SessionID),
+		WithLifecycleTelemetry(s.telemetry),
+	}
+	if app := s.recoveryAppender(run); app != nil {
+		opts = append(opts, WithLifecycleAppender(app))
+	}
+	lc := NewLifecycle(opts...)
+	for _, err := range DriveLifecycle(ctx, lc, rt, runtime.AgentRun{}) {
 		if err != nil {
-			return s.abandonRun(ctx, lease, run)
+			break
 		}
 	}
-	if err := s.stores.Runs.Finish(ctx, lease, stores.Finished, run.Uncertain, ""); err != nil {
-		return fmt.Errorf("recover run: %w", err)
+	state, terminal := s.terminalRun(ctx, run.RunID)
+	if !terminal {
+		return s.abandonRun(ctx, lc.lease, run)
 	}
-	countRecovered(ctx, s.telemetry, run)
+	if state == stores.Finished {
+		countRecovered(ctx, s.telemetry, run)
+	}
 	return nil
+}
+
+// terminalRun reports the run's stored state when the store can answer it.
+// A store without a by-id reader cannot verify the transition; the
+// lifecycle's own ordering is trusted.
+func (s *Stack) terminalRun(ctx context.Context, runID string) (stores.RunState, bool) {
+	run, ok, err := s.runByID(ctx, runID)
+	if err != nil || !ok {
+		return 0, true
+	}
+	switch run.State {
+	case stores.Finished, stores.Failed, stores.Suspended:
+		return run.State, true
+	}
+	return run.State, false
+}
+
+func (s *Stack) runByID(ctx context.Context, runID string) (stores.Run, bool, error) {
+	rf, ok := s.stores.Runs.(runFinder)
+	if !ok {
+		return stores.Run{}, false, nil
+	}
+	run, err := rf.ByID(ctx, runID)
+	if err != nil {
+		return stores.Run{}, false, nil
+	}
+	return run, true, nil
+}
+
+type runFinder interface {
+	ByID(ctx context.Context, runID string) (stores.Run, error)
+}
+
+func (s *Stack) recoveryAppender(run stores.Run) HistoryAppender {
+	if s.stores.SessionLog == nil {
+		return nil
+	}
+	return AppendFunc(func(ctx context.Context, expected int64, msgs ...types.Message) (int64, error) {
+		return s.stores.SessionLog.Append(ctx, run.SessionID, expected, msgs...)
+	})
 }
 
 // replayState reconstructs the state a crash left behind: a Resuming run
 // continues from its checkpoint with the pending resume input applied, a
 // Running one re-enters the step whose pending calls the session log
 // already carries.
-func (s *Stack) replayState(ctx context.Context, run stores.Run) (runtime.State, *stores.Checkpoint, stores.ResumeInput, error) {
+func (s *Stack) replayState(ctx context.Context, run stores.Run, rt runtime.Runtime) (runtime.State, *stores.Checkpoint, stores.ResumeInput, error) {
 	var st runtime.State
 	if run.State == stores.Resuming {
 		cp, in, err := s.stores.Checkpoints.PendingInput(ctx, run.RunID)
@@ -109,15 +226,19 @@ func (s *Stack) replayState(ctx context.Context, run stores.Run) (runtime.State,
 			return st, nil, in, fmt.Errorf("recover run: %w", err)
 		}
 		if len(cp.Data) > 0 {
-			if uerr := json.Unmarshal(cp.Data, &st); uerr != nil {
-				return st, nil, in, fmt.Errorf("recover run: decode checkpoint: %w", uerr)
+			_, decoded, derr := decodeCheckpoint(cp, rt, run.Flow)
+			if derr != nil {
+				return st, nil, in, fmt.Errorf("recover run: %w", derr)
 			}
+			st = decoded
 		}
 		// The run continues as the originator before any history append
 		// touches the session.
 		ctx = WithPrincipal(ctx, cp.Originator)
-		if aerr := applyResume(ctx, s.stores.SessionLog, cp.SessionID, &st, in); aerr != nil {
-			return st, nil, in, fmt.Errorf("recover run: %w", aerr)
+		if resumeConsumed(in) {
+			if aerr := applyResume(ctx, s.stores.SessionLog, cp.SessionID, &st, in); aerr != nil {
+				return st, nil, in, fmt.Errorf("recover run: %w", aerr)
+			}
 		}
 		return st, &cp, in, nil
 	}

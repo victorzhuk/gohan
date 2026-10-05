@@ -3,6 +3,7 @@ package gohan
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -24,6 +25,8 @@ type recoverRuntime struct {
 	executed []string
 	replayed []string
 	seenInfo []types.RunInfo
+	block    chan struct{}
+	entered  chan struct{}
 }
 
 func (r *recoverRuntime) Name() string                         { return "recover.test" }
@@ -52,6 +55,17 @@ func (r *recoverRuntime) infos() []types.RunInfo {
 }
 
 func (r *recoverRuntime) Step(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+	if r.block != nil {
+		if r.entered != nil {
+			select {
+			case <-r.entered:
+			default:
+				close(r.entered)
+			}
+		}
+		<-r.block
+		return st, nil, runtime.Continue, nil
+	}
 	if len(st.Pending) > 0 {
 		msg := types.Message{Role: types.RoleAssistant}
 		for _, call := range st.Pending {
@@ -260,7 +274,7 @@ func TestRecover(t *testing.T) {
 		}
 	})
 
-	t.Run("recovery.no-double-run", func(t *testing.T) {
+	t.Run("active run refuses send", func(t *testing.T) {
 		f := newRecoverFixture(t, "agent")
 		f.seedRun(t, stores.Run{SessionID: "s1", RunID: "r1", Flow: "agent"})
 		events := stores.NewMemoryEventLog()
@@ -303,7 +317,7 @@ func TestRecover(t *testing.T) {
 		// The span-nesting half of this scenario is telemetry's (row 28).
 	})
 
-	t.Run("only one racing reaper wins", func(t *testing.T) {
+	t.Run("recovery.no-double-run", func(t *testing.T) {
 		f := newRecoverFixture(t, "agent")
 		f.seedRun(t, stores.Run{SessionID: "s1", RunID: "r1", Flow: "agent", State: stores.Running, Turn: 1, Seq: 1})
 		f.expire()
@@ -344,11 +358,80 @@ func TestRecover(t *testing.T) {
 		}
 	})
 
+	t.Run("consumed checkpoint resumes once", func(t *testing.T) {
+		f := newRecoverFixture(t, "agent")
+		ctx := f.reaperCtx()
+		_, lease := f.seedRunLease(t, stores.Run{SessionID: "s1", RunID: "r1", Flow: "agent", State: stores.Running, Turn: 1, Seq: 1})
+		tokCtx := types.WithRunInfo(t.Context(), types.RunInfo{RunID: "r1"})
+		token, err := f.cps.Put(WithPrincipal(tokCtx, types.Principal{Subject: "u1", Tenant: "t1"}), stores.Checkpoint{
+			RunID:      "r1",
+			SessionID:  "s1",
+			Originator: types.Principal{Subject: "u1", Tenant: "t1"},
+			Data:       mustJSON(t, runtime.State{Turn: 1}),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.runs.Suspend(t.Context(), lease, token); err != nil {
+			t.Fatal(err)
+		}
+		// The client consumed the token, then the pod died before Runs.Resuming.
+		if _, err := f.cps.Consume(t.Context(), token, stores.ResumeInput{}); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := f.stack.Recover(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+		if n := f.rt.modelCalls(); n != 1 {
+			t.Fatalf("model calls = %d, want 1", n)
+		}
+		if err := f.stack.Recover(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+		if n := f.rt.modelCalls(); n != 1 {
+			t.Fatalf("model calls after second recover = %d, want 1", n)
+		}
+		final, err := f.runs.ByID(t.Context(), "r1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if final.State != stores.Finished {
+			t.Fatalf("run state = %v, want Finished", final.State)
+		}
+	})
+
+	t.Run("drive without terminal transition fails the run", func(t *testing.T) {
+		f := newRecoverFixture(t, "agent")
+		f.seedRun(t, stores.Run{SessionID: "s1", RunID: "r1", Flow: "agent", State: stores.Running, Turn: 1, Seq: 1})
+		f.expire()
+		f.rt.block = make(chan struct{})
+		f.rt.entered = make(chan struct{})
+		driveCtx, cancel := context.WithCancel(f.reaperCtx())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- f.stack.Recover(driveCtx, 10) }()
+		<-f.rt.entered
+		cancel()
+		close(f.rt.block)
+		if err := <-done; err != nil {
+			t.Fatalf("recover: %v", err)
+		}
+		final, err := f.runs.ByID(t.Context(), "r1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if final.State != stores.Failed {
+			t.Fatalf("run state = %v, want Failed", final.State)
+		}
+	})
+
 	t.Run("resuming run re-drives from the persisted input", func(t *testing.T) {
 		f := newRecoverFixture(t, "agent")
 		_, lease := f.seedRunLease(t, stores.Run{SessionID: "s1", RunID: "r1", Flow: "agent", State: stores.Running})
 		tokCtx := types.WithRunInfo(t.Context(), types.RunInfo{RunID: "r1"})
 		token, err := f.cps.Put(WithPrincipal(tokCtx, types.Principal{Subject: "u1", Tenant: "t1"}), stores.Checkpoint{
+			RunID:      "r1",
 			SessionID:  "s1",
 			Originator: types.Principal{Subject: "u1", Tenant: "t1"},
 			Data:       mustJSON(t, runtime.State{Turn: 3, Pending: pendingCalls("c1")}),
@@ -382,5 +465,5 @@ func TestRecover(t *testing.T) {
 }
 
 func isErrRunActive(err error) bool {
-	return err != nil && err.Error() == types.ErrRunActive.Error()
+	return errors.Is(err, types.ErrRunActive)
 }

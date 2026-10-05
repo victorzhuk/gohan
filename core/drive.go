@@ -40,56 +40,20 @@ func Drive(ctx context.Context, rt runtime.Runtime, r runtime.AgentRun) iter.Seq
 			yield(nil, err)
 			return
 		}
-		driveSteps(ctx, rt, st, yield)
+		NewLifecycle().drive(ctx, rt, r, st, yield)
 	}
 }
 
 // DriveResume re-drives a run from the state a checkpoint carries. The
-// resume input is already appended to the history by the caller.
+// resume input is already appended to the history by the caller. Start runs
+// once to install the per-run wiring; the saved state replaces the initial
+// position it returns, so initial effects never replay.
 func DriveResume(ctx context.Context, rt runtime.Runtime, r runtime.AgentRun, st runtime.State, _ stores.ResumeInput) iter.Seq2[types.Event, error] {
 	return func(yield func(types.Event, error) bool) {
-		driveSteps(ctx, rt, st, yield)
-	}
-}
-
-func driveSteps(ctx context.Context, rt runtime.Runtime, st runtime.State, yield func(types.Event, error) bool) {
-	relay := &sinkRelay{}
-	if prev, ok := types.SinkFrom(ctx); ok {
-		relay.next = prev
-	}
-	sctx := types.WithSink(ctx, relay)
-	for {
-		if err := ctx.Err(); err != nil {
+		if _, err := rt.Start(ctx, r); err != nil {
 			yield(nil, err)
 			return
 		}
-		for _, e := range relay.take() {
-			if !yield(e, nil) {
-				return
-			}
-		}
-		next, evs, status, err := rt.Step(sctx, st)
-		for _, e := range relay.take() {
-			if !yield(e, nil) {
-				return
-			}
-		}
-		for _, e := range evs {
-			if !yield(e, nil) {
-				return
-			}
-		}
-		if err != nil {
-			yield(nil, err)
-			return
-		}
-		st = next
-		if status == runtime.DoneStatus {
-			yield(types.Done{Reason: types.StopCompleted, Usage: st.Usage}, nil)
-			return
-		}
-		if status == runtime.SuspendedStatus {
-			return
-		}
+		NewLifecycle().drive(ctx, rt, r, st, yield)
 	}
 }

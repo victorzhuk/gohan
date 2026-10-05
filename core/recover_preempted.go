@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 )
 
@@ -47,20 +46,12 @@ func (s *Stack) recoverPreemptedRun(ctx context.Context, run stores.Run) error {
 		return s.abandonRun(ctx, lease, run)
 	}
 	run.State = stores.Resuming
-	st, _, _, err := s.replayState(ctx, run)
+	st, _, _, err := s.replayState(ctx, run, rt)
 	if err != nil {
 		return s.abandonRun(ctx, lease, run)
 	}
 	rctx := s.recoveryContext(ctx, run, st, &cp)
-	for _, err := range DriveResume(rctx, rt, runtime.AgentRun{}, st, stores.ResumeInput{}) {
-		if err != nil {
-			return s.abandonRun(ctx, lease, run)
-		}
-	}
-	if err := s.stores.Runs.Finish(ctx, lease, stores.Finished, run.Uncertain, ""); err != nil {
-		return fmt.Errorf("recover run: %w", err)
-	}
-	return nil
+	return s.driveRecovered(rctx, lease, run, rt, st)
 }
 
 // resumeConsumed reports whether a client decision is already recorded on
