@@ -4,6 +4,8 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-05
+
 ### Added
 
 - Attached and detached runs: a consumer attaches to a live run, catches up from the event log in order, and reattaches after a disconnect, while a detached run keeps going and coalesces its deltas in that log.
@@ -26,3 +28,6 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 - The wall-clock budget is measured in elapsed monotonic time, so neither a store timestamp nor a system clock jump can move it.
 - A repeated prefix build for the same request is allocation-free: the assembler memoises instead of allocating on every call.
+
+[unreleased]: https://github.com/victorzhuk/gohan/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/victorzhuk/gohan/releases/tag/v0.1.0

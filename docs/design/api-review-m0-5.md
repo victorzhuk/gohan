@@ -33,7 +33,11 @@ Run on 2026-10-05 against the working tree (no tags exist yet, so `api:check` ha
   api:check: github.com/victorzhuk/gohan/adapter/otel: no tag yet, skipped (no baseline to diff against)
   ```
 
-  `git tag --list` is empty; there is no tag and no incompatibility to gate.
+  `git tag --list` was empty when this ran; there was no tag and no incompatibility to gate at that moment.
+
+### After the review
+
+The first release was cut from this same tree on 2026-10-05: `v0.1.0` for the root module and `adapter/otel/v0.1.0` for the adapter module (`CHANGELOG.md`). The two `api:check` lines above are the pre-tag run and stay as the evidence they are; from that cut onward `api:check` compares a module against its last tag instead of skipping it, so the next change to either module's exported surface is gated rather than unmeasured.
 
 ## What is under review
 
@@ -85,4 +89,4 @@ Core ports by package (verified by `grep -rn '^type [A-Z][A-Za-z]* interface' co
 
 ## Review verdict
 
-The core API review gate of ADR-0083/ADR-0136 passes: the three offline acceptance processes are green against the memory stores, the unit suite is green, the generated types index is clean and drift-free, and `api:check` exits 0 with no baseline to violate. Core types and ports are declared **v1-candidate**; the missing M4 gate artifacts are recorded above and remain open work, not silent omissions.
+The core API review gate of ADR-0083/ADR-0136 passes: the three offline acceptance processes are green against the memory stores, the unit suite is green, the generated types index is clean and drift-free, and `api:check` exits 0 — with the `v0.1.0` baseline the cut established, that check now compares a module's exported surface instead of skipping it. Core types and ports are declared **v1-candidate**; the missing M4 gate artifacts are recorded above and remain open work, not silent omissions.
