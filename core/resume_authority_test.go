@@ -29,11 +29,14 @@ type authPolicySource struct {
 	quorum   int
 	separate bool
 	err      error
+	mu       sync.Mutex
 	calls    int
 }
 
 func (s *authPolicySource) ApprovalPolicy(context.Context, types.RiskTier, string, bool) (permission.ApprovalPolicy, error) {
+	s.mu.Lock()
 	s.calls++
+	s.mu.Unlock()
 	if s.err != nil {
 		return permission.ApprovalPolicy{}, s.err
 	}
