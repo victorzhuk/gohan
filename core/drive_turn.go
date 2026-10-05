@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -263,8 +264,7 @@ func runCalls(ctx context.Context, c turnConfig, sink types.Sink, turn int, call
 			}
 			res = types.ToolResult{
 				ID:      cu.ID,
-				Outcome: types.Failed,
-				Error:   &types.ToolError{Kind: types.Permanent, Message: "not_executed: " + err.Error()},
+				Error:   &types.ToolError{Kind: types.Permanent, Message: runtime.NotExecutedPrefix + err.Error()},
 			}
 		}
 		res.ID = cu.ID

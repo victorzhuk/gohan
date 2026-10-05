@@ -43,14 +43,15 @@ func Schedule(ctx context.Context, calls []types.ToolUse, exec ToolFunc, cfg Sch
 	}
 	results := make([]types.ToolResult, len(calls))
 	if !cfg.Parallel {
-		var err error
+		var batchErr error
 		for i, call := range calls {
-			results[i], err = execOne(ctx, call, exec, cfg)
-			if err != nil {
-				return results, err
+			res, err := execOne(ctx, call, exec, cfg)
+			results[i] = res
+			if err != nil && batchErr == nil {
+				batchErr = err
 			}
 		}
-		return results, nil
+		return results, batchErr
 	}
 	parallel := make([]int, 0, len(calls))
 	sequential := make([]int, 0, len(calls))

@@ -8,9 +8,7 @@ import (
 	"github.com/victorzhuk/gohan/core/types"
 )
 
-// notExecutedPrefix begins the reason of every result for a call the batch
-// did not execute; the frozen form is normative in runtime/spec.md.
-const notExecutedPrefix = "not_executed: "
+const NotExecutedPrefix = "not_executed: "
 
 // BatchOutcome is a pre-execution decision for one call in a batch.
 type BatchOutcome int
@@ -49,6 +47,7 @@ type Batch struct {
 	Used   int
 	Gate   BatchGate
 	Exec   BatchExec
+	Scheduler SchedulerConfig
 }
 
 // BatchResult is the settled result of one call, in call order.
@@ -79,43 +78,50 @@ type BatchReport struct {
 // ErrBatchOverrun and nothing executed, denials render at once, and the
 // allowed calls run through Exec before the first ask suspends the batch.
 func (b Batch) Run(ctx context.Context) (BatchReport, error) {
-	if b.Used+len(b.Calls) > b.Limits.MaxToolCalls {
+	if b.Used > b.Limits.MaxToolCalls || len(b.Calls) > b.Limits.MaxToolCalls-b.Used {
 		return BatchReport{}, fmt.Errorf("%w: need %d, %d of %d remain",
 			ErrBatchOverrun, len(b.Calls), b.Limits.MaxToolCalls-b.Used, b.Limits.MaxToolCalls)
 	}
-
-	report := BatchReport{Spent: len(b.Calls)}
-	var suspend *BatchSuspend
-	for _, call := range b.Calls {
-		if suspend != nil {
-			// Asks settle one at a time across resumes; allowed calls are
-			// never held back behind an ask.
-			if b.Gate(ctx, call).Outcome == BatchAsk {
-				suspend.Pending = append(suspend.Pending, call)
-			}
-			continue
-		}
-		dec := b.Gate(ctx, call)
-		switch dec.Outcome {
+	decisions := make([]BatchDecision, len(b.Calls))
+	for i, call := range b.Calls {
+		decisions[i] = b.Gate(ctx, call)
+	}
+	report := BatchReport{Results: make([]BatchResult, len(b.Calls)), Spent: len(b.Calls)}
+	allowed := make([]types.ToolUse, 0, len(b.Calls))
+	allowedIndexes := make([]int, 0, len(b.Calls))
+	firstAsk := -1
+	for i, call := range b.Calls {
+		report.Results[i].Call = call
+		switch decisions[i].Outcome {
 		case BatchDeny, BatchTaintDenied:
-			report.Results = append(report.Results, BatchResult{
-				Call: call,
-				Result: types.ToolResult{
-					ID:      call.ID,
-					Outcome: types.Failed,
-					Error:   &types.ToolError{Kind: types.Permanent, Message: notExecutedPrefix + dec.Reason},
-				},
-			})
-		case BatchAsk:
-			suspend = &BatchSuspend{Call: call}
-		default:
-			res, err := b.Exec(ctx, call)
-			if err != nil {
-				return report, err
+			report.Results[i].Result = types.ToolResult{
+				ID: call.ID, Outcome: types.Failed,
+				Error: &types.ToolError{Kind: types.Permanent, Message: NotExecutedPrefix + decisions[i].Reason},
 			}
-			report.Results = append(report.Results, BatchResult{Call: call, Result: res})
+		case BatchAsk:
+			if firstAsk < 0 {
+				firstAsk = i
+			}
+		default:
+			allowed = append(allowed, call)
+			allowedIndexes = append(allowedIndexes, i)
 		}
 	}
-	report.Suspend = suspend
+	if firstAsk >= 0 {
+		pending := make([]types.ToolUse, 0, len(b.Calls)-firstAsk-1)
+		for i := firstAsk + 1; i < len(b.Calls); i++ {
+			if decisions[i].Outcome == BatchAsk {
+				pending = append(pending, b.Calls[i])
+			}
+		}
+		report.Suspend = &BatchSuspend{Call: b.Calls[firstAsk], Pending: pending}
+	}
+	results, err := Schedule(ctx, allowed, ToolFunc(b.Exec), b.Scheduler)
+	for j, res := range results {
+		report.Results[allowedIndexes[j]].Result = res
+	}
+	if err != nil {
+		return report, err
+	}
 	return report, nil
 }

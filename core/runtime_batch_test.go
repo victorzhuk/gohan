@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -143,6 +144,45 @@ func TestRuntimeBatchProtocol(t *testing.T) {
 			t.Fatalf("allowed result = %v, want %v", report.Results[0].Result.Outcome, types.Succeeded)
 		}
 	})
+	t.Run("runtime.batch-decisions-before-effects-after-ask", func(t *testing.T) {
+		rec := &batchRecorder{}
+		report, err := rec.run(t, batchCalls("search", "confirm", "search", "wipe"), types.RunLimits{MaxToolCalls: 10}, 0)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		wantEvents := []string{"gate:search", "gate:confirm", "gate:search", "gate:wipe", "exec:search", "exec:search"}
+		if !slices.Equal(rec.events, wantEvents) {
+			t.Fatalf("events = %v, want %v", rec.events, wantEvents)
+		}
+		if !slices.Equal(rec.executed, []string{"search", "search"}) {
+			t.Fatalf("executed = %v, want both allowed calls", rec.executed)
+		}
+		if report.Suspend == nil || report.Suspend.Call.Name != "confirm" {
+			t.Fatalf("Suspend = %v, want first ask confirm", report.Suspend)
+		}
+		if len(report.Suspend.Pending) != 1 || report.Suspend.Pending[0].Name != "confirm" ||
+			report.Suspend.Pending[0].ID != "confirm" {
+			t.Fatalf("pending = %v, want confirm in call order", report.Suspend.Pending)
+		}
+		if len(report.Results) != 3 || report.Results[0].Call.Name != "search" ||
+			report.Results[1].Call.Name != "search" || report.Results[2].Call.Name != "wipe" {
+			t.Fatalf("results = %+v, want both allowed results then denial in call order", report.Results)
+		}
+		if report.Results[2].Result.Outcome != types.Failed || report.Results[2].Result.Error.Kind != types.Permanent {
+			t.Fatalf("denial = %+v, want Failed(Permanent)", report.Results[2].Result)
+		}
+	})
+
+	t.Run("runtime.batch-overrun-has-zero-gates", func(t *testing.T) {
+		rec := &batchRecorder{}
+		_, err := rec.run(t, batchCalls("search", "wipe"), types.RunLimits{MaxToolCalls: 1}, 0)
+		if !errors.Is(err, runtime.ErrBatchOverrun) {
+			t.Fatalf("got %v, want ErrBatchOverrun", err)
+		}
+		if len(rec.events) != 0 || len(rec.executed) != 0 {
+			t.Fatalf("events = %v, executed = %v, want no gates or effects", rec.events, rec.executed)
+		}
+	})
 
 	t.Run("runtime.batch-one-result-per-call", func(t *testing.T) {
 		rec := &batchRecorder{}
@@ -173,7 +213,7 @@ func TestRuntimeBatchProtocol(t *testing.T) {
 		if res.Outcome != types.Failed || res.Error == nil || res.Error.Kind != types.Permanent {
 			t.Fatalf("result = %+v, want Failed(Permanent)", res)
 		}
-		if !strings.HasPrefix(res.Error.Message, "not_executed: ") {
+		if !strings.HasPrefix(res.Error.Message, runtime.NotExecutedPrefix) {
 			t.Fatalf("reason = %q, want the not_executed prefix", res.Error.Message)
 		}
 	})
@@ -188,7 +228,7 @@ func TestRuntimeBatchProtocol(t *testing.T) {
 		if res.Outcome != types.Failed || res.Error == nil || res.Error.Kind != types.Permanent {
 			t.Fatalf("result = %+v, want Failed(Permanent)", res)
 		}
-		if !strings.HasPrefix(res.Error.Message, "not_executed: ") {
+		if !strings.HasPrefix(res.Error.Message, runtime.NotExecutedPrefix) {
 			t.Fatalf("reason = %q, want the not_executed prefix", res.Error.Message)
 		}
 	})
