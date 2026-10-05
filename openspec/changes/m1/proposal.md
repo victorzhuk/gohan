@@ -1,6 +1,6 @@
 # Change: m1
 
-Stub: scope only; tasks are written when the previous milestone's M-review closes.
+The preceding M-review is closed on the current tree (`design.md` §1). `design.md` holds the acceptance matrix that assigns every obligation in this scope to one change, the shared contract decisions the first changes implement, and the milestone conflicts that need a decision before implementation.
 
 ## Scope
 

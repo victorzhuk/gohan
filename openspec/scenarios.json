@@ -1538,7 +1538,7 @@
     "capability": "taint",
     "origin": "ADR-0097",
     "title": "sub-flow output tainted",
-    "deferred_to": "M1"
+    "deferred_to": "M3"
   },
   "tools.verify-reconciles-unknown": {
     "capability": "tools",
