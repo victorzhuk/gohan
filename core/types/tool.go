@@ -71,20 +71,26 @@ type EgressDenied struct {
 	Reason string
 }
 
+func (e EgressDenied) Error() string {
+	return "gohan: egress to " + e.URL + " refused: " + e.Reason
+}
+
 // ToolSpec is the full declaration of one tool. A Tool value holds one spec
 // built once before Build and shared by every run.
 type ToolSpec struct {
-	Name              string
-	Description       string
-	Schema            json.RawMessage
-	Effect            Effect
-	RequiredScopes    []string
-	Timeout           time.Duration
-	ReadBack          string
-	MaxOutput         int
-	Deferred          bool
-	Risk              RiskTier
-	Capabilities      Capabilities
+	Name           string
+	Description    string
+	Schema         json.RawMessage
+	Effect         Effect
+	RequiredScopes []string
+	Timeout        time.Duration
+	ReadBack       string
+	MaxOutput      int
+	Deferred       bool
+	Risk           RiskTier
+	Capabilities   Capabilities
+	// Network is the registration fact Build passes to RequiresEgress and CheckEgress. It never implies Capabilities.Exfil.
+	Network           bool
 	Executor          Executor
 	Egress            *EgressPolicy
 	FingerprintFields []string

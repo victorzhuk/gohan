@@ -29,6 +29,7 @@ const (
 	AuditSessionFork  AuditKind = "session.fork"
 	AuditApproval     AuditKind = "approval"
 	AuditGrantedScope AuditKind = "granted_by_scope"
+	AuditEgressDenied AuditKind = "egress_denied"
 )
 
 // AuditRecord is one entry of the decision trail. It carries checksums and
@@ -46,6 +47,8 @@ type AuditRecord struct {
 	Effect       types.Effect
 	ArgsChecksum string
 	Decision     string
+	Host         string
+	Reason       string
 	Confidence   float64
 	Approver     string
 	Verdict      string

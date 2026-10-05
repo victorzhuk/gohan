@@ -48,6 +48,11 @@ func decisionAuditFrom(ctx context.Context) (stores.AuditLog, bool) {
 	return a, ok
 }
 
+// AuditLogFrom returns the audit log bound to ctx.
+func AuditLogFrom(ctx context.Context) (stores.AuditLog, bool) {
+	return decisionAuditFrom(ctx)
+}
+
 var (
 	errControlWriterMissing = errors.New("gohan: session log does not support control writes")
 	errApprovalExpiryNeeded = errors.New("gohan: takeover of a pending approval needs an expiry binding")

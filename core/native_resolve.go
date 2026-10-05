@@ -3,6 +3,7 @@ package gohan
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/permission"
@@ -20,6 +21,7 @@ type resolvedNativeConfig struct {
 	instruction []types.Block
 	tools       []types.Tool
 	specs       []types.ToolSpec
+	clients     map[string]*http.Client
 	assemble    func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error)
 	modelChain  chains.ModelChain
 	toolChain   chains.ToolChain
@@ -50,6 +52,21 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 		}
 		req := spec.Request
 		req.Tools = toolSpecs(spec.Tools)
+		clients := make(map[string]*http.Client)
+		for i := range req.Tools {
+			toolSpec := req.Tools[i]
+			if err := types.CheckEgress(toolSpec, toolSpec.Network); err != nil {
+				return fmt.Errorf("flow %q: %w", name, err)
+			}
+			toolSpec.Capabilities.Exfil = types.DeriveExfil(toolSpec)
+			req.Tools[i] = toolSpec
+			if toolSpec.Egress != nil {
+				if s.egressClient == nil {
+					return fmt.Errorf("flow %q: %w", name, types.ErrEgressClientRequired{Name: toolSpec.Name})
+				}
+				clients[toolSpec.Name] = s.egressClient(*toolSpec.Egress)
+			}
+		}
 		plan, err := s.ResolveStrategies(req, profiles, spec.Profile)
 		if err != nil {
 			return err
@@ -74,6 +91,7 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			instruction: cloneBlocks(spec.Instruction),
 			tools:       cloneTools(spec.Tools),
 			specs:       req.Tools,
+			clients:     clients,
 			assemble:    spec.Assemble,
 			modelChain:  cloneModelChain(modelChain),
 			toolChain:   cloneToolChain(spec.ToolChain),

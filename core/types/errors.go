@@ -219,3 +219,9 @@ type ErrToolSetDrift struct {
 func (e ErrToolSetDrift) Error() string {
 	return "gohan: tool set drifted from the recorded manifest"
 }
+
+type ErrEgressClientRequired struct{ Name string }
+
+func (e ErrEgressClientRequired) Error() string {
+	return "gohan: tool " + e.Name + " declares an egress policy but no egress client is configured"
+}

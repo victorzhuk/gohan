@@ -42,6 +42,7 @@ type ToolSpec struct {
 	Deferred       bool
 	Risk           RiskTier
 	Capabilities   Capabilities
+	Network        bool
 	Executor       Executor
 	Egress         *EgressPolicy
 	Verify         func(ctx context.Context, args json.RawMessage, r ToolResult) (Outcome, error)

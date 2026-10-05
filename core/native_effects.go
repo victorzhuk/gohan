@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -32,12 +33,13 @@ func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 		profile:     cfg.profile,
 		specs:       cfg.specs,
 		instruction: cloneBlocks(cfg.instruction),
+		clients:     cfg.clients,
 		scheduler: runtime.SchedulerConfig{
 			EffectOf:    nativeEffectOf(cfg.tools),
 			Parallel:    cfg.plan.ParallelTools,
 			MaxParallel: cfg.plan.MaxParallelTools,
 		},
-		exec: governedToolExec(cfg.toolChain, toolset, specLookup(cfg.specs)),
+		exec: governedToolExec(cfg.toolChain, toolset, specLookup(cfg.specs), cfg.clients),
 	}
 }
 
@@ -108,9 +110,16 @@ func runModelChain(ch chains.ModelChain, next types.ModelFunc) types.ModelFunc {
 // resolved spec; a step that does not govern the call composes over it
 // without running. A nil Applies, or an unresolved tool name, keeps the
 // step in the composition.
-func governedToolExec(ch chains.ToolChain, set ToolSet, lookup func(string) (types.ToolSpec, bool)) func(context.Context, types.ToolUse) (types.ToolResult, error) {
+func governedToolExec(ch chains.ToolChain, set ToolSet, lookup func(string) (types.ToolSpec, bool), clientMaps ...map[string]*http.Client) func(context.Context, types.ToolUse) (types.ToolResult, error) {
+	var clients map[string]*http.Client
+	if len(clientMaps) > 0 {
+		clients = clientMaps[0]
+	}
 	return func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
 		spec, haveSpec := lookup(call.Name)
+		if client := clients[call.Name]; client != nil && haveSpec {
+			ctx = withEgressClient(ctx, client)
+		}
 		next := func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
 			return CallTool(ctx, set, call.Name, call.Args)
 		}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/permission"
@@ -23,6 +24,7 @@ type config struct {
 	keys             types.ProviderKeySource
 	credentials      types.CredentialSource
 	approvalPolicy   permission.ApprovalPolicySource
+	egressClient     func(p types.EgressPolicy) *http.Client
 	logger           *slog.Logger
 	telemetry        types.Telemetry
 	pinned           *types.PinnedManifest
@@ -100,6 +102,14 @@ func WithCredentialSource(src types.CredentialSource) Option {
 func WithApprovalPolicySource(src permission.ApprovalPolicySource) Option {
 	return func(c *config) error {
 		c.approvalPolicy = src
+		return nil
+	}
+}
+
+// WithEgressClient sets the HTTP client factory for tool egress policies.
+func WithEgressClient(fn func(p types.EgressPolicy) *http.Client) Option {
+	return func(c *config) error {
+		c.egressClient = fn
 		return nil
 	}
 }

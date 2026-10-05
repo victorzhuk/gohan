@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+
+	"github.com/victorzhuk/gohan/core/stores"
 
 	"encoding/json/jsontext"
 
@@ -70,7 +73,7 @@ func CallTool(ctx context.Context, set ToolSet, name string, args jsontext.Value
 		if errors.As(err, &suspended) || errors.As(err, &aborted) || errors.Is(err, context.Canceled) {
 			return types.ToolResult{}, err
 		}
-		return classifyFailure(effectOf(tool), err), nil
+		return classifyFailure(ctx, tool.Spec(), err), nil
 	}
 	if result.Outcome == types.Unknown && result.Error == nil {
 		result.Error = &types.ToolError{Kind: types.OutcomeUnknown, Message: "outcome unknown"}
@@ -116,10 +119,6 @@ func errorKindLabel(k types.ErrorKind) string {
 	}
 }
 
-func effectOf(tool types.Tool) types.Effect {
-	return tool.Spec().Effect
-}
-
 // callRecovered runs Call with panic containment: the tool author contract
 // turns a recovered panic into Failed(Permanent), or Unknown for a
 // SideEffect tool whose external call may already have happened.
@@ -142,15 +141,15 @@ func callRecovered(ctx context.Context, tool types.Tool, args jsontext.Value) (r
 	return tool.Call(ctx, args)
 }
 
-// classifyFailure maps a Go error to the failed ToolResult the model sees.
-// A deadline on a SideEffect tool leaves the outcome unknown; on a
-// ReadOnly or Idempotent tool the call is retryable. A marked retryable
-// error stays retryable; everything else is permanent.
-func classifyFailure(effect types.Effect, err error) types.ToolResult {
+func classifyFailure(ctx context.Context, spec types.ToolSpec, err error) types.ToolResult {
 	kind := types.Permanent
+	var denied types.EgressDenied
 	switch {
+	case errors.As(err, &denied):
+		kind = types.Permanent
+		recordEgressDenied(ctx, spec, denied)
 	case errors.Is(err, context.DeadlineExceeded):
-		if effect == types.SideEffect {
+		if spec.Effect == types.SideEffect {
 			kind = types.OutcomeUnknown
 		} else {
 			kind = types.Retryable
@@ -167,11 +166,33 @@ func classifyFailure(effect types.Effect, err error) types.ToolResult {
 	}
 	p := types.ProblemOf(err)
 	message := p.Detail
+	if errors.As(err, &denied) {
+		message = denied.Error()
+	}
 	if message == "" || message == p.Title {
 		message = p.Title
 	}
 	return types.ToolResult{
 		Outcome: outcome,
 		Error:   &types.ToolError{Kind: kind, Message: message},
+	}
+}
+
+func recordEgressDenied(ctx context.Context, spec types.ToolSpec, denied types.EgressDenied) {
+	u, _ := url.Parse(denied.URL)
+	host := ""
+	if u != nil {
+		host = u.Hostname()
+	}
+	run, _ := types.RunInfoFrom(ctx)
+	if audit, ok := AuditLogFrom(ctx); ok && audit != nil {
+		_ = audit.Append(ctx, stores.AuditRecord{
+			Kind: stores.AuditEgressDenied, Tool: spec.Name,
+			RunID: run.RunID, SessionID: run.SessionID, Host: host, Reason: denied.Reason,
+		})
+	}
+	if tel := types.TelemetryFrom(ctx); tel != nil {
+		tel.Count(ctx, "gohan.egress.requests", 1,
+			types.String("tool", spec.Name), types.String("host", host), types.String("decision", "denied"))
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/permission"
@@ -77,6 +78,7 @@ type Stack struct {
 	keys             types.ProviderKeySource
 	credentials      types.CredentialSource
 	approvalPolicy   permission.ApprovalPolicySource
+	egressClient     func(p types.EgressPolicy) *http.Client
 	pinned           *types.PinnedManifest
 	prompts          chains.PromptSet
 	sequentialTools  bool
@@ -135,6 +137,7 @@ func Build(opts ...Option) (*Stack, error) {
 		keys:             cfg.keys,
 		credentials:      cfg.credentials,
 		approvalPolicy:   cfg.approvalPolicy,
+		egressClient:     cfg.egressClient,
 		pinned:           cfg.pinned,
 		prompts:          cfg.prompts,
 		sequentialTools:  cfg.sequentialTools,

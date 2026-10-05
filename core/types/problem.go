@@ -177,6 +177,7 @@ var sentinelRows = []sentinelRow{
 	{ErrPartitionMissing, catalog[30]},
 	{ErrShutdownIncomplete, catalog[30]},
 	{ErrEgressPolicyRequired, catalog[30]},
+	{ErrEgressClientRequired{}, catalog[30]},
 }
 
 func stageName(s GuardStage) string {

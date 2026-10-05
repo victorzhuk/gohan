@@ -4,11 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"reflect"
 	"time"
 
 	"github.com/victorzhuk/gohan/core/types"
 )
+
+type egressClientContextKey struct{}
+
+// EgressClient returns the HTTP client supplied for the current tool call.
+func EgressClient(ctx context.Context) *http.Client {
+	client, _ := ctx.Value(egressClientContextKey{}).(*http.Client)
+	return client
+}
+
+func withEgressClient(ctx context.Context, c *http.Client) context.Context {
+	return context.WithValue(ctx, egressClientContextKey{}, c)
+}
 
 // defaultMaxOutput is the tools spec's inline output cap: content beyond
 // it moves to the output store.
@@ -54,6 +67,34 @@ func WithRisk(r types.RiskTier) ToolOption {
 // discovered.
 func Deferred() ToolOption {
 	return func(c *toolConfig) { c.spec.Deferred = true }
+}
+
+// WithEgress declares the connection policy for a tool.
+func WithEgress(p types.EgressPolicy) ToolOption {
+	return func(c *toolConfig) {
+		policy := p
+		policy.Allow = append([]string(nil), p.Allow...)
+		policy.Schemes = append([]string(nil), p.Schemes...)
+		c.spec.Egress = &policy
+	}
+}
+
+// WithHTTP declares that a tool reaches the network.
+func WithHTTP() ToolOption {
+	return func(c *toolConfig) { c.spec.Network = true }
+}
+
+// WithExfil declares that a tool can send data outside the run.
+func WithExfil() ToolOption {
+	return func(c *toolConfig) {
+		c.spec.Capabilities.Exfil = true
+		c.spec.Network = true
+	}
+}
+
+// WithPrivateRead declares that a tool can read private run data.
+func WithPrivateRead() ToolOption {
+	return func(c *toolConfig) { c.spec.Capabilities.PrivateRead = true }
 }
 
 // WithRawArgs allows untyped argument fields in the schema.

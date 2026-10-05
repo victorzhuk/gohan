@@ -274,6 +274,7 @@ const (
 	AuditSuspended    AuditKind = "suspended"
 	AuditResumed      AuditKind = "resumed"
 	AuditLimit        AuditKind = "limit"
+	AuditEgressDenied AuditKind = "egress_denied"
 )
 
 type AuditRecord struct {
@@ -289,6 +290,8 @@ type AuditRecord struct {
 	Effect       Effect
 	ArgsChecksum string
 	Decision     string
+	Host         string
+	Reason       string
 	Confidence   float64
 	Approver     string
 	Verdict      string

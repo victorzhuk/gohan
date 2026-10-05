@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ type turnConfig struct {
 	maxTokens int
 	gate      runtime.BatchGate
 	limits    types.RunLimits
+	clients   map[string]*http.Client
 	// scheduler carries the resolved batch strategy. A zero value runs
 	// every call sequentially.
 	scheduler runtime.SchedulerConfig
