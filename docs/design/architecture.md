@@ -44,7 +44,42 @@ tools ── are driving adapters: they call use cases / repositories, like HTTP
 
 ### 4.2a Core budget rule (ADR-0098)
 
-`core` (package `gohan`, a tree — ADR-0139) contains ports, types, events, error classes and the driver (`Drive`, chain validation, the permission gate skeleton, stores contracts). Any default, matcher, heuristic, preset or policy value lives in `std`; anything protocol- or vendor-specific lives in `adapter`. A capability spec may name a core hook (e.g. `TaintHook`, `ContextPolicy`) but its implementations are `std`. Consequences applied: `SkillSource` is a `std/skills` interface; `TaintPolicy` defaults and the substring matcher are `std/taint` behind the gate's `TaintHook`; JSON-Patch diffing for `StateChanged` is `std/state`; sandbox effect derivation and secret scanning are `std/sandbox`. One exception is recorded rather than implied: the executable limit middleware and the concrete `RunLimits` preset values still live in `core/chains` and `core/types`, sequenced after per-run accounting (ADR-0148). New capabilities are frozen until M0 ships; later grill rounds append to `docs/backlog.md`.
+`core` (package `gohan`, a tree — ADR-0139) contains ports, types, events, error classes and the driver (`Drive`, chain validation, the permission gate skeleton, stores contracts). Any default, matcher, heuristic, preset or policy value lives in `std`; anything protocol- or vendor-specific lives in `adapter`. A capability spec may name a core hook (e.g. `TaintHook`, `ContextPolicy`) but its implementations are `std`. Consequences applied: `SkillSource` is a `std/skills` interface; `TaintPolicy` defaults and the substring matcher are `std/taint` behind the gate's `TaintHook`; JSON-Patch diffing for `StateChanged` is `std/state`; sandbox effect derivation and secret scanning are `std/sandbox`. One exception is recorded rather than implied: the executable limit **policy** moved out of the floor into `std/limit` (`Limits`, `ToolLimits`, plus the per-endpoint `MaxInFlight` bulkhead), sequenced after per-run accounting (ADR-0148). The concrete **default values** did not move with it: the run-limit presets (`InteractiveLimits`, `AgenticLimits`, `BatchLimits`) and the zero-fill defaults `Build` applies to a preset's zero fields are still declared in the floor package (`core/types`, `core/limits.go`), and `core/chains` keeps the ledger and its counters. New capabilities are frozen until M0 ships; later grill rounds append to `docs/backlog.md`.
+
+### 4.2b Governed native construction
+
+A service registers its flow as a **native definition** and takes its handle from the constructor. Nothing passes a runtime or a stepper: the definition is the only thing a service writes, and the handle is what the conversation is obtained from.
+
+```go
+stack, err := gohan.Build(
+	gohan.WithModels(model),
+	gohan.WithStores(stores.Stores{SessionLog: sessions}),
+	gohan.WithNativeAgent(gohan.NativeSpec{
+		Request:  gohan.FlowRequest{Name: "quickstart"},
+		Profile:  "scripted",
+		Assemble: assemble,
+	}),
+)
+if err != nil {
+	return err
+}
+conv, err := gohan.NewNativeConversation(stack, "quickstart",
+	gohan.WithConversationRuns(stores.NewMemoryRuns()),
+	gohan.WithConversationEventLog(stores.NewMemoryEventLog()),
+)
+```
+
+`WithNativeAgent(gohan.NativeSpec)` is a `Build` option, so the definition is registered before `Build` runs. `NativeSpec` carries what the flow requests at build time and what it runs: the validated `FlowRequest` (whose name is the flow name), the model `Profile` name, the `Instruction` blocks, the `Tools`, the `Assemble` function, the `chains.ModelChain` and `chains.ToolChain` to run, the flow's `RunLimits`, and the flow's own `Decider` — the tool policy the batch gate consults before any call executes. The tool list has one source: `Request.Tools` is derived from `Tools` during resolution, never supplied independently. A nil `Decider` keeps the default gate — read-only and idempotent calls pass, side effects ask, a decider error asks rather than widening permission.
+
+`Build` resolves each registered definition once — model by profile name, strategies, fidelity, then chain ordering — and a rejected definition fails the build **before any provider call**. The constructor reads that resolution instead of recomputing it: an unknown name is refused before any invocation, and `stack.Explain(conv)` projects the same resolved configuration execution uses (profile, strategy plan, named chain steps, tools, prompt set, limits, release) with zero provider calls and no run budget spent.
+
+#### Per-run accounting
+
+The ledger is **per run** and reached from the run's invocation context, not from a chain or a preset. Each `Send` mints a `chains.LimitsState` and installs it with `chains.WithLimitsState`; each `Resume` mints one seeded from the spend the persisted run record already reports. Concurrent sessions share neither runtime state nor spend, and a branch under one tree shares one tree total rather than a second budget.
+
+The executable policy lives in `std/limit` and reads that ledger from the context: `limit.Limits` is the model-chain step (charges usage through the profile's pricing, warns once at the soft ratio, aborts on a hard cost overrun or an expired wall clock), `limit.ToolLimits` is the tool-chain step (consumes a reserved batch slot, bounds each call by the wall clock the run has left so an overrun cancels the tool's context), and `limit.Endpoint` is the per-endpoint `MaxInFlight` bulkhead. `std` presets cross into a build through `Preset.Options()`. Without a ledger in the context the steps forward unchanged.
+
+The two ceilings behave differently on purpose. Reaching `MaxTurns` or `MaxToolCalls` **stops** the run: those are budgeting counters, the step only records itself, and the run ends with `types.Done{Reason: types.StopLimit}` at its effect boundary. A cost overrun or an expired wall clock **aborts** the run: those are the hard checks, and they fire before or right after the call that crossed them. A batch whose reservation exceeds `MaxToolCalls` is refused whole with `types.ErrBatchOverrun` — nothing executes and the reservation is refunded.
 
 ### 4.3 Adapter roles
 

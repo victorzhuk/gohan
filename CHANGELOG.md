@@ -15,6 +15,8 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ### Fixed
 
+- One send emits exactly one terminal event and persists the assistant reply: the reply was delivered both as an event and through the sink, and a turn that ended on a tool batch never appended its final message, so the next turn and the next caller saw an assistant turn that was gone.
+- `Resume` keeps the calls it was waiting on, replays the batch from the checkpointed decision rather than the pre-decision per-run scope, and reports the run's outcome: a resumed batch used to restart from the state before the decision, so no call ran, no result landed in history, and the run completed with nothing completed.
 - `Resume` authorizes before it consumes: it checks the transport principal against the session owner, the approval policy and the request's eligibility, and leaves the token pending when it refuses. It no longer continues a run under the originator's identity without that check.
 - Resume, crash recovery and preempted recovery run one lifecycle: a resumed run takes a lease, starts a heartbeat, persists a new checkpoint when it suspends again, and reaches a terminal transition before the terminal event is delivered.
 - The lease heartbeat runs in production, so a long step or a blocked consumer no longer lets the lease expire, and a lost lease ends the run instead of finishing under it.
@@ -43,6 +45,9 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ### Added
 
+- Governed native construction: `WithNativeAgent(NativeSpec)` registers a flow definition with `Build`, and `NewNativeConversation(stack, name, opts…)` returns a `Conversation` built from the resolved configuration. A service writes a definition instead of passing a runtime and a stepper; `Build` resolves each definition once and refuses an invalid one before any provider call, and the constructor refuses an unregistered name before any invocation. The definition carries the model profile, instruction, tools, assembler, both chains, the run limits and the flow's own tool decider.
+- `Explain` projects that same resolved configuration — profile, strategy plan, both chains' steps, tools, prompt set, limits and release — with zero provider calls and no run budget spent, from a flow name or a handle.
+- Per-run accounting: each run carries its own ledger, reached from the run's invocation context, with the executable limit policy in `std/limit`. Reaching the turn or tool-call ceiling stops the run at its effect boundary with `Done{StopLimit}`, while a cost overrun or an expired wall clock aborts it.
 - `AllowAnonymous()`, a build option for unowned function-flow invocation; it invents no tenant and grants no access to an owned session.
 - `task spec:gate` runs the scenario coverage gate over every module in the workspace, and `task spec` regenerates the type index before it.
 

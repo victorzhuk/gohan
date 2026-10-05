@@ -22,40 +22,38 @@ internal/transport/http/          ogen handlers; sets Principal
 
 ```go
 stack, err := gohan.Build(
-	gohan.WithModels(openai.New(cfg.Gateway, gohan.ModelProfile{
+	gohan.WithModels(openai.New(cfg.Gateway, types.ModelProfile{
 		Name:         "gw-default",
 		Version:      "gpt-5.2-2025-12-11",
-		Caps:         gohan.Caps{Tools: true, Streaming: true, Cache: gohan.CacheAuto},
+		Caps:         types.Caps{Tools: true, Streaming: true, Cache: types.CacheAuto},
 		MaxInFlight:  64,
-		LatencyClass: gohan.Interactive,
+		LatencyClass: types.Interactive,
 	})),
 	gohan.WithStores(memory.New()),
-	std.Interactive(),  // an Option: chains, prompts, guards, output mode, limits
+	std.Interactive().Options()...,  // chains, prompts, guards, output mode, limits
 )
 if err != nil {
 	return err
 }
-flow, err := agent.New[askIn, askOut](stack, gohan.AgentSpec{
-	Name:        "excursion-assistant",
-	Instruction: prompts.Assistant,
-	Tools:       []gohan.Tool{tools.Search(repo), tools.Availability(repo)},
-	Limits:      gohan.RunLimits{MaxTurns: 6},
-}, native.Runtime())
 ```
 
-`std.Interactive()` is one exported function: it registers `std.ToolChain`, `std.ModelChain`, `std.DefaultPrompts`, the rule-based guards, `Windowed` output and default `RunLimits`. Its body is the documentation; `stack.Explain(flow)` prints the result. A team that wants less copies the function and deletes lines.
+The S1 assistant is a native definition registered with the build option that takes a `NativeSpec`, and its handle is what the conversation is obtained from — the wiring is spelled out in §4.2b of `docs/design/architecture.md`. The definition carries the flow's name in its request, the model profile, the instruction blocks, the tools, the assembler, the two chains, the run limits and the flow's own tool decider.
+
+`std.Interactive()` is one exported function: it registers `std.ToolChain`, `std.ModelChain`, `std.DefaultPrompts`, the rule-based guards, `Windowed` output and default `RunLimits`, and `Options()` presents it as `Build` options. Its body is the documentation; `stack.Explain(conv)` prints the result. A team that wants less copies the function and deletes lines.
+
+The S1 assistant is a `Conversation`, so the use case streams events and maps a suspension:
 
 ```go
-func (a *Assistant) Answer(ctx context.Context, q assist.Question) (assist.Answer, error) {
-	out, err := a.flow.Invoke(ctx, toAskIn(q))
-	var se *gohan.SuspendError
-	if errors.As(err, &se) {
-		return assist.Answer{}, assist.ErrPending{Ref: string(se.Token)}
+func (a *Assistant) Answer(ctx context.Context, q assist.Question, yield func(gohan.Event) bool) (assist.Answer, error) {
+	for ev, err := range a.conv.Send(ctx, q.SessionID, toAskIn(q)) {
+		if err != nil {
+			return assist.Answer{}, err
+		}
+		if !yield(ev) {
+			break
+		}
 	}
-	if err != nil {
-		return assist.Answer{}, fmt.Errorf("invoke assistant: %w", err)
-	}
-	return toAnswer(out), nil
+	return assist.Answer{}, nil
 }
 ```
 
@@ -89,6 +87,31 @@ flow, err := einoflow.FromRunnable[askIn, askOut](stack, graph)
 ```
 
 Domain, use cases, tools, transport: unchanged. Governance, telemetry and suspension behave identically (R3, R4, R12).
+
+### Native path seams
+
+The shipped `examples/quickstart` is the smallest complete service on the governed path. Its imports are the whole wiring surface — core as the driver, plus the store and type packages:
+
+```go
+import (
+	gohan "github.com/victorzhuk/gohan/core"
+	"github.com/victorzhuk/gohan/core/stores"
+	"github.com/victorzhuk/gohan/core/types"
+)
+```
+
+`examples/excursions` adds exactly one more import, `github.com/victorzhuk/gohan/core/permission`, for the flow's own decider. Neither example writes a runtime, a stepper or a batch: the conversation loads the history, gates the batch, drives the run and persists every append.
+
+| Seam | What it does | What the tests assert |
+|---|---|---|
+| Construction | A native definition registers with `Build`; the constructor returns a `Conversation` from the resolved configuration | A valid registration resolves; a constrained request without the profile's cap, an unknown profile and an unknown fallback are each rejected; a rejected definition makes zero provider calls; an unknown flow name and a nil stack are refused by the constructor; two conversations over one stack stay isolated; build middleware runs inside `Send` |
+| Effect seam | `Stack.nativeTurnConfig` binds the model chain, the assembler with the resolved prompt set as the single system insertion point, the tool registry, the governed call path, the limits and the scheduler strategy; `nativeRun` pairs the model and batch effects over one per-run scope | The turn config binds the resolved values; the turn sequence alternates effects; a tool call keeps its original identity through the chain; a control error stays a control error; a batch reservation keeps call order and refunds on refusal; a side effect appends before it executes; batch results keep call order; the step-0-outermost model chain composes the stack middleware; an unknown profile is refused before a call |
+| Lifecycle seam | `Send`, `Continue`, `Resume` and `Recover` each build a fresh run through the same governed factory; a steer during a batch reaches the next turn; the ledger is per run | A steer during a batch is applied and acknowledged; a resume keeps the spend the record reports; a run with no ledger still completes; a resume can suspend again; an empty record starts an empty ledger |
+| Gate | The batch gate consults the flow's `Decider` for every call before the first one executes | A denied side effect never executes and renders as an ordered `not_executed` result; a decider error asks instead of allowing; a nil decider keeps the read-only/idempotent-pass default; an unknown tool denies even with a decider |
+| Accounting | `Send` mints a ledger into the run context; `Resume` mints one seeded from the record; `std/limit` reads it | One run's spend never touches another's; reaching `MaxTurns` ends the run with `Done{StopLimit}` at its effect boundary |
+| Explain | `stack.Explain(handle)` projects the resolved configuration | The projection carries the profile, both chains' steps, the strategy plan, the limits, the prompts and the release; the sample request matches execution preparation; a handle resolves the same configuration as its flow name; an unknown flow yields an empty explanation; the release follows the resolved prompt set |
+
+`examples/excursions` covers the same ground end to end: the offline plan streams an assistant message and one `Done`, the fixture decider denies `book_cabin` so the booking tool never runs, and the persisted history carries the denial as an ordered `not_executed` result.
 
 ### 9.0 Quickstart (canonical smoke test; every identifier is checked against `docs/design/types.md`)
 
@@ -136,9 +159,9 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	classify := flow.Extract[Ticket](model)
-	ctx := gohan.WithPrincipal(context.Background(), gohan.Principal{Tenant: "demo", Subject: "dev"})
-	out, err := classify.Invoke(ctx, []gohan.Block{gohan.Text{Text: os.Args[1]}})
+	classify := flow.Extract[Ticket](stack, "default")
+	ctx := types.WithPrincipal(context.Background(), types.Principal{Tenant: "demo", Subject: "dev"})
+	out, err := classify.Invoke(ctx, []types.Block{types.Text{Text: os.Args[1]}})
 	if err != nil {
 		panic(err)
 	}
@@ -146,9 +169,9 @@ func main() {
 }
 ```
 
-`ModelProfile`, `Caps`, `CacheAuto` and `Interactive` live in `core/types`, not in the driver package; `flow.Extract` takes a `types.Model`, not a `Stack`.
+`ModelProfile`, `Caps`, `CacheAuto` and `Interactive` live in `core/types`, not in the driver package; `flow.Extract` takes the `*gohan.Stack` and a profile name, not a `types.Model`.
 
-No preset, no chain, no prompt text: the empty-chain path (`chains.empty-chains`) with `Extract`'s schema-only request. Spreading `std.Interactive().Options()` into `Build` is the first governance step.
+No preset, no chain, no prompt text: the empty-chain path with `Extract`'s schema-only request. Spreading `std.Interactive().Options()` into `Build` is the first governance step.
 
 ### 9.1 Example catalog
 
