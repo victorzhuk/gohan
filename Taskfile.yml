@@ -26,7 +26,6 @@ tasks:
     cmds:
       - |
         set -euo pipefail
-        fail=0
         for dir in . adapter/*; do
           [ -f "$dir/go.mod" ] || continue
           mod=$(sed -n 's/^module //p' "$dir/go.mod")
@@ -37,16 +36,8 @@ tasks:
             continue
           fi
           echo "api:check: $mod: diffing HEAD against $tag"
-          out=$(go run golang.org/x/exp/cmd/apidiff@latest -m "$mod@$tag" "$dir")
-          [ -z "$out" ] || printf '%s\n' "$out"
-          if printf '%s\n' "$out" | grep -q '^Incompatible changes:'; then
-            case "$tag" in
-              *v1.*|*[2-9].*) echo "api:check: $mod: incompatible change gated at $tag"; fail=1 ;;
-              *) echo "api:check: $mod: v0, incompatible changes reported but not gated" ;;
-            esac
-          fi
+          go run ./tools/apicheck -dir "$dir" -tag "$tag"
         done
-        exit $fail
 
   lint:
     desc: Run golangci-lint (extra flags after --)
