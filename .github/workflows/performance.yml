@@ -16,7 +16,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/gohan-performance-gate
-          key: performance-gate-${{ runner.os }}-${{ github.event.pull_request.base.sha }}
+          key: performance-gate-schema2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod') }}-${{ hashFiles('core/performance_baselines.json') }}-${{ github.event.pull_request.base.sha }}-${{ github.sha }}
       - id: mergebase
         run: echo "base=$(git merge-base "origin/${{ github.base_ref }}" HEAD)" >> "$GITHUB_OUTPUT"
       - run: |

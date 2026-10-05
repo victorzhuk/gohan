@@ -5,18 +5,33 @@
 // Measurement alternates base and head at the round level, three rounds per
 // side, and takes the fastest round per benchmark: -count repeats one side's
 // cells back to back, so machine drift over the run would be confounded with
-// the side. Allocation counts and bytes are exact per-op numbers and are
-// judged first; latency is a sampled statistic decidable only on a quiet
-// fixed runner, so a latency miss defers to the release runner unless
-// -latency enforces it. Verdicts are cached by the commit pair so a
-// re-run of the same pair does not re-measure. The tool never touches the
-// network: it checks out both commits into temporary worktrees and builds them
-// with the local toolchain.
+// the side. Every gated benchmark must produce a nonempty sample in each
+// round on both sides; a missing benchmark or a zero ns/op sample fails the
+// run and names the benchmark.
+//
+// Allocation counts and bytes are exact per-op numbers and are judged first;
+// they are authoritative on any machine. Latency is a sampled statistic:
+// the chain-overhead budgets from the baselines file (fastest chain minus
+// fastest raw comparator against the frozen µs budgets) and the relative
+// regression are enforced only in strict mode (-latency, the reference
+// runner); a local run reports them as advisory and can never satisfy a
+// strict verdict, because the latency mode is part of the cache identity.
+//
+// Verdicts are cached under a versioned identity (schema2): full commit
+// SHAs, benchmark selector, effective benchtime, inner timeout, round count,
+// tolerance, latency mode, SHA256 digest of the validated baselines file,
+// Go version, GOOS/GOARCH/GOMAXPROCS, and runner identity. A cache entry is
+// read back only when its identity matches exactly; entries from earlier
+// schemas are ignored. The baselines file is loaded and validated before the
+// cache is consulted. The tool never touches the network: it checks out both
+// commits into temporary worktrees and builds them with the local toolchain.
 package main
 
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -25,12 +40,16 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 )
 
-const rounds = 3
+const (
+	rounds         = 3
+	identitySchema = "schema2"
+)
 
 type sample struct {
 	ns     float64
@@ -39,6 +58,49 @@ type sample struct {
 }
 
 type benchResult map[string][]sample
+
+// baselines mirrors the gated subset of core/performance_baselines.json.
+type baselines struct {
+	Gated   []string `json:"gated"`
+	Budgets struct {
+		ToolChainOverheadUS  float64 `json:"tool_chain_overhead_us"`
+		ModelChainOverheadUS float64 `json:"model_chain_overhead_us"`
+	} `json:"budgets"`
+}
+
+// budgetPair freezes the pairing between each chain benchmark and its raw
+// comparator; the µs budget itself comes from the baselines file.
+type budgetPair struct {
+	chain, raw, label string
+	budgetUS          float64
+}
+
+func budgetPairs(b baselines) []budgetPair {
+	return []budgetPair{
+		{"BenchmarkToolChain_ReadOnly", "BenchmarkToolCall_Raw", "tool-chain overhead", b.Budgets.ToolChainOverheadUS},
+		{"BenchmarkModelChain", "BenchmarkModelCall_Raw", "model-chain overhead", b.Budgets.ModelChainOverheadUS},
+	}
+}
+
+// gateIdentity is the schema2 cache identity: a cached verdict is reused only
+// when every field matches the current run exactly.
+type gateIdentity struct {
+	Schema          string  `json:"schema"`
+	Base            string  `json:"base_sha"`
+	Head            string  `json:"head_sha"`
+	Selector        string  `json:"bench_selector"`
+	Benchtime       string  `json:"benchtime"`
+	Timeout         string  `json:"test_timeout"`
+	Rounds          int     `json:"rounds"`
+	Tolerance       float64 `json:"tolerance"`
+	LatencyEnforced bool    `json:"latency_enforced"`
+	BaselinesSHA    string  `json:"baselines_sha256"`
+	GoVersion       string  `json:"go_version"`
+	GOOS            string  `json:"goos"`
+	GOARCH          string  `json:"goarch"`
+	GOMAXPROCS      int     `json:"gomaxprocs"`
+	Runner          string  `json:"runner"`
+}
 
 type verdictRow struct {
 	Name       string  `json:"name"`
@@ -51,10 +113,9 @@ type verdictRow struct {
 }
 
 type verdict struct {
-	Base   string       `json:"base"`
-	Head   string       `json:"head"`
-	Passed bool         `json:"passed"`
-	Rows   []verdictRow `json:"rows"`
+	Identity gateIdentity `json:"identity"`
+	Passed   bool         `json:"passed"`
+	Rows     []verdictRow `json:"rows"`
 }
 
 type exitError struct {
@@ -84,12 +145,12 @@ func run(args []string) error {
 	base := fs.String("base", "", "base commit (required)")
 	head := fs.String("head", "HEAD", "head commit")
 	bench := fs.String("bench", ".", "benchmark name pattern passed to go test")
-	benchtime := fs.String("benchtime", "", "benchtime passed to go test (default: go's own)")
+	benchtime := fs.String("benchtime", "1000x", "benchtime passed to go test (the gated chain benchmarks carry a MaxToolCalls limit, so a fixed iteration count is required)")
 	innerTimeout := fs.String("test-timeout", "10m", "timeout for each inner go test run")
 	tolerance := fs.Float64("tolerance", 5.0, "allowed regression percent")
 	latency := fs.Bool("latency", false, "fail on latency regressions (quiet fixed runner only)")
 	cacheDir := fs.String("cache", defaultCacheDir(), "verdict cache directory")
-	baselines := fs.String("baselines", "", "optional JSON file naming the gated benchmarks")
+	baselinesPath := fs.String("baselines", "", "JSON baselines file naming the gated benchmarks and the latency budgets (required)")
 	fs.Usage = usage(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -100,6 +161,10 @@ func run(args []string) error {
 	if *base == "" {
 		fs.Usage()
 		return errors.New("-base is required")
+	}
+	if *baselinesPath == "" {
+		fs.Usage()
+		return errors.New("-baselines is required")
 	}
 
 	root, err := filepath.Abs(*repo)
@@ -115,8 +180,23 @@ func run(args []string) error {
 		return err
 	}
 
-	cacheFile := filepath.Join(*cacheDir, cacheName(baseSHA, headSHA))
-	if v, ok, err := loadVerdict(cacheFile); err != nil {
+	// The baselines file is loaded and validated before the cache is
+	// consulted: the validated file's digest is part of the cache identity,
+	// so a stale or invalid budget set can never bless a cached verdict.
+	bl, baselinesSHA, err := loadBaselines(*baselinesPath)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("[gate] gating %d benchmarks from %s (sha256 %s)\n", len(bl.Gated), *baselinesPath, baselinesSHA)
+
+	benchtimeEff := *benchtime
+	if benchtimeEff == "" {
+		benchtimeEff = "default"
+	}
+	id := buildIdentity(baseSHA, headSHA, *bench, benchtimeEff, *innerTimeout, *tolerance, *latency, baselinesSHA)
+
+	cacheFile := filepath.Join(*cacheDir, cacheName(id))
+	if v, ok, err := loadVerdict(cacheFile, id); err != nil {
 		return err
 	} else if ok {
 		fmt.Printf("[gate] cache hit: %s\n", cacheFile)
@@ -124,26 +204,16 @@ func run(args []string) error {
 		return exitCode(v)
 	}
 
-	gated, err := loadGated(*baselines)
-	if err != nil {
-		return err
-	}
-	if gated == nil {
-		fmt.Println("[gate] no baselines file: gating every benchmark found")
-	} else {
-		fmt.Printf("[gate] gating %d benchmarks from baselines\n", len(gated))
-	}
-
 	work, err := os.MkdirTemp("", "performance-gate-")
 	if err != nil {
 		return err
 	}
 	defer func() { _ = os.RemoveAll(work) }()
-	baseWT, err := worktree(root, baseSHA, work)
+	baseWT, err := worktree(root, "base", baseSHA, work)
 	if err != nil {
 		return err
 	}
-	headWT, err := worktree(root, headSHA, work)
+	headWT, err := worktree(root, "head", headSHA, work)
 	if err != nil {
 		return err
 	}
@@ -161,7 +231,7 @@ func run(args []string) error {
 		}
 	}
 
-	v := compare(baseSHA, headSHA, baseRes, headRes, gated, *tolerance, *latency)
+	v := compare(id, baseRes, headRes, *bl, *tolerance, *latency)
 	if err := os.MkdirAll(*cacheDir, 0o755); err != nil {
 		return err
 	}
@@ -190,11 +260,46 @@ func defaultCacheDir() string {
 	return filepath.Join(os.TempDir(), "gohan-performance-gate")
 }
 
-func cacheName(base, head string) string {
-	return base[:12] + "-" + head[:12] + ".json"
+func buildIdentity(baseSHA, headSHA, selector, benchtime, timeout string, tolerance float64, latency bool, baselinesSHA string) gateIdentity {
+	runner, err := os.Hostname()
+	if err != nil || runner == "" {
+		runner = "unknown"
+	}
+	if r := os.Getenv("RUNNER_NAME"); r != "" {
+		runner = r
+	}
+	if img := os.Getenv("ImageOS"); img != "" {
+		runner += "/" + img
+	}
+	return gateIdentity{
+		Schema:          identitySchema,
+		Base:            baseSHA,
+		Head:            headSHA,
+		Selector:        selector,
+		Benchtime:       benchtime,
+		Timeout:         timeout,
+		Rounds:          rounds,
+		Tolerance:       tolerance,
+		LatencyEnforced: latency,
+		BaselinesSHA:    baselinesSHA,
+		GoVersion:       runtime.Version(),
+		GOOS:            runtime.GOOS,
+		GOARCH:          runtime.GOARCH,
+		GOMAXPROCS:      runtime.GOMAXPROCS(0),
+		Runner:          runner,
+	}
 }
 
-func loadVerdict(path string) (verdict, bool, error) {
+func cacheName(id gateIdentity) string {
+	blob, err := json.Marshal(id)
+	if err != nil {
+		panic(err) // struct of comparable builtin fields cannot fail to marshal
+	}
+	sum := sha256.Sum256(blob)
+	return hex.EncodeToString(sum[:]) + ".json"
+}
+
+func loadVerdict(path string, want gateIdentity) (verdict, bool, error) {
 	blob, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return verdict{}, false, nil
@@ -204,44 +309,49 @@ func loadVerdict(path string) (verdict, bool, error) {
 	}
 	var v verdict
 	if err := json.Unmarshal(blob, &v); err != nil {
-		return verdict{}, false, fmt.Errorf("cache %s: %w", path, err)
+		fmt.Printf("[gate] ignoring unreadable cache entry %s: %v\n", path, err)
+		return verdict{}, false, nil
+	}
+	if v.Identity.Schema != identitySchema {
+		fmt.Printf("[gate] ignoring cache entry %s: schema %q, want %q\n", path, v.Identity.Schema, identitySchema)
+		return verdict{}, false, nil
+	}
+	if v.Identity != want {
+		fmt.Printf("[gate] ignoring cache entry %s: identity mismatch\n", path)
+		return verdict{}, false, nil
 	}
 	return v, true, nil
 }
 
-// loadGated reads the optional baselines file. Its shape is a JSON object with
-// a "gated" array of benchmark names; any other object is tolerated by taking
-// only that key, and a missing file disables filtering.
-func loadGated(path string) (map[string]bool, error) {
-	if path == "" {
-		return nil, nil
-	}
+// loadBaselines reads the baselines file, validates that the gated set is
+// nonempty and both latency budgets are positive, and returns the file's
+// SHA256 digest over its exact bytes.
+func loadBaselines(path string) (*baselines, string, error) {
 	blob, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		fmt.Printf("[gate] baselines file %s not found: gating every benchmark found\n", path)
-		return nil, nil
+		return nil, "", fmt.Errorf("baselines file %s not found", path)
 	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	var doc struct {
-		Gated []string `json:"gated"`
+	var bl baselines
+	if err := json.Unmarshal(blob, &bl); err != nil {
+		return nil, "", fmt.Errorf("baselines %s: %w", path, err)
 	}
-	if err := json.Unmarshal(blob, &doc); err != nil {
-		return nil, fmt.Errorf("baselines %s: %w", path, err)
+	switch {
+	case len(bl.Gated) == 0:
+		return nil, "", fmt.Errorf("baselines %s: gated set is empty", path)
+	case bl.Budgets.ToolChainOverheadUS <= 0:
+		return nil, "", fmt.Errorf("baselines %s: tool_chain_overhead_us must be > 0", path)
+	case bl.Budgets.ModelChainOverheadUS <= 0:
+		return nil, "", fmt.Errorf("baselines %s: model_chain_overhead_us must be > 0", path)
 	}
-	if len(doc.Gated) == 0 {
-		return nil, nil
-	}
-	set := make(map[string]bool, len(doc.Gated))
-	for _, name := range doc.Gated {
-		set[name] = true
-	}
-	return set, nil
+	sum := sha256.Sum256(blob)
+	return &bl, hex.EncodeToString(sum[:]), nil
 }
 
-func worktree(root, sha, work string) (string, error) {
-	dir := filepath.Join(work, sha[:12])
+func worktree(root, label, sha, work string) (string, error) {
+	dir := filepath.Join(work, label+"-"+sha[:12])
 	if _, err := gitOut(root, "worktree", "add", "--detach", dir, sha); err != nil {
 		return "", err
 	}
@@ -315,55 +425,92 @@ func fastest(ss []sample) sample {
 	return best
 }
 
-func compare(baseSHA, headSHA string, baseRes, headRes benchResult, gated map[string]bool, tolerance float64, latencyEnforced bool) verdict {
-	names := make([]string, 0, len(baseRes))
-	for name := range baseRes {
-		if gated != nil && !gated[name] {
-			continue
+func hasZeroSample(ss []sample) bool {
+	for _, s := range ss {
+		if s.ns <= 0 {
+			return true
 		}
-		names = append(names, name)
 	}
+	return false
+}
+
+func compare(id gateIdentity, baseRes, headRes benchResult, bl baselines, tolerance float64, latencyEnforced bool) verdict {
+	names := append([]string(nil), bl.Gated...)
 	sort.Strings(names)
-	v := verdict{Base: baseSHA, Head: headSHA, Passed: true}
+	v := verdict{Identity: id, Passed: true}
 	for _, name := range names {
-		headSamples, ok := headRes[name]
-		if !ok {
-			v.Rows = append(v.Rows, verdictRow{Name: name, Reason: "missing in head"})
-			v.Passed = false
-			continue
-		}
-		b, h := fastest(baseRes[name]), fastest(headSamples)
-		delta := 0.0
-		if b.ns > 0 {
-			delta = (h.ns - b.ns) / b.ns * 100
-		}
-		row := verdictRow{
-			Name:       name,
-			BaseNS:     b.ns,
-			HeadNS:     h.ns,
-			DeltaPct:   delta,
-			BaseAllocs: b.allocs,
-			HeadAllocs: h.allocs,
-		}
-		// Exact per-op counts are locally authoritative, so they are judged
-		// before the sampled latency axis: an allocation or byte rise fails
-		// deterministically, while a latency miss on a noisy machine defers
-		// to the release runner instead of failing the gate here.
+		row := verdictRow{Name: name}
+		bs, hs := baseRes[name], headRes[name]
 		switch {
-		case h.allocs > b.allocs:
-			row.Reason = fmt.Sprintf("allocations increased %g -> %g per op", b.allocs, h.allocs)
-		case h.bytes > b.bytes:
-			row.Reason = fmt.Sprintf("bytes per op increased %g -> %g", b.bytes, h.bytes)
-		case delta > tolerance && latencyEnforced:
-			row.Reason = fmt.Sprintf("latency regressed %+.2f%% (tolerance %.1f%%)", delta, tolerance)
-		case delta > tolerance:
-			fmt.Printf("[gate] %s: latency %+.2f%% exceeds tolerance %.1f%%: deferred to release runner\n",
-				name, delta, tolerance)
+		case len(bs) == 0:
+			row.Reason = "missing in base: no samples"
+		case len(hs) == 0:
+			row.Reason = "missing in head: no samples"
+		case len(bs) < rounds:
+			row.Reason = fmt.Sprintf("only %d of %d rounds produced base samples", len(bs), rounds)
+		case len(hs) < rounds:
+			row.Reason = fmt.Sprintf("only %d of %d rounds produced head samples", len(hs), rounds)
+		case hasZeroSample(bs):
+			row.Reason = "zero ns/op sample in base rounds"
+		case hasZeroSample(hs):
+			row.Reason = "zero ns/op sample in head rounds"
+		default:
+			b, h := fastest(bs), fastest(hs)
+			delta := 0.0
+			if b.ns > 0 {
+				delta = (h.ns - b.ns) / b.ns * 100
+			}
+			row.BaseNS, row.HeadNS, row.DeltaPct = b.ns, h.ns, delta
+			row.BaseAllocs, row.HeadAllocs = b.allocs, h.allocs
+			// Exact per-op counts are locally authoritative, so they are
+			// judged before the sampled latency axis: an allocation or byte
+			// rise fails deterministically, while a latency miss on a noisy
+			// machine defers to the reference runner unless -latency.
+			switch {
+			case h.allocs > b.allocs:
+				row.Reason = fmt.Sprintf("allocations increased %g -> %g per op", b.allocs, h.allocs)
+			case h.bytes > b.bytes:
+				row.Reason = fmt.Sprintf("bytes per op increased %g -> %g", b.bytes, h.bytes)
+			case delta > tolerance && latencyEnforced:
+				row.Reason = fmt.Sprintf("latency regressed %+.2f%% (tolerance %.1f%%)", delta, tolerance)
+			case delta > tolerance:
+				fmt.Printf("[gate] %s: latency %+.2f%% exceeds tolerance %.1f%%: deferred to reference runner\n",
+					name, delta, tolerance)
+			}
 		}
 		if row.Reason != "" {
 			v.Passed = false
 		}
 		v.Rows = append(v.Rows, row)
+	}
+
+	// Chain-overhead budgets: fastest chain minus fastest raw comparator on
+	// head, against the frozen µs budgets from the baselines file. Enforced
+	// only in strict mode; a local miss is advisory and never fails the run.
+	for _, p := range budgetPairs(bl) {
+		hc, hr := headRes[p.chain], headRes[p.raw]
+		if len(hc) == 0 || len(hr) == 0 || hasZeroSample(hc) || hasZeroSample(hr) {
+			continue // already failed per benchmark above
+		}
+		overheadUS := (fastest(hc).ns - fastest(hr).ns) / 1000
+		if overheadUS > p.budgetUS {
+			if latencyEnforced {
+				v.Rows = append(v.Rows, verdictRow{
+					Name:   fmt.Sprintf("overhead %s: %s - %s", p.label, p.chain, p.raw),
+					Reason: fmt.Sprintf("%s %.1f µs exceeds budget %.1f µs", p.label, overheadUS, p.budgetUS),
+				})
+				v.Passed = false
+			} else {
+				fmt.Printf("[gate] %s: %.1f µs exceeds budget %.1f µs: advisory only, deferred to reference runner\n",
+					p.label, overheadUS, p.budgetUS)
+			}
+			continue
+		}
+		if latencyEnforced {
+			v.Rows = append(v.Rows, verdictRow{
+				Name: fmt.Sprintf("overhead %s: %s - %s", p.label, p.chain, p.raw),
+			})
+		}
 	}
 	if len(v.Rows) == 0 {
 		fmt.Println("[gate] warning: no benchmarks matched")
