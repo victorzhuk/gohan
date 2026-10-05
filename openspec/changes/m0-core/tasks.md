@@ -924,44 +924,44 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - scenarios: `performance.regression-gate`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestPerformanceRegressionGate' && task test`
 
-33. [ ] M0.5: API review document; `docs/design/compatibility.md` applied (interface kinds in `types.md`, `task api:check` job, optional-interface fallbacks `stores.optional-preempted-lister-fallback`, `working-state.memory-store-optional`); the three acceptance processes' offline scenarios (`engines`) green against memory stores; core types/ports declared v1-candidate. — `engines.*` offline subset
+33. [x] M0.5: API review document; `docs/design/compatibility.md` applied (interface kinds in `types.md`, `task api:check` job, optional-interface fallbacks `stores.optional-preempted-lister-fallback`, `working-state.memory-store-optional`); the three acceptance processes' offline scenarios (`engines`) green against memory stores; core types/ports declared v1-candidate. — `engines.*` offline subset
 
-- [ ] 33.1 `core`: Apply `compatibility.md` optional-interface behaviour for absent `PreemptedLister` and `MemoryStore`, reusing the existing fallback scenario bindings.
+- [x] 33.1 `core`: Apply `compatibility.md` optional-interface behaviour for absent `PreemptedLister` and `MemoryStore`, reusing the existing fallback scenario bindings.
   - files: `core/recover.go`, `core/recover_optional_test.go`, `core/working_state.go`, `core/working_state_optional_test.go`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./core/... -run 'TestOptionalInterfaceFallbacks'`
 
-- [ ] 33.2 `core`: Record every exported interface as a port or handle in `types.md`; implement `task api:check` and its CI job with v0 reporting and v1 incompatibility rejection. **GATE**
+- [x] 33.2 `core`: Record every exported interface as a port or handle in `types.md`; implement `task api:check` and its CI job with v0 reporting and v1 incompatibility rejection. **GATE**
   - files: `tools/gen_types_index.py`, `docs/design/types.md`, `Taskfile.yml`, `.github/workflows/api.yml`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./core/... -run 'TestOptionalInterfaceFallbacks' && task spec:types && task api:check`
 
-- [ ] 33.3 `examples/kafka-refunds`: Implement offline refund delivery and redelivery in the `examples/` module against memory stores; deduplicate `OperationID` and enforce the live refund kill flag after approval.
+- [x] 33.3 `examples/kafka-refunds`: Implement offline refund delivery and redelivery in the `examples/` module against memory stores; deduplicate `OperationID` and enforce the live refund kill flag after approval.
   - files: `examples/kafka-refunds/main.go`, `examples/kafka-refunds/main_test.go`, `examples/kafka-refunds/README.md`
   - scenarios: `engines.redelivery-returns-the-same-result`, `engines.live-deny-beats-approval`
   - verify: `go -C examples test -short -timeout 2m ./kafka-refunds/ -run 'TestKafkaRefundsOffline' && task examples:test`
 
-- [ ] 33.4 `examples/temporal-travel`: Implement offline activity/signal composition in the `examples/` module against memory stores; recover consumed input exactly once, preserve frozen flags and replay by `Step` re-execution.
+- [x] 33.4 `examples/temporal-travel`: Implement offline activity/signal composition in the `examples/` module against memory stores; recover consumed input exactly once, preserve frozen flags and replay by `Step` re-execution.
   - files: `examples/temporal-travel/main.go`, `examples/temporal-travel/main_test.go`, `examples/temporal-travel/README.md`
   - scenarios: `engines.crash-after-consume`, `engines.frozen-flag-on-replay`, `engines.replay-is-step-re-execution`
   - verify: `go -C examples test -short -timeout 2m ./temporal-travel/ -run 'TestTemporalTravelOffline' && task examples:test`
 
-- [ ] 33.5 `examples/camunda-invoice`: Implement offline job/user-task composition in the `examples/` module against memory stores; handle duplicate workers, suspended leases, revoked resume authority and stale-control suspension then denial.
+- [x] 33.5 `examples/camunda-invoice`: Implement offline job/user-task composition in the `examples/` module against memory stores; handle duplicate workers, suspended leases, revoked resume authority and stale-control suspension then denial.
   - files: `examples/camunda-invoice/main.go`, `examples/camunda-invoice/main_test.go`, `examples/camunda-invoice/README.md`
   - scenarios: `engines.duplicate-workers`, `engines.suspended-runs-are-not-reclaimed`, `engines.revoked-authority-on-resume`, `engines.stale-control-state`
   - verify: `go -C examples test -short -timeout 2m ./camunda-invoice/ -run 'TestCamundaInvoiceOffline' && task examples:test`
 
-- [ ] 33.6 `core`: Publish the M0.5 API review document after all three offline acceptance processes pass; review port/handle kinds, optional-interface fallbacks and async contracts. **GATE**
+- [x] 33.6 `core`: Publish the M0.5 API review document after all three offline acceptance processes pass; review port/handle kinds, optional-interface fallbacks and async contracts. **GATE**
   - files: `docs/design/api-review-m0-5.md`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./core/... -run 'TestOptionalInterfaceFallbacks' && task examples:test && task api:check && task spec:types && task spec:coverage`
 
-- [ ] 33.7 `core`: Declare core types and ports v1-candidate after the API review; document the freeze marker without releasing `v1.0.0` before M2. **GATE**
+- [x] 33.7 `core`: Declare core types and ports v1-candidate after the API review; document the freeze marker without releasing `v1.0.0` before M2. **GATE**
   - files: `docs/design/compatibility.md`, `docs/design/api-review-m0-5.md`, `CHANGELOG.md`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./core/... -run 'TestOptionalInterfaceFallbacks' && task spec:types && task api:check && task lint && task test && task examples:test`
 
-- [ ] 33.90 `core/stores`: Deliver the two optional-interface fallbacks and their documented behaviour when the type assertion fails: `PreemptedLister` for `Runs` and `MemoryStore` for the notes store.
+- [x] 33.90 `core/stores`: Deliver the two optional-interface fallbacks and their documented behaviour when the type assertion fails: `PreemptedLister` for `Runs` and `MemoryStore` for the notes store.
   - files: `core/stores/optional.go`
   - scenarios: `stores.optional-preempted-lister-fallback`, `working-state.memory-store-optional`
   - verify: `go test -short -timeout 2m ./core/stores/ -run 'TestOptionalInterfaces'`
