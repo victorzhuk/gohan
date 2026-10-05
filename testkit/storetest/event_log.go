@@ -284,6 +284,48 @@ func EventLog(t *testing.T, newLog EventLogFactory) {
 		}
 	})
 
+	t.Run(EventLogSuiteName+".ring-window-capacity-three", func(t *testing.T) {
+		log := newLog(t, time.Now, 3)
+
+		ctx := context.Background()
+		for i := range 5 {
+			if err := log.Append(ctx, "run", Event{Payload: types.TextDelta{Turn: i}}); err != nil {
+				t.Fatalf("Append #%d: %v", i+1, err)
+			}
+		}
+
+		readSeqs := func(after int64) []int64 {
+			t.Helper()
+			var got []int64
+			for e, err := range log.Read(ctx, "run", after) {
+				if err != nil {
+					t.Fatalf("Read(after=%d): %v", after, err)
+				}
+				delta, ok := e.Payload.(types.TextDelta)
+				if !ok || delta.Turn != int(e.Meta.Seq)-1 {
+					t.Fatalf("Read(after=%d): event %d carries %#v, want Turn %d", after, e.Meta.Seq, e.Payload, int(e.Meta.Seq)-1)
+				}
+				got = append(got, e.Meta.Seq)
+			}
+			return got
+		}
+
+		if got := readSeqs(0); len(got) != 3 || got[0] != 3 || got[1] != 4 || got[2] != 5 {
+			t.Fatalf("Read(after=0) after saturation got %v, want [3 4 5]", got)
+		}
+		if got := readSeqs(4); len(got) != 1 || got[0] != 5 {
+			t.Fatalf("Read(after=4) after saturation got %v, want [5]", got)
+		}
+
+		// Numbering keeps growing past the evicted window.
+		if err := log.Append(ctx, "run", Event{Payload: types.TextDelta{Turn: 5}}); err != nil {
+			t.Fatalf("Append after saturation: %v", err)
+		}
+		if got := readSeqs(5); len(got) != 1 || got[0] != 6 {
+			t.Fatalf("Read(after=5) got %v, want [6]: seq must keep growing across eviction", got)
+		}
+	})
+
 	t.Run(EventLogSuiteName+".runs-are-isolated", func(t *testing.T) {
 		log := newLog(t, time.Now, 8)
 

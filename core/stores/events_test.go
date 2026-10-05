@@ -78,8 +78,8 @@ func TestEventLog(t *testing.T) {
 			}
 		}
 
-		// Expiry judged against the store clock; later events survive and
-		// keep their sequence numbers.
+		// Expiry clears retained payloads but never restarts the run's
+		// sequence: the next append for the same run keeps counting.
 		clock = now.Add(time.Hour)
 		if err := s.Expire(ctx, clock); err != nil {
 			t.Fatalf("expire: %v", err)
@@ -95,7 +95,6 @@ func TestEventLog(t *testing.T) {
 			t.Fatalf("seqs after expiry = %v, want none", remaining)
 		}
 
-		// The expired run starts over: its sequence is gone with its events.
 		if err := s.Append(ctx, "run-1", Event{Payload: types.LimitWarning{Limit: "tokens"}}); err != nil {
 			t.Fatalf("append after expire: %v", err)
 		}
@@ -103,8 +102,8 @@ func TestEventLog(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read refilled: %v", err)
 			}
-			if e.Meta.Seq != 1 {
-				t.Fatalf("refilled seq = %d, want 1", e.Meta.Seq)
+			if e.Meta.Seq != n+1 {
+				t.Fatalf("refilled seq = %d, want %d: expiry must not restart numbering", e.Meta.Seq, n+1)
 			}
 		}
 	})

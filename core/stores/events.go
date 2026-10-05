@@ -50,15 +50,24 @@ func WithMemoryEventLogCapacity(n int) MemoryEventLogOption {
 // store clock is authoritative for the instants it persists.
 type MemoryEventLog struct {
 	mu       sync.Mutex
-	byRun    map[string][]Event
+	rings    map[string]*eventRing
 	next     map[string]int64
 	capacity int
 	now      func() time.Time
 }
 
+// eventRing holds one run's retained window in a fixed slice: head is the
+// oldest slot, count the retained events. Saturated Appends overwrite in
+// place, so the slice is allocated once per run.
+type eventRing struct {
+	slots []Event
+	head  int
+	count int
+}
+
 func NewMemoryEventLog(opts ...MemoryEventLogOption) *MemoryEventLog {
 	s := &MemoryEventLog{
-		byRun:    map[string][]Event{},
+		rings:    map[string]*eventRing{},
 		next:     map[string]int64{},
 		capacity: DefaultEventLogCapacity,
 		now:      time.Now,
@@ -78,15 +87,26 @@ func (s *MemoryEventLog) Append(ctx context.Context, runID string, e Event) erro
 
 	seq := s.next[runID] + 1
 	s.next[runID] = seq
+	if s.capacity <= 0 {
+		return nil
+	}
 	e.Meta.Seq = seq
 	e.Meta.RunID = runID
 	if e.Meta.Time.IsZero() {
 		e.Meta.Time = s.now()
 	}
-	s.byRun[runID] = append(s.byRun[runID], e)
-	if overflow := len(s.byRun[runID]) - s.capacity; overflow > 0 {
-		s.byRun[runID] = append([]Event(nil), s.byRun[runID][overflow:]...)
+	ring := s.rings[runID]
+	if ring == nil {
+		ring = &eventRing{slots: make([]Event, s.capacity)}
+		s.rings[runID] = ring
 	}
+	if ring.count < s.capacity {
+		ring.slots[(ring.head+ring.count)%s.capacity] = e
+		ring.count++
+		return nil
+	}
+	ring.slots[ring.head] = e
+	ring.head = (ring.head + 1) % s.capacity
 	return nil
 }
 
@@ -96,9 +116,14 @@ func (s *MemoryEventLog) Append(ctx context.Context, runID string, e Event) erro
 func (s *MemoryEventLog) Read(ctx context.Context, runID string, afterSeq int64) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
 		s.mu.Lock()
-		events := s.byRun[runID]
-		out := make([]Event, 0, len(events))
-		for _, e := range events {
+		ring := s.rings[runID]
+		count := 0
+		if ring != nil {
+			count = ring.count
+		}
+		out := make([]Event, 0, count)
+		for i := range count {
+			e := ring.slots[(ring.head+i)%s.capacity]
 			if e.Meta.Seq > afterSeq {
 				out = append(out, e)
 			}
@@ -114,25 +139,33 @@ func (s *MemoryEventLog) Read(ctx context.Context, runID string, afterSeq int64)
 }
 
 // Expire drops events whose recorded instant is before olderThan, across
-// every run.
+// every run. It clears the payload references it removes and compacts the
+// ring in place; a run's sequence counter survives so later appends for the
+// same run keep increasing.
 func (s *MemoryEventLog) Expire(ctx context.Context, olderThan time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for runID, events := range s.byRun {
-		kept := events[:0]
-		for _, e := range events {
+	for runID, ring := range s.rings {
+		kept := 0
+		for i := range ring.count {
+			idx := (ring.head + i) % s.capacity
+			e := ring.slots[idx]
 			if e.Meta.Time.Before(olderThan) {
+				ring.slots[idx] = Event{}
 				continue
 			}
-			kept = append(kept, e)
+			if idx != kept {
+				ring.slots[kept] = e
+				ring.slots[idx] = Event{}
+			}
+			kept++
 		}
-		if len(kept) == 0 {
-			delete(s.byRun, runID)
-			delete(s.next, runID)
-			continue
+		ring.head = 0
+		ring.count = kept
+		if kept == 0 {
+			delete(s.rings, runID)
 		}
-		s.byRun[runID] = kept
 	}
 	return nil
 }

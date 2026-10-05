@@ -109,7 +109,12 @@ func TestModelStream(t *testing.T) {
 					break
 				}
 			}
-			synctest.Wait()
+			// The iterator must return only after the provider pump and the
+			// timed reader have exited; no synctest.Wait may be needed to
+			// observe the release.
+			if !p.wasReleased() {
+				t.Fatal("provider stream not released after early break")
+			}
 			select {
 			case <-p.release:
 			default:

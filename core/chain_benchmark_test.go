@@ -202,7 +202,7 @@ func TestChainPerformanceBudget(t *testing.T) {
 		modelAllocs := testing.AllocsPerRun(samples, func() {
 			for _, err := range call(ctx, req) {
 				_ = err
-		}
+			}
 		})
 
 		if overhead := int(chainAllocs) - int(rawAllocs); overhead > bl.ToolChain.OverheadAllocs {

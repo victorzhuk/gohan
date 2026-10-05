@@ -65,19 +65,27 @@ func (s *ModelStream) Generate(ctx context.Context, req types.ModelRequest) iter
 		idle := timeoutOf(profile.Timeout.Idle, profile.LatencyClass, 2)
 
 		done := make(chan struct{})
-		defer close(done)
-
-		// srcctx is cancelled when Generate's iterator exits for any
-		// reason, releasing a provider that parked waiting for the next
-		// call after its events ran out.
 		srcctx, cancel := context.WithCancel(ctx)
-		defer cancel()
+
+		// The iterator returns only after both helpers exited, and the stop
+		// signal plus provider cancellation are observable to them before
+		// the wait: a provider can never still own its stream reader once
+		// Generate returns.
+		pumpDone := make(chan struct{})
+		readerDone := make(chan struct{})
+		defer func() {
+			cancel()
+			close(done)
+			<-pumpDone
+			<-readerDone
+		}()
 
 		// The pump forwards one provider read at a time and exits as soon
 		// as done closes, so the inner iterator's release runs before
 		// Generate returns whatever the cause.
 		src := make(chan pulled)
 		go func() {
+			defer close(pumpDone)
 			defer close(src)
 			for c, err := range s.model.Generate(srcctx, req) {
 				select {
@@ -96,6 +104,7 @@ func (s *ModelStream) Generate(ctx context.Context, req types.ModelRequest) iter
 		// neither hold the clock down nor trip it.
 		expired := make(chan error, 1)
 		go func() {
+			defer close(readerDone)
 			defer buf.close()
 			timer := time.NewTimer(firstChunk)
 			defer timer.Stop()
@@ -103,6 +112,10 @@ func (s *ModelStream) Generate(ctx context.Context, req types.ModelRequest) iter
 			for {
 				select {
 				case <-ctx.Done():
+					return
+				case <-srcctx.Done():
+					return
+				case <-done:
 					return
 				case <-timer.C:
 					cls := types.ClassTransient
