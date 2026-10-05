@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,5 +146,58 @@ func TestDiffTreesUnexportedChangeCompatible(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("unexported field change reported: %v", got)
+	}
+}
+
+func TestReportBreaks(t *testing.T) {
+	cases := []struct {
+		name    string
+		tag     string
+		breaks  []breakage
+		wantErr bool
+	}{
+		{"v0 break reported without failing", "v0.1.0", []breakage{"m: F: removed"}, false},
+		{"adapter v0 break reported without failing", "adapter/otel/v0.2.0", []breakage{"m: F: removed"}, false},
+		{"v1 break fails", "v1.0.0", []breakage{"m: F: removed"}, true},
+		{"adapter v1 break fails", "adapter/otel/v1.0.0", []breakage{"m: F: removed"}, true},
+		{"v0 compatible surface", "v0.1.0", nil, false},
+		{"v1 compatible surface", "v1.0.0", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := captureStdout(t)
+			err := reportBreaks("github.com/victorzhuk/gohan", tc.tag, tc.breaks)
+			got := out()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("reportBreaks(%q) error = %v, wantErr %v", tc.tag, err, tc.wantErr)
+			}
+			for _, b := range tc.breaks {
+				if !strings.Contains(got, string(b)) {
+					t.Fatalf("break %q not reported:\n%s", b, got)
+				}
+			}
+		})
+	}
+}
+
+func captureStdout(t *testing.T) func() string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	var buf strings.Builder
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&buf, r)
+		close(done)
+	}()
+	return func() string {
+		os.Stdout = old
+		_ = w.Close()
+		<-done
+		return buf.String()
 	}
 }

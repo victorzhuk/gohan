@@ -18,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -74,11 +75,42 @@ func run(args []string) error {
 		fmt.Printf("api:check: %s: exported API compatible with %s\n", mod, *tag)
 		return nil
 	}
-	fmt.Printf("api:check: %s: incompatible change(s) against %s:\n", mod, *tag)
+	return reportBreaks(mod, *tag, breaks)
+}
+
+// Pre-v1 modules report incompatible changes without failing: breaking
+// changes are allowed before v1 and are recorded in CHANGELOG.md instead of
+// gating CI.
+func reportBreaks(mod, tag string, breaks []breakage) error {
+	if len(breaks) == 0 {
+		return nil
+	}
+	fmt.Printf("api:check: %s: incompatible change(s) against %s:\n", mod, tag)
 	for _, b := range breaks {
 		fmt.Printf("  %s\n", b)
 	}
-	return fmt.Errorf("%s: %d incompatible change(s) against %s", mod, len(breaks), *tag)
+	if majorOf(tag) == 0 {
+		fmt.Printf("api:check: %s: module is pre-v1, reporting incompatible change(s) without failing\n", mod)
+		return nil
+	}
+	return fmt.Errorf("%s: %d incompatible change(s) against %s", mod, len(breaks), tag)
+}
+
+// majorOf reads the major version from the tag's last path segment, which is
+// the semver part for both root tags (v0.1.0) and adapter tags
+// (adapter/otel/v0.1.0). A tag without a semver tail is treated as v1: the
+// strict path is the safe default.
+func majorOf(tag string) int {
+	ver := tag[strings.LastIndex(tag, "/")+1:]
+	if !strings.HasPrefix(ver, "v") {
+		return 1
+	}
+	major, _, _ := strings.Cut(ver[1:], ".")
+	n, err := strconv.Atoi(major)
+	if err != nil {
+		return 1
+	}
+	return n
 }
 
 func relToRoot(root, dir string) (string, error) {
