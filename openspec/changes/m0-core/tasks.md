@@ -877,22 +877,23 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - scenarios: none
   - verify: `go test -short -timeout 2m ./testkit/conformance/ -run 'TestFlowConformance' && task spec:coverage`
 
-30. [ ] `std/tool/exec` host runner (argv, env allowlist, caps, process-group kill, `AllowHostExec` warning). — `tools.timeout-kills-group`, `tools.output-cap`, `tools.env-allowlist`, `tools.large-output-stored`, `tools.notes-survive-reset`
+30. [x] `std/tool/exec` host runner (argv, env allowlist, caps, process-group kill, `AllowHostExec` warning). — `tools.timeout-kills-group`, `tools.output-cap`, `tools.env-allowlist`, `tools.large-output-stored`, `tools.notes-survive-reset`
 
-- [ ] 30.1 `std/tool/exec`: Implement `exec.New` with typed argv, an empty-default env allowlist, working directory, process-group timeout kill, effect-aware outcomes and the `AllowHostExec` build warning.
+- [x] 30.1 `std/tool/exec`: Implement `exec.New` with typed argv, an empty-default env allowlist, working directory, process-group timeout kill, effect-aware outcomes and the `AllowHostExec` build warning.
   - files: `std/tool/exec/exec.go`, `std/tool/exec/exec_test.go`, `std/tool/exec/process.go`, `std/tool/exec/process_test.go`
   - scenarios: `tools.timeout-kills-group`, `tools.env-allowlist`
   - verify: `go test -short -timeout 2m ./std/tool/exec/ -run 'TestExecHostRunner'`
 
-- [ ] 30.2 `std/tool/exec`: Cap stdout/stderr independently with truncation markers; verify `MaxOutput` excerpts, full-content `Ref` retrieval and `gohan.output.stored` through `std/outputs`.
+- [x] 30.2 `std/tool/exec`: Cap stdout/stderr independently with truncation markers; verify `MaxOutput` excerpts, full-content `Ref` retrieval and `gohan.output.stored` through `std/outputs`.
   - files: `std/tool/exec/output.go`, `std/tool/exec/output_test.go`
   - scenarios: `tools.output-cap`, `tools.large-output-stored`
   - verify: `go test -short -timeout 2m ./std/tool/exec/ -run 'TestExecOutput'`
 
-- [ ] 30.3 `std/notes`: Verify `notes_write` survives run reset and truncated history; assemble the saved notes into the next run's `SlotSession`.
-  - files: `std/notes/reset_test.go`
+- [x] 30.3 `std/notes`: Implement the notes package - the `notes_write` tool over the landed memory notes store and the context provider that assembles saved notes into the session slot - and prove a note survives a run reset and a truncated history.
+  - files: `std/notes/notes.go`, `std/notes/notes_test.go`, `std/notes/reset_test.go`
   - scenarios: `tools.notes-survive-reset`
   - verify: `go test -short -timeout 2m ./std/notes/ -run 'TestNotesSurviveReset'`
+  - note: This chunk was planned as test-only and **the package it tests does not exist**: no `std/notes/`, no `notes_write` tool, no provider assembling notes into the session slot, while `openspec/specs/working-state/spec.md:58` declares `notes.New(store)` as a `gohan.Tool` and a `ContextProvider`. What is landed is only the store primitive `core/stores/notes.go`, the reserved tool name in `core/tool_names.go`, and `std/context`'s truncation with its notes-exclusion behaviour. So the chunk builds the package first and proves the survival in the same chunk; the test-only split it was planned with is gone.
 
 31. [ ] `examples/quickstart` and `examples/excursions` S1 (native runtime, memory stores, scripted model) green offline. — acceptance for the `flow`, `runtime`, `permission` paths above
 
@@ -1027,6 +1028,8 @@ The rows above keep their reviewed scope; these are the places the review correc
 - Rows 27 and 27a, landing notes. **Two chunks were proofs, not builds**: 27.4 found the wall-clock budget already measured in elapsed monotonic time (`core/chains/limits.go:146`, `:229` - `now.Sub(s.start)` through Go's monotonic reading), and 27.3 found staleness, reclaim, expiry and the clock jump all landed, so it wrote `core/stores/clock_test.go` alone; the plan's `store_clock.go`/`checkpoints_clock.go` were both unnecessary. **One fix cycle per wave**: 27.1's re-drive subtest exposed a real defect - `replayState` derived `HistoryVersion` from `run.Seq` instead of the session log, which masked a wrong-version append behind the abandon path - and 27a.2 left the package unbuildable with a harness field the implementation never got plus a resumed drive that stepped forever; both were bounded fixes. **A deviation to carry**: 27a.1 put its in-flight run registry beside `Stack` in `core/shutdown.go` rather than on it, because `core/build.go` was another chunk's file this wave - fold those fields into `Stack` when the run entry point next changes. **File correction**: 27a.3's leaf half is `core/stores/runs_preempted.go` (the store type's method), not `core/store_runs_preempted.go`.
 
 - Rows 28 and 29, from the rung's two scouts, plus the dependency decision. **OTel cannot live in `std`**: the repo's core-budget rule puts a third-party dependency in `adapter/<name>/` as its own module, while `adapter/` does not exist and `go.work` lists only `use .`, so row 28 gains a fifth chunk (28.5) that establishes the module, the workspace entry and the test leg. Core keeps a dependency-free port - the landed `TaintHook` precedent (`core/types/taint.go:37-40`) - and `std/telemetry` keeps the convention and metrics layers with no OTel types, so the port shape (`Telemetry`, `Attr`, the canonical key consts, `WithTelemetry`) is frozen in 28.1's note before four chunks compile against it. **One premise had already landed**: 28.4 said "implement `WithLogger`" and it has existed since row 20 (`core/build_options.go:110`, `core/build.go:71,101,137-138`), so that chunk is the per-run attributes and the content exclusion. **No telemetry seam exists anywhere in core** - no tracer, counter or span - while the recovery row recorded the recovered and abandoned counters as this row's work, and `core/flow_test.go:45` still carries a pending-comment naming this row. **Row 29 is all-new packages**: both testkit packages are doc-declared and absent, `conformance.Model` is spec-only (`model/spec.md:277`), and the three hand-rolled scripted fakes stay local rather than migrating.
+
+- Row 30, from the rung's scout. **A third false premise**: 30.3 was planned as a test-only chunk over `std/notes`, and the package does not exist - not in the worktree, not in history. What is landed is the store primitive (`core/stores/notes.go`), the reserved tool name (`core/tool_names.go`) and `std/context`'s notes-exclusion behaviour, while `working-state/spec.md:58` declares `notes.New(store)` as both a tool and a context provider, so the chunk now builds the package and proves the survival in one go. **Two premises were already built**: 30.2's output capping arrived while its own chunk ran, and rows 32's `task bench` target (`Taskfile.yml:41-44`) with its CI job (`.github/workflows/ci.yml:64-75`) landed in row 1, so row 32's work is the benchmarks and the frozen baselines rather than the gate wiring. **One absence shapes row 33**: `task api:check` does not exist and no `api/` directory does, and `docs/design/types.md` has no interface section, so `compatibility.md`'s application needs both.
 
 ## Deferred
 
