@@ -74,9 +74,11 @@ const (
 // Lease is the store-minted proof that a pod drives a run. Expires is
 // store time and informational: callers pass durations, never instants.
 type Lease struct {
-	RunID   string
-	Expires time.Time
+	RunID      string
+	Generation uint64
+	Expires    time.Time
 }
+
 
 // Runs persists run rows and their leases. Heartbeat, Reclaim, the signal
 // mailbox (Signal, Drain) and the notice outbox (Notices, AckNotice) are
@@ -135,16 +137,18 @@ type runRecord struct {
 // clock is authoritative for StartedAt, Heartbeat and lease expiry: a
 // caller with a skewed clock cannot shorten or extend anyone's lease.
 type MemoryRuns struct {
-	mu     sync.Mutex
-	runs   map[string]*runRecord
-	byOp   map[string]string
-	onSess map[string]string
-	now    func() time.Time
-	info   RunInfoSource
+	mu         sync.Mutex
+	runs       map[string]*runRecord
+	byOp       map[string]string
+	onSess     map[string]string
+	now        func() time.Time
+	info       RunInfoSource
+	generation uint64
 
 	notices   []*noticeEntry
 	noticeSeq uint64
 }
+
 
 type MemoryRunOption func(*MemoryRuns)
 
@@ -191,6 +195,14 @@ func (rec *runRecord) expiredAt(now time.Time) bool {
 	return !rec.lease.Expires.IsZero() && !now.Before(rec.lease.Expires)
 }
 
+func (s *MemoryRuns) nextGenerationLocked() (uint64, error) {
+	if s.generation == ^uint64(0) {
+		return 0, types.ErrRunNotActive
+	}
+	s.generation++
+	return s.generation, nil
+}
+
 // Start records a new run and mints its lease. It fails with
 // types.ErrRunActive while the session holds an unexpired lease and with
 // OperationExistsError when the operation id is already recorded for the
@@ -211,6 +223,10 @@ func (s *MemoryRuns) Start(ctx context.Context, r Run, ttl time.Duration) (Lease
 			return Lease{}, OperationExistsError{RunID: runID}
 		}
 	}
+	generation, err := s.nextGenerationLocked()
+	if err != nil {
+		return Lease{}, err
+	}
 	now = s.now()
 	r.State = Running
 	r.StartedAt = now
@@ -218,9 +234,10 @@ func (s *MemoryRuns) Start(ctx context.Context, r Run, ttl time.Duration) (Lease
 	rec := &runRecord{
 		run:   cloneRun(r),
 		ttl:   ttl,
-		lease: Lease{RunID: r.RunID, Expires: now.Add(ttl)},
+		lease: Lease{RunID: r.RunID, Generation: generation, Expires: now.Add(ttl)},
 		live:  true,
 	}
+
 	s.runs[r.RunID] = rec
 	s.onSess[r.SessionID] = r.RunID
 	if r.OperationID != "" {
@@ -320,13 +337,18 @@ func (s *MemoryRuns) Resuming(ctx context.Context, runID string, ttl time.Durati
 	if rec.run.State != Suspended {
 		return Lease{}, fmt.Errorf("%w: run %s is %v", types.ErrRunNotActive, runID, rec.run.State)
 	}
+	generation, err := s.nextGenerationLocked()
+	if err != nil {
+		return Lease{}, err
+	}
 	now := s.now()
 	rec.run.State = Resuming
 	rec.run.Heartbeat = now
 	rec.ttl = ttl
-	rec.lease = Lease{RunID: runID, Expires: now.Add(ttl)}
+	rec.lease = Lease{RunID: runID, Generation: generation, Expires: now.Add(ttl)}
 	rec.live = true
 	return rec.lease, nil
+
 }
 
 // Stale lists up to limit runs whose heartbeat is older than staleAfter by
@@ -366,13 +388,13 @@ func (s *MemoryRuns) SessionLeaseActive(ctx context.Context, sessionID string) b
 	return rec.active(s.now())
 }
 
-// heldLocked resolves the lease to its run and verifies it is still live.
 func (s *MemoryRuns) heldLocked(l Lease) (*runRecord, error) {
 	rec, ok := s.runs[l.RunID]
 	if !ok {
 		return nil, fmt.Errorf("%w: run %s", ErrRunNotFound, l.RunID)
 	}
-	if !rec.live || rec.expiredAt(s.now()) {
+	if rec.lease.RunID != l.RunID || rec.lease.Generation != l.Generation ||
+		l.Generation == 0 || !rec.live || rec.expiredAt(s.now()) {
 		return nil, fmt.Errorf("%w: run %s", types.ErrRunNotActive, l.RunID)
 	}
 	return rec, nil

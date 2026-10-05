@@ -134,9 +134,10 @@ func TestCheckpointConsume(t *testing.T) {
 		if err != nil {
 			t.Fatalf("PendingInput after Consume: %v", err)
 		}
-		if got.Verdict != VerdictEdit || got.Approver != &p {
-			t.Fatalf("PendingInput input = %+v, want the consumed input", got)
+		if got.Verdict != in.Verdict || got.Approver == nil || got.Approver.Subject != p.Subject || got.Approver.Tenant != p.Tenant {
+			t.Fatalf("PendingInput input = %+v, want a defensive copy of the consumed input", got)
 		}
+
 		if _, _, err := s.PendingInput(t.Context(), "run-other"); err == nil {
 			t.Fatal("PendingInput for an unknown run returned no error")
 		}

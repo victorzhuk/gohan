@@ -40,7 +40,8 @@ const (
 
 // Lease is the store-minted proof that a caller drives a run.
 type Lease struct {
-	RunID string
+	RunID      string
+	Generation uint64
 }
 
 // RunRow is the port-level shape of a run row, carrying the fields the
@@ -409,6 +410,47 @@ func Runs(t *testing.T, newRuns RunFactory) {
 		}
 		if err := s.AckNotice(ctx, "nt-missing"); err == nil {
 			t.Fatal("AckNotice unknown id succeeded")
+		}
+	})
+
+	t.Run("stale-generation-refusals", func(t *testing.T) {
+		ctx := context.Background()
+		s, clk := newRuns(t)
+		l, err := s.Start(ctx, RunRow{SessionID: "sess-n", RunID: "run-n1"}, 10*time.Second)
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		// Once the store clock passes the ttl, the lease is a stale
+		// generation: every lease-holder call refuses it and the run
+		// stays in place for a reaper.
+		clk.Advance(20 * time.Second)
+		if _, err := s.Heartbeat(ctx, l); !errors.Is(err, types.ErrRunNotActive) {
+			t.Fatalf("Heartbeat on stale lease: %v, want ErrRunNotActive", err)
+		}
+		if err := s.Finish(ctx, l, RunFinished, nil, ""); !errors.Is(err, types.ErrRunNotActive) {
+			t.Fatalf("Finish on stale lease: %v, want ErrRunNotActive", err)
+		}
+		if err := s.Suspend(ctx, l, "tok-n1"); !errors.Is(err, types.ErrRunNotActive) {
+			t.Fatalf("Suspend on stale lease: %v, want ErrRunNotActive", err)
+		}
+		if _, err := s.Drain(ctx, l); !errors.Is(err, types.ErrRunNotActive) {
+			t.Fatalf("Drain on stale lease: %v, want ErrRunNotActive", err)
+		}
+		// Reclaim mints the next generation; the new lease works while
+		// the old one, whose expiry the clock already passed, stays
+		// refused.
+		l2, err := s.Reclaim(ctx, RunRow{SessionID: "sess-n", RunID: "run-n1"}, time.Minute)
+		if err != nil {
+			t.Fatalf("Reclaim: %v", err)
+		}
+		if _, err := s.Heartbeat(ctx, l2); err != nil {
+			t.Fatalf("Heartbeat on reclaimed lease: %v", err)
+		}
+		if _, err := s.Drain(ctx, l); !errors.Is(err, types.ErrRunNotActive) {
+			t.Fatalf("Drain on stale lease after reclaim: %v, want ErrRunNotActive", err)
+		}
+		if err := s.Finish(ctx, l2, RunFinished, nil, ""); err != nil {
+			t.Fatalf("Finish on reclaimed lease: %v", err)
 		}
 	})
 

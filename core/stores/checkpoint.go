@@ -37,6 +37,7 @@ type WorkspaceRef string
 // Originator is a Principal by type, so it cannot carry the caller's
 // credential: the token stays in ctx and is re-issued on resume.
 type Checkpoint struct {
+	RunID          string
 	SchemaVersion  SchemaVersion
 	SessionID      string
 	Flow           string
@@ -49,6 +50,17 @@ type Checkpoint struct {
 	Workspace      WorkspaceRef
 	ExpiresAt      time.Time
 }
+
+type CheckpointResumer interface {
+	Peek(ctx context.Context, t types.ResumeToken) (Checkpoint, error)
+	ConsumeIf(ctx context.Context, t types.ResumeToken, expected Checkpoint, in ResumeInput) (Checkpoint, error)
+	UpdatePending(ctx context.Context, t types.ResumeToken, expected, next Checkpoint) error
+}
+
+type ResumeReadyLister interface {
+	ResumeReady(ctx context.Context, limit int) ([]Checkpoint, error)
+}
+
 
 // Checkpoints stores suspension checkpoints keyed by single-use resume
 // tokens. Consume is atomic: the second caller gets types.ErrTokenConsumed.

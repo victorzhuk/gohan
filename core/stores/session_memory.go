@@ -481,16 +481,60 @@ func (s *MemorySessionLog) SetControl(ctx context.Context, sessionID string, con
 	return nil
 }
 
-// Owner reports the session's recorded owner. The control checks compare
-// tenants against it, which must not imply read access to the history.
-func (s *MemorySessionLog) Owner(_ context.Context, sessionID string) (types.SessionOwner, error) {
+// Owner reports the session owner to a principal authorized to access its metadata.
+func (s *MemorySessionLog) Owner(ctx context.Context, sessionID string) (types.SessionOwner, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	p, err := s.principal(ctx)
+	if err != nil {
+		return types.SessionOwner{}, err
+	}
 	rec, ok := s.sessions[sessionID]
 	if !ok {
 		return types.SessionOwner{}, fmt.Errorf("session %s: %w", sessionID, ErrSessionNotFound)
 	}
-	return rec.meta.Owner, nil
+	for _, scope := range []string{scopeSessionRead, scopeSessionWrite, scopeSessionControl} {
+		if s.checkAccess(p, rec.meta.Owner, scope) == nil {
+			return rec.meta.Owner, nil
+		}
+	}
+	return types.SessionOwner{}, fmt.Errorf("session %s: %w", sessionID, types.ErrSessionForbidden)
+}
+
+func (s *MemorySessionLog) UpdateSession(ctx context.Context, sessionID string, p SessionPatch) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.get(ctx, sessionID, scopeSessionWrite)
+	if err != nil {
+		return err
+	}
+	candidate := rec.meta
+	if p.Hold != nil {
+		pr, err := s.principal(ctx)
+		if err != nil {
+			return err
+		}
+		if !hasScope(pr, scopeSessionHold) {
+			return fmt.Errorf("update session %s: %w", sessionID, ErrHoldScopeMissing)
+		}
+		prev := candidate.Hold
+		candidate.Hold = *p.Hold
+		if err := s.auditHold(ctx, candidate, prev); err != nil {
+			return err
+		}
+	}
+	if p.Title != nil {
+		candidate.Title = *p.Title
+		candidate.TitleLocked = true
+	}
+	if p.Archived != nil {
+		candidate.Archived = *p.Archived
+	}
+	if p.Pinned != nil {
+		candidate.Pinned = *p.Pinned
+	}
+	rec.meta = candidate
+	return nil
 }
 
 // SharedStateMeta reads the session's shared state value and version.
@@ -521,36 +565,3 @@ func (s *MemorySessionLog) SetSharedStateMeta(ctx context.Context, sessionID str
 	return rec.state.version, nil
 }
 
-func (s *MemorySessionLog) UpdateSession(ctx context.Context, sessionID string, p SessionPatch) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rec, err := s.get(ctx, sessionID, scopeSessionWrite)
-	if err != nil {
-		return err
-	}
-	if p.Hold != nil {
-		pr, err := s.principal(ctx)
-		if err != nil {
-			return err
-		}
-		if !hasScope(pr, scopeSessionHold) {
-			return fmt.Errorf("update session %s: %w", sessionID, ErrHoldScopeMissing)
-		}
-		prev := rec.meta.Hold
-		rec.meta.Hold = *p.Hold
-		if err := s.auditHold(ctx, rec.meta, prev); err != nil {
-			return err
-		}
-	}
-	if p.Title != nil {
-		rec.meta.Title = *p.Title
-		rec.meta.TitleLocked = true
-	}
-	if p.Archived != nil {
-		rec.meta.Archived = *p.Archived
-	}
-	if p.Pinned != nil {
-		rec.meta.Pinned = *p.Pinned
-	}
-	return nil
-}

@@ -11,6 +11,59 @@ import (
 	"github.com/victorzhuk/gohan/core/types"
 )
 
+func TestRunsLeasesStaleGeneration(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	s := NewMemoryRuns(WithMemoryRunClock(func() time.Time { return now }))
+	ctx := context.Background()
+
+	l, err := s.Start(ctx, Run{RunID: "run-sg1", SessionID: "s-sg1"}, time.Second)
+	if err != nil {
+		t.Fatalf("Start err = %v", err)
+	}
+
+	// Past the ttl by store time, the lease is a stale generation: all
+	// four lease-holder methods refuse it and the run stays in place.
+	now = now.Add(2 * time.Second)
+	if _, err := s.Heartbeat(ctx, l); !errors.Is(err, types.ErrRunNotActive) {
+		t.Fatalf("Heartbeat err = %v, want ErrRunNotActive", err)
+	}
+	if err := s.Finish(ctx, l, Finished, nil, ""); !errors.Is(err, types.ErrRunNotActive) {
+		t.Fatalf("Finish err = %v, want ErrRunNotActive", err)
+	}
+	if err := s.Suspend(ctx, l, "tok-sg1"); !errors.Is(err, types.ErrRunNotActive) {
+		t.Fatalf("Suspend err = %v, want ErrRunNotActive", err)
+	}
+	if _, err := s.Drain(ctx, l); !errors.Is(err, types.ErrRunNotActive) {
+		t.Fatalf("Drain err = %v, want ErrRunNotActive", err)
+	}
+
+	l2, err := s.Reclaim(ctx, Run{RunID: "run-sg1", SessionID: "s-sg1"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Reclaim err = %v", err)
+	}
+
+	// must not let the previous generation regain ownership.
+	oldGeneration := l
+	oldGeneration.Expires = l2.Expires
+	if _, err := s.Heartbeat(ctx, oldGeneration); !errors.Is(err, types.ErrRunNotActive) {
+		t.Fatalf("Heartbeat with stale generation and current expiry err = %v, want ErrRunNotActive", err)
+	}
+	if _, err := s.Drain(ctx, oldGeneration); !errors.Is(err, types.ErrRunNotActive) {
+		t.Fatalf("Drain with stale generation and current expiry err = %v, want ErrRunNotActive", err)
+	}
+	if l2.Generation == l.Generation || l.Generation == 0 || l2.Generation == 0 {
+		t.Fatalf("lease generations = %d then %d, want distinct nonzero values", l.Generation, l2.Generation)
+	}
+	if _, err := s.Heartbeat(ctx, l2); err != nil {
+		t.Fatalf("Heartbeat on reclaimed lease err = %v", err)
+	}
+	if err := s.Finish(ctx, l2, Finished, nil, ""); err != nil {
+		t.Fatalf("Finish on reclaimed lease err = %v", err)
+	}
+
+
+}
+
 func TestRunsLeases(t *testing.T) {
 	t.Run("stores.lease-exclusivity", func(t *testing.T) {
 		now := time.Unix(1700000000, 0)

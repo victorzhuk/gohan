@@ -12,6 +12,7 @@ import (
 
 type fakeRun struct {
 	row      RunRow
+	lease    Lease
 	ttl      time.Duration
 	expires  time.Time
 	live     bool
@@ -20,12 +21,13 @@ type fakeRun struct {
 }
 
 type fakeRuns struct {
-	mu     sync.Mutex
-	now    time.Time
-	runs   map[string]*fakeRun
-	onSess map[string]string
-	byOp   map[string]string
-	seq    int
+	mu         sync.Mutex
+	now        time.Time
+	runs       map[string]*fakeRun
+	onSess     map[string]string
+	byOp       map[string]string
+	generation uint64
+	seq        int
 }
 
 type fakeRunsClock struct {
@@ -52,9 +54,14 @@ func (s *fakeRuns) expired(rec *fakeRun) bool {
 	return !rec.expires.IsZero() && !s.now.Before(rec.expires)
 }
 
+func (s *fakeRuns) nextGenerationLocked() uint64 {
+	s.generation++
+	return s.generation
+}
+
 func (s *fakeRuns) held(l Lease) (*fakeRun, error) {
 	rec, ok := s.runs[l.RunID]
-	if !ok || !rec.live || s.expired(rec) {
+	if !ok || l.Generation == 0 || rec.lease.Generation != l.Generation || !rec.live || s.expired(rec) {
 		return nil, fmt.Errorf("%w: run %s", types.ErrRunNotActive, l.RunID)
 	}
 	return rec, nil
@@ -76,13 +83,14 @@ func (s *fakeRuns) Start(_ context.Context, r RunRow, ttl time.Duration) (Lease,
 	}
 	r.State = RunRunning
 	r.Heartbeat = s.now
-	rec := &fakeRun{row: r, ttl: ttl, expires: s.now.Add(ttl), live: true}
+	generation := s.nextGenerationLocked()
+	rec := &fakeRun{row: r, lease: Lease{RunID: r.RunID, Generation: generation}, ttl: ttl, expires: s.now.Add(ttl), live: true}
 	s.runs[r.RunID] = rec
 	s.onSess[r.SessionID] = r.RunID
 	if r.OperationID != "" {
 		s.byOp[r.OperationID] = r.RunID
 	}
-	return Lease{RunID: r.RunID}, nil
+	return rec.lease, nil
 }
 
 func (s *fakeRuns) Heartbeat(_ context.Context, l Lease) (Lease, error) {
@@ -94,7 +102,7 @@ func (s *fakeRuns) Heartbeat(_ context.Context, l Lease) (Lease, error) {
 		return Lease{}, err
 	}
 	rec.expires = s.now.Add(rec.ttl)
-	return Lease{RunID: rec.row.RunID}, nil
+	return rec.lease, nil
 }
 
 func (s *fakeRuns) Suspend(_ context.Context, l Lease, _ types.ResumeToken) error {
@@ -125,9 +133,10 @@ func (s *fakeRuns) Resuming(_ context.Context, runID string, ttl time.Duration) 
 	}
 	rec.row.State = RunResuming
 	rec.ttl = ttl
+	rec.lease = Lease{RunID: runID, Generation: s.nextGenerationLocked()}
 	rec.expires = s.now.Add(ttl)
 	rec.live = true
-	return Lease{RunID: runID}, nil
+	return rec.lease, nil
 }
 
 func (s *fakeRuns) Finish(_ context.Context, l Lease, state RunState, uncertain []types.CallKey, resultRef string) error {
@@ -190,10 +199,11 @@ func (s *fakeRuns) Reclaim(_ context.Context, r RunRow, ttl time.Duration) (Leas
 		return Lease{}, fmt.Errorf("%w: run %s not reclaimable", types.ErrRunNotActive, r.RunID)
 	}
 	rec.ttl = ttl
+	rec.lease = Lease{RunID: r.RunID, Generation: s.nextGenerationLocked()}
 	rec.expires = s.now.Add(ttl)
 	rec.row.Heartbeat = s.now
 	rec.live = true
-	return Lease{RunID: r.RunID}, nil
+	return rec.lease, nil
 }
 
 func (s *fakeRuns) Signal(_ context.Context, runID string, sig Signal) error {

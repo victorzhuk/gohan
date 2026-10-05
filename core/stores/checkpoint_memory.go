@@ -5,11 +5,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
 	"github.com/victorzhuk/gohan/core/types"
 )
+
 
 // RunInfoSource reports the run info in ctx. Consumer-owned: the harness
 // injects the seam's extractor; the store never reads identity context
@@ -59,6 +61,27 @@ func NewMemoryCheckpoints(opts ...MemoryCheckpointOption) *MemoryCheckpoints {
 	return s
 }
 
+func cloneCheckpoint(cp Checkpoint) Checkpoint {
+	cp.Data = append([]byte(nil), cp.Data...)
+	cp.Originator.Scopes = append([]string(nil), cp.Originator.Scopes...)
+	return cp
+}
+
+func cloneResumeInput(in ResumeInput) ResumeInput {
+	in.Args = append([]byte(nil), in.Args...)
+	in.Data = append([]byte(nil), in.Data...)
+	if in.Approver != nil {
+		p := *in.Approver
+		p.Scopes = append([]string(nil), p.Scopes...)
+		in.Approver = &p
+	}
+	return in
+}
+
+func checkpointEqual(a, b Checkpoint) bool {
+	return reflect.DeepEqual(a, b)
+}
+
 // Put mints a fresh single-use token for cp. The run id comes from the
 // RunInfo in ctx so PendingInput can find the checkpoint after a crash; a
 // token put outside a run is reachable by Consume only.
@@ -69,21 +92,22 @@ func (s *MemoryCheckpoints) Put(ctx context.Context, cp Checkpoint) (types.Resum
 	}
 	t := types.ResumeToken("cp_" + hex.EncodeToString(raw[:]))
 
-	cp.Data = append([]byte(nil), cp.Data...)
-	// Scopes is copied so the caller cannot mutate the stored principal.
-	p := cp.Originator
-	p.Scopes = append([]string(nil), cp.Originator.Scopes...)
-	cp.Originator = p
+	cp = cloneCheckpoint(cp)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.toks[t] = &checkpointRecord{cp: cp}
-	if s.runs != nil {
-		if ri, ok := s.runs(ctx); ok && ri.RunID != "" {
-			s.byRun[ri.RunID] = t
+	runID := cp.RunID
+	if runID == "" && s.runs != nil {
+		if ri, ok := s.runs(ctx); ok {
+			runID = ri.RunID
 		}
 	}
+	if runID != "" {
+		s.byRun[runID] = t
+	}
 	return t, nil
+
 }
 
 // Consume atomically marks the token used and stores the resume input: the
@@ -103,8 +127,9 @@ func (s *MemoryCheckpoints) Consume(ctx context.Context, t types.ResumeToken, in
 		return Checkpoint{}, fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenExpired)
 	}
 	rec.consumed = true
-	rec.input = in
-	return rec.cp, nil
+	rec.input = cloneResumeInput(in)
+	return cloneCheckpoint(rec.cp), nil
+
 }
 
 // PendingInput returns the checkpoint a suspended run waits on and the
@@ -117,5 +142,83 @@ func (s *MemoryCheckpoints) PendingInput(ctx context.Context, runID string) (Che
 		return Checkpoint{}, ResumeInput{}, fmt.Errorf("gohan: no checkpoint for run %s", runID)
 	}
 	rec := s.toks[t]
-	return rec.cp, rec.input, nil
+	return cloneCheckpoint(rec.cp), cloneResumeInput(rec.input), nil
+}
+
+
+func (s *MemoryCheckpoints) Peek(ctx context.Context, t types.ResumeToken) (Checkpoint, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.toks[t]
+	if !ok {
+		return Checkpoint{}, fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenMismatch)
+	}
+	if rec.consumed {
+		return Checkpoint{}, fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenConsumed)
+	}
+	if !rec.cp.ExpiresAt.IsZero() && !s.now().Before(rec.cp.ExpiresAt) {
+		return Checkpoint{}, fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenExpired)
+	}
+	return cloneCheckpoint(rec.cp), nil
+}
+
+func (s *MemoryCheckpoints) ConsumeIf(ctx context.Context, t types.ResumeToken, expected Checkpoint, in ResumeInput) (Checkpoint, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.toks[t]
+	if !ok {
+		return Checkpoint{}, fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenMismatch)
+	}
+	if rec.consumed {
+		return Checkpoint{}, fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenConsumed)
+	}
+	if !rec.cp.ExpiresAt.IsZero() && !s.now().Before(rec.cp.ExpiresAt) {
+		return Checkpoint{}, fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenExpired)
+	}
+	if !checkpointEqual(expected, rec.cp) {
+		return Checkpoint{}, types.ErrVersionConflict
+	}
+	rec.consumed = true
+	rec.input = cloneResumeInput(in)
+	return cloneCheckpoint(rec.cp), nil
+}
+
+func (s *MemoryCheckpoints) UpdatePending(ctx context.Context, t types.ResumeToken, expected, next Checkpoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.toks[t]
+	if !ok {
+		return fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenMismatch)
+	}
+	if rec.consumed {
+		return fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenConsumed)
+	}
+	if !rec.cp.ExpiresAt.IsZero() && !s.now().Before(rec.cp.ExpiresAt) {
+		return fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenExpired)
+	}
+	if !checkpointEqual(expected, rec.cp) {
+		return types.ErrVersionConflict
+	}
+	candidate := cloneCheckpoint(rec.cp)
+	candidate.Data = append(candidate.Data[:0], next.Data...)
+	if !checkpointEqual(candidate, next) {
+		return types.ErrVersionConflict
+	}
+	rec.cp = candidate
+	return nil
+}
+
+func (s *MemoryCheckpoints) ResumeReady(ctx context.Context, limit int) ([]Checkpoint, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Checkpoint, 0)
+	for _, rec := range s.toks {
+		if rec.consumed {
+			out = append(out, cloneCheckpoint(rec.cp))
+			if limit > 0 && len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
 }

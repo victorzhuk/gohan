@@ -193,4 +193,23 @@ func TestSessionLifecycle(t *testing.T) {
 			t.Fatalf("post-fork writes share a message id %s; sessions must be isolated", parentHist.Messages[2].ID)
 		}
 	})
+	t.Run("identity.owner-requires-authorized-metadata-access", func(t *testing.T) {
+		now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+		store, _, _ := sessionTestStore(&now)
+		if _, err := store.Append(withTestPrincipal(context.Background(), ownerTenantA), "owner", 0, types.Message{Role: types.RoleUser}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+		if _, err := store.Owner(withTestPrincipal(context.Background(), outsider), "owner"); !errors.Is(err, types.ErrSessionForbidden) {
+			t.Fatalf("cross-tenant Owner error = %v, want ErrSessionForbidden", err)
+		}
+		got, err := store.Owner(withTestPrincipal(context.Background(), ownerTenantA), "owner")
+		if err != nil || got != (types.SessionOwner{Tenant: ownerTenantA.Tenant, Subject: ownerTenantA.Subject}) {
+			t.Fatalf("owner access = %+v, %v", got, err)
+		}
+		controller := types.Principal{Tenant: ownerTenantA.Tenant, Subject: "operator", Scopes: []string{types.ScopeSessionControl}}
+		got, err = store.Owner(withTestPrincipal(context.Background(), controller), "owner")
+		if err != nil || got.Tenant != ownerTenantA.Tenant {
+			t.Fatalf("control access = %+v, %v", got, err)
+		}
+	})
 }

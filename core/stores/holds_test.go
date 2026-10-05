@@ -66,6 +66,28 @@ func TestSessionHold(t *testing.T) {
 			t.Fatalf("audit kinds = %v, want [hold_set hold_cleared]", kinds)
 		}
 	})
+	t.Run("stores.hold-audit-failure-is-atomic", func(t *testing.T) {
+		now := start
+		audit := NewMemoryAuditLog()
+		store, _, _ := sessionTestStore(&now)
+		store.audit = audit
+		if _, err := store.Append(withTestPrincipal(context.Background(), ownerTenantA), "atomic", 0, types.Message{Role: types.RoleUser}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+		ctx, cancel := context.WithCancel(withTestPrincipal(context.Background(), holder))
+		cancel()
+		title, archived, pinned, hold := "new title", true, true, "case-42"
+		err := store.UpdateSession(ctx, "atomic", SessionPatch{
+			Title: &title, Archived: &archived, Pinned: &pinned, Hold: &hold,
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("UpdateSession error = %v, want canceled audit error", err)
+		}
+		rec := store.sessions["atomic"].meta
+		if rec.Title != "" || rec.TitleLocked || rec.Archived || rec.Pinned || rec.Hold != "" {
+			t.Fatalf("metadata changed after audit failure: %+v", rec)
+		}
+	})
 
 	t.Run("identity.hold-requires-scope", func(t *testing.T) {
 		now := start
