@@ -359,6 +359,27 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			}
 			runCtx, rt, ag, ledger = rctx, nrt, nag, nled
 		}
+		// The resumed drive carries the original run's identity: the gate
+		// reads the run's principal scopes from ctx, and a zero run would
+		// hard-deny every replayed call the approver already granted. The
+		// identity comes from the checkpoint and the run row, never from
+		// the caller.
+		info := types.RunInfo{
+			Flow:      c.spec,
+			SessionID: cp.SessionID,
+			RunID:     consumed.RunID,
+			Turn:      st.Turn,
+			Principal: cp.Originator,
+		}
+		if rf, ok := c.runs.(runFinder); ok {
+			if run, ferr := rf.ByID(ctx, consumed.RunID); ferr == nil {
+				info.RootRunID = run.RootRunID
+				info.ParentRunID = run.ParentRunID
+				info.Depth = run.Depth
+				info.Mode = run.Mode
+			}
+		}
+		runCtx = types.WithRunInfo(runCtx, info)
 		opts := []LifecycleOption{
 			WithLifecycleRuns(c.runs, lease),
 			WithLifecycleSession(cp.SessionID),

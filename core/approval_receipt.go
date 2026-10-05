@@ -1,10 +1,12 @@
 package gohan
 
 import (
+	"context"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"fmt"
 
+	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -31,6 +33,22 @@ func approvalReceiptMessage(rc approvalReceipt) (types.Message, error) {
 		return types.Message{}, fmt.Errorf("%w: incomplete approval receipt", types.ErrInputInvalid)
 	}
 	return types.Message{Role: types.RoleAssistant, Meta: map[string]any{ApprovalReceiptKey: rc}}, nil
+}
+
+// receiptGrantCheck builds the session-grant lookup the permission gate
+// consults after the taint policy and before the decider: an approval
+// receipt recorded at quorum grants the call's fingerprint for the rest of
+// the session, so a resumed or recovered drive executes the call instead of
+// asking again. A malformed receipt is treated as no grant; a live deny
+// from the decider runs after this check and always wins.
+func receiptGrantCheck(h stores.History) func(context.Context, *permission.ToolInvocation) bool {
+	return func(_ context.Context, inv *permission.ToolInvocation) bool {
+		args, err := latestApprovedArgs(h, inv.Spec.Name)
+		if err != nil || args == nil {
+			return false
+		}
+		return ToolFingerprint(inv.Spec, args) == ToolFingerprint(inv.Spec, inv.Call.Args)
+	}
 }
 
 func rejectReservedMeta(msgs []types.Message) error {

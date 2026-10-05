@@ -62,6 +62,7 @@ type ToolInvocation struct {
 type Option func(*gate)
 
 type gate struct {
+	grantCheck    func(ctx context.Context, inv *ToolInvocation) bool
 	decider       types.Decider[*ToolInvocation, Verdict]
 	minConfidence float64
 	taintHook     types.TaintHook
@@ -80,6 +81,14 @@ func MinConfidence(x float64) Option {
 // enforcement until std/taint ships its matcher.
 func WithTaintHook(h types.TaintHook) Option {
 	return func(g *gate) { g.taintHook = h }
+}
+
+// WithGrantCheck installs the session-grant slot. The check runs after the
+// hard blocks and the taint policy, before the decider: a call the session
+// already granted passes without asking, while a Deny the decider returns
+// live still wins over the recorded grant.
+func WithGrantCheck(check func(ctx context.Context, inv *ToolInvocation) bool) Option {
+	return func(g *gate) { g.grantCheck = check }
 }
 
 // WithSpecLookup resolves the ToolSpec for a call. The registry is the
@@ -164,12 +173,15 @@ func (g *gate) decideCall(ctx context.Context, inv *ToolInvocation) Decision {
 		}
 	}
 
-	if v := g.decide(ctx, inv); v == DenyVerdict {
+	granted := g.grantCheck != nil && g.grantCheck(ctx, inv)
+	switch v := g.decide(ctx, inv); {
+	case v == DenyVerdict:
 		return Decision{Verdict: v, Reason: "denied by policy"}
-	} else if v != Allow {
+	case v == Allow || granted:
+		return Decision{Verdict: Allow}
+	default:
 		return Decision{Verdict: v}
 	}
-	return Decision{Verdict: Allow}
 }
 
 func taintReason(taints []types.ArgTaint) string {

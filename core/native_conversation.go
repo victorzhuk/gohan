@@ -44,7 +44,7 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 		}
 
 		tc := stack.nativeTurnConfig(cfg)
-		tc.gate = nativeBatchGate(cfg)
+		tc.gate = nativeBatchGate(cfg, hist)
 		tc.reserve = func(ctx context.Context, n int) (context.Context, func(), error) {
 			return ledger.ReserveBatch(ctx, cfg.limits, n)
 		}
@@ -62,7 +62,7 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 		ctx = chains.WithLimitsState(ctx, ledger)
 
 		tc := stack.nativeTurnConfig(cfg)
-		tc.gate = nativeBatchGate(cfg)
+		tc.gate = nativeBatchGate(cfg, hist)
 		tc.reserve = func(ctx context.Context, n int) (context.Context, func(), error) {
 			return ledger.ReserveBatch(ctx, cfg.limits, n)
 		}
@@ -94,15 +94,17 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 // verdict projects onto the batch protocol's outcomes. A nil decider keeps
 // the core default — read-only and idempotent calls pass, everything else
 // asks; a decider error asks rather than widening permission.
-func nativeBatchGate(cfg *resolvedNativeConfig) runtime.BatchGate {
+func nativeBatchGate(cfg *resolvedNativeConfig, hist stores.History) runtime.BatchGate {
 	lookup := specLookup(cfg.specs)
+	grant := receiptGrantCheck(hist)
 	return func(ctx context.Context, call types.ToolUse) runtime.BatchDecision {
 		spec, ok := lookup(call.Name)
 		if !ok {
 			return runtime.BatchDecision{Outcome: runtime.BatchDeny, Reason: "unknown tool " + call.Name}
 		}
 		run, _ := RunInfoFrom(ctx)
-		dec := permission.DecideCall(ctx, cfg.decider, &permission.ToolInvocation{Spec: spec, Call: call, Run: run})
+		inv := &permission.ToolInvocation{Spec: spec, Call: call, Run: run}
+		dec := permission.DecideCall(ctx, cfg.decider, inv, permission.WithGrantCheck(grant))
 		switch dec.Verdict {
 		case permission.Allow:
 			return runtime.BatchDecision{Outcome: runtime.BatchAllow}

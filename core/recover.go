@@ -3,6 +3,7 @@ package gohan
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/runtime"
@@ -99,15 +100,15 @@ func (s *Stack) recoverConsumedRun(ctx context.Context, cp stores.Checkpoint) er
 		return nil
 	}
 	run.State = stores.Resuming
-	st, _, _, err := s.replayState(ctx, run, rt)
+	st, rcp, rin, err := s.replayState(ctx, run, rt)
 	if err != nil {
 		return s.abandonRun(ctx, lease, run)
 	}
-	rctx, p, err := s.recoveryContext(ctx, run, st, &cp)
+	rctx, p, err := s.recoveryContext(ctx, run, st, rcp)
 	if err != nil {
 		return s.abandonWith(ctx, lease, run, err)
 	}
-	return s.driveRecovered(rctx, lease, run, rt, st, p)
+	return s.driveRecovered(rctx, lease, run, rt, st, rcp, rin, p)
 }
 
 // orderTreeRootsFirst lists depth-zero runs before their children, so a
@@ -136,7 +137,7 @@ func (s *Stack) recoverRun(ctx context.Context, run stores.Run) error {
 	if !ok {
 		return s.abandonRun(ctx, lease, run)
 	}
-	st, cp, _, err := s.replayState(ctx, run, rt)
+	st, cp, in, err := s.replayState(ctx, run, rt)
 	if err != nil {
 		return s.abandonRun(ctx, lease, run)
 	}
@@ -144,7 +145,7 @@ func (s *Stack) recoverRun(ctx context.Context, run stores.Run) error {
 	if err != nil {
 		return s.abandonWith(ctx, lease, run, err)
 	}
-	return s.driveRecovered(rctx, lease, run, rt, st, p)
+	return s.driveRecovered(rctx, lease, run, rt, st, cp, in, p)
 }
 
 // driveRecovered re-drives one recovered run through the shared lifecycle:
@@ -153,11 +154,20 @@ func (s *Stack) recoverRun(ctx context.Context, run stores.Run) error {
 // drive ends and the run is still Running or Resuming, nothing recorded a
 // terminal transition — the run is closed as failed instead of silently
 // left open.
-func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stores.Run, rt runtime.Runtime, st runtime.State, p types.Principal) error {
+func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stores.Run, rt runtime.Runtime, st runtime.State, cp *stores.Checkpoint, in stores.ResumeInput, p types.Principal) error {
 	if s.stores.Checkpoints == nil {
 		// The re-drive can reach another suspension; without the
 		// checkpoint store it cannot park the run again.
 		return s.abandonWith(ctx, lease, run, fmt.Errorf("recover run %s: no checkpoint store to suspend through", run.RunID))
+	}
+	// An approval delivered between the token consume and Runs.Resuming
+	// never passed the resume path that records its receipts. Record them
+	// before the gate is wired, or the re-drive asks again for a call the
+	// approver already granted.
+	if cp != nil && in.Verdict == stores.VerdictApprove && resumeConsumed(in) {
+		if err := s.recoveryReceipts(ctx, cp, in, run, &st); err != nil {
+			return s.abandonWith(ctx, lease, run, err)
+		}
 	}
 	opts := []LifecycleOption{
 		WithLifecycleRuns(s.stores.Runs, lease),
@@ -182,19 +192,22 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 	// reports as spent. The re-drive can suspend again through the same
 	// effects a live run uses.
 	ag := runtime.AgentRun{Save: s.stores.Checkpoints.Put}
+	if len(st.Pending) > 0 {
+		ctx = withPendingReplay(ctx)
+	}
 	if cfg, ok := s.resolvedNative(run.Flow); ok {
 		ledger := chains.NewLimitsStateSeeded(run.Cost)
 		ctx = chains.WithLimitsState(ctx, ledger)
-		tc := s.nativeTurnConfig(cfg)
-		tc.gate = nativeBatchGate(cfg)
-		tc.reserve = func(ctx context.Context, n int) (context.Context, func(), error) {
-			return ledger.ReserveBatch(ctx, cfg.limits, n)
-		}
 		var hist stores.History
 		if s.stores.SessionLog != nil {
 			if h, err := s.stores.SessionLog.Load(ctx, run.SessionID); err == nil {
 				hist = h
 			}
+		}
+		tc := s.nativeTurnConfig(cfg)
+		tc.gate = nativeBatchGate(cfg, hist)
+		tc.reserve = func(ctx context.Context, n int) (context.Context, func(), error) {
+			return ledger.ReserveBatch(ctx, cfg.limits, n)
 		}
 		native := nativeRun(tc, hist.Messages, nil)
 		native.Model = cfg.model
@@ -251,6 +264,100 @@ func (s *Stack) runByID(ctx context.Context, runID string) (stores.Run, bool, er
 
 type runFinder interface {
 	ByID(ctx context.Context, runID string) (stores.Run, error)
+}
+
+// recoveryReceipts records the receipts an approval delivered straight to
+// the checkpoint store earned: the resume Send records them after the
+// consume, and a crash in that interval leaves the gate with no grant to
+// consult. A HumanApproval envelope carries the approval-controlled calls
+// with their recorded votes; a batch ask carries them as the state's
+// pending calls, and the delivered approver is the vote.
+func (s *Stack) recoveryReceipts(ctx context.Context, cp *stores.Checkpoint, in stores.ResumeInput, run stores.Run, st *runtime.State) error {
+	if s.stores.SessionLog == nil || len(cp.Data) == 0 {
+		return nil
+	}
+	env, _, err := decodeCheckpoint(*cp, runtime.NewNative(), run.Flow)
+	if err != nil {
+		return fmt.Errorf("recover run %s: %w", run.RunID, err)
+	}
+	var rcpts []approvalReceipt
+	switch {
+	case len(env.Approvals) > 0:
+		if in.Approver != nil {
+			for i := range env.Approvals {
+				if !approverRecorded(env.Approvals[i], *in.Approver) {
+					env.Approvals[i].ApprovedBy = append(slices.Clone(env.Approvals[i].ApprovedBy), *in.Approver)
+				}
+			}
+		}
+		for _, ap := range env.Approvals {
+			if len(ap.ApprovedBy) == 0 {
+				continue
+			}
+			rcpts = append(rcpts, approvalReceipt{
+				RunID:      run.RunID,
+				Generation: env.Generation,
+				CallID:     ap.Call.ID,
+				Tool:       ap.Call.Name,
+				Args:       slices.Clone(ap.Call.Args),
+				Approvers:  slices.Clone(ap.ApprovedBy),
+			})
+		}
+	case cp.Reason == types.AwaitingBatch:
+		var apps []types.Principal
+		if in.Approver != nil {
+			apps = []types.Principal{*in.Approver}
+		}
+		for _, call := range env.State.Pending {
+			rcpts = append(rcpts, approvalReceipt{
+				RunID:      run.RunID,
+				Generation: env.Generation,
+				CallID:     call.ID,
+				Tool:       call.Name,
+				Args:       slices.Clone(call.Args),
+				Approvers:  slices.Clone(apps),
+			})
+		}
+	default:
+		return nil
+	}
+	if len(rcpts) == 0 {
+		return nil
+	}
+	h, err := s.stores.SessionLog.Load(ctx, cp.SessionID)
+	if err != nil {
+		return fmt.Errorf("recover run %s: %w", run.RunID, err)
+	}
+	var msgs []types.Message
+	seen := map[string]bool{}
+	for _, msg := range h.Messages {
+		if raw, ok := msg.Meta[ApprovalReceiptKey]; ok {
+			rc, derr := decodeReceipt(raw)
+			if derr != nil {
+				return derr
+			}
+			seen[receiptDedupKey(rc)] = true
+		}
+	}
+	for _, rc := range rcpts {
+		if seen[receiptDedupKey(rc)] {
+			continue
+		}
+		msg, merr := approvalReceiptMessage(rc)
+		if merr != nil {
+			return merr
+		}
+		msgs = append(msgs, msg)
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	ver, err := s.stores.SessionLog.Append(ctx, cp.SessionID, h.Version, msgs...)
+	if err != nil {
+		return fmt.Errorf("recover run %s: %w", run.RunID, err)
+	}
+	st.HistoryVersion = ver
+	return nil
 }
 
 func (s *Stack) recoveryAppender(run stores.Run) HistoryAppender {
