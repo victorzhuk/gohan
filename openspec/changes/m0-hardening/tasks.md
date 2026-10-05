@@ -42,29 +42,34 @@ Independent, file-disjoint.
 
 ## Wave 2 — journal integrity, then the governed native path
 
-6. [ ] `core`: journal fingerprint identity and outcome uncertainty. Decision D11. Validation first: trace `Reserve`/`Complete` through the governed tool path and the uncertainty contract before changing a signature, a sentinel or a store contract.
+6. [x] `tools`: implement the documented `api:check` exit policy. `docs/design/compatibility.md` states it: CI fails on an incompatible change in any module at `v1` or later and only reports for `v0` modules. The tool currently exits 1 for every module, which is why the floor is red on five genuine pre-v1 changes. Report and exit 0 for a `v0` module, keep failing for `v1`, and keep printing every difference.
+  - verify result: `task api:check` exits 0 and still prints the five differences plus "module is pre-v1, reporting incompatible change(s) without failing"; `./tools/apicheck` green with the v0/v1 cases added.
+  - files: `tools/apicheck/main.go`, `tools/apicheck/main_test.go`, `docs/design/api-review-m0-5.md`
+  - scenarios: none
+  - verify: `timeout 3m go test -timeout 2m ./tools/apicheck && timeout 3m task api:check`
+
+7. [x] `core`, `std`: journal key identity, and the decorator that consumes it. Both refusals are sealed by ADR-0149: `Reserve` refuses a key presented with a different fingerprint (`ErrJournalFingerprintMismatch`), `Complete` refuses a key with no live reservation (`ErrJournalCompleteMissed`), the store conformance suite holds every implementation to both, and `std.Journal` stops discarding them — a `Reserve` error fails the call, a `Complete` error marks the result `Outcome: Unknown`. The trace that justified the `Complete` change: `execOne` (`core/runtime/runtime_schedule.go:105-120`) is the only production caller, and it always Reserves first, so only a call outliving the 24 h TTL reaches the miss — where the old no-op reported a clean run over an unrecorded write. Decisions D11, D12.
+  - verify result: `go test -timeout 2m ./core/stores/... ./testkit/storetest/... ./std/... ./core/...` green; `stores.reserve-fingerprint-mismatch` and `stores.complete-without-reservation` registered and covered.
   - files: `core/stores/journal.go`, `core/stores/journal_memory.go`, `core/stores/journal_memory_test.go`, `testkit/storetest/`
-  - scenarios: `stores.journal-*` (whatever the capability registers), `tools.effect-once`
-  - verify: `timeout 2m go test -timeout 2m ./core/stores/... ./testkit/storetest/...`
+  - scenarios: keeps `stores.fingerprint-after-compaction`, `tools.effect-once` and the journal suite green
+  - verify: `timeout 3m go test -timeout 2m ./core/stores/... ./testkit/storetest/...`
 
-7. [ ] `core`, `std`: the governed native path from chunk 5's design: `Build` resolves profiles, strategies, fidelity and middleware into the public execution path; `Explain` reports the same resolved configuration; preset and recipe prompts reach the manifest; per-run limit state.
-  - files: per chunk 5's design
-  - scenarios: `build.resolved-matrix`, `chains.prompt-strings-accounted-for`, `limits.*`, `flow.plain-invoke`
-  - verify: `timeout 3m go test -timeout 2m ./core/... ./std/... && timeout 2m go -C examples run ./quickstart`
+8. [ ] `core`, `std`: the governed native path from `design-native-path.md` (chunks C01–C09). C01 is sealed: limit termination is ADR-0147, the core budget exception is ADR-0148, and the remaining C01 work is the flow/runtime/build spec statements the native definition needs.
+  - files: per `design-native-path.md`
+  - scenarios: `build.resolved-matrix`, `chains.prompt-strings-accounted-for`, `runtime.max-turns`, `limits.hard-cost-abort`, `flow.plain-invoke`
+  - verify: `timeout 5m go test -timeout 2m ./core/... ./std/...`
 
-8. [ ] `examples`: the three offline acceptance processes drive the public governed path (`Build`, native agent entry, `std` chain, memory stores) while keeping all nine `engines.*` assertions; the refund example gains a runnable `main`. The three directories are independent.
+9. [ ] `examples`: the three offline acceptance processes drive the public governed path while keeping all nine `engines.*` assertions; the refund example gains a runnable `main`. The three directories are independent. Depends on 8.
   - files: `examples/{camunda-invoice,temporal-travel,kafka-refunds}/`
   - scenarios: `engines.*` (nine)
-  - verify: `timeout 3m go -C examples test -timeout 2m ./...`
+  - verify: `timeout 3m go -C examples test -timeout 2m ./... && timeout 2m go -C examples run ./kafka-refunds`
 
-## Wave 3 — streaming, then evidence
-
-9. [ ] `core`: stream ownership and ordering before the protections are enabled on the public path: deterministic terminal outcome on timeout, live bounded delivery instead of step-wide retention, joined producers on early exit, detached continuation, subscription bookkeeping. Decisions: none sealed; design first.
+10. [ ] `core`: stream ownership and ordering before the protections are enabled on the public path. Decisions: none sealed; design first.
   - files: `core/drive.go`, `core/drive_lifecycle.go`, `core/model_stream.go`, `core/stream_stall.go`, `core/attach.go`
   - scenarios: `streams.stream-buffer-bound`, `streams.consumer-stall-preempts`, `streams.consumer-stall-detaches-with-log`, `streams.terminal-error-event`
   - verify: `timeout 5m go test -timeout 2m ./core/...`
 
-10. [ ] `docs`: completion evidence. `docs/design/api-review-m0-5.md` drops the claims the gates cannot show, names the public surface the offline processes exercise, and records the pre-v1 breaking changes; `docs/design/compatibility.md` moves the unimplemented port-freeze clause to the recorded gaps; `openspec/changes/m0-core/tasks.md` reconciles the scenario tally against the registry; `docs/overview.md`, `docs/design/scenarios.md` and `docs/design/testing.md` lose stale counts, a nonexistent import path and superseded signatures.
-  - files: the five documents plus `CHANGELOG.md`
+11. [ ] `docs`: publish completion evidence after 6–10 land: the API-review verdict records the resolved policy and the exercised surface, the changelog carries the wave-2 fixes, and the tasks tally is recomputed.
+  - files: `docs/design/api-review-m0-5.md`, `CHANGELOG.md`, `openspec/changes/m0-hardening/tasks.md`
   - scenarios: none
   - verify: `timeout 3m task spec && timeout 3m task api:check`

@@ -97,7 +97,14 @@ Rejected: moving the `v0.1.0` baseline tag, and relaxing the allocation assertio
 
 Evidence: `Reserve` returned the stored entry on key hit without comparing fingerprints (`core/stores/journal_memory.go:37-39`), while the port comment requires the retry to inherit the key only for the same fingerprint.
 
-## Open decisions for the owner
+## D12 — The journal decorator fails closed
+
+`std.Journal` executed the tool when `Reserve` returned an error, and discarded the error from `Complete` in both branches. Both defeat exactly-once: a refused identity — a call key reused with a different fingerprint — would run the effect anyway, and a lost completion leaves the run reporting clean over a write that was never recorded.
+
+Sealed: a `Reserve` error fails the call for a non-`ReadOnly` effect. A `Complete` error marks the result `Outcome: Unknown` and is not swallowed, so the run ends with `*UncertainOutcomeError` (`limits` § 6.13b) instead of a clean report. The read-back branch follows the same rule.
+
+Rejected: keeping the fail-open path — it is the defect, and it is the difference between exactly-once and at-most-once for every side-effecting tool. Failing the call on a `Complete` error — the effect already happened, so the honest report is uncertainty, not a failed call that invites a retry.
+
 
 1. **`api:check` policy before v1.** Five of the six reported differences are genuine source-visible changes against `v0.1.0`. Pre-v1 breaking changes are permitted by the compatibility policy, but the gate is wired as a required CI check. Either it becomes advisory until the freeze tag, or the baseline moves.
 2. **Core policy ownership.** Executable limit middleware and concrete preset values live in `core` while the core budget rule assigns them to `std`. Moving them changes package ownership and needs its own ADR.
