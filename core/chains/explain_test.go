@@ -17,7 +17,7 @@ func TestExplanation(t *testing.T) {
 		Flow:    "booking",
 		Profile: "fast",
 		Steps:   []StepInfo{info},
-		Prompts: map[string]string{"DataNotInstructions": set.DataNotInstructions},
+		Prompts: PromptFields(set),
 		Release: "r1",
 	}
 	if ex.Steps[0].Kind != KindJournal {
@@ -27,17 +27,12 @@ func TestExplanation(t *testing.T) {
 		t.Fatal("Explanation.Prompts must key by PromptSet field name")
 	}
 	n := reflect.TypeOf(set).NumField()
-	if len(setFields(set)) != n {
-		t.Fatalf("setFields covered %d of %d fields", len(setFields(set)), n)
+	if len(ex.Prompts) != n {
+		t.Fatalf("PromptFields covered %d of %d fields", len(ex.Prompts), n)
 	}
-}
-
-func setFields(set PromptSet) map[string]string {
-	v := reflect.ValueOf(set)
-	typ := v.Type()
-	out := make(map[string]string, typ.NumField())
-	for i := range typ.NumField() {
-		out[typ.Field(i).Name] = v.Field(i).String()
+	for name, val := range ex.Prompts {
+		if got := reflect.ValueOf(set).FieldByName(name).String(); got != val {
+			t.Errorf("PromptFields[%s] = %q, want %q", name, val, got)
+		}
 	}
-	return out
 }

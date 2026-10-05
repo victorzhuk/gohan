@@ -2,6 +2,7 @@ package gohan
 
 import (
 	"log/slog"
+	"sort"
 )
 
 // matrixEntry is one flow × profile × strategy resolution the build
@@ -39,4 +40,22 @@ func logResolvedMatrix(l *slog.Logger, entries []matrixEntry) {
 		attrs = append(attrs, slog.Any(e.Flow, e))
 	}
 	l.Info("resolved strategy matrix", attrs...)
+}
+
+// nativeMatrixEntries projects every resolved native definition into the
+// startup record, in flow order so the log is deterministic across builds.
+func nativeMatrixEntries(native map[string]*resolvedNativeConfig) []matrixEntry {
+	entries := make([]matrixEntry, 0, len(native))
+	for _, cfg := range native {
+		entries = append(entries, matrixEntry{
+			Flow:             cfg.flow,
+			Profile:          cfg.profile.Name,
+			Fallback:         cfg.request.Fallback,
+			Structured:       entryName(cfg.plan.Structured),
+			ParallelTools:    cfg.plan.ParallelTools,
+			MaxParallelTools: cfg.plan.MaxParallelTools,
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Flow < entries[j].Flow })
+	return entries
 }

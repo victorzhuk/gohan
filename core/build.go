@@ -95,6 +95,10 @@ func (s *Stack) Limits(flow string) (types.RunLimits, bool) {
 	return l, ok
 }
 
+// Prompts returns the PromptSet Build resolved. Recipes read the caller's
+// model-facing strings here instead of carrying a literal of their own.
+func (s *Stack) Prompts() chains.PromptSet { return s.prompts }
+
 // Manifest returns the release identity Build computed over the pinned
 // profiles, prompts and tool hashes.
 func (s *Stack) Manifest() ReleaseManifest { return s.manifest }
@@ -150,7 +154,7 @@ func Build(opts ...Option) (*Stack, error) {
 	}
 	// build.resolved-matrix: one structured record per build, never one
 	// per profile. Flows resolve further via ResolveStrategies.
-	logResolvedMatrix(logger, nil)
+	logResolvedMatrix(logger, nativeMatrixEntries(s.native))
 	return s, nil
 }
 

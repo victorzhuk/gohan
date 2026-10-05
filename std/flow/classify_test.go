@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -18,7 +19,8 @@ func classifyCall(t *testing.T, m *scriptedModel, texts ...string) (label, error
 		m.streams = append(m.streams, []streamItem{{chunk: types.ModelChunk{Kind: types.DeltaText, Delta: x}}})
 	}
 	labels := []label{"refund", "billing", "other"}
-	got, err := Classify(m, labels).Invoke(gohanctx(), []types.Block{types.Text{Text: "where do I upload?"}})
+	s := recipeStack(t, chains.PromptSet{}, m)
+	got, err := Classify(s, "cheap", labels).Invoke(gohanctx(), []types.Block{types.Text{Text: "where do I upload?"}})
 	return label(got), err
 }
 

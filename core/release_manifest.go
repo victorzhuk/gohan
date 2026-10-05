@@ -56,22 +56,8 @@ func computeReleaseManifest(profiles map[string]types.ModelProfile, prompts chai
 	for name, p := range profiles {
 		m.Models[name] = p.Version
 	}
-	m.Prompts["Version"] = hashString(prompts.Version)
-	for _, f := range []struct {
-		key string
-		val string
-	}{
-		{"FenceOpen", prompts.FenceOpen},
-		{"FenceClose", prompts.FenceClose},
-		{"DataNotInstructions", prompts.DataNotInstructions},
-		{"OutcomeUnknown", prompts.OutcomeUnknown},
-		{"ReadBackHint", prompts.ReadBackHint},
-		{"OutputRefHint", prompts.OutputRefHint},
-		{"RepairInstruction", prompts.RepairInstruction},
-		{"NotesPreamble", prompts.NotesPreamble},
-		{"OperatorTurn", prompts.OperatorTurn},
-	} {
-		m.Prompts[f.key] = hashString(f.val)
+	for name, val := range chains.PromptFields(prompts) {
+		m.Prompts[name] = hashString(val)
 	}
 	if pinned != nil {
 		for _, t := range pinned.Tools {
