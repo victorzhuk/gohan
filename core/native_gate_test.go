@@ -39,9 +39,9 @@ func runGatedBatch(t *testing.T, gate runtime.BatchGate, names ...string) (runti
 	}
 	var executed []string
 	report, err := runtime.Batch{
-		Calls: calls,
+		Calls:  calls,
 		Limits: types.RunLimits{MaxToolCalls: 100},
-		Gate: gate,
+		Gate:   gate,
 		Exec: func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
 			executed = append(executed, call.Name)
 			return types.ToolResult{ID: call.ID, Outcome: types.Succeeded}, nil
