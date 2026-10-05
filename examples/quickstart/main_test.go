@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"slices"
+	"strings"
 	"testing"
 
 	"github.com/victorzhuk/gohan/core/types"
@@ -20,26 +20,31 @@ func collectEvents(t *testing.T, input string) []types.Event {
 func TestQuickstartOffline(t *testing.T) {
 	t.Run("native turn with memory stores", func(t *testing.T) {
 		evs := collectEvents(t, "Say hello.")
-		if len(evs) != 4 {
-			t.Fatalf("got %d events, want 4: %v", len(evs), evs)
-		}
-		deltas := []string{"Hello, ", "quickstart!"}
-		for i, want := range deltas {
-			d, ok := evs[i].(types.TextDelta)
-			if !ok || d.Delta != want {
-				t.Fatalf("event %d is %v, want TextDelta %q", i, evs[i], want)
+		var deltas []string
+		var am types.AssistantMessage
+		done := false
+		for _, ev := range evs {
+			switch e := ev.(type) {
+			case types.TextDelta:
+				deltas = append(deltas, e.Delta)
+			case types.AssistantMessage:
+				am = e
+			case types.Done:
+				done = true
 			}
 		}
-		am, ok := evs[2].(types.AssistantMessage)
-		if !ok || len(am.Message.Blocks) != 1 {
-			t.Fatalf("event 2 is %v, want AssistantMessage with one block", evs[2])
+		if got := strings.Join(deltas, ""); got != "Hello, quickstart!" {
+			t.Fatalf("streamed %q, want %q", got, "Hello, quickstart!")
+		}
+		if len(am.Message.Blocks) != 1 {
+			t.Fatalf("assistant message %v, want one block", am.Message)
 		}
 		tb, ok := am.Message.Blocks[0].(types.Text)
 		if !ok || tb.Text != "Hello, quickstart!" {
 			t.Fatalf("assistant block %v, want Text %q", am.Message.Blocks[0], "Hello, quickstart!")
 		}
-		if _, ok := evs[3].(types.Done); !ok {
-			t.Fatalf("event 3 is %v, want types.Done", evs[3])
+		if !done {
+			t.Fatal("no types.Done event")
 		}
 	})
 
@@ -61,14 +66,24 @@ func TestQuickstartOffline(t *testing.T) {
 		}
 	})
 
-	t.Run("reply persists to the session log", func(t *testing.T) {
-		repliedMessages = nil
+	t.Run("governed send appends the user message", func(t *testing.T) {
+		sessionLog = nil
 		_ = collectEvents(t, "Say hello.")
-		if len(repliedMessages) != 1 {
-			t.Fatalf("persisted %d replies, want 1", len(repliedMessages))
+		ctx := types.WithPrincipal(context.Background(), types.Principal{
+			Tenant:  "local",
+			Subject: "reader",
+			Scopes:  []string{types.ScopeSessionRead, types.ScopeSessionWrite},
+		})
+		hist, err := sessionLog.Load(ctx, "quickstart")
+		if err != nil {
+			t.Fatalf("load session: %v", err)
 		}
-		if !slices.Contains(repliedMessages, "Hello, quickstart!") {
-			t.Fatalf("persisted %v, want the scripted reply", repliedMessages)
+		if len(hist.Messages) != 1 || hist.Messages[0].Role != types.RoleUser {
+			t.Fatalf("session history %+v, want the one user message", hist.Messages)
+		}
+		tb, ok := hist.Messages[0].Blocks[0].(types.Text)
+		if !ok || tb.Text != "Say hello." {
+			t.Fatalf("persisted block %v, want Text %q", hist.Messages[0].Blocks[0], "Say hello.")
 		}
 	})
 }

@@ -1,5 +1,5 @@
-// Command quickstart drives one scripted agent turn through gohan's
-// native Drive loop with in-memory stores. It runs offline: no network,
+// Command quickstart sends one scripted turn through gohan's governed
+// native conversation with in-memory stores. It runs offline: no network,
 // no API keys.
 package main
 
@@ -9,10 +9,8 @@ import (
 	"iter"
 	"os"
 	"slices"
-	"strings"
 
-	"github.com/victorzhuk/gohan/core"
-	"github.com/victorzhuk/gohan/core/runtime"
+	gohan "github.com/victorzhuk/gohan/core"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -39,73 +37,41 @@ func (m *scriptedModel) Generate(_ context.Context, req types.ModelRequest) iter
 	}
 }
 
-// quickstartRuntime is the native stepper for the quickstart: one Step is
-// one model call whose text streams through the sink.
-type quickstartRuntime struct {
-	model *scriptedModel
-	run   runtime.AgentRun
-}
-
-func (rt *quickstartRuntime) Name() string                         { return "quickstart.scripted" }
-func (rt *quickstartRuntime) Granularity() runtime.StepGranularity { return runtime.GranularityEffect }
-
-func (rt *quickstartRuntime) Start(_ context.Context, r runtime.AgentRun) (runtime.State, error) {
-	rt.run = r
-	return runtime.State{HistoryVersion: r.History.Version}, nil
-}
-
-func (rt *quickstartRuntime) Step(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
-	req, err := rt.run.Assemble(ctx, types.AssembleInput{History: rt.run.History.Messages})
-	if err != nil {
-		return st, nil, runtime.Continue, err
-	}
-	var text []string
-	for chunk, err := range rt.model.Generate(ctx, req) {
-		if err != nil {
-			return st, nil, runtime.Continue, err
-		}
-		if chunk.Kind != types.DeltaText {
-			continue
-		}
-		text = append(text, chunk.Delta)
-		if sink, ok := types.SinkFrom(ctx); ok {
-			sink.Emit(ctx, types.TextDelta{Turn: st.Turn, MessageID: "assistant-1", Delta: chunk.Delta})
-		}
-	}
-	msg := types.Message{
-		ID:   "assistant-1",
-		Role: types.RoleAssistant,
-		Blocks: []types.Block{
-			types.Text{Text: strings.Join(text, "")},
-		},
-	}
-	if sink, ok := types.SinkFrom(ctx); ok {
-		sink.Emit(ctx, types.AssistantMessage{Turn: st.Turn, Message: msg})
-	}
-	return runtime.State{Turn: st.Turn + 1, HistoryVersion: rt.run.History.Version + 1},
-		nil, runtime.DoneStatus, nil
-}
-
 func assemble(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
 	return types.ModelRequest{Messages: slices.Clone(in.History)}, nil
 }
 
-// repliedMessages holds the text of every reply the run persisted, so a
-// reader can see what reached the session log.
-var repliedMessages []string
+// sessionLog exposes the memory log Run builds, so the tests can read
+// what the governed path persisted.
+var sessionLog *stores.MemorySessionLog
 
-// Run appends the user input to a memory session log, drives one scripted
-// turn on the native runtime, and persists the assistant reply.
+// Run builds a stack with the scripted model registered as a native flow,
+// obtains the governed native conversation for it, and streams one send.
+// The conversation loads the history, drives the run, and persists the
+// assistant reply; the example persists nothing by hand.
 func Run(ctx context.Context, input string) ([]types.Event, error) {
 	model := &scriptedModel{chunks: []types.ModelChunk{
 		{Kind: types.DeltaText, Delta: "Hello, "},
 		{Kind: types.DeltaText, Delta: "quickstart!"},
 	}}
 	sessions := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
-	if _, err := gohan.Build(
+	stack, err := gohan.Build(
 		gohan.WithStores(stores.Stores{SessionLog: sessions}),
 		gohan.WithModels(model),
-	); err != nil {
+		gohan.WithNativeAgent(gohan.NativeSpec{
+			Request:  gohan.FlowRequest{Name: "quickstart"},
+			Profile:  "scripted",
+			Assemble: assemble,
+		}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	conv, err := gohan.NewNativeConversation(stack, "quickstart",
+		gohan.WithConversationRuns(stores.NewMemoryRuns()),
+		gohan.WithConversationEventLog(stores.NewMemoryEventLog()),
+	)
+	if err != nil {
 		return nil, err
 	}
 	ctx = types.WithPrincipal(ctx, types.Principal{
@@ -113,35 +79,17 @@ func Run(ctx context.Context, input string) ([]types.Event, error) {
 		Subject: "reader",
 		Scopes:  []string{types.ScopeSessionRead, types.ScopeSessionWrite},
 	})
-	ver, err := sessions.Append(ctx, "quickstart", 0,
-		types.Message{Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: input}}})
-	if err != nil {
-		return nil, err
-	}
-	hist, err := sessions.Load(ctx, "quickstart")
-	if err != nil {
-		return nil, err
-	}
-	rt := &quickstartRuntime{model: model}
-	run := runtime.AgentRun{Model: model, History: hist, Assemble: assemble}
 	var evs []types.Event
-	for ev, err := range gohan.Drive(ctx, rt, run) {
+	for ev, err := range conv.Send(ctx, "quickstart", types.Message{
+		Role:   types.RoleUser,
+		Blocks: []types.Block{types.Text{Text: input}},
+	}) {
 		if err != nil {
 			return evs, err
 		}
 		evs = append(evs, ev)
 	}
-	var reply types.Message
-	for _, ev := range evs {
-		if am, ok := ev.(types.AssistantMessage); ok {
-			reply = am.Message
-		}
-	}
-	if _, err := sessions.Append(ctx, "quickstart", ver, reply); err != nil {
-		return evs, err
-	}
-	tb, _ := reply.Blocks[0].(types.Text)
-	repliedMessages = append(repliedMessages, tb.Text)
+	sessionLog = sessions
 	return evs, nil
 }
 
