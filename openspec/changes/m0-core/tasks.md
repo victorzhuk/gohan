@@ -895,14 +895,14 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - verify: `go test -short -timeout 2m ./std/notes/ -run 'TestNotesSurviveReset'`
   - note: This chunk was planned as test-only and **the package it tests does not exist**: no `std/notes/`, no `notes_write` tool, no provider assembling notes into the session slot, while `openspec/specs/working-state/spec.md:58` declares `notes.New(store)` as a `gohan.Tool` and a `ContextProvider`. What is landed is only the store primitive `core/stores/notes.go`, the reserved tool name in `core/tool_names.go`, and `std/context`'s truncation with its notes-exclusion behaviour. So the chunk builds the package first and proves the survival in the same chunk; the test-only split it was planned with is gone.
 
-31. [ ] `examples/quickstart` and `examples/excursions` S1 (native runtime, memory stores, scripted model) green offline. — acceptance for the `flow`, `runtime`, `permission` paths above
+31. [x] `examples/quickstart` and `examples/excursions` S1 (native runtime, memory stores, scripted model) green offline. — acceptance for the `flow`, `runtime`, `permission` paths above
 
-- [ ] 31.1 `examples/quickstart`: Establish the `examples/` module and offline quickstart with native runtime, memory stores and scripted model; wire `task examples:test`.
+- [x] 31.1 `examples/quickstart`: Establish the `examples/` module and offline quickstart with native runtime, memory stores and scripted model; wire `task examples:test`.
   - files: `examples/go.mod`, `examples/quickstart/main.go`, `examples/quickstart/main_test.go`, `Taskfile.yml`
   - scenarios: none
   - verify: `go -C examples test -short -timeout 2m ./quickstart/ -run 'TestQuickstartOffline' && task examples:test`
 
-- [ ] 31.2 `examples/excursions`: Implement S1 offline in the `examples/` module with native runtime, memory stores, scripted model and fixture-backed tools; verify flow, runtime and permission acceptance through `task examples:test`.
+- [x] 31.2 `examples/excursions`: Implement S1 offline in the `examples/` module with native runtime, memory stores, scripted model and fixture-backed tools; verify flow, runtime and permission acceptance through `task examples:test`.
   - files: `examples/excursions/main.go`, `examples/excursions/main_test.go`, `examples/excursions/fixtures.go`, `examples/excursions/README.md`
   - scenarios: none
   - verify: `go -C examples test -short -timeout 2m ./excursions/ -run 'TestExcursionsS1Offline' && task examples:test`
