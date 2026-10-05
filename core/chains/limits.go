@@ -2,6 +2,7 @@ package chains
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"sync"
 	"time"
@@ -74,6 +75,14 @@ func (s *LimitsState) TreeCost() float64 {
 // NewLimitsState returns the accumulator one run shares across its
 // chain steps.
 func NewLimitsState() *LimitsState { return &LimitsState{} }
+
+// NewLimitsStateSeeded returns an accumulator whose cost starts at seed,
+// the spend the persisted run record already reports. The counters a
+// checkpoint does not carry start at zero: only the spent cost survives
+// the store record.
+func NewLimitsStateSeeded(seed float64) *LimitsState {
+	return &LimitsState{cost: seed}
+}
 
 // Cost reports the cost charged so far.
 func (s *LimitsState) Cost() float64 {
@@ -294,4 +303,136 @@ func ToolLimits(l types.RunLimits, st *LimitsState) types.ToolMiddleware {
 			return res, err
 		}
 	}
+}
+
+// Charge prices one usage record and adds it to the run's cost, with the
+// same cache-write pricing rules as the model-chain limit step, and reports
+// the new total.
+func (s *LimitsState) Charge(u types.Usage, p types.Pricing) float64 {
+	return s.charge(u, p)
+}
+
+// ChargeModelCall records one model turn and returns the wall clock the call
+// has left. Turns are budgeting counters, not refusals: passing MaxTurns
+// only records itself, and the driver ends the run with Done(StopLimit) at
+// its effect boundary. Only a hard cost overrun or an expired wall clock
+// aborts before the call.
+func (s *LimitsState) ChargeModelCall(l types.RunLimits, now time.Time) (time.Duration, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.start.IsZero() {
+		s.start = now
+	}
+	if l.MaxCost > 0 {
+		cost := s.cost
+		if s.tree != nil {
+			cost = s.tree.get()
+		}
+		if cost > l.MaxCost {
+			return 0, &types.LimitExceededError{Limit: "MaxCost", Value: cost}
+		}
+	}
+	if l.MaxTurns > 0 {
+		s.turns++
+	}
+	remaining := l.MaxWallClock - now.Sub(s.start)
+	if remaining <= 0 {
+		return 0, &types.LimitExceededError{Limit: "MaxWallClock", Value: now.Sub(s.start).Seconds()}
+	}
+	return remaining, nil
+}
+
+// AfterCharge applies the post-spend checks: the soft-ratio warning once,
+// then the hard cost abort.
+func (s *LimitsState) AfterCharge(l types.RunLimits) error {
+	return s.afterCharge(l)
+}
+
+// ChargeToolCall records one tool call against the tool total and returns
+// the wall clock the call has left. Tool calls are budgeting counters, not
+// refusals: passing MaxToolCalls only records itself, and ending the run on
+// MaxToolCalls belongs to the driver.
+func (s *LimitsState) ChargeToolCall(l types.RunLimits, now time.Time) (time.Duration, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.start.IsZero() {
+		s.start = now
+	}
+	if l.MaxToolCalls > 0 {
+		s.toolUses++
+	}
+	remaining := l.MaxWallClock - now.Sub(s.start)
+	if remaining <= 0 {
+		return 0, &types.LimitExceededError{Limit: "MaxWallClock", Value: now.Sub(s.start).Seconds()}
+	}
+	return remaining, nil
+}
+
+// WallClockLeft reports the wall clock the run has left without charging
+// anything; a call that arrives already past its wall clock is refused.
+func (s *LimitsState) WallClockLeft(l types.RunLimits, now time.Time) (time.Duration, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.start.IsZero() {
+		s.start = now
+	}
+	remaining := l.MaxWallClock - now.Sub(s.start)
+	if remaining <= 0 {
+		return 0, &types.LimitExceededError{Limit: "MaxWallClock", Value: now.Sub(s.start).Seconds()}
+	}
+	return remaining, nil
+}
+
+type batchReservation struct {
+	mu        sync.Mutex
+	used      int
+	remaining int
+}
+
+type batchKey struct{}
+
+// ConsumeReservation reports whether ctx carries a batch reservation with a
+// slot left, and spends one if it does. A reserved call charges nothing: the
+// batch paid for its slots up front.
+func (s *LimitsState) ConsumeReservation(ctx context.Context) bool {
+	r, ok := ctx.Value(batchKey{}).(*batchReservation)
+	if !ok || r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.remaining <= 0 {
+		return false
+	}
+	r.remaining--
+	r.used++
+	return true
+}
+
+// ReserveBatch charges a whole batch against the tool total before any call
+// executes. The returned context carries the reservation, so every call the
+// batch runs consumes a paid slot instead of charging again; denied and
+// suspended calls keep their slots charged. When the batch is refused with
+// types.ErrBatchOverrun, the caller invokes the refund and the refusal
+// spends nothing.
+func (s *LimitsState) ReserveBatch(ctx context.Context, l types.RunLimits, n int) (context.Context, func(), error) {
+	s.mu.Lock()
+	if l.MaxToolCalls > 0 && n > l.MaxToolCalls-s.toolUses {
+		refused := fmt.Errorf("%w: need %d, %d of %d remain", types.ErrBatchOverrun, n, l.MaxToolCalls-s.toolUses, l.MaxToolCalls)
+		s.mu.Unlock()
+		return ctx, func() {}, refused
+	}
+	s.toolUses += n
+	s.mu.Unlock()
+	r := &batchReservation{remaining: n}
+	refund := func() {
+		r.mu.Lock()
+		r.used = 0
+		r.remaining = 0
+		r.mu.Unlock()
+		s.mu.Lock()
+		s.toolUses -= n
+		s.mu.Unlock()
+	}
+	return context.WithValue(ctx, batchKey{}, r), refund, nil
 }

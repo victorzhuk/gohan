@@ -3,13 +3,10 @@
 package std
 
 import (
-	"context"
-	"iter"
-	"strings"
-
 	gohan "github.com/victorzhuk/gohan/core"
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std/limit"
 )
 
 // DefaultPrompts is the exported PromptSet every preset bundles. Core
@@ -28,17 +25,15 @@ var DefaultPrompts = chains.PromptSet{
 }
 
 // Preset bundles a latency class: prompts plus the recommended tool chain.
-// A service is meant to read one, copy it and edit it in place.
+// A service is meant to read one, copy it and edit it in place. It holds
+// configuration only: the run's ledger and the resolved PromptSet live in
+// the invocation context, never here.
 type Preset struct {
 	Name      string
 	Prompts   chains.PromptSet
 	ToolChain chains.ToolChain
 	Limits    types.RunLimits
 	Pricing   types.Pricing
-
-	// state accumulates the run's spend across the model and tool
-	// limit steps. A nil state marks enforcement disabled.
-	state *chains.LimitsState
 }
 
 // Interactive bundles the low-latency class.
@@ -57,98 +52,62 @@ func Batch() Preset {
 }
 
 func limitsPreset(name string, limits types.RunLimits) Preset {
-	st := chains.NewLimitsState()
 	return Preset{
 		Name:      name,
 		Prompts:   DefaultPrompts,
-		ToolChain: presetChain(limits, st),
+		ToolChain: presetChain(limits),
 		Limits:    limits,
-		state:     st,
 	}
 }
 
-func presetChain(limits types.RunLimits, st *chains.LimitsState) chains.ToolChain {
+// presetChain carries exactly the policy the preset actually runs. The
+// ledger comes from the invocation context: two independent runs each
+// spend a full budget, and a ledger created after the preset still governs.
+func presetChain(limits types.RunLimits) chains.ToolChain {
 	return chains.ToolChain{
-		{Name: "telemetry", Kind: chains.KindTelemetry, Use: passthrough()},
-		{Name: "limits", Kind: chains.KindLimit, Use: chains.ToolLimits(limits, st)},
-		{Name: "gate", Kind: chains.KindGate, Use: passthrough()},
-		{Name: "hooks", Kind: chains.KindHooks, Use: passthrough()},
-		{Name: "journal", Kind: chains.KindJournal, Use: passthrough()},
+		{Name: "limits", Kind: chains.KindLimit, Use: limit.ToolLimits(limits)},
 	}
-}
-
-func passthrough() chains.ToolMiddleware {
-	return func(next chains.ToolFunc) chains.ToolFunc { return next }
 }
 
 // WithoutLimits returns a copy of the preset with limit enforcement
-// removed: the chain's limits step runs the pass-through and Options
-// drops the limit middleware. A caller who wants the previous behaviour
-// opts out here.
+// removed: the chain drops its limits step and Options drops the limit
+// middleware. A caller who wants the previous behaviour opts out here.
 func (p Preset) WithoutLimits() Preset {
-	ch := make(chains.ToolChain, len(p.ToolChain))
-	copy(ch, p.ToolChain)
-	for i, s := range ch {
+	ch := make(chains.ToolChain, 0, len(p.ToolChain))
+	for _, s := range p.ToolChain {
 		if s.Kind == chains.KindLimit {
-			ch[i].Use = passthrough()
+			continue
 		}
+		ch = append(ch, s)
 	}
 	p.ToolChain = ch
-	p.state = nil
 	return p
 }
 
 // LimitsMiddleware returns the model-chain limit step: it charges each
-// call's usage through the preset's Pricing and aborts on the preset's
-// Limits. The second return is false when enforcement is disabled.
+// call's usage through the preset's Pricing against the run's ledger and
+// aborts on the preset's Limits. The second return is false when the
+// chain carries no limits step.
 func (p Preset) LimitsMiddleware() (types.ModelMiddleware, bool) {
-	if p.state == nil {
-		return nil, false
+	for _, s := range p.ToolChain {
+		if s.Kind != chains.KindLimit {
+			continue
+		}
+		return limit.Limits(p.Limits, p.Pricing), true
 	}
-	return chains.Limits(p.Limits, p.Pricing, p.state), true
+	return nil, false
 }
 
 // Options presents the preset as driver Build options, per the build
-// spec's "std presets are Options too". The prompt set crosses as one
-// model middleware and the limit step as another; the tool-chain steps
-// cross as chain data a service composes itself. Options never
-// constructs a Build itself; the caller composes it.
+// spec's "std presets are Options too". The prompt set crosses as
+// WithPrompts, so a later WithPrompts replaces the complete set, and the
+// limit step as model middleware; the tool-chain steps cross as chain
+// data a service composes itself. Options never constructs a Build
+// itself; the caller composes it.
 func (p Preset) Options() []gohan.Option {
-	mws := []types.ModelMiddleware{p.PromptMiddleware()}
+	opts := []gohan.Option{gohan.WithPrompts(p.Prompts)}
 	if mw, ok := p.LimitsMiddleware(); ok {
-		mws = append(mws, mw)
+		opts = append(opts, gohan.WithModelMiddleware(mw))
 	}
-	return []gohan.Option{gohan.WithModelMiddleware(mws...)}
-}
-
-// PromptMiddleware places the preset's authored strings ahead of every
-// model call as one fenced system block. The strings are model-facing,
-// so the model middleware, not a chain step, is their honest carrier.
-func (p Preset) PromptMiddleware() types.ModelMiddleware {
-	ps := p.Prompts
-	return func(next types.ModelFunc) types.ModelFunc {
-		return func(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
-			req.System = append(preamble(ps), req.System...)
-			return next(ctx, req)
-		}
-	}
-}
-
-// preamble renders every model-facing PromptSet string as one system
-// block, each accounted for by its named field.
-func preamble(ps chains.PromptSet) []types.Block {
-	return []types.Block{types.Text{
-		BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginSystem}},
-		Text: strings.Join([]string{
-			ps.FenceOpen,
-			ps.DataNotInstructions,
-			ps.FenceClose,
-			ps.OutcomeUnknown,
-			ps.ReadBackHint,
-			ps.OutputRefHint,
-			ps.RepairInstruction,
-			ps.NotesPreamble,
-			ps.OperatorTurn,
-		}, "\n"),
-	}}
+	return opts
 }

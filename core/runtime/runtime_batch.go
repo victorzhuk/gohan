@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/victorzhuk/gohan/core/types"
@@ -34,10 +33,6 @@ type BatchGate func(ctx context.Context, call types.ToolUse) BatchDecision
 // BatchExec runs one gated call. The driver's governed call path backs it;
 // errors other than tool failures abort the run.
 type BatchExec func(ctx context.Context, call types.ToolUse) (types.ToolResult, error)
-
-// ErrBatchOverrun reports a batch whose reservation exceeds MaxToolCalls.
-// The run aborts with nothing executed.
-var ErrBatchOverrun = errors.New("gohan: tool batch exceeds MaxToolCalls")
 
 // Batch is one turn's tool calls under the batch protocol. Used is the
 // tool-call count the run already spent.
@@ -80,7 +75,7 @@ type BatchReport struct {
 func (b Batch) Run(ctx context.Context) (BatchReport, error) {
 	if b.Used > b.Limits.MaxToolCalls || len(b.Calls) > b.Limits.MaxToolCalls-b.Used {
 		return BatchReport{}, fmt.Errorf("%w: need %d, %d of %d remain",
-			ErrBatchOverrun, len(b.Calls), b.Limits.MaxToolCalls-b.Used, b.Limits.MaxToolCalls)
+			types.ErrBatchOverrun, len(b.Calls), b.Limits.MaxToolCalls-b.Used, b.Limits.MaxToolCalls)
 	}
 	decisions := make([]BatchDecision, len(b.Calls))
 	for i, call := range b.Calls {

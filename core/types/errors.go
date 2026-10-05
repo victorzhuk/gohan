@@ -115,6 +115,10 @@ type AbortError struct {
 	Reason string
 }
 
+// ErrBatchOverrun reports a batch whose reservation exceeds MaxToolCalls.
+// The run aborts with nothing executed.
+var ErrBatchOverrun = errors.New("gohan: tool batch exceeds MaxToolCalls")
+
 func (e *AbortError) Error() string { return "gohan: run aborted: " + e.Reason }
 
 type LimitExceededError struct {

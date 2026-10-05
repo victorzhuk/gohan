@@ -5,6 +5,7 @@ import (
 	"errors"
 	"iter"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -66,9 +67,6 @@ func TestPreset(t *testing.T) {
 		copy(copied, preset.ToolChain)
 		drop := 0
 		copied = append(copied[:drop], copied[drop+1:]...)
-		if err := chains.ValidateToolChain(copied); err != nil {
-			t.Fatalf("edited copy must still validate: %v", err)
-		}
 		if len(copied) != len(preset.ToolChain)-1 {
 			t.Fatalf("edited copy has %d steps, want %d", len(copied), len(preset.ToolChain)-1)
 		}
@@ -88,7 +86,7 @@ func TestPreset(t *testing.T) {
 					}
 				}
 			}
-			_, err := chains.RunToolChain(context.Background(), instrumented, func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+			_, err := chains.RunToolChain(limitCtx(context.Background()), instrumented, func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
 				return types.ToolResult{ID: call.ID}, nil
 			})
 			if err != nil {
@@ -99,10 +97,16 @@ func TestPreset(t *testing.T) {
 		full := trace(preset.ToolChain)
 		seen := trace(copied)
 		want := append(append([]string{}, full[:drop]...), full[drop+1:]...)
-		if !reflect.DeepEqual(seen, want) {
+		if !slices.Equal(seen, want) {
 			t.Fatalf("edited copy ran %v, want %v", seen, want)
 		}
 	})
+}
+
+// limitCtx carries a fresh ledger, the way the invocation factory will in
+// production once the driver lands its per-run creation.
+func limitCtx(ctx context.Context) context.Context {
+	return chains.WithLimitsState(ctx, chains.NewLimitsState())
 }
 
 func TestBatchAndAgenticPrompts(t *testing.T) {
@@ -138,6 +142,10 @@ func collectModel(seq iter.Seq2[types.ModelChunk, error]) error {
 	return err
 }
 
+func okTool(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+	return types.ToolResult{ID: call.ID}, nil
+}
+
 func TestPresetLimitsEnforced(t *testing.T) {
 	t.Run("maxcost-abort", func(t *testing.T) {
 		p := std.Interactive()
@@ -147,10 +155,23 @@ func TestPresetLimitsEnforced(t *testing.T) {
 		if !ok {
 			t.Fatal("preset enforces no limits by default")
 		}
-		err := collectModel(mw(fakeSpend(1))(context.Background(), types.ModelRequest{}))
+		err := collectModel(mw(fakeSpend(1))(limitCtx(context.Background()), types.ModelRequest{}))
 		var over *types.LimitExceededError
 		if !errors.As(err, &over) || over.Limit != "MaxCost" {
 			t.Fatalf("err = %v, want *LimitExceededError{Limit: MaxCost}", err)
+		}
+	})
+
+	t.Run("no-ledger-forwards", func(t *testing.T) {
+		p := std.Interactive()
+		p.Limits.MaxCost = 0.5
+		p.Pricing = types.Pricing{Input: 1}
+		mw, _ := p.LimitsMiddleware()
+		// No run ledger in the context: the step forwards and charges
+		// nothing, whatever the configured budget says.
+		err := collectModel(mw(fakeSpend(100))(context.Background(), types.ModelRequest{}))
+		if err != nil {
+			t.Fatalf("middleware without a ledger must forward: %v", err)
 		}
 	})
 
@@ -158,11 +179,9 @@ func TestPresetLimitsEnforced(t *testing.T) {
 		p := std.Interactive().WithoutLimits()
 		p.Limits.MaxToolCalls = 1
 		// Two calls through the disabled chain must both pass, where
-		// ToolLimits would abort the second against MaxToolCalls=1.
+		// ToolLimits would record the second against MaxToolCalls=1.
 		for i := range 2 {
-			if _, err := chains.RunToolChain(context.Background(), p.ToolChain, func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
-				return types.ToolResult{ID: call.ID}, nil
-			}); err != nil {
+			if _, err := chains.RunToolChain(limitCtx(context.Background()), p.ToolChain, okTool); err != nil {
 				t.Fatalf("call %d: %v", i+1, err)
 			}
 		}
@@ -185,32 +204,129 @@ func TestPresetOptions(t *testing.T) {
 				t.Fatalf("Build rejected preset options: %v", err)
 			}
 
-			// The prompt set survives the round trip: the option set's
-			// middleware carries every authored string onto the request.
-			var got types.ModelRequest
-			mw := p.PromptMiddleware()
-			call := mw(func(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
-				got = req
-				return func(yield func(types.ModelChunk, error) bool) {}
-			})
-			for range call(context.Background(), types.ModelRequest{}) {
-			}
-			if len(got.System) != 1 {
-				t.Fatalf("request carries %d system blocks, want 1", len(got.System))
-			}
-			ps := p.Prompts
-			want := strings.Join([]string{
-				ps.FenceOpen, ps.DataNotInstructions, ps.FenceClose,
-				ps.OutcomeUnknown, ps.ReadBackHint, ps.OutputRefHint,
-				ps.RepairInstruction, ps.NotesPreamble, ps.OperatorTurn,
-			}, "\n")
-			block, ok := got.System[0].(types.Text)
-			if !ok {
-				t.Fatalf("system block is %T, want types.Text", got.System[0])
-			}
-			if block.Text != want {
-				t.Fatalf("prompt round trip lost strings:\ngot  %q\nwant %q", block.Text, want)
+			// The named chain describes only what the preset runs.
+			if len(p.ToolChain) != 1 || p.ToolChain[0].Kind != chains.KindLimit || p.ToolChain[0].Name != "limits" {
+				t.Fatalf("chain = %v, want a single limits step", explainSteps(p.ToolChain))
 			}
 		})
+	}
+
+	t.Run("runs-spend-full-budget-independently", func(t *testing.T) {
+		p := std.Agentic()
+		p.Limits.MaxToolCalls = 2
+		p.Limits.MaxTurns = 2
+		spendRun := func() *chains.LimitsState {
+			st := chains.NewLimitsState()
+			ctx := chains.WithLimitsState(context.Background(), st)
+			mw, ok := p.LimitsMiddleware()
+			if !ok {
+				t.Fatal("preset yields no limit middleware")
+			}
+			if err := collectModel(mw(fakeSpend(1))(ctx, types.ModelRequest{})); err != nil {
+				t.Fatalf("model call: %v", err)
+			}
+			if _, err := chains.RunToolChain(ctx, p.ToolChain, okTool); err != nil {
+				t.Fatalf("tool call: %v", err)
+			}
+			return st
+		}
+		first := spendRun()
+		second := spendRun()
+		// Each run spent its whole budget: model turn and tool call
+		// landed on its own ledger.
+		for i, st := range []*chains.LimitsState{first, second} {
+			snap := st.Snapshot()
+			if snap.Turns != 1 || snap.ToolUses != 1 {
+				t.Fatalf("run %d spent %+v, want 1 turn and 1 tool use", i+1, snap)
+			}
+		}
+		// The tool total is shared on one ledger: the batch reservation
+		// refuses what the direct call already spent.
+		st := chains.NewLimitsState()
+		ctx := chains.WithLimitsState(context.Background(), st)
+		if _, err := chains.RunToolChain(ctx, p.ToolChain, okTool); err != nil {
+			t.Fatalf("tool call: %v", err)
+		}
+		if _, _, err := st.ReserveBatch(ctx, p.Limits, 2); !errors.Is(err, types.ErrBatchOverrun) {
+			t.Fatalf("batch reserve err = %v, want ErrBatchOverrun", err)
+		}
+	})
+
+	t.Run("ledger-created-after-preset-governs", func(t *testing.T) {
+		p := std.Interactive()
+		p.Limits.MaxCost = 0.5
+		p.Pricing = types.Pricing{Input: 1}
+		mw, ok := p.LimitsMiddleware()
+		if !ok {
+			t.Fatal("preset yields no limit middleware")
+		}
+		// The preset was built first; the ledger only enters at call
+		// time and still governs the spend.
+		err := collectModel(mw(fakeSpend(1))(limitCtx(context.Background()), types.ModelRequest{}))
+		var over *types.LimitExceededError
+		if !errors.As(err, &over) || over.Limit != "MaxCost" {
+			t.Fatalf("err = %v, want *LimitExceededError{Limit: MaxCost}", err)
+		}
+	})
+
+	t.Run("later-withprompts-replaces-set", func(t *testing.T) {
+		p := std.Interactive()
+		manifestID := func(opts []gohan.Option) string {
+			s, err := gohan.Build(opts...)
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			return s.Manifest().ID()
+		}
+		presetOpts := p.Options()
+		first := manifestID(presetOpts)
+		second := manifestID(append([]gohan.Option{}, presetOpts...))
+		if first != second {
+			t.Fatal("a preset-alone build must be deterministic")
+		}
+		custom := p.Prompts
+		custom.RepairInstruction = "Repair the answer against the reported problems."
+		if manifestID(append(append([]gohan.Option{}, presetOpts...), gohan.WithPrompts(custom))) == manifestID(presetOpts) {
+			t.Fatal("a later WithPrompts must change the manifest identity")
+		}
+	})
+
+	t.Run("without-limits-drops-middleware", func(t *testing.T) {
+		p := std.Interactive().WithoutLimits()
+		if mw, ok := p.LimitsMiddleware(); ok {
+			t.Fatalf("WithoutLimits still returned a middleware %v", mw)
+		}
+		opts := p.Options()
+		if len(opts) != 1 {
+			t.Fatalf("WithoutLimits yields %d options, want only WithPrompts", len(opts))
+		}
+	})
+}
+
+func TestPromptMiddleware(t *testing.T) {
+	p := std.Interactive()
+	mw := std.PromptMiddleware(p.Prompts)
+	var got types.ModelRequest
+	call := mw(func(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+		got = req
+		return func(yield func(types.ModelChunk, error) bool) {}
+	})
+	for range call(context.Background(), types.ModelRequest{}) {
+	}
+	if len(got.System) != 1 {
+		t.Fatalf("request carries %d system blocks, want 1", len(got.System))
+	}
+	ps := p.Prompts
+	want := strings.Join([]string{
+		ps.FenceOpen, ps.DataNotInstructions, ps.FenceClose,
+		ps.OutcomeUnknown, ps.ReadBackHint, ps.OutputRefHint,
+		ps.RepairInstruction, ps.NotesPreamble, ps.OperatorTurn,
+	}, "\n")
+	block, ok := got.System[0].(types.Text)
+	if !ok {
+		t.Fatalf("system block is %T, want types.Text", got.System[0])
+	}
+	if block.Text != want {
+		t.Fatalf("prompt round trip lost strings:\ngot  %q\nwant %q", block.Text, want)
 	}
 }

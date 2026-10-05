@@ -117,7 +117,7 @@ func TestRuntimeBatchProtocol(t *testing.T) {
 	t.Run("runtime.batch-limit-before-execute", func(t *testing.T) {
 		rec := &batchRecorder{}
 		_, err := rec.run(t, batchCalls("search", "wipe"), types.RunLimits{MaxToolCalls: 2}, 1)
-		if !errors.Is(err, runtime.ErrBatchOverrun) {
+		if !errors.Is(err, types.ErrBatchOverrun) {
 			t.Fatalf("got %v, want ErrBatchOverrun", err)
 		}
 		if len(rec.executed) != 0 {
@@ -176,7 +176,7 @@ func TestRuntimeBatchProtocol(t *testing.T) {
 	t.Run("overrun makes zero gates", func(t *testing.T) {
 		rec := &batchRecorder{}
 		_, err := rec.run(t, batchCalls("search", "wipe"), types.RunLimits{MaxToolCalls: 1}, 0)
-		if !errors.Is(err, runtime.ErrBatchOverrun) {
+		if !errors.Is(err, types.ErrBatchOverrun) {
 			t.Fatalf("got %v, want ErrBatchOverrun", err)
 		}
 		if len(rec.events) != 0 || len(rec.executed) != 0 {

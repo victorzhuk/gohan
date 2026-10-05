@@ -9,7 +9,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/victorzhuk/gohan/core/runtime"
+	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -40,10 +40,9 @@ var okTool types.ToolFunc = func(ctx context.Context, call types.ToolUse) (types
 
 func TestRunLimits(t *testing.T) {
 	t.Run("two independent runs each spend the full budget", func(t *testing.T) {
-		mw := Limits(types.RunLimits{MaxCost: 0.03, MaxWallClock: time.Minute}, testPricing, nil)
+		mw := Limits(types.RunLimits{MaxCost: 0.03, MaxWallClock: time.Minute}, testPricing)
 		for run := range 2 {
-			st := NewLimitsState()
-			ctx := WithLimitsState(context.Background(), st)
+			ctx := chains.WithLimitsState(context.Background(), chains.NewLimitsState())
 			err := collect(mw(spendModel(0.01))(ctx, types.ModelRequest{}))
 			if err != nil {
 				t.Fatalf("run %d: err = %v, want within budget", run, err)
@@ -55,28 +54,23 @@ func TestRunLimits(t *testing.T) {
 		}
 	})
 
-	t.Run("a preset ledger without a context ledger still bounds one run", func(t *testing.T) {
-		st := NewLimitsState()
-		mw := Limits(types.RunLimits{MaxCost: 0.015, MaxWallClock: time.Minute}, testPricing, st)
+	t.Run("without a ledger the steps forward unchanged", func(t *testing.T) {
+		mw := Limits(types.RunLimits{MaxCost: 0.005, MaxWallClock: time.Minute}, testPricing)
+		tmw := ToolLimits(types.RunLimits{MaxToolCalls: 0, MaxWallClock: time.Minute})
 		if err := collect(mw(spendModel(0.01))(context.Background(), types.ModelRequest{})); err != nil {
-			t.Fatalf("first call: %v", err)
+			t.Fatalf("model call: %v", err)
 		}
-		err := collect(mw(spendModel(0.01))(context.Background(), types.ModelRequest{}))
-		var over *types.LimitExceededError
-		if !errors.As(err, &over) || over.Limit != "MaxCost" {
-			t.Fatalf("err = %v, want *LimitExceededError{Limit: MaxCost}", err)
-		}
-		if st.Cost() != 0.02 {
-			t.Fatalf("cost = %v, want 0.02", st.Cost())
+		if _, err := tmw(okTool)(context.Background(), types.ToolUse{}); err != nil {
+			t.Fatalf("tool call: %v", err)
 		}
 	})
 
 	t.Run("provider calls share the tool total", func(t *testing.T) {
-		st := NewLimitsState()
-		ctx := WithLimitsState(context.Background(), st)
+		st := chains.NewLimitsState()
+		ctx := chains.WithLimitsState(context.Background(), st)
 		l := types.RunLimits{MaxToolCalls: 2, MaxWallClock: time.Minute}
-		mw := Limits(l, testPricing, st)
-		tmw := ToolLimits(l, st)
+		mw := Limits(l, testPricing)
+		tmw := ToolLimits(l)
 		for i := range 2 {
 			if err := collect(mw(spendModel(0))(ctx, types.ModelRequest{})); err != nil {
 				t.Fatalf("model call %d: %v", i, err)
@@ -92,10 +86,9 @@ func TestRunLimits(t *testing.T) {
 	})
 
 	t.Run("provider tool usage charges the tool total", func(t *testing.T) {
-		st := NewLimitsState()
-		ctx := WithLimitsState(context.Background(), st)
-		l := types.RunLimits{MaxCost: 0, MaxWallClock: time.Minute}
-		mw := Limits(l, types.Pricing{Input: 0.01, ProviderCall: map[string]float64{"search": 0.5}}, st)
+		st := chains.NewLimitsState()
+		ctx := chains.WithLimitsState(context.Background(), st)
+		mw := Limits(types.RunLimits{MaxWallClock: time.Minute}, types.Pricing{Input: 0.01, ProviderCall: map[string]float64{"search": 0.5}})
 		err := collect(mw(func(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
 			return func(yield func(types.ModelChunk, error) bool) {
 				yield(types.ModelChunk{Usage: &types.Usage{InputTokens: 1, ProviderToolCalls: map[string]int{"search": 1}}}, nil)
@@ -111,9 +104,9 @@ func TestRunLimits(t *testing.T) {
 
 	t.Run("wall clock overrun refuses the next model call", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			st := NewLimitsState()
-			ctx := WithLimitsState(context.Background(), st)
-			mw := Limits(types.RunLimits{MaxWallClock: time.Minute}, testPricing, st)
+			st := chains.NewLimitsState()
+			ctx := chains.WithLimitsState(context.Background(), st)
+			mw := Limits(types.RunLimits{MaxWallClock: time.Minute}, testPricing)
 			if err := collect(mw(spendModel(0))(ctx, types.ModelRequest{})); err != nil {
 				t.Fatalf("first call: %v", err)
 			}
@@ -128,9 +121,9 @@ func TestRunLimits(t *testing.T) {
 
 	t.Run("a streaming call cut by the wall clock reports MaxWallClock", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			st := NewLimitsState()
-			ctx := WithLimitsState(context.Background(), st)
-			mw := Limits(types.RunLimits{MaxWallClock: time.Minute}, testPricing, st)
+			st := chains.NewLimitsState()
+			ctx := chains.WithLimitsState(context.Background(), st)
+			mw := Limits(types.RunLimits{MaxWallClock: time.Minute}, testPricing)
 			slow := func(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
 				return func(yield func(types.ModelChunk, error) bool) {
 					time.Sleep(2 * time.Minute)
@@ -146,9 +139,9 @@ func TestRunLimits(t *testing.T) {
 	})
 
 	t.Run("passing MaxTurns records the counter and does not refuse", func(t *testing.T) {
-		st := NewLimitsState()
-		ctx := WithLimitsState(context.Background(), st)
-		mw := Limits(types.RunLimits{MaxTurns: 2, MaxWallClock: time.Minute}, testPricing, st)
+		st := chains.NewLimitsState()
+		ctx := chains.WithLimitsState(context.Background(), st)
+		mw := Limits(types.RunLimits{MaxTurns: 2, MaxWallClock: time.Minute}, testPricing)
 		for range 4 {
 			if err := collect(mw(spendModel(0))(ctx, types.ModelRequest{})); err != nil {
 				t.Fatalf("call: err = %v, want no refusal past MaxTurns", err)
@@ -159,28 +152,67 @@ func TestRunLimits(t *testing.T) {
 		}
 	})
 
-	t.Run("a refused batch leaves the tool total unchanged", func(t *testing.T) {
-		st := NewLimitsState()
+	t.Run("passing MaxToolCalls records the counter and does not refuse", func(t *testing.T) {
+		st := chains.NewLimitsState()
+		ctx := chains.WithLimitsState(context.Background(), st)
+		tmw := ToolLimits(types.RunLimits{MaxToolCalls: 1, MaxWallClock: time.Minute})
+		for i := range 3 {
+			if _, err := tmw(okTool)(ctx, types.ToolUse{}); err != nil {
+				t.Fatalf("call %d: err = %v, want no refusal past MaxToolCalls", i, err)
+			}
+		}
+		if snap := st.Snapshot(); snap.ToolUses != 3 {
+			t.Fatalf("toolUses = %d, want 3", snap.ToolUses)
+		}
+	})
+
+	t.Run("a cost overrun returns a LimitExceededError", func(t *testing.T) {
+		st := chains.NewLimitsState()
+		ctx := chains.WithLimitsState(context.Background(), st)
+		mw := Limits(types.RunLimits{MaxCost: 0.015, MaxWallClock: time.Minute}, testPricing)
+		if err := collect(mw(spendModel(0.01))(ctx, types.ModelRequest{})); err != nil {
+			t.Fatalf("first call: %v", err)
+		}
+		err := collect(mw(spendModel(0.01))(ctx, types.ModelRequest{}))
+		var over *types.LimitExceededError
+		if !errors.As(err, &over) || over.Limit != "MaxCost" {
+			t.Fatalf("err = %v, want *LimitExceededError{Limit: MaxCost}", err)
+		}
+		if st.Cost() != 0.02 {
+			t.Fatalf("cost = %v, want 0.02", st.Cost())
+		}
+	})
+
+	t.Run("the driver reserves against the context ledger and a refused batch spends nothing", func(t *testing.T) {
+		ctx := chains.WithLimitsState(context.Background(), chains.NewLimitsState())
+		st, ok := chains.LimitsStateFrom(ctx)
+		if !ok {
+			t.Fatal("context carries no ledger")
+		}
 		l := types.RunLimits{MaxToolCalls: 1, MaxWallClock: time.Minute}
-		_, release, err := st.ReserveBatch(context.Background(), l, 2)
-		if !errors.Is(err, runtime.ErrBatchOverrun) {
+		_, refund, err := st.ReserveBatch(ctx, l, 2)
+		if !errors.Is(err, types.ErrBatchOverrun) {
 			t.Fatalf("err = %v, want ErrBatchOverrun", err)
 		}
-		release()
+		refund()
 		if got := st.Snapshot().ToolUses; got != 0 {
 			t.Fatalf("toolUses = %d, want 0 after refused reservation", got)
+		}
+		tmw := ToolLimits(l)
+		if _, err := tmw(okTool)(ctx, types.ToolUse{}); err != nil {
+			t.Fatalf("call inside remaining budget: %v", err)
 		}
 	})
 
 	t.Run("an accepted batch reserves once and its calls charge nothing more", func(t *testing.T) {
-		st := NewLimitsState()
-		ctx := WithLimitsState(context.Background(), st)
+		st := chains.NewLimitsState()
+		ctx := chains.WithLimitsState(context.Background(), st)
 		l := types.RunLimits{MaxToolCalls: 3, MaxWallClock: time.Minute}
-		batchCtx, release, err := st.ReserveBatch(ctx, l, 2)
+		batchCtx, refund, err := st.ReserveBatch(ctx, l, 2)
 		if err != nil {
 			t.Fatalf("ReserveBatch: %v", err)
 		}
-		tmw := ToolLimits(l, st)
+		tmw := ToolLimits(l)
 		for i := range 2 {
 			if _, err := tmw(okTool)(batchCtx, types.ToolUse{}); err != nil {
 				t.Fatalf("batch call %d: %v", i, err)
@@ -189,33 +221,33 @@ func TestRunLimits(t *testing.T) {
 		if got := st.Snapshot().ToolUses; got != 2 {
 			t.Fatalf("toolUses = %d, want 2 (reserved once)", got)
 		}
-		release()
+		refund()
 	})
 
 	t.Run("releasing a refused batch after partial execution refunds spent slots", func(t *testing.T) {
-		st := NewLimitsState()
-		ctx := WithLimitsState(context.Background(), st)
+		st := chains.NewLimitsState()
+		ctx := chains.WithLimitsState(context.Background(), st)
 		l := types.RunLimits{MaxToolCalls: 3, MaxWallClock: time.Minute}
-		batchCtx, release, err := st.ReserveBatch(ctx, l, 3)
+		batchCtx, refund, err := st.ReserveBatch(ctx, l, 3)
 		if err != nil {
 			t.Fatalf("ReserveBatch: %v", err)
 		}
-		tmw := ToolLimits(l, st)
+		tmw := ToolLimits(l)
 		if _, err := tmw(okTool)(batchCtx, types.ToolUse{}); err != nil {
 			t.Fatalf("first batch call: %v", err)
 		}
-		release()
+		refund()
 		if got := st.Snapshot().ToolUses; got != 0 {
-			t.Fatalf("toolUses = %d, want 0 after release", got)
+			t.Fatalf("toolUses = %d, want 0 after refund", got)
 		}
 	})
 
 	t.Run("a tool cut by the wall clock reports MaxWallClock", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			st := NewLimitsState()
-			ctx := WithLimitsState(context.Background(), st)
+			st := chains.NewLimitsState()
+			ctx := chains.WithLimitsState(context.Background(), st)
 			l := types.RunLimits{MaxWallClock: time.Minute}
-			tmw := ToolLimits(l, st)
+			tmw := ToolLimits(l)
 			slow := types.ToolFunc(func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
 				time.Sleep(2 * time.Minute)
 				return types.ToolResult{}, context.DeadlineExceeded
@@ -230,22 +262,21 @@ func TestRunLimits(t *testing.T) {
 
 	t.Run("concurrent independent ledgers never share counters", func(t *testing.T) {
 		var wg sync.WaitGroup
-		l := types.RunLimits{MaxCost: 0.03, MaxWallClock: time.Minute}
-		mw := Limits(l, testPricing, nil)
-		for run := 0; run < 8; run++ {
+		for range 8 {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				st := NewLimitsState()
-				ctx := WithLimitsState(context.Background(), st)
-				for i := 0; i < 2; i++ {
-					if err := collect(mw(spendModel(0.01))(ctx, types.ModelRequest{})); err != nil {
-						t.Errorf("run: %v", err)
+				st := chains.NewLimitsState()
+				ctx := chains.WithLimitsState(context.Background(), st)
+				tmw := ToolLimits(types.RunLimits{MaxToolCalls: 5, MaxWallClock: time.Minute})
+				for range 3 {
+					if _, err := tmw(okTool)(ctx, types.ToolUse{}); err != nil {
+						t.Errorf("call: %v", err)
 						return
 					}
 				}
-				if got := st.Snapshot().Cost; got != 0.02 {
-					t.Errorf("cost = %v, want 0.02", got)
+				if snap := st.Snapshot(); snap.ToolUses != 3 {
+					t.Errorf("toolUses = %d, want 3", snap.ToolUses)
 				}
 			}()
 		}
