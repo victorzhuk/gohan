@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "runner_class": {
+    "name": "ubuntu-latest (4 vCPU, amd64)",
+    "role": "reference machine; absolute wall-clock budgets are gate expectations on this class, not measured values",
+    "local_runs": "advisory only; they never fail a PR"
+  },
+  "budgets": {
+    "tool_chain_overhead_us": 20,
+    "model_chain_overhead_us": 50
+  },
+  "gated": [
+    "BenchmarkToolChain_ReadOnly",
+    "BenchmarkModelChain"
+  ],
+  "measured_ratios": {
+    "note": "advisory: taken on the developer workstation class (AMD Ryzen 5 9600X, 12 threads, linux/amd64, Go toolchain of this checkout), not on the reference runner; they are ratios only, never absolute times",
+    "tool_chain_over_raw_call": 53.4,
+    "model_chain_over_raw_call": 66.7
+  },
+  "tool_chain_read_only": {
+    "raw_allocs_per_op": 0,
+    "chain_allocs_per_op": 7,
+    "overhead_allocs_per_op": 7
+  },
+  "model_chain": {
+    "allocs_per_op": 12
+  }
+}

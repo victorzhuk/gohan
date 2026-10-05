@@ -21,6 +21,33 @@ tasks:
     desc: Regenerate the types index and run the spec coverage gate
     deps: [spec:types, spec:coverage]
 
+  api:check:
+    desc: apidiff of every module against its last tag
+    cmds:
+      - |
+        set -euo pipefail
+        fail=0
+        for dir in . adapter/*; do
+          [ -f "$dir/go.mod" ] || continue
+          mod=$(sed -n 's/^module //p' "$dir/go.mod")
+          if [ "$dir" = . ]; then prefix=v; else prefix="$dir/v"; fi
+          tag=$(git tag --list --sort=-v:refname "$prefix*" | head -1)
+          if [ -z "$tag" ]; then
+            echo "api:check: $mod: no tag yet, skipped (no baseline to diff against)"
+            continue
+          fi
+          echo "api:check: $mod: diffing HEAD against $tag"
+          out=$(go run golang.org/x/exp/cmd/apidiff@latest -m "$mod@$tag" "$dir")
+          [ -z "$out" ] || printf '%s\n' "$out"
+          if printf '%s\n' "$out" | grep -q '^Incompatible changes:'; then
+            case "$tag" in
+              *v1.*|*[2-9].*) echo "api:check: $mod: incompatible change gated at $tag"; fail=1 ;;
+              *) echo "api:check: $mod: v0, incompatible changes reported but not gated" ;;
+            esac
+          fi
+        done
+        exit $fail
+
   lint:
     desc: Run golangci-lint (extra flags after --)
     cmds:
@@ -31,14 +58,26 @@ tasks:
     cmds:
       - go test -timeout 2m -short ./...
       - go -C adapter/otel test -timeout 2m -short ./...
+      - go -C examples test -timeout 2m -short ./...
+
+  examples:test:
+    desc: Run the examples module tests
+    cmds:
+      - go -C examples test -timeout 2m -short ./...
 
   test:race:
     desc: Run short unit tests with the race detector
     cmds:
       - go test -timeout 10m -race -short ./...
       - go -C adapter/otel test -timeout 10m -race -short ./...
+      - go -C examples test -timeout 10m -race -short ./...
 
   bench:
     desc: Run benchmarks once each
     cmds:
       - go test -timeout 10m -run '^$' -bench . -benchtime=1x ./...
+
+  bench:gate:
+    desc: Run the base/head performance regression gate (BASE/HEAD overrides)
+    cmds:
+      - go run ./tools/performance_gate.go --base '{{.BASE | default "HEAD~1"}}' --head '{{.HEAD | default "HEAD"}}' --baselines core/performance_baselines.json

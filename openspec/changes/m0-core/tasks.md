@@ -907,19 +907,19 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - scenarios: none
   - verify: `go -C examples test -short -timeout 2m ./excursions/ -run 'TestExcursionsS1Offline' && task examples:test`
 
-32. [ ] Performance baselines on the reference machine, frozen; benchmark gate wired into CI. — `performance.chain-overhead-within-budget`, `performance.prefix-build-allocation-free`, `performance.regression-gate`
+32. [x] Performance baselines on the reference machine, frozen; benchmark gate wired into CI. — `performance.chain-overhead-within-budget`, `performance.prefix-build-allocation-free`, `performance.regression-gate`
 
-- [ ] 32.1 `core`: Add `BenchmarkToolChain_ReadOnly`, raw-call comparison and allocation contracts; freeze tool-chain and model-chain overhead baselines on the reference CI runner.
+- [x] 32.1 `core`: Add `BenchmarkToolChain_ReadOnly`, raw-call comparison and allocation contracts; freeze tool-chain and model-chain overhead baselines on the reference CI runner.
   - files: `core/chain_benchmark_test.go`, `core/performance_baselines.json`
   - scenarios: `performance.chain-overhead-within-budget`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestChainPerformanceBudget' -bench 'Benchmark(ToolChain_ReadOnly|ToolCall_Raw|ModelChain)' -benchmem`
 
-- [ ] 32.2 `core`: Enforce zero allocations for unchanged assembler prefix builds with `testing.AllocsPerRun` and a prefix benchmark.
+- [x] 32.2 `core`: Enforce zero allocations for unchanged assembler prefix builds with `testing.AllocsPerRun` and a prefix benchmark.
   - files: `core/assembly_benchmark_test.go`
   - scenarios: `performance.prefix-build-allocation-free`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestPrefixBuildAllocationFree' -bench 'BenchmarkPrefixBuild' -benchmem`
 
-- [ ] 32.3 `core`: Wire the reference-runner CI regression gate: alternating base/head measurements, three rounds, fastest round, 5% tolerance, SHA-cached verdicts and allocation-increase rejection. **GATE**
+- [x] 32.3 `core`: Wire the reference-runner CI regression gate: alternating base/head measurements, three rounds, fastest round, 5% tolerance, SHA-cached verdicts and allocation-increase rejection. **GATE**
   - files: `core/performance_gate_test.go`, `tools/performance_gate.go`, `.github/workflows/performance.yml`, `docs/design/performance-baselines.md`
   - scenarios: `performance.regression-gate`
   - verify: `go test -short -timeout 2m ./core/... -run 'TestPerformanceRegressionGate' && task test`

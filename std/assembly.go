@@ -3,7 +3,10 @@ package std
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
+	"sync"
+	"unsafe"
 
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -19,10 +22,108 @@ type AssembleInput = types.AssembleInput
 // sorted by name.
 type StablePrefix struct{}
 
+// The prefix memo holds the last assembled request. The assembly contract
+// makes the prefix bytes a pure function of the input, and the input is
+// immutable for the life of a run, so the memo keys on the input's identity:
+// slice backing pointers and lengths, the provider map and filter identities,
+// and the scalar and string values the providers observe. Inputs that are
+// equal but freshly allocated simply rebuild; only identical inputs hit. A
+// hit returns the cached request, so callers must treat the returned slices
+// as read-only.
+var (
+	prefixMu   sync.Mutex
+	prefixLast prefixKey
+	prefixHave bool
+	prefixReq  types.ModelRequest
+)
+
+type sliceID struct {
+	ptr unsafe.Pointer
+	n   int
+}
+
+type prefixKey struct {
+	filter    uintptr
+	providers uintptr
+	tools     sliceID
+	system    sliceID
+	history   sliceID
+	input     sliceID
+	flow      string
+	sessionID string
+	runID     string
+	rootRunID string
+	parentID  string
+	depth     int
+	turn      int
+	subject   string
+	tenant    string
+	scopes    sliceID
+	latency   types.LatencyClass
+	feature   string
+	cluster   string
+	costCtr   string
+	residency string
+	releaseID string
+	variant   string
+	mode      types.RunMode
+}
+
+func prefixID(in AssembleInput) prefixKey {
+	ri := in.Run
+	return prefixKey{
+		filter:    reflect.ValueOf(in.Filter).Pointer(),
+		providers: reflect.ValueOf(in.Providers).Pointer(),
+		tools:     sliceID{unsafe.Pointer(unsafe.SliceData(in.Tools)), len(in.Tools)},
+		system:    sliceID{unsafe.Pointer(unsafe.SliceData(in.System)), len(in.System)},
+		history:   sliceID{unsafe.Pointer(unsafe.SliceData(in.History)), len(in.History)},
+		input:     sliceID{unsafe.Pointer(unsafe.SliceData(in.Input)), len(in.Input)},
+		flow:      ri.Flow,
+		sessionID: ri.SessionID,
+		runID:     ri.RunID,
+		rootRunID: ri.RootRunID,
+		parentID:  ri.ParentRunID,
+		depth:     ri.Depth,
+		turn:      ri.Turn,
+		subject:   ri.Principal.Subject,
+		tenant:    ri.Principal.Tenant,
+		scopes:    sliceID{unsafe.Pointer(unsafe.SliceData(ri.Principal.Scopes)), len(ri.Principal.Scopes)},
+		latency:   ri.LatencyClass,
+		feature:   ri.CostTags.Feature,
+		cluster:   ri.CostTags.Environment,
+		costCtr:   ri.CostTags.CostCenter,
+		residency: ri.Residency,
+		releaseID: ri.ReleaseID,
+		variant:   ri.Variant,
+		mode:      ri.Mode,
+	}
+}
+
+func cachedPrefix(in AssembleInput) (types.ModelRequest, bool) {
+	key := prefixID(in)
+	prefixMu.Lock()
+	defer prefixMu.Unlock()
+	if prefixHave && prefixLast == key {
+		return prefixReq, true
+	}
+	return types.ModelRequest{}, false
+}
+
+func storePrefix(in AssembleInput, req types.ModelRequest) {
+	prefixMu.Lock()
+	prefixLast = prefixID(in)
+	prefixReq = req
+	prefixHave = true
+	prefixMu.Unlock()
+}
+
 // Assemble builds the request in the canonical order: system instruction,
 // tool specs sorted by name, static providers, a CacheBreak, session
 // providers, a second CacheBreak, history, turn providers, new input.
 func (StablePrefix) Assemble(ctx context.Context, in AssembleInput) (types.ModelRequest, error) {
+	if req, ok := cachedPrefix(in); ok {
+		return req, nil
+	}
 	tools, err := NarrowTools(in.Tools, in.Filter, in.Run.Turn)
 	if err != nil {
 		return types.ModelRequest{}, fmt.Errorf("narrow tools: %w", err)
@@ -55,7 +156,9 @@ func (StablePrefix) Assemble(ctx context.Context, in AssembleInput) (types.Model
 	}
 	messages = append(messages, in.Input...)
 
-	return types.ModelRequest{System: system, Tools: sorted, Messages: messages}, nil
+	req := types.ModelRequest{System: system, Tools: sorted, Messages: messages}
+	storePrefix(in, req)
+	return req, nil
 }
 
 func appendSlot(ctx context.Context, system []types.Block, in AssembleInput, slot types.ContextSlot, ri types.RunInfo) ([]types.Block, error) {

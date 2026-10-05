@@ -40,6 +40,9 @@ type NotesStore interface {
 type MemoryNotes struct {
 	mu    sync.Mutex
 	byKey map[NotesKey]notesRecord
+	// memory backs the optional MemoryStore surface; session notes and
+	// subject memory share the key space but not the records.
+	memory map[NotesKey][]memoryRecord
 }
 
 type notesRecord struct {

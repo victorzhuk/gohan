@@ -1,0 +1,27 @@
+name: performance
+
+on:
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/gohan-performance-gate
+          key: performance-gate-${{ runner.os }}-${{ github.event.pull_request.base.sha }}
+      - id: mergebase
+        run: echo "base=$(git merge-base "origin/${{ github.base_ref }}" HEAD)" >> "$GITHUB_OUTPUT"
+      - run: |
+          go run ./tools/performance_gate.go \
+            --base "${{ steps.mergebase.outputs.base }}" \
+            --head "${{ github.sha }}" \
+            --baselines core/performance_baselines.json \
+            --latency
