@@ -27,14 +27,18 @@ type MemoryJournal struct {
 // Reserve atomically claims the call key. For a new key it returns
 // created=true with a Reserved entry; otherwise it returns the existing
 // entry unchanged and created=false, so a concurrent second caller learns
-// the outcome is already pinned. An expired entry is dropped and a fresh
-// one created.
+// the outcome is already pinned. A key hit whose fingerprint differs from
+// the stored entry's returns ErrJournalFingerprintMismatch. An expired
+// entry is dropped and a fresh one created.
 func (s *MemoryJournal) Reserve(ctx context.Context, k types.CallKey, fp Fingerprint) (Entry, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := s.now()
 	if rec, ok := s.byKey[k]; ok && now.Before(rec.expireAt) {
+		if rec.entry.Fingerprint != fp {
+			return Entry{}, false, ErrJournalFingerprintMismatch
+		}
 		return rec.entry, false, nil
 	}
 	rec := &journalRecord{
@@ -56,14 +60,16 @@ func (s *MemoryJournal) Reserve(ctx context.Context, k types.CallKey, fp Fingerp
 
 // Complete records the result and moves the entry to Completed. The result
 // is copied: nothing the caller passed stays aliased. Completing an expired
-// or never-reserved entry is a no-op, matching the drop-on-expire reserve.
+// or never-reserved entry returns ErrJournalCompleteMissed: silently
+// dropping the result would let a run report clean without a replayable
+// outcome.
 func (s *MemoryJournal) Complete(ctx context.Context, k types.CallKey, res types.ToolResult) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	rec, ok := s.byKey[k]
 	if !ok || !s.now().Before(rec.expireAt) {
-		return nil
+		return ErrJournalCompleteMissed
 	}
 	rec.entry.State = Completed
 	rec.entry.Result = copyToolResult(res)

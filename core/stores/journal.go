@@ -2,6 +2,7 @@ package stores
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/victorzhuk/gohan/core/types"
@@ -31,6 +32,14 @@ type Entry struct {
 	Result      types.ToolResult
 	At          time.Time
 }
+
+// ErrJournalFingerprintMismatch reports that a call key was presented with
+// a fingerprint differing from the stored entry's.
+var ErrJournalFingerprintMismatch = errors.New("gohan: journal call key reused with a different fingerprint")
+
+// ErrJournalCompleteMissed reports that Complete found no live
+// reservation for the call key, so the result was not recorded.
+var ErrJournalCompleteMissed = errors.New("gohan: journal completion found no live reservation")
 
 // Journal records tool calls so a retried call replays the recorded result
 // instead of re-executing. Results are needed for replay during a run's

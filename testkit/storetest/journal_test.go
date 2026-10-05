@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -36,6 +37,9 @@ func (f *fakeJournal) Reserve(_ context.Context, k types.CallKey, fp string) (Jo
 
 	now := f.now()
 	if rec, ok := f.byKey[k]; ok && now.Before(rec.expireAt) {
+		if rec.entry.Fingerprint != fp {
+			return JournalEntry{}, false, errors.New("gohan: journal call key reused with a different fingerprint")
+		}
 		return rec.entry, false, nil
 	}
 	f.nextID++
@@ -61,7 +65,7 @@ func (f *fakeJournal) Complete(_ context.Context, k types.CallKey, res types.Too
 
 	rec, ok := f.byKey[k]
 	if !ok || !f.now().Before(rec.expireAt) {
-		return nil
+		return errors.New("gohan: journal completion found no live reservation")
 	}
 	rec.entry.State = JournalCompleted
 	rec.entry.Result = res

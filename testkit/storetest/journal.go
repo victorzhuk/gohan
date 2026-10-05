@@ -166,6 +166,45 @@ func Journal(t *testing.T, newJournal JournalFactory) {
 		}
 	})
 
+	t.Run("stores.reserve-fingerprint-mismatch", func(t *testing.T) {
+		ctx := context.Background()
+		j := newJournal(t, time.Hour)
+		k := types.CallKey{SessionID: "s1", CallID: "c1"}
+
+		if _, _, err := j.Reserve(ctx, k, "fp"); err != nil {
+			t.Fatalf("first Reserve: %v", err)
+		}
+		e, created, err := j.Reserve(ctx, k, "fp2")
+		if err == nil {
+			t.Fatal("mismatched Reserve: err=nil, want a fingerprint refusal")
+		}
+		if created {
+			t.Fatal("mismatched Reserve: created=true, want no new entry")
+		}
+		if e.Fingerprint != "" {
+			t.Fatalf("mismatched Reserve returned entry fingerprint=%q, want none", e.Fingerprint)
+		}
+
+		// The stored entry survives the refusal for its own fingerprint.
+		e, created, err = j.Reserve(ctx, k, "fp")
+		if err != nil || created {
+			t.Fatalf("Reserve with original fingerprint: created=%v err=%v", created, err)
+		}
+		if e.Fingerprint != "fp" {
+			t.Fatalf("stored entry fingerprint=%q, want %q", e.Fingerprint, "fp")
+		}
+	})
+
+	t.Run("stores.complete-without-reservation", func(t *testing.T) {
+		ctx := context.Background()
+		j := newJournal(t, time.Hour)
+		k := types.CallKey{SessionID: "s1", CallID: "c1"}
+
+		if err := j.Complete(ctx, k, types.ToolResult{ID: "r1"}); err == nil {
+			t.Fatal("Complete without Reserve: err=nil, want a missed-reservation refusal")
+		}
+	})
+
 	t.Run("by-fingerprint-scopes-to-session", func(t *testing.T) {
 		ctx := context.Background()
 		j := newJournal(t, time.Hour)

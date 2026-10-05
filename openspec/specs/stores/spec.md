@@ -317,7 +317,7 @@ Contracts:
 - **Conditional resume.** An external `Resume` inspects a token before consuming it: `Peek` returns an owned snapshot and changes no token state; `ConsumeIf` and `UpdatePending` compare that snapshot against the stored record atomically across every field including `Data` bytes and originator scopes, return `ErrVersionConflict` when the record moved, and never overwrite collected approvals. `ConsumeIf` records the input and consumes the token in one transaction; `UpdatePending` may change only `Data`. Every read path returns copies — `Put`'s result, `Peek`, `Consume`, `ConsumeIf`, `PendingInput`, `ResumeReady` — so no caller can mutate store-owned bytes. A conversation with approvals requires both optional interfaces and is refused with `ErrCheckpointIncompatible` when the store has none, rather than falling back to unconditional `Consume`.
 - **Recovery discovery.** `ResumeReady` lists consumed checkpoints whose runs are still `Suspended`: `Recover` attempts the `Resuming` transition for each, exactly one driver wins, and a `Finished` run is never re-executed. This closes the crash interval between consumption and `Resuming`, which the separate atomic stores cannot do on their own.
 - **Lease generation.** `Lease.Generation` is a nonzero ownership token minted by `Start`, `Resuming` and `Reclaim`; `Heartbeat` changes only `Expires`. `Heartbeat`, `Finish`, `Suspend` and `Drain` require the run id *and* the current generation of an active, unexpired record; a stale generation fails with `ErrRunNotActive` and mutates nothing, so a driver that was reclaimed cannot heartbeat, finish, suspend or drain the new driver's run. `Expires` stays informational and is never an ownership token. Implementations allocate generations that do not repeat for the same run and refuse rather than wrap when the counter is exhausted.
-- `Reserve` returns `created=true` for a new reservation. Existing `Completed` → decorator returns the recorded result without executing (`ToolFinished.Replayed=true`). Existing `Reserved` → outcome unknown; the tool re-executes with the same pinned key.
+- `Reserve` returns `created=true` for a new reservation. Existing `Completed` → decorator returns the recorded result without executing (`ToolFinished.Replayed=true`). Existing `Reserved` → outcome unknown; the tool re-executes with the same pinned key. A key presented with a fingerprint that differs from the stored entry's is refused with `ErrJournalFingerprintMismatch`, so a reused call id cannot inherit another call's outcome. `Complete` refuses a key with no live reservation — expired or never reserved — with `ErrJournalCompleteMissed`, so a write that outlived its journal entry fails the call instead of a clean run being reported over an unrecorded result (ADR-0149).
 - `Fingerprint = hash(tool name, canonical JSON of args)`. Before creating a new entry the decorator calls `ByFingerprint`; if an entry whose `Result.Outcome` is `Unknown` (state `Reserved`) exists in the same session, the new entry **inherits its `Key`** (key pinning per intent). If a `Completed`/`Succeeded` entry exists for a `SideEffect` fingerprint, the call proceeds with a fresh key but `gohan.tool.repeat_intent` increments and the loop detector counts it.
 - `AuditLog.Append` is called only from chain steps and the harness (gate, scope check, journal, model step, guards, suspend/resume, limits, run start/finish). Tools, models, context providers and user code have no handle to it. Records carry checksums and sizes of args and results, never content. `PrevHash`/`Hash` form an optional per-session hash chain (postgres implementation on by default). Retention is per tenant; default 6 months; `Purge` is the only delete.
 - `Journal` results are needed for replay during a run's lifetime only: after `Runs.Finish` they expire (default 24 h); the audit record keeps `ResultSHA` and `ResultBytes`.
@@ -431,6 +431,16 @@ ID: `stores.uncertainty-surfaced`
 ID: `stores.fingerprint-after-compaction`
 - WHEN history is truncated so the model no longer sees a previous failed call, and it re-calls the same tool with the same args
 - THEN the loop detector counts it via the journal fingerprint, independent of context contents
+
+#### Scenario: reserve refuses a reused key with different arguments
+ID: `stores.reserve-fingerprint-mismatch`
+- WHEN a call key is reserved again with a fingerprint that differs from the stored entry's
+- THEN the reservation is refused with `ErrJournalFingerprintMismatch` and the stored entry is unchanged
+
+#### Scenario: complete refuses a key with no live reservation
+ID: `stores.complete-without-reservation`
+- WHEN a completion arrives for a key that is expired or was never reserved
+- THEN it is refused with `ErrJournalCompleteMissed`, so the caller cannot report a clean run over an unrecorded result
 
 ### Requirement: Optional interfaces
 

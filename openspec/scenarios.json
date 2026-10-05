@@ -503,6 +503,16 @@
     "origin": "R5a",
     "title": "fingerprint after compaction"
   },
+  "stores.reserve-fingerprint-mismatch": {
+    "capability": "stores",
+    "origin": "ADR-0149",
+    "title": "reserve refuses a reused key with different arguments"
+  },
+  "stores.complete-without-reservation": {
+    "capability": "stores",
+    "origin": "ADR-0149",
+    "title": "complete refuses a key with no live reservation"
+  },
   "stores.chain-written-only": {
     "capability": "stores",
     "origin": "R5m",

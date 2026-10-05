@@ -2,6 +2,7 @@ package stores
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -111,6 +112,53 @@ func TestJournalReserve(t *testing.T) {
 		entries, err := j.ByFingerprint(context.Background(), "s2", "fp")
 		if err != nil || len(entries) != 0 {
 			t.Fatalf("foreign session returned %d entries, err=%v", len(entries), err)
+		}
+	})
+
+	t.Run("same key and fingerprint returns stored entry", func(t *testing.T) {
+		j := NewMemoryJournal()
+		k := types.CallKey{SessionID: "s1", CallID: "c1"}
+		e1, _, err := j.Reserve(context.Background(), k, "fp")
+		if err != nil {
+			t.Fatalf("first Reserve: %v", err)
+		}
+		e2, created, err := j.Reserve(context.Background(), k, "fp")
+		if err != nil || created {
+			t.Fatalf("second Reserve: created=%v err=%v", created, err)
+		}
+		if e2.State != Reserved || e2.Fingerprint != e1.Fingerprint || e2.Key != e1.Key {
+			t.Fatalf("second Reserve entry = %+v, want the stored entry", e2)
+		}
+	})
+
+	t.Run("same key with different fingerprint is refused", func(t *testing.T) {
+		j := NewMemoryJournal()
+		k := types.CallKey{SessionID: "s1", CallID: "c1"}
+		if _, _, err := j.Reserve(context.Background(), k, "fp"); err != nil {
+			t.Fatalf("first Reserve: %v", err)
+		}
+		_, created, err := j.Reserve(context.Background(), k, "other")
+		if !errors.Is(err, ErrJournalFingerprintMismatch) {
+			t.Fatalf("mismatched Reserve err = %v, want ErrJournalFingerprintMismatch", err)
+		}
+		if created {
+			t.Fatal("mismatched Reserve created an entry")
+		}
+		// The refusal leaves the stored entry untouched.
+		e, created, err := j.Reserve(context.Background(), k, "fp")
+		if err != nil || created {
+			t.Fatalf("Reserve with original fingerprint: created=%v err=%v", created, err)
+		}
+		if e.Fingerprint != "fp" || e.State != Reserved {
+			t.Fatalf("stored entry = %+v, want the original reserved entry", e)
+		}
+	})
+
+	t.Run("complete without live reservation is refused", func(t *testing.T) {
+		j := NewMemoryJournal()
+		k := types.CallKey{SessionID: "s1", CallID: "c1"}
+		if err := j.Complete(context.Background(), k, types.ToolResult{ID: "c1"}); !errors.Is(err, ErrJournalCompleteMissed) {
+			t.Fatalf("Complete without Reserve err = %v, want ErrJournalCompleteMissed", err)
 		}
 	})
 
