@@ -24,7 +24,7 @@ The reference machine is the CI runner class (`ubuntu-latest`, 4 vCPU, amd64) on
 | `Message` ↔ eino `AgenticMessage` / adk-go `genai.Content` conversion | ≤ 1 allocation per block |
 | `Explain` on a `std.Interactive()` flow | ≤ 5 ms |
 
-Gate: benchmarks run on every PR with alternating base/head measurement, 3 rounds, fastest round, 5 % tolerance, verdict cached by commit SHA; `testing.AllocsPerRun` contracts on the paths above fail the build on any increase.
+Gate: benchmarks run on every PR with alternating base/head measurement, 3 rounds, fastest round, 5 % tolerance; `testing.AllocsPerRun` contracts on the paths above fail the build on any increase. On the reference runner the gate also enforces the table's absolute budgets as deltas over a matched raw measurement (tool overhead = fastest chain minus fastest raw tool call; model overhead against the raw model call) and fails when a configured benchmark or its raw comparator is missing, empty or malformed on either side — a missing measurement is never a pass. Local runs stay advisory and enforce no latency budget. A verdict is cached by a digest of the full measurement identity (cache schema version, both full commit SHAs, benchmark selector, benchtime, timeout and rounds, tolerance and latency-enforcement mode, the validated baseline configuration, toolchain and runner identity); configuration is validated before the cache lookup and the identity is revalidated inside the cached verdict, so an advisory pass can never satisfy a strict invocation.
 
 
 ## Requirements

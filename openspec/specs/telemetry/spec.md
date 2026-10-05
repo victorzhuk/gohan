@@ -13,7 +13,7 @@ See `docs/overview.md` for how `telemetry` fits the architecture. Out of scope f
 
 ### 6.16 Telemetry
 
-**No tracing abstraction of our own.** The OTel API is the seam; gohan emits spans and metrics with `gohan.*` attributes as the source of truth and maps them through a `Convention`:
+**A dependency-free port with std policy.** Core declares a small `Telemetry` port (span start/end with attributes, counters and recordings); `std/telemetry` owns the conventions, the metric label policy and a `Decorate(sink, convention)` wrapper that applies `Convention.ApplyAttrs` to initial span attributes, final span attributes, counters and recordings; `adapter/otel` owns the vendor translation. The root module stays dependency-free (ADR-0145 supersedes the tracing-seam clause of ADR-0066). gohan emits spans and metrics with `gohan.*` attributes as the source of truth and maps them through a `Convention`:
 
 ```go
 type Convention struct {
@@ -66,7 +66,7 @@ Canonical attribute keys (core emits these; the `Convention` layer maps them to 
 | `gohan.approver`, `gohan.suspend.reason` | suspend/resume spans | — |
 | `gohan.notice.kind` | notice delivery span | — |
 
-Metric labels are an allow-list enforced by `std/telemetry` at registration: `flow`, `tool`, `profile`, `class`, `release`, `variant`, `mode`, `stage`, `reason`, `kind`, `limit`, `lifecycle`, `source`, `judge`, `name`, `target`, `provider`, `notes`, `from`, `to`; `tenant` only with `WithTenantLabel()`; `session_id`, `run_id`, `subject`, `approver` never. A metric registered with any other label fails `Build`.
+Metric labels are an allow-list enforced by `std/telemetry` at registration **and at emission**: `flow`, `tool`, `profile`, `class`, `release`, `variant`, `mode`, `stage`, `reason`, `kind`, `limit`, `lifecycle`, `source`, `judge`, `name`, `target`, `provider`, `notes`, `from`, `to`; `tenant` only with `WithTenantLabel()`; `session_id`, `run_id`, `subject`, `approver` never. A metric registered with any other label fails `Build`. Emission is filtered by the registration: an unregistered metric is not emitted, a label that is not registered for that metric is omitted, a forbidden identity attribute is omitted even when a caller passes a canonical `gohan.*` spelling, `tenant` is forwarded only with `WithTenantLabel()`, duplicate normalized labels keep the last admissible caller value, and the harness's own release/variant stamps override caller spellings. Emission methods stay void and never panic for an invalid attribute.
 
 Logging contract: core takes `WithLogger(*slog.Logger)` (default `slog.Default()`) and derives a per-run logger with the attribute keys above as `slog.Attr`s. Levels: run start, finish, suspend, resume and `Recover` actions at `Info`; per-step and per-tool records at `Debug`; `Build` warnings at `Warn`; model and tool errors at `Debug` (they are events, metrics and spans, not log noise); nothing at `Error` except store failures that abort a run. Message content, tool arguments and results, prompts, credentials and `Raw` values are never logged at any level; the only content-bearing sink is span content capture behind the `Redactor`.
 

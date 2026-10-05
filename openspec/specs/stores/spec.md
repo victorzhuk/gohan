@@ -86,6 +86,18 @@ type Checkpoints interface {
 	PendingInput(ctx context.Context, runID string) (Checkpoint, ResumeInput, error)
 }
 
+// Optional surfaces on Checkpoints, discovered by type assertion
+// (docs/design/compatibility.md). Checkpoint carries the run it belongs to.
+type CheckpointResumer interface {
+	Peek(ctx context.Context, t ResumeToken) (Checkpoint, error)
+	ConsumeIf(ctx context.Context, t ResumeToken, expected Checkpoint, in ResumeInput) (Checkpoint, error)
+	UpdatePending(ctx context.Context, t ResumeToken, expected, next Checkpoint) error
+}
+
+type ResumeReadyLister interface {
+	ResumeReady(ctx context.Context, limit int) ([]Checkpoint, error)
+}
+
 type CallKey struct {
 	SessionID string
 	CallID    string
@@ -149,8 +161,9 @@ const (
 )
 
 type Lease struct {
-	RunID   string
-	Expires time.Time
+	RunID      string
+	Generation uint64
+	Expires    time.Time
 }
 
 type Runs interface {
@@ -301,6 +314,9 @@ Contracts:
 
 - `Append` with a stale version returns `ErrVersionConflict`; the harness reloads and retries once for pure appends, otherwise surfaces the error.
 - `Consume` is atomic; the second caller gets `ErrTokenConsumed`; expired checkpoints return `ErrTokenExpired`.
+- **Conditional resume.** An external `Resume` inspects a token before consuming it: `Peek` returns an owned snapshot and changes no token state; `ConsumeIf` and `UpdatePending` compare that snapshot against the stored record atomically across every field including `Data` bytes and originator scopes, return `ErrVersionConflict` when the record moved, and never overwrite collected approvals. `ConsumeIf` records the input and consumes the token in one transaction; `UpdatePending` may change only `Data`. Every read path returns copies — `Put`'s result, `Peek`, `Consume`, `ConsumeIf`, `PendingInput`, `ResumeReady` — so no caller can mutate store-owned bytes. A conversation with approvals requires both optional interfaces and is refused with `ErrCheckpointIncompatible` when the store has none, rather than falling back to unconditional `Consume`.
+- **Recovery discovery.** `ResumeReady` lists consumed checkpoints whose runs are still `Suspended`: `Recover` attempts the `Resuming` transition for each, exactly one driver wins, and a `Finished` run is never re-executed. This closes the crash interval between consumption and `Resuming`, which the separate atomic stores cannot do on their own.
+- **Lease generation.** `Lease.Generation` is a nonzero ownership token minted by `Start`, `Resuming` and `Reclaim`; `Heartbeat` changes only `Expires`. `Heartbeat`, `Finish`, `Suspend` and `Drain` require the run id *and* the current generation of an active, unexpired record; a stale generation fails with `ErrRunNotActive` and mutates nothing, so a driver that was reclaimed cannot heartbeat, finish, suspend or drain the new driver's run. `Expires` stays informational and is never an ownership token. Implementations allocate generations that do not repeat for the same run and refuse rather than wrap when the counter is exhausted.
 - `Reserve` returns `created=true` for a new reservation. Existing `Completed` → decorator returns the recorded result without executing (`ToolFinished.Replayed=true`). Existing `Reserved` → outcome unknown; the tool re-executes with the same pinned key.
 - `Fingerprint = hash(tool name, canonical JSON of args)`. Before creating a new entry the decorator calls `ByFingerprint`; if an entry whose `Result.Outcome` is `Unknown` (state `Reserved`) exists in the same session, the new entry **inherits its `Key`** (key pinning per intent). If a `Completed`/`Succeeded` entry exists for a `SideEffect` fingerprint, the call proceeds with a fresh key but `gohan.tool.repeat_intent` increments and the loop detector counts it.
 - `AuditLog.Append` is called only from chain steps and the harness (gate, scope check, journal, model step, guards, suspend/resume, limits, run start/finish). Tools, models, context providers and user code have no handle to it. Records carry checksums and sizes of args and results, never content. `PrevHash`/`Hash` form an optional per-session hash chain (postgres implementation on by default). Retention is per tenant; default 6 months; `Purge` is the only delete.
