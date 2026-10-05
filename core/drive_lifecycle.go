@@ -361,6 +361,13 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 				return
 			}
 		}
+		if status == runtime.DoneStatus && len(evs) > 0 {
+			// The terminal transition below owns the Done; the step's
+			// trailing copy would reach the caller twice.
+			if _, ok := evs[len(evs)-1].(types.Done); ok {
+				evs = evs[:len(evs)-1]
+			}
+		}
 		for _, e := range evs {
 			if !yield(e, nil) {
 				return

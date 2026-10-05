@@ -3,7 +3,6 @@ package gohan
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math"
 	"slices"
 	"strconv"
@@ -217,7 +216,6 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 			}
 		}
 	}
-	fmt.Println("DBG modelEffect results", n, "msgs", len(env.msgs))
 	st.Turn = env.turn
 
 	var sb strings.Builder
@@ -316,16 +314,24 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	asst := types.Message{ID: assistantID(env.turn), Role: types.RoleAssistant, Blocks: []types.Block{types.Text{Text: reply}}}
 	retainReasoning(&asst, reasoning.String())
 	env.msgs = append(env.msgs, asst)
+	if h, ok := historyAppenderFrom(ctx); ok {
+		v, aerr := h.Append(ctx, st.HistoryVersion, asst)
+		if aerr != nil {
+			env.flushDeltas(ctx)
+			return st, nil, runtime.Continue, aerr
+		}
+		st.HistoryVersion = v
+	}
 	if c.resultPreview != nil {
 		for _, d := range c.resultPreview(asst) {
 			env.emitDelta(ctx, types.ResultDelta{Turn: env.turn, MessageID: asst.ID, Delta: d})
 		}
 	}
 	env.flushDeltas(ctx)
+	// The iterator carries the terminal assistant message; emitting it
+	// through the sink too would deliver it twice wherever the driver
+	// merges the sink into the same stream.
 	ev := types.AssistantMessage{Turn: env.turn, Message: asst}
-	if env.sink != nil {
-		env.sink.Emit(ctx, ev)
-	}
 	return st, []types.Event{ev, types.Done{Reason: types.StopCompleted}}, runtime.DoneStatus, nil
 }
 

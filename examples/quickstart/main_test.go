@@ -20,6 +20,9 @@ func collectEvents(t *testing.T, input string) []types.Event {
 func TestQuickstartOffline(t *testing.T) {
 	t.Run("native turn with memory stores", func(t *testing.T) {
 		evs := collectEvents(t, "Say hello.")
+		if len(evs) != 4 {
+			t.Fatalf("got %d events (%v), want 4: two deltas, one assistant message, one Done", len(evs), evs)
+		}
 		var deltas []string
 		var am types.AssistantMessage
 		done := false
@@ -28,8 +31,14 @@ func TestQuickstartOffline(t *testing.T) {
 			case types.TextDelta:
 				deltas = append(deltas, e.Delta)
 			case types.AssistantMessage:
+				if am.Message.Blocks != nil {
+					t.Fatalf("second assistant message %v in one send", e.Message)
+				}
 				am = e
 			case types.Done:
+				if done {
+					t.Fatal("second Done event in one send")
+				}
 				done = true
 			}
 		}
@@ -66,7 +75,7 @@ func TestQuickstartOffline(t *testing.T) {
 		}
 	})
 
-	t.Run("governed send appends the user message", func(t *testing.T) {
+	t.Run("governed send appends the user and assistant messages", func(t *testing.T) {
 		sessionLog = nil
 		_ = collectEvents(t, "Say hello.")
 		ctx := types.WithPrincipal(context.Background(), types.Principal{
@@ -78,12 +87,22 @@ func TestQuickstartOffline(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load session: %v", err)
 		}
-		if len(hist.Messages) != 1 || hist.Messages[0].Role != types.RoleUser {
-			t.Fatalf("session history %+v, want the one user message", hist.Messages)
+		if len(hist.Messages) != 2 {
+			t.Fatalf("session history %+v, want the user message and the assistant reply", hist.Messages)
 		}
-		tb, ok := hist.Messages[0].Blocks[0].(types.Text)
-		if !ok || tb.Text != "Say hello." {
+		if hist.Messages[0].Role != types.RoleUser {
+			t.Fatalf("first message %+v, want the user message", hist.Messages[0])
+		}
+		ub, ok := hist.Messages[0].Blocks[0].(types.Text)
+		if !ok || ub.Text != "Say hello." {
 			t.Fatalf("persisted block %v, want Text %q", hist.Messages[0].Blocks[0], "Say hello.")
+		}
+		if hist.Messages[1].Role != types.RoleAssistant {
+			t.Fatalf("second message %+v, want the assistant reply", hist.Messages[1])
+		}
+		ab, ok := hist.Messages[1].Blocks[0].(types.Text)
+		if !ok || ab.Text != "Hello, quickstart!" {
+			t.Fatalf("persisted reply %v, want Text %q", hist.Messages[1].Blocks[0], "Hello, quickstart!")
 		}
 	})
 }
