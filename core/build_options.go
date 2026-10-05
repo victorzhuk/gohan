@@ -33,6 +33,7 @@ type config struct {
 	limits           map[string]types.RunLimits
 	recovery         map[string]runtime.Runtime
 	stores           stores.Stores
+	native           []NativeSpec
 }
 
 // WithStores binds the store ports Recover runs against. A zero field

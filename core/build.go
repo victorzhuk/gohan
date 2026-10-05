@@ -84,6 +84,7 @@ type Stack struct {
 	maxParallelTools int
 	limits           map[string]types.RunLimits
 	stores           stores.Stores
+	native           map[string]*resolvedNativeConfig
 	recovery         map[string]runtime.Runtime
 	manifest         ReleaseManifest
 }
@@ -138,6 +139,9 @@ func Build(opts ...Option) (*Stack, error) {
 		limits:           limits,
 		recovery:         cfg.recovery,
 		stores:           cfg.stores,
+	}
+	if err := s.resolveNative(cfg.native, profiles); err != nil {
+		return nil, err
 	}
 	s.manifest = computeReleaseManifest(profiles, cfg.prompts, cfg.pinned)
 	logger := cfg.logger
