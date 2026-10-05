@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
@@ -75,9 +76,11 @@ type Stack struct {
 	estimator        types.TokenEstimator
 	keys             types.ProviderKeySource
 	credentials      types.CredentialSource
+	approvalPolicy   permission.ApprovalPolicySource
 	pinned           *types.PinnedManifest
 	prompts          chains.PromptSet
 	sequentialTools  bool
+	allowAnonymous   bool
 	maxParallelTools int
 	limits           map[string]types.RunLimits
 	stores           stores.Stores
@@ -126,9 +129,11 @@ func Build(opts ...Option) (*Stack, error) {
 		estimator:        cfg.estimator,
 		keys:             cfg.keys,
 		credentials:      cfg.credentials,
+		approvalPolicy:   cfg.approvalPolicy,
 		pinned:           cfg.pinned,
 		prompts:          cfg.prompts,
 		sequentialTools:  cfg.sequentialTools,
+		allowAnonymous:   cfg.allowAnonymous,
 		maxParallelTools: cfg.maxParallelTools,
 		limits:           limits,
 		recovery:         cfg.recovery,

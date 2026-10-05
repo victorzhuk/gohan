@@ -89,8 +89,8 @@ func TestSuspensionDelivery(t *testing.T) {
 		// Replay: Deliver(result) becomes the pending call's tool result and
 		// the run continues.
 		alice := types.Principal{Tenant: "acme", Subject: "alice"}
-		op := types.Principal{Tenant: "acme", Subject: "op"}
 		cps := stores.NewMemoryCheckpoints()
+		runs := stores.NewMemoryRuns()
 		pending, err := json.Marshal(runtime.State{
 			Turn:           1,
 			HistoryVersion: 1,
@@ -100,6 +100,7 @@ func TestSuspensionDelivery(t *testing.T) {
 			t.Fatal(err)
 		}
 		token, err := cps.Put(types.WithPrincipal(context.Background(), alice), stores.Checkpoint{
+			RunID:         "run-d1",
 			SchemaVersion: stores.CurrentSchemaVersion,
 			SessionID:     "s1",
 			Backend:       "susp.test",
@@ -107,6 +108,22 @@ func TestSuspensionDelivery(t *testing.T) {
 			Originator:    alice,
 			Data:          pending,
 		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		lease, err := runs.Start(types.WithPrincipal(context.Background(), alice), stores.Run{
+			SessionID: "s1", RunID: "run-d1", Backend: "susp.test",
+		}, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runs.Suspend(types.WithPrincipal(context.Background(), alice), lease, token); err != nil {
+			t.Fatal(err)
+		}
+		op := types.Principal{
+			Tenant: "acme", Subject: "op",
+			Scopes: []string{types.ScopeSessionRead, types.ScopeSessionWrite},
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -120,7 +137,7 @@ func TestSuspensionDelivery(t *testing.T) {
 		}
 		resumed := &suspRT{}
 		conv, err := NewConversation(&Stack{stores: stores.Stores{SessionLog: log}}, "flights", resumed,
-			WithConversationRuns(stores.NewMemoryRuns()),
+			WithConversationRuns(runs),
 			WithConversationEventLog(stores.NewMemoryEventLog()),
 			WithConversationCheckpoints(cps),
 		)

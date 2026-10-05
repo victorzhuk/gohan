@@ -13,7 +13,7 @@ import (
 
 type stubRuntime struct{}
 
-func (stubRuntime) Name() string                    { return "stub" }
+func (stubRuntime) Name() string                         { return "stub" }
 func (stubRuntime) Granularity() runtime.StepGranularity { return runtime.GranularityEffect }
 func (stubRuntime) Start(context.Context, runtime.AgentRun) (runtime.State, error) {
 	return runtime.State{}, nil
@@ -139,7 +139,7 @@ func TestCheckpointEnvelopeDecode(t *testing.T) {
 
 	t.Run("empty-and-non-object-refused", func(t *testing.T) {
 		cp, _ := envelopeCheckpoint()
-		for _, data := range []string{``, `   `, `null`, `[1,2]`, `"x"`, `{` /* malformed */ } {
+		for _, data := range []string{``, `   `, `null`, `[1,2]`, `"x"`, `{` /* malformed */} {
 			cp.Data = []byte(data)
 			if _, _, err := decodeCheckpoint(cp, stubRuntime{}, "flow-a"); !errors.Is(err, types.ErrCheckpointIncompatible) {
 				t.Fatalf("data %q: err = %v, want ErrCheckpointIncompatible", data, err)

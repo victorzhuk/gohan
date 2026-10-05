@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
@@ -21,11 +22,13 @@ type config struct {
 	estimator        types.TokenEstimator
 	keys             types.ProviderKeySource
 	credentials      types.CredentialSource
+	approvalPolicy   permission.ApprovalPolicySource
 	logger           *slog.Logger
 	telemetry        types.Telemetry
 	pinned           *types.PinnedManifest
 	prompts          chains.PromptSet
 	sequentialTools  bool
+	allowAnonymous   bool
 	maxParallelTools int
 	limits           map[string]types.RunLimits
 	recovery         map[string]runtime.Runtime
@@ -90,6 +93,16 @@ func WithCredentialSource(src types.CredentialSource) Option {
 	}
 }
 
+// WithApprovalPolicySource sets the source Conversation approval decisions
+// resolve their policy from. The caller passes the floor interface value;
+// std supplies the default implementation.
+func WithApprovalPolicySource(src permission.ApprovalPolicySource) Option {
+	return func(c *config) error {
+		c.approvalPolicy = src
+		return nil
+	}
+}
+
 // WithModelMiddleware wraps every model invocation. The first middleware is
 // the outermost.
 func WithModelMiddleware(mw ...types.ModelMiddleware) Option {
@@ -141,6 +154,16 @@ func WithPinnedManifest(m types.PinnedManifest) Option {
 func SequentialTools() Option {
 	return func(c *config) error {
 		c.sequentialTools = true
+		return nil
+	}
+}
+
+// AllowAnonymous permits principal-less invocation of unowned function
+// flows. It invents no tenant, grants no access to a session that already
+// has an owner, and bypasses no store authorization.
+func AllowAnonymous() Option {
+	return func(c *config) error {
+		c.allowAnonymous = true
 		return nil
 	}
 }
