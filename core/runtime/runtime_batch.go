@@ -21,9 +21,12 @@ const (
 
 // BatchDecision carries the gate's verdict for one call before the batch
 // executes. Reason states the denial; it renders after notExecutedPrefix.
+// Taints names the origins that forced an ask, so the suspension can show
+// the approver where each argument came from.
 type BatchDecision struct {
 	Outcome BatchOutcome
 	Reason  string
+	Taints  []types.ArgTaint
 }
 
 // BatchGate decides one call without running it. The driver wires the
@@ -53,9 +56,11 @@ type BatchResult struct {
 
 // BatchSuspend reports the ask that suspended the batch. Pending lists every
 // ask in call order, starting with Call; they settle on resume, one at a time.
+// Taints are the origins that suspended the head.
 type BatchSuspend struct {
 	Call    types.ToolUse
 	Pending []types.ToolUse
+	Taints  []types.ArgTaint
 }
 
 // BatchReport is the outcome of one batch. Results holds one entry per
@@ -85,6 +90,7 @@ func (b Batch) Run(ctx context.Context) (BatchReport, error) {
 	allowed := make([]types.ToolUse, 0, len(b.Calls))
 	askCalls := make([]types.ToolUse, 0, len(b.Calls))
 	allowedSlots := make([]int, 0, len(b.Calls))
+	askSlot := make([]int, 0, len(b.Calls))
 	for i, call := range b.Calls {
 		switch decisions[i].Outcome {
 		case BatchDeny, BatchTaintDenied:
@@ -93,6 +99,7 @@ func (b Batch) Run(ctx context.Context) (BatchReport, error) {
 				Error: &types.ToolError{Kind: types.Permanent, Message: NotExecutedPrefix + decisions[i].Reason},
 			}})
 		case BatchAsk:
+			askSlot = append(askSlot, i)
 			askCalls = append(askCalls, call)
 		default:
 			allowedSlots = append(allowedSlots, len(report.Results))
@@ -101,7 +108,7 @@ func (b Batch) Run(ctx context.Context) (BatchReport, error) {
 		}
 	}
 	if len(askCalls) > 0 {
-		report.Suspend = &BatchSuspend{Call: askCalls[0], Pending: askCalls}
+		report.Suspend = &BatchSuspend{Call: askCalls[0], Pending: askCalls, Taints: decisions[askSlot[0]].Taints}
 	}
 	results, err := Schedule(ctx, allowed, ToolFunc(b.Exec), b.Scheduler)
 	for j, res := range results {

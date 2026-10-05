@@ -553,6 +553,7 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 				Risk:        ap.Risk,
 				Reversible:  ap.Reversible,
 				Eligible:    ap.Eligible,
+				ArgOrigins:  permission.ArgOrigins(ap.Call.Args, ap.Taints),
 			}
 		}
 	}
@@ -608,6 +609,14 @@ func (lc *Lifecycle) specFor(r runtime.AgentRun, name string) types.ToolSpec {
 // policy refuses the suspension instead of persisting a partial approvals
 // list.
 func (lc *Lifecycle) approvalsFor(ctx context.Context, r runtime.AgentRun, st runtime.State) ([]checkpointApproval, error) {
+	b, err := decodeNativeBackend(st)
+	if err != nil {
+		return nil, err
+	}
+	var taints []types.ArgTaint
+	if b.Driver != nil && b.Driver.Batch != nil {
+		taints = b.Driver.Batch.Taints
+	}
 	specs := make(map[string]types.ToolSpec, len(r.Tools))
 	for _, t := range r.Tools {
 		specs[t.Spec().Name] = t.Spec()
@@ -644,6 +653,7 @@ func (lc *Lifecycle) approvalsFor(ctx context.Context, r runtime.AgentRun, st ru
 			Call:        call,
 			Risk:        spec.Risk,
 			Fingerprint: ToolFingerprint(spec, json.RawMessage(call.Args)),
+			Taints:      taints,
 			Reversible:  reversible,
 			Eligible:    elig,
 		})

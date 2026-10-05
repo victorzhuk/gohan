@@ -86,7 +86,7 @@ func NewApprovalRequest(inv *ToolInvocation, lastApproved jsontext.Value, expire
 		Call:         inv.Call,
 		Risk:         inv.Spec.Risk,
 		ReadBack:     inv.Spec.ReadBack,
-		ArgOrigins:   argOrigins(inv.Call.Args, inv.Taints),
+		ArgOrigins:   ArgOrigins(inv.Call.Args, inv.Taints),
 		DiffFromLast: diffFromLast(lastApproved, inv.Call.Args),
 		ExpiresAt:    expires,
 	}
@@ -107,9 +107,9 @@ func CheckEligibility(req ApprovalRequest, approver types.Principal) error {
 	return nil
 }
 
-// argOrigins names where each top-level argument came from: model inference
+// ArgOrigins names where each top-level argument came from: model inference
 // unless a taint matched the argument against untrusted session content.
-func argOrigins(args jsontext.Value, taints []types.ArgTaint) map[string]types.Origin {
+func ArgOrigins(args jsontext.Value, taints []types.ArgTaint) map[string]types.Origin {
 	origins := map[string]types.Origin{}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(args, &fields); err != nil || fields == nil {

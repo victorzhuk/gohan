@@ -43,6 +43,7 @@ type ToolSpec struct {
 	Risk           RiskTier
 	Capabilities   Capabilities
 	Network        bool
+	Trust          Trust
 	Executor       Executor
 	Egress         *EgressPolicy
 	Verify         func(ctx context.Context, args json.RawMessage, r ToolResult) (Outcome, error)

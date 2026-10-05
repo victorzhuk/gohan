@@ -18,7 +18,7 @@ import (
 const manifestVersion = 1
 
 // ToolManifestHash pins a tool's identity: SHA-256 over the name,
-// description, schema, effect and required scopes, joined with newlines.
+// description, schema, effect, required scopes and trust, joined with newlines.
 // The algorithm and field set are frozen here; a change is a manifest
 // version bump and a re-review of every pinned set, like a lockfile bump.
 func ToolManifestHash(spec types.ToolSpec) string {
@@ -28,6 +28,7 @@ func ToolManifestHash(spec types.ToolSpec) string {
 		string(spec.Schema),
 		fmt.Sprint(int(spec.Effect)),
 		strings.Join(spec.RequiredScopes, ","),
+		fmt.Sprint(int(spec.Trust)),
 	}, "\n")))
 	return hex.EncodeToString(h[:])
 }

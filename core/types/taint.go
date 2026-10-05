@@ -34,6 +34,18 @@ func (e TaintDenied) Error() string {
 	return fmt.Sprintf("gohan: argument %s carries untrusted content", e.Arg)
 }
 
+type taintWindowContextKey struct{}
+
+// WithTaintWindow carries raw, unprojected run blocks because the driver binds them at the tool-call boundary.
+func WithTaintWindow(ctx context.Context, blocks []Block) context.Context {
+	return context.WithValue(ctx, taintWindowContextKey{}, blocks)
+}
+
+func TaintWindowFrom(ctx context.Context) ([]Block, bool) {
+	blocks, ok := ctx.Value(taintWindowContextKey{}).([]Block)
+	return blocks, ok
+}
+
 // TaintHook computes the taint verdict for a call's arguments. Core declares
 // the slot only; the deterministic matcher and its policy are std/taint and
 // land later, so a gate wired without a hook skips taint enforcement.

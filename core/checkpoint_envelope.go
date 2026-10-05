@@ -28,6 +28,7 @@ type checkpointApproval struct {
 	Call        types.ToolUse          `json:"call"`
 	Risk        types.RiskTier         `json:"risk"`
 	Fingerprint stores.Fingerprint     `json:"fingerprint"`
+	Taints      []types.ArgTaint       `json:"taints,omitempty"`
 	Reversible  bool                   `json:"reversible"`
 	Eligible    permission.Eligibility `json:"eligible"`
 	ApprovedBy  []types.Principal      `json:"approved_by,omitempty"`

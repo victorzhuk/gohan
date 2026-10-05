@@ -200,6 +200,7 @@ These come from the `m1` proposal scope and the M1 row of `docs/overview.md` and
 
 | Obligation | Owner | Status | Evidence |
 |---|---|---|---|
+| `ToolSpec.Trust` and the manifest hash's `trust` input, declared by the `tools` spec and missing from the shipped struct and `std/manifest.go` | `m1-taint-enforcement` | integration gap | discovered while wiring the trifecta's untrusted leg; the `tools` ToolSpec block and the *Tool spec pinning* requirement both name the field, and `ToolManifestHash` does not hash it |
 | `Verify` end-to-end (Failed reconciliation, audit, lifecycle execution) | `m1-verify-public-paths` | integration gap | `std/verify.go` has no `Failed` reconciliation and discards journal errors |
 | `std/redact` rules + HMAC `Redactor` + `EraseSubject` | `m1-redaction-pipeline`, `m1-subject-erasure-residency` | missing | neither package exists |
 | `std/cache` key builder + exact-match cache | `m1-exact-match-cache` | missing | no `std/cache` |

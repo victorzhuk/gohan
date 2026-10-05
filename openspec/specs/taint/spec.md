@@ -26,10 +26,11 @@ const (
 )
 
 type TaintPolicy struct {
-	ToExfil      TaintAction
-	ToSideEffect TaintAction
-	ToReadOnly   TaintAction
-	MinMatch     int
+	ToExfil        TaintAction
+	ToSideEffect   TaintAction
+	ToReadOnly     TaintAction
+	MinMatch       int
+	MaxWindowBytes int
 }
 
 type ArgTaint struct {
@@ -39,7 +40,7 @@ type ArgTaint struct {
 }
 ```
 
-Core owns `Capabilities`, `ArgTaint` and the gate's `TaintHook func(ctx, ToolSpec, args) (TaintAction, []ArgTaint)`; `TaintPolicy`, its defaults and the substring matcher are `std/taint` and are installed with `agent.WithTaintPolicy`. Defaults: `Exfil` is derived from the tool's `EgressPolicy` when it declares one (`tools` *Egress*: any `Allow` entry outside the private ranges makes it true); a tool that declares no `EgressPolicy` is `Exfil: true` when it is `Untrusted` (including `agui` frontend tools), when it is a `sandbox` tool set with non-empty `Egress`, or when wired with `WithExfil()`; `PrivateRead` is set by wiring (`WithPrivateRead()`) and on `ContextProvider`s that return tenant or user data. `TaintPolicy` defaults: `{ToExfil: Deny, ToSideEffect: Ask, ToReadOnly: Allow, MinMatch: 16, MaxWindowBytes: 256 KiB}`.
+Core owns `Capabilities`, `ArgTaint` and the gate's `TaintHook func(ctx, ToolSpec, args) (TaintAction, []ArgTaint)`; `TaintPolicy`, its defaults and the substring matcher are `std/taint`, and the flow's hook is registered through `gohan.NativeSpec.TaintPolicy`, which `Build` resolves the way it resolves `Decider`; a flow that declares no hook gets no taint enforcement (ADR-0155). Defaults: `Exfil` is derived from the tool's `EgressPolicy` when it declares one (`tools` *Egress*: any `Allow` entry outside the private ranges makes it true); a tool that declares no `EgressPolicy` is `Exfil: true` when it is `Untrusted` (including `agui` frontend tools), when it is a `sandbox` tool set with non-empty `Egress`, or when wired with `WithExfil()`; `PrivateRead` is set by wiring (`WithPrivateRead()`) and on `ContextProvider`s that return tenant or user data. `TaintPolicy` defaults: `{ToExfil: Deny, ToSideEffect: Ask, ToReadOnly: Allow, MinMatch: 16, MaxWindowBytes: 256 KiB}`.
 
 Rules:
 

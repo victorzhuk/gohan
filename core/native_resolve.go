@@ -27,6 +27,8 @@ type resolvedNativeConfig struct {
 	toolChain   chains.ToolChain
 	limits      types.RunLimits
 	decider     types.Decider[*permission.ToolInvocation, permission.Verdict]
+	taintPolicy types.TaintHook
+	liveDeny    func(context.Context, *permission.ToolInvocation) (string, bool)
 }
 
 // resolvedNative returns the resolved configuration Build computed for the
@@ -82,6 +84,23 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 		}
 		limits, _ := s.Limits(name)
 		modelChain := modelChainWithMiddleware(spec.ModelChain, s.middleware)
+		var exfil, privateRead, untrusted bool
+		for _, toolSpec := range req.Tools {
+			exfil = exfil || toolSpec.Capabilities.Exfil
+			privateRead = privateRead || toolSpec.Capabilities.PrivateRead
+			// Until provider assembly can declare trust, untrusted tools are the untrusted path.
+			untrusted = untrusted || toolSpec.Trust == types.Untrusted
+		}
+		if s.telemetry != nil {
+			state := int64(0)
+			if exfil && privateRead && untrusted {
+				state = 1
+			}
+			s.telemetry.Count(context.Background(), "gohan.build.trifecta", state, types.String("flow", name))
+		}
+		if exfil && privateRead && untrusted && spec.TaintPolicy == nil {
+			return types.ErrTaintTrifecta{Flow: name, Exfil: true, PrivateRead: true, Untrusted: true}
+		}
 		resolved[name] = &resolvedNativeConfig{
 			flow:        name,
 			model:       model,
@@ -97,6 +116,8 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			toolChain:   cloneToolChain(spec.ToolChain),
 			limits:      limits,
 			decider:     spec.Decider,
+			taintPolicy: spec.TaintPolicy,
+			liveDeny:    spec.LiveDeny,
 		}
 	}
 	s.native = resolved

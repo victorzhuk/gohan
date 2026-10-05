@@ -69,7 +69,15 @@ func (env *turnEnv) effectCtx(ctx context.Context) context.Context {
 	if env.sink == nil {
 		env.sink, _ = types.SinkFrom(ctx)
 	}
-	return withTurnEnv(ctx, env)
+	return types.WithTaintWindow(withTurnEnv(ctx, env), rawTaintWindow(env.msgs))
+}
+
+func rawTaintWindow(msgs []types.Message) []types.Block {
+	var blocks []types.Block
+	for _, msg := range msgs {
+		blocks = append(blocks, msg.Blocks...)
+	}
+	return blocks
 }
 
 // runModelChain composes the chain around the model: step 0 outermost, the

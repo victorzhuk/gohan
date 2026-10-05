@@ -66,6 +66,7 @@ type gate struct {
 	decider       types.Decider[*ToolInvocation, Verdict]
 	minConfidence float64
 	taintHook     types.TaintHook
+	liveDeny      func(ctx context.Context, inv *ToolInvocation) (reason string, denied bool)
 	specLookup    func(name string) (types.ToolSpec, bool)
 	runLookup     func(ctx context.Context) types.RunInfo
 }
@@ -81,6 +82,11 @@ func MinConfidence(x float64) Option {
 // enforcement until std/taint ships its matcher.
 func WithTaintHook(h types.TaintHook) Option {
 	return func(g *gate) { g.taintHook = h }
+}
+
+// WithLiveDeny installs a check that denies before taint can request approval.
+func WithLiveDeny(check func(ctx context.Context, inv *ToolInvocation) (reason string, denied bool)) Option {
+	return func(g *gate) { g.liveDeny = check }
 }
 
 // WithGrantCheck installs the session-grant slot. The check runs after the
@@ -155,11 +161,17 @@ func (g *gate) middleware(next types.ToolFunc) types.ToolFunc {
 	}
 }
 
-// decideCall applies the scope check, the taint hook and the decider to one
-// invocation. A broken decider asks — it must never widen permission.
+// decideCall applies scope and live-deny checks, then the taint hook and decider.
+// A broken decider asks — it must never widen permission.
 func (g *gate) decideCall(ctx context.Context, inv *ToolInvocation) Decision {
 	if missing := missingScopes(inv.Run.Principal.Scopes, inv.Spec.RequiredScopes); len(missing) > 0 {
 		return Decision{Verdict: DenyVerdict, Reason: "missing scope " + strings.Join(missing, ", ")}
+	}
+
+	if g.liveDeny != nil {
+		if reason, denied := g.liveDeny(ctx, inv); denied {
+			return Decision{Verdict: DenyVerdict, Reason: reason}
+		}
 	}
 
 	if g.taintHook != nil {

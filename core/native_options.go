@@ -24,6 +24,13 @@ type NativeSpec struct {
 	// Decider states the flow's own tool policy. The batch gate consults
 	// it before any call executes; a nil Decider keeps the core defaults
 	// (read-only and idempotent calls pass, side effects ask).
+	// TaintPolicy declares this flow's taint hook. A nil hook disables taint enforcement.
+	TaintPolicy types.TaintHook
+	// LiveDeny declares this flow's live deny source. A nil source adds no live denies.
+	LiveDeny func(ctx context.Context, inv *permission.ToolInvocation) (string, bool)
+	// Decider states the flow's own tool policy. The batch gate consults
+	// it before any call executes; a nil Decider keeps the core defaults
+	// (read-only and idempotent calls pass, side effects ask).
 	Decider types.Decider[*permission.ToolInvocation, permission.Verdict]
 }
 

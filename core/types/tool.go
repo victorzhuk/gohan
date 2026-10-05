@@ -87,8 +87,10 @@ type ToolSpec struct {
 	ReadBack       string
 	MaxOutput      int
 	Deferred       bool
-	Risk           RiskTier
-	Capabilities   Capabilities
+	// Trust is Trusted for own-code registrations. Imported sets are not trusted.
+	Trust        Trust
+	Risk         RiskTier
+	Capabilities Capabilities
 	// Network is the registration fact Build passes to RequiresEgress and CheckEgress. It never implies Capabilities.Exfil.
 	Network           bool
 	Executor          Executor

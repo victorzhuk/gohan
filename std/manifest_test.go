@@ -79,6 +79,20 @@ func TestToolManifestAndFilter(t *testing.T) {
 	})
 }
 
+func TestToolManifestHashIncludesTrust(t *testing.T) {
+	trusted := types.ToolSpec{Name: "search", Description: "Search", Effect: types.ReadOnly}
+	identical := trusted
+	if got, want := std.ToolManifestHash(trusted), std.ToolManifestHash(identical); got != want {
+		t.Fatalf("identical trusted specs hash differently: %q != %q", got, want)
+	}
+
+	untrusted := trusted
+	untrusted.Trust = types.Untrusted
+	if got, want := std.ToolManifestHash(trusted), std.ToolManifestHash(untrusted); got == want {
+		t.Fatalf("different trust values hash identically: %q", got)
+	}
+}
+
 func names(specs []types.ToolSpec) []string {
 	out := make([]string, 0, len(specs))
 	for _, s := range specs {

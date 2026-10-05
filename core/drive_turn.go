@@ -419,6 +419,7 @@ type nativeBatchContinuation struct {
 	Calls   []types.ToolUse    `json:"calls"`
 	Results []types.ToolResult `json:"results"`
 	Ready   bool               `json:"ready,omitempty"`
+	Taints  []types.ArgTaint   `json:"taints,omitempty"`
 }
 
 type nativeBackend struct {
@@ -719,14 +720,15 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	// The batch phase marker is a string literal: the runtime's phase
 	// constants are unexported there. ToolCalls uses the gated batch size
 	// until the reservation hook reports the admitted ledger total.
-	enc, err := encodeNativeBackend(nativeBackend{
+	b := nativeBackend{
 		Phase: "batch",
 		Driver: &nativeProgress{
 			Version:   nativeProgressVersion,
 			ToolCalls: len(calls),
 			Batch:     &nativeBatchContinuation{Calls: calls, Results: aligned},
 		},
-	})
+	}
+	enc, err := encodeNativeBackend(b)
 	if err != nil {
 		return st, nil, runtime.Continue, err
 	}
@@ -734,6 +736,12 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	env.used += report.Spent
 	if report.Suspend != nil {
 		st.Pending = report.Suspend.Pending
+		b.Driver.Batch.Taints = report.Suspend.Taints
+		enc, err = encodeNativeBackend(b)
+		if err != nil {
+			return st, nil, runtime.Continue, err
+		}
+		st.Backend = enc
 		return st, nil, runtime.SuspendedStatus, &types.SuspendError{Reason: types.HumanApproval}
 	}
 	env.calls = nil
@@ -891,6 +899,9 @@ func governedAskExec(ctx context.Context, env *turnEnv, exec func(context.Contex
 		}
 	}
 	res.ID = call.ID
+	// A tool author does not set provenance: the call path does, or the
+	// result reads as system content downstream and taint and fencing skip it.
+	res.Origin = types.Origin{Kind: types.OriginTool, Name: call.Name}
 	return res, nil
 }
 

@@ -225,3 +225,20 @@ type ErrEgressClientRequired struct{ Name string }
 func (e ErrEgressClientRequired) Error() string {
 	return "gohan: tool " + e.Name + " declares an egress policy but no egress client is configured"
 }
+
+type ErrTaintTrifecta struct {
+	Flow        string
+	Exfil       bool
+	PrivateRead bool
+	Untrusted   bool
+}
+
+func (e ErrTaintTrifecta) Error() string {
+	return fmt.Sprintf(
+		"gohan: flow %q requires a taint policy (exfil=%t, private_read=%t, untrusted=%t)",
+		e.Flow,
+		e.Exfil,
+		e.PrivateRead,
+		e.Untrusted,
+	)
+}

@@ -129,7 +129,14 @@ func nativeBatchGate(cfg *resolvedNativeConfig, hist stores.History) runtime.Bat
 		}
 		run, _ := RunInfoFrom(ctx)
 		inv := &permission.ToolInvocation{Spec: spec, Call: call, Run: run}
-		dec := permission.DecideCall(ctx, cfg.decider, inv, permission.WithGrantCheck(grant))
+		opts := []permission.Option{permission.WithGrantCheck(grant)}
+		if cfg.taintPolicy != nil {
+			opts = append(opts, permission.WithTaintHook(cfg.taintPolicy))
+		}
+		if cfg.liveDeny != nil {
+			opts = append(opts, permission.WithLiveDeny(cfg.liveDeny))
+		}
+		dec := permission.DecideCall(ctx, cfg.decider, inv, opts...)
 		switch dec.Verdict {
 		case permission.Allow:
 			return runtime.BatchDecision{Outcome: runtime.BatchAllow}
@@ -138,7 +145,7 @@ func nativeBatchGate(cfg *resolvedNativeConfig, hist stores.History) runtime.Bat
 		case permission.TaintDenied:
 			return runtime.BatchDecision{Outcome: runtime.BatchTaintDenied, Reason: dec.Reason}
 		default:
-			return runtime.BatchDecision{Outcome: runtime.BatchAsk}
+			return runtime.BatchDecision{Outcome: runtime.BatchAsk, Taints: dec.Taints}
 		}
 	}
 }
