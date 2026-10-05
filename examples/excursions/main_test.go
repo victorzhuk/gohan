@@ -22,6 +22,17 @@ func runTrip(t *testing.T) Trip {
 	return trip
 }
 
+func fakeTool(t *testing.T, tools []types.Tool, name string) *gohantest.FakeTool {
+	t.Helper()
+	for _, tool := range tools {
+		if f, ok := tool.(*gohantest.FakeTool); ok && f.Spec().Name == name {
+			return f
+		}
+	}
+	t.Fatalf("no fixture tool %q", name)
+	return nil
+}
+
 func TestExcursionsS1Offline(t *testing.T) {
 	t.Run("offline excursion plan", func(t *testing.T) {
 		trip := runTrip(t)
@@ -47,34 +58,38 @@ func TestExcursionsS1Offline(t *testing.T) {
 
 	t.Run("fixture policy denies the booking", func(t *testing.T) {
 		trip := runTrip(t)
-		if len(trip.Batch.Results) != 2 {
-			t.Fatalf("batch settled %d results, want 2: %+v", len(trip.Batch.Results), trip.Batch.Results)
+		if calls := fakeTool(t, trip.Tools, "book_cabin").Calls(); len(calls) != 0 {
+			t.Fatalf("book_cabin executed %d times, want 0: %v", len(calls), calls)
 		}
-		if trip.Batch.Suspend != nil {
-			t.Fatalf("batch suspended at %+v, want no ask", trip.Batch.Suspend)
+		if calls := fakeTool(t, trip.Tools, "search_trails").Calls(); len(calls) != 1 {
+			t.Fatalf("search_trails executed %d times, want 1", len(calls))
 		}
-		denied := trip.Batch.Results[1]
-		if denied.Call.Name != "book_cabin" {
-			t.Fatalf("second call %q, want book_cabin", denied.Call.Name)
+		var denied *types.ToolResult
+		for i := range trip.History {
+			m := &trip.History[i]
+			for _, b := range m.Blocks {
+				res, ok := b.(types.ToolResult)
+				if ok && res.ID == "call_book_cabin" {
+					denied = &res
+				}
+			}
 		}
-		res := denied.Result
-		if res.Outcome != types.Failed || res.Error == nil || res.Error.Kind != types.Permanent {
-			t.Fatalf("booking result %+v, want Failed(Permanent)", res)
+		if denied == nil {
+			t.Fatalf("history %v, want a persisted result for call_book_cabin", trip.History)
 		}
-		if res.Error.Message != "not_executed: denied by policy" {
-			t.Fatalf("denial message %q, want not_executed: denied by policy", res.Error.Message)
+		if denied.Outcome != types.Failed || denied.Error == nil || denied.Error.Kind != types.Permanent {
+			t.Fatalf("booking result %+v, want Failed(Permanent)", denied)
 		}
-		lookup := trip.Batch.Results[0]
-		if lookup.Call.Name != "search_trails" || lookup.Result.Outcome != types.Succeeded {
-			t.Fatalf("lookup result %+v, want an executed search_trails", lookup)
+		if denied.Error.Message != "not_executed: denied by policy" {
+			t.Fatalf("denial message %q, want not_executed: denied by policy", denied.Error.Message)
 		}
 	})
 
 	t.Run("batch history lands in call order", func(t *testing.T) {
 		trip := runTrip(t)
 		var pending, results *types.Message
-		for i := range trip.Appended {
-			m := &trip.Appended[i]
+		for i := range trip.History {
+			m := &trip.History[i]
 			for _, b := range m.Blocks {
 				switch b.(type) {
 				case types.ToolUse:
@@ -85,7 +100,7 @@ func TestExcursionsS1Offline(t *testing.T) {
 			}
 		}
 		if pending == nil || results == nil {
-			t.Fatalf("appended %v, want a pending message and a results message", trip.Appended)
+			t.Fatalf("history %v, want a pending message and a results message", trip.History)
 		}
 		calls := []string{"search_trails", "book_cabin"}
 		for i, want := range calls {
@@ -97,20 +112,6 @@ func TestExcursionsS1Offline(t *testing.T) {
 			if !ok || res.ID != "call_"+want {
 				t.Fatalf("results block %d is %v, want ToolResult for call_%s", i, results.Blocks[i], want)
 			}
-		}
-		var historyToolUses, historyToolResults int
-		for _, m := range trip.History {
-			for _, b := range m.Blocks {
-				switch b.(type) {
-				case types.ToolUse:
-					historyToolUses++
-				case types.ToolResult:
-					historyToolResults++
-				}
-			}
-		}
-		if historyToolUses != 2 || historyToolResults != 2 {
-			t.Fatalf("history holds %d tool uses and %d results, want 2 and 2", historyToolUses, historyToolResults)
 		}
 	})
 }
