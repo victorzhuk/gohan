@@ -12,14 +12,33 @@ tasks:
       - python3 tools/gen_types_index.py
 
   spec:coverage:
-    desc: Run the spec coverage gate (extra flags after --)
-    set: [pipefail]
+    desc: Spec coverage report across all modules (extra flags after --)
     cmds:
-      - go test -json -timeout 2m -short ./... | python3 tools/spec_coverage.py {{.CLI_ARGS}}
+      - |
+        set -euo pipefail
+        { go test -json -timeout 2m -short ./...;
+          go -C adapter/otel test -json -timeout 2m -short ./...;
+          go -C examples test -json -timeout 2m -short ./...; } |
+          python3 tools/spec_coverage.py {{.CLI_ARGS}}
+
+  spec:gate:
+    desc: Spec gate across all modules (GATE overrides the milestone, default M0.5)
+    vars:
+      GATE: '{{.GATE | default "M0.5"}}'
+    cmds:
+      - |
+        set -euo pipefail
+        { go test -json -timeout 2m -short ./...;
+          go -C adapter/otel test -json -timeout 2m -short ./...;
+          go -C examples test -json -timeout 2m -short ./...; } |
+          python3 tools/spec_coverage.py --gate '{{.GATE}}'
 
   spec:
-    desc: Regenerate the types index and run the spec coverage gate
-    deps: [spec:types, spec:coverage]
+    desc: Regenerate the types index, then run the ordered spec gate
+    cmds:
+      - task: spec:types
+      - task: spec:gate
+
 
   api:check:
     desc: apidiff of every module against its last tag

@@ -52,6 +52,37 @@ class CoverageTest(unittest.TestCase):
         self.assertEqual(out.returncode, 0)
         self.assertIn("covered=1", out.stdout)
 
+    def test_multiple_module_streams_aggregate(self):
+        out = self.stream(
+            [ev("run", "TestFlow/flow.plain-invoke")]
+            + [ev("run", "TestAdapter/flow.backend-swap")]
+            + [ev("run", "TestExample/flow.plain-invoke")],
+            ["--gate", "M0.5"],
+        )
+        self.assertEqual(out.returncode, 0)
+        self.assertIn("subtests=2", out.stdout)
+        self.assertIn("covered=2", out.stdout)
+
+    def test_gate_m0_5_blocks_uncovered_in_scope(self):
+        out = self.stream([], ["--gate", "M0.5"])
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("missing_in_scope=1", out.stdout)
+
+    def test_failing_producer_fails_pipeline(self):
+        proc = subprocess.run(
+            [
+                "bash",
+                "-o",
+                "pipefail",
+                "-c",
+                "set -e; { printf ''; exit 7; } | "
+                f"{sys.executable} {SCRIPT} --registry {self.registry}",
+            ],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(proc.returncode, 7)
+
     def test_unregistered_id_shaped_name_fails(self):
         out = self.stream([ev("run", "TestFlow/flow.bogus-id")], [])
         self.assertEqual(out.returncode, 1)

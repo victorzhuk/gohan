@@ -63,11 +63,11 @@ tools ── are driving adapters: they call use cases / repositories, like HTTP
 
 ## 5. Repository layout and modules
 
-Three parts: **core** (contracts, no behavior), **std** (the recommended behavior as readable code), **adapter** (everything with a third-party dependency).
+Three parts: **core** (contracts and driver code), **std** (the recommended behavior as readable code), **adapter** (everything with a third-party dependency).
 
 ```
 github.com/victorzhuk/gohan                 ← module A: core + std + testkit
-  go.mod                                      deps: stdlib, OTel API, one JSON-schema library
+  go.mod                                      deps: stdlib only; telemetry deps live in adapter/otel; tool schemas use the core reflection walker
   go.work                                     dev only
   core/          package gohan                driver: Build/Stack/options, Flow/FlowFunc/Conversation,
                                               Drive/DriveResume, Recover, Inspect, Explain, NewTool and type

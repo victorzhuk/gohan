@@ -7,7 +7,7 @@
 - Round-trip property tests for all message converters.
 - Scenario tests for S1–S4 in `examples/excursions` are the acceptance suite of the spec.
 - Real-provider integration tests behind a build tag; load test for S3 in a separate pipeline.
-- Scenario binding: each scenario ID in `openspec/scenarios.json` is the exact name of the subtest that covers it (`t.Run("flow.plain-invoke", …)`); `task spec:coverage` lists IDs with no matching subtest in `go test -list` output and subtests named like IDs that are not in the registry. No comments or tags carry IDs.
+- Scenario binding: each scenario ID in `openspec/scenarios.json` is the exact name of the subtest that covers it (`t.Run("flow.plain-invoke", …)`). `task spec:coverage` reports IDs with no matching subtest and subtests named like IDs that are not in the registry. It reads concatenated `go test -json` streams from all three modules (root, `adapter/otel`, `examples`). `task spec:gate` gates the same matching at milestone `M0.5` by default (`GATE=` overrides). No comments or tags carry IDs.
 - `t.Parallel()` and `t.Cleanup()` throughout; `synctest` for harness-time tests (budgets, timeouts, heartbeats) and `memory.WithNow` or short TTLs against testcontainers for store-time tests (`stores` *Two clocks*); goroutine-leak profile in conformance; hand-written fakes in `gohantest`, no mock generators.
 
 
@@ -50,6 +50,6 @@ func Schemas(t *testing.T, s gohan.Stores)
 func Bloat(t *testing.T, s gohan.Stores)
 ```
 
-Every suite runs the scenarios listed against its capability in `openspec/scenarios.json`, using subtest names equal to the IDs, so `task spec:coverage` counts adapters' conformance runs.
+Every suite runs the scenarios listed against its capability in `openspec/scenarios.json`, using subtest names equal to the IDs, so `task spec:gate` counts adapters' conformance runs in the `adapter/otel` stream.
 
 Performance gates are specified in `openspec/specs/performance/spec.md`.
