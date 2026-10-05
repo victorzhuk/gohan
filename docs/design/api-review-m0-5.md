@@ -35,9 +35,9 @@ Run on 2026-10-05 against the working tree (no tags exist yet, so `api:check` ha
 
   `git tag --list` was empty when this ran; there was no tag and no incompatibility to gate at that moment.
 
-### After the review
+### Adapter standalone release
 
-The first release was cut from this same tree on 2026-10-05: `v0.1.0` for the root module and `adapter/otel/v0.1.0` for the adapter module (`CHANGELOG.md`). The two `api:check` lines above are the pre-tag run and stay as the evidence they are; from that cut onward `api:check` compares a module against its last tag instead of skipping it, so the next change to either module's exported surface is gated rather than unmeasured.
+The adapter manifest must require a published root module version and must not use a local `replace` directive for standalone installation. The v0.1.0 adapter manifest still uses a local replace. This repair changes the manifest to require root v0.1.0 and ships in a later adapter patch release. No publishing occurred in this review.
 
 ## What is under review
 
