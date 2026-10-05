@@ -181,3 +181,30 @@ func TestStablePrefix(t *testing.T) {
 		}
 	})
 }
+
+func TestAssembleFilterPerCall(t *testing.T) {
+	filterFor := func(keep string) ToolFilter {
+		return func(specs []types.ToolSpec, _ int) []types.ToolSpec {
+			var out []types.ToolSpec
+			for _, s := range specs {
+				if s.Name == keep {
+					out = append(out, s)
+				}
+			}
+			return out
+		}
+	}
+	in := baseInput()
+	in.Tools = []types.ToolSpec{{Name: "alpha"}, {Name: "beta"}, {Name: "gamma"}}
+	in.Providers = map[types.ContextSlot][]types.ContextProvider{
+		types.SlotStatic: {fixedProvider{slot: types.SlotStatic, blocks: []types.Block{types.Text{Text: "skills"}}}},
+	}
+
+	for _, keep := range []string{"gamma", "alpha", "beta"} {
+		in.Filter = filterFor(keep)
+		req := assemble(t, in)
+		if len(req.Tools) != 1 || req.Tools[0].Name != keep {
+			t.Fatalf("filter keeping %q: tools = %s", keep, namesJSON(t, req.Tools))
+		}
+	}
+}

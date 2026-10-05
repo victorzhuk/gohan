@@ -22,14 +22,16 @@ type AssembleInput = types.AssembleInput
 // sorted by name.
 type StablePrefix struct{}
 
-// The prefix memo holds the last assembled request. The assembly contract
-// makes the prefix bytes a pure function of the input, and the input is
-// immutable for the life of a run, so the memo keys on the input's identity:
-// slice backing pointers and lengths, the provider map and filter identities,
-// and the scalar and string values the providers observe. Inputs that are
-// equal but freshly allocated simply rebuild; only identical inputs hit. A
-// hit returns the cached request, so callers must treat the returned slices
-// as read-only.
+// The prefix memo holds the last assembled request for a filter-free input.
+// The key captures the input's identity: slice backing pointers and lengths,
+// the provider map identity, and the scalar and string values the providers
+// observe. Inputs that are equal but freshly allocated simply rebuild; only
+// identical inputs hit. A hit therefore requires the caller's slices and the
+// provider map to be unchanged since the miss, so a caller must treat the
+// assembled request and its inputs as read-only for the run's life. A
+// non-nil filter never consults or updates the memo: a Go func value exposes
+// no identity (reflect's Pointer and UnsafePointer both return the code
+// pointer for kind Func), so no filter key can be sound.
 var (
 	prefixMu   sync.Mutex
 	prefixLast prefixKey
@@ -43,7 +45,6 @@ type sliceID struct {
 }
 
 type prefixKey struct {
-	filter    uintptr
 	providers uintptr
 	tools     sliceID
 	system    sliceID
@@ -72,7 +73,6 @@ type prefixKey struct {
 func prefixID(in AssembleInput) prefixKey {
 	ri := in.Run
 	return prefixKey{
-		filter:    reflect.ValueOf(in.Filter).Pointer(),
 		providers: reflect.ValueOf(in.Providers).Pointer(),
 		tools:     sliceID{unsafe.Pointer(unsafe.SliceData(in.Tools)), len(in.Tools)},
 		system:    sliceID{unsafe.Pointer(unsafe.SliceData(in.System)), len(in.System)},
@@ -121,9 +121,21 @@ func storePrefix(in AssembleInput, req types.ModelRequest) {
 // tool specs sorted by name, static providers, a CacheBreak, session
 // providers, a second CacheBreak, history, turn providers, new input.
 func (StablePrefix) Assemble(ctx context.Context, in AssembleInput) (types.ModelRequest, error) {
-	if req, ok := cachedPrefix(in); ok {
+	if in.Filter == nil {
+		if req, ok := cachedPrefix(in); ok {
+			return req, nil
+		}
+		req, err := build(ctx, in)
+		if err != nil {
+			return types.ModelRequest{}, err
+		}
+		storePrefix(in, req)
 		return req, nil
 	}
+	return build(ctx, in)
+}
+
+func build(ctx context.Context, in AssembleInput) (types.ModelRequest, error) {
 	tools, err := NarrowTools(in.Tools, in.Filter, in.Run.Turn)
 	if err != nil {
 		return types.ModelRequest{}, fmt.Errorf("narrow tools: %w", err)
@@ -156,9 +168,7 @@ func (StablePrefix) Assemble(ctx context.Context, in AssembleInput) (types.Model
 	}
 	messages = append(messages, in.Input...)
 
-	req := types.ModelRequest{System: system, Tools: sorted, Messages: messages}
-	storePrefix(in, req)
-	return req, nil
+	return types.ModelRequest{System: system, Tools: sorted, Messages: messages}, nil
 }
 
 func appendSlot(ctx context.Context, system []types.Block, in AssembleInput, slot types.ContextSlot, ri types.RunInfo) ([]types.Block, error) {
