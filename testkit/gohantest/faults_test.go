@@ -33,3 +33,31 @@ func TestLeakCheckInBubble(t *testing.T) {
 		})
 	})
 }
+func TestLeakCheckUsesGoroutineIdentity(t *testing.T) {
+	baselineStarted := make(chan struct{})
+	baselineDone := make(chan struct{})
+	go func() {
+		close(baselineStarted)
+		<-baselineDone
+	}()
+	<-baselineStarted
+
+	leakStarted := make(chan struct{})
+	leakRelease := make(chan struct{})
+	leakDone := make(chan struct{})
+	checked := &leakStub{}
+	LeakCheck(checked, func() {
+		go func() {
+			defer close(leakDone)
+			close(leakStarted)
+			<-leakRelease
+		}()
+		<-leakStarted
+		close(baselineDone)
+	})
+	close(leakRelease)
+	<-leakDone
+	if !checked.Failed() {
+		t.Fatal("leak check passed when a baseline goroutine exited and a new goroutine remained")
+	}
+}

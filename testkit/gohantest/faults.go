@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"iter"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/victorzhuk/gohan/core/types"
@@ -132,21 +134,93 @@ type leakReporter interface {
 
 // leakSpins bounds how long LeakCheck waits for goroutines to drain. The
 // wait is a Gosched spin rather than a timer, so the profile is safe under
-// testing/synctest: a leaked goroutine surfaces as a failed check, never as
-// a bubble deadlock.
-const leakSpins = 200000
+// testing/synctest.
+const (
+	leakSpins          = 200000
+	maxGoroutineStacks = 16 << 20
+)
 
-// LeakCheck runs fn and fails the test if a goroutine still exists when fn
+type goroutineStack struct {
+	id   string
+	head string
+}
+
+func goroutineSnapshot() (map[string]goroutineStack, error) {
+	size := 64 << 10
+	for {
+		buf := make([]byte, size)
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			stacks := make(map[string]goroutineStack)
+			var id, head string
+			for _, line := range strings.Split(string(buf[:n]), "\n") {
+				if strings.HasPrefix(line, "goroutine ") {
+					if id != "" {
+						stacks[id] = goroutineStack{id: id, head: head}
+					}
+					fields := strings.Fields(line)
+					id, head = "", ""
+					if len(fields) > 1 {
+						id = fields[1]
+					}
+					continue
+				}
+				if id != "" && head == "" && strings.HasPrefix(line, "\t") {
+					head = strings.TrimSpace(line)
+				}
+			}
+			if id != "" {
+				stacks[id] = goroutineStack{id: id, head: head}
+			}
+			return stacks, nil
+		}
+		if size >= maxGoroutineStacks {
+			return nil, fmt.Errorf("goroutine snapshot exceeds %d bytes", maxGoroutineStacks)
+		}
+		size *= 2
+		if size > maxGoroutineStacks {
+			size = maxGoroutineStacks
+		}
+	}
+}
+
+// LeakCheck runs fn and fails the test if a new goroutine remains when fn
 // returns. It runs on the caller's goroutine and spawns none of its own.
 func LeakCheck(tb leakReporter, fn func()) {
 	tb.Helper()
-	before := runtime.NumGoroutine()
+	before, err := goroutineSnapshot()
+	if err != nil {
+		tb.Errorf("gohantest: cannot capture goroutines before checked function: %v", err)
+		return
+	}
 	fn()
+	var after map[string]goroutineStack
 	for range leakSpins {
-		if runtime.NumGoroutine() <= before {
+		after, err = goroutineSnapshot()
+		if err != nil {
+			tb.Errorf("gohantest: cannot capture goroutines after checked function: %v", err)
+			return
+		}
+		hasNew := false
+		for id := range after {
+			if _, existed := before[id]; !existed {
+				hasNew = true
+				break
+			}
+		}
+		if !hasNew {
 			return
 		}
 		runtime.Gosched()
 	}
-	tb.Errorf("gohantest: %d goroutine(s) outlived the checked function", runtime.NumGoroutine()-before)
+	residual := make([]string, 0)
+	for id, stack := range after {
+		if _, existed := before[id]; !existed {
+			head := stack.head
+			if parsed, parseErr := strconv.ParseUint(id, 10, 64); parseErr == nil {
+				residual = append(residual, fmt.Sprintf("goroutine %d: %s", parsed, head))
+			}
+		}
+	}
+	tb.Errorf("gohantest: goroutine(s) outlived the checked function: %s", strings.Join(residual, "; "))
 }

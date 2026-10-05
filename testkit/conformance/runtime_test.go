@@ -181,10 +181,19 @@ func (h *nativeHarness) Observed() Observations {
 }
 
 // leakingHarness spawns a goroutine that outlives its run until released.
-type leakingHarness struct{ release chan struct{} }
+type leakingHarness struct {
+	release chan struct{}
+	started chan struct{}
+	done    chan struct{}
+}
 
 func (h *leakingHarness) Run(context.Context, []types.Message) ([]types.Event, error) {
-	go func() { <-h.release }()
+	go func() {
+		defer close(h.done)
+		close(h.started)
+		<-h.release
+	}()
+	<-h.started
 	return nil, nil
 }
 
@@ -228,12 +237,19 @@ func TestRuntimeAndChainConformance(t *testing.T) {
 
 	t.Run("leak check fails a leaking run", func(t *testing.T) {
 		release := make(chan struct{})
-		defer close(release)
+		started := make(chan struct{})
+		done := make(chan struct{})
 		capture := &captureTB{}
-		runRuntimeLeakCheck(capture, func(Scenario) Harness { return &leakingHarness{release: release} })
+		runRuntimeLeakCheck(capture, func(Scenario) Harness {
+			return &leakingHarness{release: release, started: started, done: done}
+		})
 		if !capture.Failed() {
+			close(release)
+			<-done
 			t.Fatal("leak check passed a leaking run")
 		}
+		close(release)
+		<-done
 	})
 
 	t.Run("cancelled run stops", func(t *testing.T) {
