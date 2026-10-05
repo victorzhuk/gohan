@@ -87,6 +87,23 @@ tasks:
     cmds:
       - go test -timeout 10m -run '^$' -bench . -benchtime=1x ./...
 
+  tools:test:
+    desc: Run the Python gate tools' own tests
+    cmds:
+      - |
+        set -euo pipefail
+        timeout 2m python3 -B -m unittest discover -s tools -p '*_test.py'
+
+  examples:run:
+    desc: Run each shipped example main offline
+    cmds:
+      - |
+        set -euo pipefail
+        for dir in quickstart excursions kafka-refunds temporal-travel camunda-invoice; do
+          echo "examples:run: $dir"
+          timeout 2m go -C examples run ./"$dir"
+        done
+
   bench:gate:
     desc: Run the base/head performance regression gate (BASE/HEAD overrides)
     cmds:

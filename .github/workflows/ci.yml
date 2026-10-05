@@ -26,6 +26,7 @@ jobs:
       - run: task spec
       - name: drift check
         run: git diff --exit-code docs/design/types.md
+      - run: task tools:test
 
   lint:
     runs-on: ubuntu-latest
@@ -52,6 +53,7 @@ jobs:
           version: 3.54.0
       - run: task test:race
       - run: go -C examples test -timeout 2m -short ./quickstart/ -run TestQuickstartOffline -v
+      - run: task examples:run
 
   security:
     runs-on: ubuntu-latest
@@ -81,6 +83,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
@@ -88,3 +92,6 @@ jobs:
         with:
           version: 3.54.0
       - run: task bench
+      - name: performance regression gate
+        timeout-minutes: 15
+        run: task bench:gate BASE=${{ github.event.pull_request.base.sha }} HEAD=${{ github.event.pull_request.head.sha }}
