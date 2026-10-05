@@ -843,36 +843,36 @@ Scope: the 21 M0 capabilities named in `proposal.md`. Order follows dependency a
   - verify: `go -C adapter/otel test -short -timeout 2m ./... -run 'TestOTelExporter' && task test`
   - note: The repo rule puts any third-party dependency in `adapter/<name>/` as its own module, and `adapter/` does not exist while `go.work` lists only `use .`. This chunk establishes both: module `github.com/victorzhuk/gohan/adapter/otel` requiring `go.opentelemetry.io/otel` (plus the SDK and exporters its test needs), implementing `types.Telemetry` over a tracer, a counter and a histogram. `./...` from the root module does not reach another module, so the workspace entry and the `task test`/CI leg are part of this chunk - a module nothing runs is not wired. It is also what makes the spec's span names provable against a real tracer, so its test asserts the span tree and the canonical keys round-trip.
 
-29. [ ] `testkit/gohantest`: `ScriptedModel` (itself passing `conformance.Model`), `Recorder`/`Replayer` (`Strict`, `ByTurn`, `Rerecord`), fakes, fault injection, leak profile; `conformance` suites for runtime, chain, flow, model with the provider fixture set. — `telemetry.replay-strictness`, `runtime.foreign-tool-under-native`
+29. [x] `testkit/gohantest`: `ScriptedModel` (itself passing `conformance.Model`), `Recorder`/`Replayer` (`Strict`, `ByTurn`, `Rerecord`), fakes, fault injection, leak profile; `conformance` suites for runtime, chain, flow, model with the provider fixture set. — `telemetry.replay-strictness`, `runtime.foreign-tool-under-native`
 
-- [ ] 29.1 `testkit/gohantest`: Implement illustrative `ScriptedModel` canned turns, request assertions, usage and timed deltas; pass `conformance.Model` with the provider fixture set.
+- [x] 29.1 `testkit/gohantest`: Implement illustrative `ScriptedModel` canned turns, request assertions, usage and timed deltas; pass `conformance.Model` with the provider fixture set.
   - files: `testkit/gohantest/scripted_model.go`, `testkit/gohantest/scripted_model_test.go`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./testkit/gohantest/ -run 'TestScriptedModel'`
 
-- [ ] 29.2 `testkit/gohantest`: Fix cassette behaviour to `testing.md`, not illustrative `Recorder`/`Replayer`/`Rerecord` names: assembled-request hash plus profile `Version` key, JSON `version`/`calls`/`key`/`chunks`/`at_ms`/`chunk`/`usage`, timed replay, `Strict`/`ByTurn`/`Rerecord`, and `GOHAN_CASSETTES` selection.
+- [x] 29.2 `testkit/gohantest`: Fix cassette behaviour to `testing.md`, not illustrative `Recorder`/`Replayer`/`Rerecord` names: assembled-request hash plus profile `Version` key, JSON `version`/`calls`/`key`/`chunks`/`at_ms`/`chunk`/`usage`, timed replay, `Strict`/`ByTurn`/`Rerecord`, and `GOHAN_CASSETTES` selection.
   - files: `testkit/gohantest/cassette.go`, `testkit/gohantest/cassette_test.go`
   - scenarios: `telemetry.replay-strictness`
   - verify: `go test -short -timeout 2m ./testkit/gohantest/ -run 'TestCassetteModes'`
   - note: Both testkit packages are declared in the docs and absent from the tree (`testkit/gohantest` at `docs/design/testing.md:14`, `testkit/conformance` at `openspec/changes/m0-core/design.md:31`); only `testkit/storetest` exists (nine suite files). `conformance.Model` is spec-only today (`openspec/specs/model/spec.md:277`), so the requirement is implemented, not consumed. Three scripted fakes are already hand-rolled in the repo (`core/build_test.go:201`, `core/model_stream_test.go:22`, `std/route/route_test.go:14`): the shared testkit does not force their migration - they stay as local doubles, and this row adds the shared ones beside them.
 
-- [ ] 29.3 `testkit/gohantest`: Implement hand-written fakes, fault injection and the goroutine-leak profile used by conformance suites.
+- [x] 29.3 `testkit/gohantest`: Implement hand-written fakes, fault injection and the goroutine-leak profile used by conformance suites.
   - files: `testkit/gohantest/fakes.go`, `testkit/gohantest/fakes_test.go`, `testkit/gohantest/faults.go`, `testkit/gohantest/faults_test.go`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./testkit/gohantest/ -run 'TestFakesAndFaults'`
 
-- [ ] 29.4 `testkit/conformance`: Implement `Model` conformance and the provider fixture set for error classes, usage, version, fidelity, streaming, cancellation and `Raw` round-trip.
+- [x] 29.4 `testkit/conformance`: Implement `Model` conformance and the provider fixture set for error classes, usage, version, fidelity, streaming, cancellation and `Raw` round-trip.
   - files: `testkit/conformance/model.go`, `testkit/conformance/model_test.go`, `testkit/conformance/fixtures.go`, `testkit/conformance/fixtures_test.go`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./testkit/conformance/ -run 'TestModelConformance'`
   - note: This package is `testkit/conformance` in the root module - it has no third-party dependency, so it is not a module of its own. It compiles against the testkit the 29.1-29.3 chunks land in this rung, which is why it sits in the second wave.
 
-- [ ] 29.5 `testkit/conformance`: Implement `Runtime` and `Chain` suites with leak checks and the imported eino `InvokableTool` fixture under native through the full governed tool chain.
+- [x] 29.5 `testkit/conformance`: Implement `Runtime` and `Chain` suites with leak checks and the imported eino `InvokableTool` fixture under native through the full governed tool chain.
   - files: `testkit/conformance/runtime.go`, `testkit/conformance/runtime_test.go`, `testkit/conformance/chain.go`, `testkit/conformance/chain_test.go`
   - scenarios: `runtime.foreign-tool-under-native`
   - verify: `go test -short -timeout 2m ./testkit/conformance/ -run 'TestRuntimeAndChainConformance'`
 
-- [ ] 29.6 `testkit/conformance`: Implement `Flow` conformance for invocation and suspension with memory stores, scripted models and leak checks. **GATE**
+- [x] 29.6 `testkit/conformance`: Implement `Flow` conformance for invocation and suspension with memory stores, scripted models and leak checks. **GATE**
   - files: `testkit/conformance/flow.go`, `testkit/conformance/flow_test.go`
   - scenarios: none
   - verify: `go test -short -timeout 2m ./testkit/conformance/ -run 'TestFlowConformance' && task spec:coverage`
