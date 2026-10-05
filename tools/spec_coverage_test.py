@@ -25,6 +25,11 @@ def ev(action, test=None):
     return e
 
 
+def ran(test):
+    """A subtest that ran and completed successfully."""
+    return [ev("run", test), ev("pass", test)]
+
+
 def ndjson(events):
     return "".join(json.dumps(e) + "\n" for e in events)
 
@@ -48,15 +53,15 @@ class CoverageTest(unittest.TestCase):
         return run_script(self.registry, args, ndjson(events))
 
     def test_nested_subtest_resolves_scenario(self):
-        out = self.stream([ev("run", "TestFlow/flow.plain-invoke")], [])
+        out = self.stream(ran("TestFlow/flow.plain-invoke"), [])
         self.assertEqual(out.returncode, 0)
         self.assertIn("covered=1", out.stdout)
 
     def test_multiple_module_streams_aggregate(self):
         out = self.stream(
-            [ev("run", "TestFlow/flow.plain-invoke")]
-            + [ev("run", "TestAdapter/flow.backend-swap")]
-            + [ev("run", "TestExample/flow.plain-invoke")],
+            ran("TestFlow/flow.plain-invoke")
+            + ran("TestAdapter/flow.backend-swap")
+            + ran("TestExample/flow.plain-invoke"),
             ["--gate", "M0.5"],
         )
         self.assertEqual(out.returncode, 0)
@@ -84,20 +89,45 @@ class CoverageTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 7)
 
     def test_unregistered_id_shaped_name_fails(self):
-        out = self.stream([ev("run", "TestFlow/flow.bogus-id")], [])
+        out = self.stream(ran("TestFlow/flow.bogus-id"), [])
         self.assertEqual(out.returncode, 1)
         self.assertIn("unregistered", out.stdout)
 
     def test_non_id_shaped_subtest_ignored(self):
-        out = self.stream([ev("run", "TestFlow/subtest_case")], [])
+        out = self.stream(ran("TestFlow/subtest_case"), [])
         self.assertEqual(out.returncode, 0)
         self.assertIn("subtests=1", out.stdout)
+        self.assertNotIn("unregistered  ", out.stdout)
+
+    def test_skipped_subtest_does_not_cover(self):
+        out = self.stream(
+            [ev("run", "TestFlow/flow.plain-invoke"), ev("skip", "TestFlow/flow.plain-invoke")], []
+        )
+        self.assertEqual(out.returncode, 0)
+        self.assertIn("covered=0", out.stdout)
+        self.assertIn("missing=3", out.stdout)
+
+    def test_failed_subtest_does_not_cover(self):
+        out = self.stream(
+            [ev("run", "TestFlow/flow.plain-invoke"), ev("fail", "TestFlow/flow.plain-invoke")], []
+        )
+        self.assertEqual(out.returncode, 0)
+        self.assertIn("covered=0", out.stdout)
+
+    def test_run_without_terminal_event_does_not_cover(self):
+        out = self.stream([ev("run", "TestFlow/flow.plain-invoke")], [])
+        self.assertEqual(out.returncode, 0)
+        self.assertIn("covered=0", out.stdout)
+
+    def test_failed_subtest_not_reported_unregistered(self):
+        out = self.stream([ev("run", "TestFlow/flow.bogus-id"), ev("fail", "TestFlow/flow.bogus-id")], [])
+        self.assertEqual(out.returncode, 0)
         self.assertNotIn("unregistered  ", out.stdout)
 
     def test_gate_m0_fails_when_uncovered_then_passes(self):
         out = self.stream([], ["--gate", "M0"])
         self.assertEqual(out.returncode, 1)
-        out = self.stream([ev("run", "TestFlow/flow.plain-invoke")], ["--gate", "M0"])
+        out = self.stream(ran("TestFlow/flow.plain-invoke"), ["--gate", "M0"])
         self.assertEqual(out.returncode, 0)
 
     def test_deferred_scenario_does_not_block_earlier_gate(self):
@@ -134,7 +164,7 @@ class CoverageTest(unittest.TestCase):
 
     def test_test_json_file_read(self):
         tf = Path(self.dir.name) / "test.json"
-        tf.write_text(ndjson([ev("run", "TestFlow/flow.plain-invoke")]))
+        tf.write_text(ndjson(ran("TestFlow/flow.plain-invoke")))
         out = run_script(self.registry, ["--test-json", str(tf)], "should not read stdin")
         self.assertEqual(out.returncode, 0)
         self.assertIn("covered=1", out.stdout)

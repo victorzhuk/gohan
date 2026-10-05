@@ -267,6 +267,9 @@ func signature(fn *ast.FuncDecl) string {
 	return b.String()
 }
 
+// Parameter names are not part of the source-compatible surface, so they are
+// dropped here; a rename must not report a break. Position is preserved by
+// emitting one entry per name, so arity and grouping still compare.
 func fieldList(fl *ast.FieldList) string {
 	if fl == nil || len(fl.List) == 0 {
 		return "()"
@@ -278,8 +281,8 @@ func fieldList(fl *ast.FieldList) string {
 			parts = append(parts, t)
 			continue
 		}
-		for _, n := range f.Names {
-			parts = append(parts, n.Name+" "+t)
+		for range f.Names {
+			parts = append(parts, t)
 		}
 	}
 	return "(" + strings.Join(parts, ", ") + ")"

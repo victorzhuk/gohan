@@ -397,15 +397,14 @@ func parseBench(out string) (benchResult, error) {
 		if s.ns, err = strconv.ParseFloat(m[2], 64); err != nil {
 			return nil, fmt.Errorf("parse %q: %w", m[0], err)
 		}
-		if m[3] != "" {
-			if s.bytes, err = strconv.ParseFloat(m[3], 64); err != nil {
-				return nil, fmt.Errorf("parse %q: %w", m[0], err)
-			}
+		if m[3] == "" || m[4] == "" {
+			return nil, fmt.Errorf("benchmark line %q: missing B/op or allocs/op measurement; gated lines must come from a -benchmem run", m[0])
 		}
-		if m[4] != "" {
-			if s.allocs, err = strconv.ParseFloat(m[4], 64); err != nil {
-				return nil, fmt.Errorf("parse %q: %w", m[0], err)
-			}
+		if s.bytes, err = strconv.ParseFloat(m[3], 64); err != nil {
+			return nil, fmt.Errorf("parse %q: %w", m[0], err)
+		}
+		if s.allocs, err = strconv.ParseFloat(m[4], 64); err != nil {
+			return nil, fmt.Errorf("parse %q: %w", m[0], err)
 		}
 		res[m[1]] = append(res[m[1]], s)
 	}

@@ -67,7 +67,7 @@ func TestDiffTrees(t *testing.T) {
 		{
 			name: "func signature changed",
 			head: write(base, "api.go", strings.Replace(base["api.go"], "func New(opts Options)", "func New(size int, opts Options)", 1)),
-			want: []string{"func New: changed from func(opts Options)(*Store, error) to func(size int, opts Options)(*Store, error)"},
+			want: []string{"func New: changed from func(Options)(*Store, error) to func(int, Options)(*Store, error)"},
 		},
 		{
 			name: "exported func removed",
@@ -77,7 +77,7 @@ func TestDiffTrees(t *testing.T) {
 		{
 			name: "method removed from interface",
 			head: write(base, "api.go", strings.Replace(base["api.go"], "\tGet(key string) (string, error)\n", "", 1)),
-			want: []string{"type Store: changed from interface{Get func(key string)(string, error)}"},
+			want: []string{"type Store: changed from interface{Get func(string)(string, error)}"},
 		},
 		{
 			name: "struct field type changed",
@@ -88,6 +88,24 @@ func TestDiffTrees(t *testing.T) {
 			name: "method receiver widened to pointer",
 			head: write(base, "api.go", strings.Replace(base["api.go"], "func (s *Store) Flush", "func (s Store) Flush", 1)),
 			want: []string{"method (*Store) Flush: removed"},
+		},
+		{
+			name: "parameter rename is compatible",
+			head: write(base, "api.go", strings.Replace(base["api.go"], "func New(opts Options)", "func New(_ Options)", 1)),
+		},
+		{
+			name: "method parameter rename is compatible",
+			head: write(base, "api.go", strings.Replace(base["api.go"], "Flush(n int)", "Flush(ctx int)", 1)),
+		},
+		{
+			name: "method signature still reported",
+			head: write(base, "api.go", strings.Replace(base["api.go"], "Flush(n int) error", "Flush(n int64) error", 1)),
+			want: []string{"method (*Store) Flush: changed from func(int)(error) to func(int64)(error)"},
+		},
+		{
+			name: "arity change still reported",
+			head: write(base, "api.go", strings.Replace(base["api.go"], "func New(opts Options)", "func New(opts Options, extra int)", 1)),
+			want: []string{"func New: changed from func(Options)(*Store, error) to func(Options, int)(*Store, error)"},
 		},
 		{
 			name: "package removed",

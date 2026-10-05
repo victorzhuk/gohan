@@ -62,12 +62,12 @@ func TestPerformanceGate(t *testing.T) {
 		cache := t.TempDir()
 		bl := writeFixtureBaselines(t, fixture, "gated-slow")
 
-		out, code := runGate(t, fixture, cache, "5x", false, bl)
+		out, code := runGate(t, fixture, cache, "1000x", false, bl)
 		if code != 0 || !strings.Contains(out, "verdict: PASS") {
 			t.Fatalf("advisory run must pass on an overbudget stable fixture\ncode=%d\n%s", code, out)
 		}
 
-		out, code = runGate(t, fixture, cache, "5x", true, bl)
+		out, code = runGate(t, fixture, cache, "1000x", true, bl)
 		if code != 1 {
 			t.Fatalf("strict run exit code = %d, want 1\n%s", code, out)
 		}

@@ -22,6 +22,10 @@ def load_registry(path):
 
 
 def parse_test_events(stream):
+    # A test counts only when its terminal event arrived: a "run" whose
+    # stream ends in "skip" or "fail", or that never terminates, must not
+    # register the scenario it is named after.
+    passed = []
     for line in stream:
         line = line.strip()
         if not line:
@@ -30,11 +34,12 @@ def parse_test_events(stream):
             event = json.loads(line)
         except json.JSONDecodeError as e:
             raise UsageError(f"malformed JSON in test stream: {e}")
-        if not isinstance(event, dict) or event.get("Action") != "run":
+        if not isinstance(event, dict) or event.get("Action") != "pass":
             continue
         test = event.get("Test")
         if isinstance(test, str):
-            yield test
+            passed.append(test)
+    yield from passed
 
 
 def discovered_subtests(tests):
