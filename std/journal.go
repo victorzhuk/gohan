@@ -107,7 +107,9 @@ func Journal(j stores.Journal, opts ...JournalOption) chains.ToolMiddleware {
 			}
 			entry, created, err := j.Reserve(ctx, key, fp)
 			if err != nil {
-				return next(ctx, call)
+				// A refused identity must not run the effect: the tool
+				// would execute under a call key the journal declined.
+				return types.ToolResult{}, fmt.Errorf("reserve %s: %w", call.Name, err)
 			}
 			if !created && entry.State == stores.Completed && entry.Result.Outcome != types.Unknown {
 				return entry.Result, nil
@@ -123,10 +125,12 @@ func Journal(j stores.Journal, opts ...JournalOption) chains.ToolMiddleware {
 				if spec.ReadBack != "" {
 					res = ReadBackResult(spec, cfg.prompts, res)
 				}
-				_ = j.Complete(ctx, key, res)
-				return res, nil
 			}
-			_ = j.Complete(ctx, key, res)
+			// The effect already ran, so a lost completion leaves
+			// uncertainty, not a failed call that invites a retry.
+			if err := j.Complete(ctx, key, res); err != nil {
+				res.Outcome = types.Unknown
+			}
 			return res, nil
 		}
 	}

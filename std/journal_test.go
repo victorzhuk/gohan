@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/json/jsontext"
+	"errors"
+	"reflect"
 	"testing"
 
 	gohan "github.com/victorzhuk/gohan/core"
@@ -40,6 +42,22 @@ func lookupOf(specs map[string]types.ToolSpec) SpecLookup {
 		s, ok := specs[name]
 		return s, ok
 	}
+}
+
+type failReserve struct{ stores.Journal }
+
+func newFailReserve() failReserve { return failReserve{stores.NewMemoryJournal()} }
+
+func (failReserve) Reserve(context.Context, types.CallKey, stores.Fingerprint) (stores.Entry, bool, error) {
+	return stores.Entry{}, false, stores.ErrJournalFingerprintMismatch
+}
+
+type failComplete struct{ stores.Journal }
+
+func newFailComplete() failComplete { return failComplete{stores.NewMemoryJournal()} }
+
+func (failComplete) Complete(context.Context, types.CallKey, types.ToolResult) error {
+	return errors.New("complete write failed")
 }
 
 func toolCall(name, id, args string) types.ToolUse {
@@ -142,6 +160,45 @@ func TestJournalIntent(t *testing.T) {
 		entries, _ := mem.ByFingerprint(ctx, "", fp)
 		if len(entries) != 1 || entries[0].Key != "c1" || entries[0].State != stores.Completed {
 			t.Fatalf("entry = %+v, want c1 Completed", entries)
+		}
+	})
+
+	t.Run("reserve fingerprint mismatch fails the call", func(t *testing.T) {
+		calls := 0
+		tool := chains.ToolFunc(func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+			calls++
+			return types.ToolResult{Outcome: types.Succeeded}, nil
+		})
+		step := Journal(newFailReserve(), WithJournalSpecs(lookupOf(bookingSpecs())))(tool)
+		res, err := step(context.Background(), toolCall("create_booking", "c1", `{"room":7}`))
+		if !errors.Is(err, stores.ErrJournalFingerprintMismatch) {
+			t.Fatalf("err = %v, want ErrJournalFingerprintMismatch", err)
+		}
+		if !reflect.DeepEqual(res, types.ToolResult{}) {
+			t.Fatalf("result = %+v, want zero result", res)
+		}
+		if calls != 0 {
+			t.Fatalf("tool calls = %d, want 0", calls)
+		}
+	})
+
+	t.Run("complete failure yields unknown outcome", func(t *testing.T) {
+		journal := newFailComplete()
+		calls := 0
+		tool := chains.ToolFunc(func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+			calls++
+			return types.ToolResult{Outcome: types.Succeeded}, nil
+		})
+		step := Journal(journal, WithJournalSpecs(lookupOf(bookingSpecs())))(tool)
+		res, err := step(context.Background(), toolCall("create_booking", "c1", `{"room":7}`))
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if res.Outcome != types.Unknown {
+			t.Fatalf("outcome = %v, want Unknown", res.Outcome)
+		}
+		if calls != 1 {
+			t.Fatalf("tool calls = %d, want 1", calls)
 		}
 	})
 
