@@ -4,6 +4,38 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ## [Unreleased]
 
+### Breaking
+
+- `stores.Lease` carries a `Generation` ownership token, and `Heartbeat`, `Finish`, `Suspend` and `Drain` refuse a stale generation with `ErrRunNotActive`: a driver that lost its lease can no longer mutate the run a reclaimer owns. Store implementations mint a new generation on `Start`, `Resuming` and `Reclaim`.
+- `stores.Checkpoint` carries `RunID`, and checkpoint data is a versioned envelope. A legacy raw state is still read for the non-approval suspensions that carry a persisted run identity; an approval suspension written by an older build is refused with `ErrCheckpointIncompatible`, because a raw state cannot prove the request it approved.
+- A checkpoints implementation that serves approvals must supply the optional `Peek`, `ConsumeIf`, `UpdatePending` and `ResumeReady` surfaces. A conversation configured for approvals refuses to run against a store without them instead of consuming a token unconditionally.
+- A conversation that accepts approvals must be built with an approval policy source (`WithConversationApprovalPolicy`, with `std/permission.PolicySource` as the default) and a tool-spec lookup (`WithConversationToolSpecs`). Without them an approval decision is refused rather than granted, and a suspension that cannot resolve the pending call's declaration fails closed instead of persisting an incomplete approval.
+- The `Message.Meta` key `gohan.approval` is reserved for the harness's approval receipt; a caller appending it is refused, and the previous approved arguments for a request are read from that receipt instead of from the journal.
+- A session-owner exception no longer bypasses the `RiskHigh` approval scope.
+
+### Fixed
+
+- `Resume` authorizes before it consumes: it checks the transport principal against the session owner, the approval policy and the request's eligibility, and leaves the token pending when it refuses. It no longer continues a run under the originator's identity without that check.
+- Resume, crash recovery and preempted recovery run one lifecycle: a resumed run takes a lease, starts a heartbeat, persists a new checkpoint when it suspends again, and reaches a terminal transition before the terminal event is delivered.
+- The lease heartbeat runs in production, so a long step or a blocked consumer no longer lets the lease expire, and a lost lease ends the run instead of finishing under it.
+- An event that cannot be recorded ends the stream with a single terminal error instead of being delivered first.
+- `Send` acquires the run lease before it appends the input, so a refused send leaves the history unchanged, and a duplicate operation reattaches to its recorded run.
+- Every call of a turn is gated before any call executes, and a suspending call no longer drops the calls decided after it.
+- `ModelStream` joins its provider and buffer helpers before the iterator returns, so an early consumer break releases provider resources synchronously.
+- The memory event log is a ring: a saturated append overwrites one slot instead of copying its capacity.
+- Session metadata reads require a principal of the owner's tenant, and a hold update applies only after its audit record is written.
+- Metric labels are enforced at emission as well as at registration: an unregistered metric is not exported, an unregistered label is dropped, and `session_id`, `run_id`, `subject` and `approver` never reach a sink; `WithTenantLabel()` admits `tenant`.
+- The governed seams emit the model, tool, guard and decider spans the contract requires, and count unknown tools and rejected arguments.
+- The performance gate requires every gated benchmark and its raw comparator, enforces the frozen absolute budgets on the reference runner, and caches a verdict by the full measurement identity, so an advisory pass can no longer satisfy a strict run.
+- The tool-chain benchmark no longer exhausts its own run budget.
+- The leak check compares goroutine identities, so an unrelated goroutine exiting cannot cancel a detected leak.
+- `adapter/otel` requires the published root version instead of a placeholder with a local replace directive.
+
+### Added
+
+- `AllowAnonymous()`, a build option for unowned function-flow invocation; it invents no tenant and grants no access to an owned session.
+- `task spec:gate` runs the scenario coverage gate over every module in the workspace, and `task spec` regenerates the type index before it.
+
 ## [0.1.0] - 2026-10-05
 
 ### Added
