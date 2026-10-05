@@ -34,21 +34,33 @@ type FaultPlan struct{ Every int; Class gohan.ErrorClass; AfterChunks int }
 func LeakCheck(t *testing.T)
 
 // conformance
-func Runtime(t *testing.T, newRuntime func() gohan.Runtime)               // runtime.* scenarios
-func Chain(t *testing.T, newStack func(chain gohan.ToolChain) *gohan.Stack) // chains.* ordering scenarios
-func Flow(t *testing.T, newFlow func() gohan.Flow[any, any])              // flow.*, suspension.* scenarios
-func Model(t *testing.T, newModel func() gohan.Model, fixtures Fixtures)  // model.status-to-class … model.raw-round-trip
+type Harness interface {
+	Run(ctx context.Context, input []types.Message) ([]types.Event, error)
+	Observed() Observations
+}
+type Scenario string     // ScenarioPlainAnswer, ScenarioForeignTool, …
+type Observations struct{ Steps, ToolCalls []string }
+type Fixtures []Fixture
+func DefaultFixtures() Fixtures
 
-// storetest
-func SessionLog(t *testing.T, new func() gohan.SessionLog)
-func Checkpoints(t *testing.T, new func() gohan.Checkpoints)
-func Journal(t *testing.T, new func() gohan.Journal)
-func Runs(t *testing.T, new func() gohan.Runs)
-func AuditLog(t *testing.T, new func() gohan.AuditLog)
-func EventLog(t *testing.T, new func() gohan.EventLog)
-func Schemas(t *testing.T, s gohan.Stores)
-func Bloat(t *testing.T, s gohan.Stores)
+func Runtime(t *testing.T, newHarness func(Scenario) Harness)                // runtime.* scenarios
+func Chain(t *testing.T, newHarness func(Scenario) Harness)                  // chains.* ordering scenarios
+func Flow(t *testing.T)                                                     // flow.*, suspension.* scenarios
+func Model(t *testing.T, newModel func(Fixture) types.Model, fixtures Fixtures) // model.status-to-class … model.raw-round-trip
+
+// storetest — each suite takes a factory, not a store, so a fresh instance
+// per subtest is the suite's own business
+func SessionLog(t *testing.T, factory SessionLogFactory)
+func Checkpoints(t *testing.T, factory CheckpointsFactory)
+func CheckpointsResumer(t *testing.T, factory CheckpointResumerFactory)
+func Journal(t *testing.T, newJournal JournalFactory)
+func Runs(t *testing.T, newRuns RunFactory) // RunFactory returns (RunStore, RunClock)
+func AuditLog(t *testing.T, newLog AuditFactory)
+func EventLog(t *testing.T, newLog EventLogFactory)
+func Schemas(t *testing.T, factory SchemasFactory)
 ```
+
+`storetest.Bloat` (1 M reserve/complete cycles under autovacuum, p99 `Reserve` latency and dead-tuple bounds) is **not shipped**: it is an M3 deliverable that lands with the Postgres partitioning work (`docs/design/adapters.md`; `docs/overview.md` M3 row).
 
 Every suite runs the scenarios listed against its capability in `openspec/scenarios.json`, using subtest names equal to the IDs, so `task spec:gate` counts adapters' conformance runs in the `adapter/otel` stream.
 

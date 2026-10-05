@@ -1038,4 +1038,4 @@ The rows above keep their reviewed scope; these are the places the review correc
 
 ## Deferred
 
-Ownership is per scenario in `openspec/scenarios.json` (`deferred_to`), set where a milestone deliberately leaves a scenario red (ADR-0135). Tally at M0: 280 of 512 scenarios are in the chunks above; the other 232 name a later milestone (M0.5 9, M1 86, M2 36, M3 56, M4 45). No scenario of an M0 capability is left unassigned.
+Ownership is per scenario in `openspec/scenarios.json` (`deferred_to`), set where a milestone deliberately leaves a scenario red (ADR-0135). Tally at M0: 283 of 513 scenarios are in the chunks above; the other 230 name a later milestone (M0.5 9, M1 85, M2 36, M3 55, M4 45). No scenario of an M0 capability is left unassigned.

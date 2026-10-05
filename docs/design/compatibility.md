@@ -33,7 +33,7 @@ Before `v1` a port may still change, but every growth is expressed as an optiona
 ## Gate
 
 - `task api:check` runs `apidiff` for every module against its last tag and diffs `api/gohan.yaml` against the generated `adapter/httpapi` server; the document is versioned with the root module. CI fails on an incompatible change in any module at `v1` or later and only reports for `v0` modules.
-- `task spec:types` records the kind of every interface; after the freeze tag it fails when a port's method set changes.
+- `task spec:types` records the kind of every interface; after the freeze tag it fails when a port's method set changes (not yet implemented — the generator reads the capability specs, not the shipped packages; the gap is recorded under *v1-candidate* below).
 
 ## v1-candidate (M0.5)
 
@@ -43,3 +43,4 @@ Core types and ports are declared **v1-candidate** in `docs/design/api-review-m0
 - The root module is **not** tagged `v1.0.0` here. It stays `v0.x` until M2's exit criteria pass; until then breaking changes remain possible and are listed under *Breaking* in `CHANGELOG.md`.
 - Illustrative-tier types may still change before the freeze; v1-candidate covers the normative tier's shape and the process.
 - One gate clause is not yet exercisable: the `api/gohan.yaml` diff against the generated `adapter/httpapi` server. Neither artifact exists in M0 (both are M4, with `adapter/httpapi` per `docs/design/architecture.md` §5); `task api:check` currently implements only the apidiff-per-module half. The gap is recorded in `docs/design/api-review-m0-5.md` and is open work for M4, not a silent omission.
+- The `spec:types` port-method-set clause is unimplemented for the same reason stated plainly: the generator reads `openspec/specs/*/spec.md`, so it records declared intent and observes neither shipped method sets nor a change to one. No gate would fail today if a frozen port grew or lost a method.

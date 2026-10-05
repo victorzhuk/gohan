@@ -47,7 +47,7 @@ The design target is evolution without rewrites: a service starts as a small, cl
 | Path | Holds |
 |---|---|
 | `openspec/specs/<capability>/spec.md` | Normative contract and requirements per capability (below) |
-| `docs/adr/` | 134 architecture decision records (D1–D89 from the monolith, 0090+ from later grill rounds) |
+| `docs/adr/` | 146 architecture decision records, numbered 0001–0146 (D1–D89 from the monolith, 0090+ from later grill rounds) |
 | `docs/design/types.md` | generated index of every normative type, function and sentinel error with its defining capability |
 | `docs/design/` | Architecture, module layout, Go baseline, compatibility policy (normative), adapter mappings, inference layer, reference scenarios, testing, evidence, risks |
 | `openspec/changes/` | Change proposals with task lists and design notes; `m0-core` is fully tasked, `m1`–`m4` are scope stubs |

@@ -4,7 +4,7 @@ Status: published 2026-10-05, after the three offline acceptance processes passe
 
 ## Gate evidence
 
-Run on 2026-10-05 against the working tree (no tags exist yet, so `api:check` has no baseline):
+Run on 2026-10-05 against the working tree. The `api:check` evidence below is the **re-run** against the tags the `v0.1.0` cut left behind (`v0.1.0` for the root module, `adapter/otel/v0.1.0` for the adapter); the first run of the day, before those tags existed, skipped both modules and is recorded at the end of this section.
 
 - `task examples:test` — all five example modules pass, including the three offline acceptance processes of ADR-0083/ADR-0136:
 
@@ -26,14 +26,34 @@ Run on 2026-10-05 against the working tree (no tags exist yet, so `api:check` ha
   {'type': 258, 'func': 72, 'const': 196, 'error': 32} dups: {} undefined: [] uncatalogued: [] missing-rows: [] empty-source: [] undeclared-source: [] collisions: [] unmapped-capabilities: []
   ```
 
-- `task api:check` — exit 0:
+- `task api:check` — exit 1, five incompatible changes against `v0.1.0`:
+
+  ```
+  api:check: github.com/victorzhuk/gohan: diffing HEAD against v0.1.0
+  api:check: github.com/victorzhuk/gohan: incompatible change(s) against v0.1.0:
+    core: func FlowFunc: changed from func(any, any)(string, func(context.Context, In) (Out, error))(Flow[In, Out]) to func(any, any)(string, func(context.Context, In) (Out, error), ...FlowOption)(Flow[In, Out])
+    core/runtime: type Batch: changed from struct{Calls []types.ToolUse;Exec BatchExec;Gate BatchGate;Limits types.RunLimits;Used int} to struct{Calls []types.ToolUse;Exec BatchExec;Gate BatchGate;Limits types.RunLimits;Scheduler SchedulerConfig;Used int}
+    core/stores: type Checkpoint: changed from struct{Backend string;BackendVersion string;Child types.ResumeToken;Data []byte;ExpiresAt time.Time;Flow string;Originator types.Principal;Reason types.SuspendReason;SchemaVersion SchemaVersion;SessionID string;Workspace WorkspaceRef} to struct{Backend string;BackendVersion string;Child types.ResumeToken;Data []byte;ExpiresAt time.Time;Flow string;Originator types.Principal;Reason types.SuspendReason;RunID string;SchemaVersion SchemaVersion;SessionID string;Workspace WorkspaceRef}
+    core/stores: type Lease: changed from struct{Expires time.Time;RunID string} to struct{Expires time.Time;Generation uint64;RunID string}
+    testkit/storetest: type Lease: changed from struct{RunID string} to struct{Generation uint64;RunID string}
+  apicheck: github.com/victorzhuk/gohan: 5 incompatible change(s) against v0.1.0
+  ```
+
+  Reading the five:
+
+  - `FlowFunc` gained variadic `FlowOption` parameters (`gohan.AllowAnonymousFlow`).
+  - `runtime.Batch` gained a `Scheduler` field.
+  - `stores.Checkpoint` gained `RunID`.
+  - `stores.Lease` and `storetest.Lease` gained `Generation` (the one-winner lease fence).
+
+  All five are genuine, source-visible changes made after the `v0.1.0` cut while the module is still `v0.x`; the gate is doing its job, not reporting noise. Whether to accept them (retag, list them as `v0.x` breaks in `CHANGELOG.md`, or re-cut the baseline) is an **open owner decision**, not something this review settles. One false positive was fixed before this re-run: `tools/apicheck` compared parameter *names*, so a pure rename was reported as a break. Parameter names are now dropped from the compared shape while arity and grouping still compare (`tools/apicheck/main.go`, `fieldList`; covered by the "parameter rename is compatible" and "method parameter rename is compatible" cases in `tools/apicheck/main_test.go`).
+
+- Earlier run of the same day, before the `v0.1.0` cut produced its tags — the check had no baseline to diff against and skipped both modules (exit 0, no comparison made):
 
   ```
   api:check: github.com/victorzhuk/gohan: no tag yet, skipped (no baseline to diff against)
   api:check: github.com/victorzhuk/gohan/adapter/otel: no tag yet, skipped (no baseline to diff against)
   ```
-
-  `git tag --list` was empty when this ran; there was no tag and no incompatibility to gate at that moment.
 
 ### Adapter standalone release
 
@@ -76,6 +96,7 @@ Core ports by package (verified by `grep -rn '^type [A-Z][A-Za-z]* interface' co
 - No `v1.0.0` tag is released. The root module is tagged `v1.0.0` only when M2's exit criteria pass; core and `std` version together, adapters get their own `v1` when their conformance suites pass against core `v1` (`docs/design/compatibility.md`, "Versions and timeline").
 - The method sets of illustrative-tier types (e.g. `Runtime`, `Stepper`, `Option`, `Stores` — see the Tier column in `docs/design/types.md`) may still change before the freeze; v1-candidate covers the normative tier's shape and the process, not a promise that no `v0` break remains.
 - Handle growth (`Conversation`, `Flow`) in a minor release is compatible and expected.
+- The three offline acceptance processes cover the store ports and their own scripted runtimes; they do not drive `Build`, a governed native agent, or a `std` chain, so they do not exercise the frozen driver API. The driver path they would cover is the subject of `openspec/changes/m0-hardening/` chunks 5–8, and this review does not claim it.
 
 **Gap against the full `compatibility.md` gate (recorded, not invented).** The gate's second clause — "`task api:check` … diffs `api/gohan.yaml` against the generated `adapter/httpapi` server; the document is versioned with the root module" — cannot be exercised yet: `api/gohan.yaml` does not exist (`ls api` → not found) and `adapter/httpapi` does not exist (only `adapter/otel` is present). Both are M4 deliverables (`docs/design/architecture.md` §5: `adapter/httpapi/` "REST + SSE transport generated from `api/gohan.yaml`"; the 2026-10-04 review note on row 1: "`api:check` with `adapter/httpapi` in M4"). The current `api:check` in `Taskfile.yml` implements only the apidiff-per-module half. This gap is recorded here rather than papered over; M4 must extend `task api:check` when `api/gohan.yaml` and `adapter/httpapi` land.
 
@@ -89,4 +110,4 @@ Core ports by package (verified by `grep -rn '^type [A-Z][A-Za-z]* interface' co
 
 ## Review verdict
 
-The core API review gate of ADR-0083/ADR-0136 passes: the three offline acceptance processes are green against the memory stores, the unit suite is green, the generated types index is clean and drift-free, and `api:check` exits 0 — with the `v0.1.0` baseline the cut established, that check now compares a module's exported surface instead of skipping it. Core types and ports are declared **v1-candidate**; the missing M4 gate artifacts are recorded above and remain open work, not silent omissions.
+The core API review gate of ADR-0083/ADR-0136 passes on everything except the compatibility clause: the three offline acceptance processes are green against the memory stores, the unit suite is green, and the generated types index is clean and drift-free — but `api:check` no longer exits 0. With the `v0.1.0` baseline the cut established, the check now compares each module's exported surface against that tag and reports five incompatible changes (see the gate evidence above). Those five are real pre-`v1` source-visible changes, and the gate does not pass while they stand. Core types and ports are declared **v1-candidate**, and that verdict stays **open** on the compatibility decision: the owner must choose whether to accept the changes as documented `v0.x` breaks, retag, or re-cut the baseline before the freeze is claimed. The missing M4 gate artifacts are recorded above and remain open work, not silent omissions.

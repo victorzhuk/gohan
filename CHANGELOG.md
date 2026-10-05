@@ -30,6 +30,16 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 - The tool-chain benchmark no longer exhausts its own run budget.
 - The leak check compares goroutine identities, so an unrelated goroutine exiting cannot cancel a detected leak.
 - `adapter/otel` requires the published root version instead of a placeholder with a local replace directive.
+- `Send` and `Continue` mint a collision-resistant run id, so two conversations over one store no longer overwrite each other's run row or mix their event streams.
+- `Cancel` authorizes the caller against the session owner before it signals, as every other session-mutating seam does.
+- A steer is persisted before it is acknowledged: `SteerApplied` follows a successful append, and the advanced history version reaches the next step.
+- `Resume` records its events through the same relay as the initial stream, so a resumed run can be reattached and reports terminal completion.
+- Recovery restores the run's own authority — the checkpoint originator, else the session owner — and refuses to execute without one; a credential failure fails the run instead of continuing under the reaper's identity.
+- A recovered run can suspend again: it is driven with the same lifecycle wiring and checkpoint save path as a fresh run.
+- A consumed preempted checkpoint whose client died before resuming is recovered (ADR-0146).
+- The assembly prefix memo applies only to an unfiltered build, so a per-turn tool filter is always evaluated and two filters from one factory can no longer share a cached request.
+- The scenario coverage gate counts only executed passing subtests: a skipped or failed test no longer satisfies its scenario.
+- The API comparison ignores a parameter rename while still reporting type, arity, variadic, result and method-set changes.
 
 ### Added
 

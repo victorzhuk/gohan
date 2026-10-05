@@ -100,9 +100,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/victorzhuk/gohan"
-	"github.com/victorzhuk/gohan/adapter/openai"
-	"github.com/victorzhuk/gohan/core/memory"
+	gohan "github.com/victorzhuk/gohan/core"
+	"github.com/victorzhuk/gohan/core/stores"
+	"github.com/victorzhuk/gohan/core/types"
 	"github.com/victorzhuk/gohan/std/flow"
 )
 
@@ -112,18 +112,31 @@ type Ticket struct {
 }
 
 func main() {
+	// Illustrative only — no provider adapter exists yet. The tree ships
+	// adapter/otel (telemetry) alone, and the only types.Model implementations
+	// are the scripted one in testkit/gohantest and the per-example fakes. A
+	// provider adapter will return a types.Model built from a types.ModelProfile:
+	//
+	//	model, err := adapteropenai.New(os.Getenv("OPENAI_BASE_URL"), types.ModelProfile{
+	//		Name: "default", Version: "gpt-5.2-2025-12-11",
+	//		Caps:         types.Caps{Tools: true, Streaming: true, Constrained: true, Cache: types.CacheAuto},
+	//		LatencyClass: types.Interactive,
+	//	})
+	var model types.Model
+
 	stack, err := gohan.Build(
-		gohan.WithModels(openai.New(os.Getenv("OPENAI_BASE_URL"), gohan.ModelProfile{
-			Name: "default", Version: "gpt-5.2-2025-12-11",
-			Caps: gohan.Caps{Tools: true, Streaming: true, Constrained: true, Cache: gohan.CacheAuto},
-			LatencyClass: gohan.Interactive,
-		})),
-		gohan.WithStores(memory.New()),
+		gohan.WithModels(model),
+		gohan.WithStores(stores.Stores{
+			SessionLog:  stores.NewMemorySessionLog(),
+			Runs:        stores.NewMemoryRuns(),
+			Checkpoints: stores.NewMemoryCheckpoints(),
+			Journal:     stores.NewMemoryJournal(),
+		}),
 	)
 	if err != nil {
 		panic(err)
 	}
-	classify := flow.Extract[Ticket](stack, "default")
+	classify := flow.Extract[Ticket](model)
 	ctx := gohan.WithPrincipal(context.Background(), gohan.Principal{Tenant: "demo", Subject: "dev"})
 	out, err := classify.Invoke(ctx, []gohan.Block{gohan.Text{Text: os.Args[1]}})
 	if err != nil {
@@ -133,7 +146,9 @@ func main() {
 }
 ```
 
-No preset, no chain, no prompt text: the empty-chain path (`chains.empty-chains`) with `Extract`'s schema-only request. Adding `std.Interactive()` to `Build` is the first governance step.
+`ModelProfile`, `Caps`, `CacheAuto` and `Interactive` live in `core/types`, not in the driver package; `flow.Extract` takes a `types.Model`, not a `Stack`.
+
+No preset, no chain, no prompt text: the empty-chain path (`chains.empty-chains`) with `Extract`'s schema-only request. Spreading `std.Interactive().Options()` into `Build` is the first governance step.
 
 ### 9.1 Example catalog
 
