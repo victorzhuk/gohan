@@ -190,14 +190,44 @@ func (g *gate) decide(ctx context.Context, inv *ToolInvocation) Verdict {
 		}
 		return Allow
 	}
-	d, err := g.decider.Decide(ctx, inv)
+	tel := telemetryFrom(ctx)
+	dctx, endDecide := startSpan(ctx, tel, "gohan.decide",
+		types.String(types.KeyToolName, inv.Spec.Name),
+	)
+	d, err := g.decider.Decide(dctx, inv)
 	if err != nil {
+		endDecide(types.String(types.KeyRouterDecision, "ask"))
 		return Ask
 	}
+	endDecide(types.String(types.KeyRouterDecision, verdictName(d.Value)), types.Float(types.KeyRouterConfidence, d.Confidence))
 	if d.Confidence < g.minConfidence {
 		return Ask
 	}
 	return d.Value
+}
+
+func verdictName(v Verdict) string {
+	switch v {
+	case Allow:
+		return "allow"
+	case DenyVerdict:
+		return "deny"
+	case TaintDenied:
+		return "taint_denied"
+	default:
+		return "ask"
+	}
+}
+
+func telemetryFrom(ctx context.Context) types.Telemetry {
+	return types.TelemetryFrom(ctx)
+}
+
+func startSpan(ctx context.Context, tel types.Telemetry, name string, attrs ...types.Attr) (context.Context, func(...types.Attr)) {
+	if tel == nil {
+		return ctx, func(...types.Attr) {}
+	}
+	return tel.StartSpan(ctx, name, attrs...)
 }
 
 func missingScopes(have, want []string) []string {

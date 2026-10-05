@@ -17,6 +17,21 @@ type Telemetry interface {
 	Record(ctx context.Context, name string, v float64, attrs ...Attr)
 }
 
+type telCtxKey struct{}
+
+// WithTelemetry carries the port in a context, so nested call sites read
+// the run's telemetry without an import of the wiring package.
+func WithTelemetry(ctx context.Context, tel Telemetry) context.Context {
+	return context.WithValue(ctx, telCtxKey{}, tel)
+}
+
+// TelemetryFrom returns the context's port; nil outside a run, which every
+// call site treats as a no-op.
+func TelemetryFrom(ctx context.Context) Telemetry {
+	tel, _ := ctx.Value(telCtxKey{}).(Telemetry)
+	return tel
+}
+
 // Attr is one attribute of a span or metric. Values are limited to the
 // kinds the constructors produce, so an adapter can map them without a
 // reflection pass.

@@ -211,3 +211,53 @@ func TestPermissionGate(t *testing.T) {
 		}
 	})
 }
+
+type gateTelemetry struct {
+	spans []gateSpan
+}
+
+type gateSpan struct {
+	name  string
+	attrs []types.Attr
+}
+
+func (f *gateTelemetry) StartSpan(ctx context.Context, name string, attrs ...types.Attr) (context.Context, func(...types.Attr)) {
+	f.spans = append(f.spans, gateSpan{name: name, attrs: attrs})
+	return ctx, func(...types.Attr) {}
+}
+
+func (f *gateTelemetry) Count(context.Context, string, int64, ...types.Attr)    {}
+func (f *gateTelemetry) Record(context.Context, string, float64, ...types.Attr) {}
+
+func TestPermissionGateTelemetry(t *testing.T) {
+	tel := &gateTelemetry{}
+	ctx := types.WithTelemetry(context.Background(), tel)
+	decider := decideFunc(func(context.Context, *ToolInvocation) (types.Decision[Verdict], error) {
+		return types.Decision[Verdict]{Value: Allow, Confidence: 1}, nil
+	})
+	gate := Gate(decider,
+		WithSpecLookup(gateSpec(types.ToolSpec{Name: "search", Effect: types.ReadOnly})),
+		WithRunInfo(gateRun("op")),
+	)
+	if _, err := gate(func(context.Context, types.ToolUse) (types.ToolResult, error) {
+		return types.ToolResult{Outcome: types.Succeeded}, nil
+	})(ctx, types.ToolUse{ID: "c1", Name: "search"}); err != nil {
+		t.Fatalf("gate: %v", err)
+	}
+	if len(tel.spans) != 1 {
+		t.Fatalf("spans %v, want one gohan.decide span", tel.spans)
+	}
+	s := tel.spans[0]
+	if s.name != "gohan.decide" {
+		t.Fatalf("span %q, want gohan.decide", s.name)
+	}
+	var tool string
+	for _, a := range s.attrs {
+		if a.Key == types.KeyToolName {
+			tool = a.Value.(string)
+		}
+	}
+	if tool != "search" {
+		t.Fatalf("decide span tool = %q, want search", tool)
+	}
+}

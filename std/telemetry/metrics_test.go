@@ -18,12 +18,17 @@ type observation struct {
 }
 
 type recordingSink struct {
-	counts  []observation
-	records []observation
+	counts   []observation
+	records  []observation
+	spans    []spanObservation
+	spanCtxs []context.Context
 }
 
-func (s *recordingSink) StartSpan(ctx context.Context, _ string, _ ...types.Attr) (context.Context, func(...types.Attr)) {
-	return ctx, func(...types.Attr) {}
+func (s *recordingSink) StartSpan(ctx context.Context, _ string, attrs ...types.Attr) (context.Context, func(...types.Attr)) {
+	s.spans = append(s.spans, spanObservation{attrs: attrs})
+	s.spanCtxs = append(s.spanCtxs, ctx)
+	i := len(s.spans) - 1
+	return ctx, func(final ...types.Attr) { s.spans[i].final = final }
 }
 
 func (s *recordingSink) Count(_ context.Context, name string, n int64, attrs ...types.Attr) {
@@ -140,7 +145,7 @@ func TestTelemetryMetrics(t *testing.T) {
 		if c.name != MetricLoopDetected || c.n != 1 {
 			t.Errorf("count = %s %d, want %s 1", c.name, c.n, MetricLoopDetected)
 		}
-		if got := attrValue(t, c.attrs, types.KeyToolName); got != "search" {
+		if got := attrValue(t, c.attrs, "tool"); got != "search" {
 			t.Errorf("tool label = %q, want search", got)
 		}
 	})

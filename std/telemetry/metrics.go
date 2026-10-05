@@ -39,6 +39,25 @@ var forbiddenLabels = map[string]bool{
 	"session_id": true, "run_id": true, "subject": true, "approver": true,
 }
 
+// labelCanonical maps the canonical gohan.* spellings a caller may hand in
+// to the bare registration vocabulary. A canonical identity key never maps:
+// the forbidden check runs on both spellings before this table is read.
+var labelCanonical = map[string]string{
+	types.KeyFlow:          "flow",
+	types.KeyModeAttr:      "mode",
+	types.KeyGuardStage:    "stage",
+	types.KeySuspendReason: "reason",
+	types.KeyRelease:       "release",
+	types.KeyVariant:       "variant",
+	types.KeyToolName:      "tool",
+	types.KeyModelProfile:  "profile",
+	types.KeyTenant:        "tenant",
+	types.KeySessionID:     "session_id",
+	types.KeyRunID:         "run_id",
+	types.KeySubject:       "subject",
+	types.KeyApprover:      "approver",
+}
+
 // Metrics forwards counter and histogram emissions to a sink, carrying the
 // release and variant stamps every gohan.* metric carries. Registrations
 // are validated at Build, so a metric whose labels leave the allow-list is
@@ -47,6 +66,7 @@ type Metrics struct {
 	tel        types.Telemetry
 	release    string
 	variant    string
+	tenant     bool
 	registered map[string]Metric
 }
 
@@ -80,12 +100,13 @@ func Build(tel types.Telemetry, metrics []Metric, opts ...Option) (*Metrics, err
 	for _, opt := range opts {
 		opt(&st)
 	}
-	m := &Metrics{tel: tel, release: st.release, variant: st.variant, registered: make(map[string]Metric, len(metrics))}
+	m := &Metrics{tel: tel, release: st.release, variant: st.variant, tenant: st.tenant, registered: make(map[string]Metric, len(metrics))}
 	for _, metric := range metrics {
 		if err := validateLabels(metric, st.tenant); err != nil {
 			return nil, err
 		}
-		m.registered[metric.Name] = metric
+		copied := Metric{Name: metric.Name, Labels: append([]string(nil), metric.Labels...)}
+		m.registered[metric.Name] = copied
 	}
 	return m, nil
 }
@@ -97,21 +118,90 @@ func validateLabels(metric Metric, tenant bool) error {
 			return fmt.Errorf("gohan/telemetry: metric %s: label %s is never admitted", metric.Name, label)
 		case label == "tenant" && !tenant:
 			return fmt.Errorf("gohan/telemetry: metric %s: label tenant needs WithTenantLabel", metric.Name)
-		case !labelAllowlist[label]:
+		case label != "tenant" && !labelAllowlist[label]:
 			return fmt.Errorf("gohan/telemetry: metric %s: label %s is not in the allow-list", metric.Name, label)
 		}
 	}
 	return nil
 }
 
-// Count forwards a counter emission with the release and variant stamps.
-func (m *Metrics) Count(ctx context.Context, name string, n int64, attrs ...types.Attr) {
-	m.tel.Count(ctx, name, n, m.stamps(attrs)...)
+// StartSpan forwards to the sink untouched: metric label registrations
+// govern Count and Record, not spans.
+func (m *Metrics) StartSpan(ctx context.Context, name string, attrs ...types.Attr) (context.Context, func(...types.Attr)) {
+	return m.tel.StartSpan(ctx, name, attrs...)
 }
 
-// Record forwards a histogram or gauge observation with the stamps.
+// Count enforces the registration at emission: an unregistered metric is
+// dropped, a label outside the metric's registration is omitted, identity
+// attributes are dropped under either spelling, and the package stamps
+// override any caller release or variant.
+func (m *Metrics) Count(ctx context.Context, name string, n int64, attrs ...types.Attr) {
+	out := m.emit(name, attrs)
+	if out == nil {
+		return
+	}
+	m.tel.Count(ctx, name, n, out...)
+}
+
+// Record enforces the registration the same way Count does.
 func (m *Metrics) Record(ctx context.Context, name string, v float64, attrs ...types.Attr) {
-	m.tel.Record(ctx, name, v, m.stamps(attrs)...)
+	out := m.emit(name, attrs)
+	if out == nil {
+		return
+	}
+	m.tel.Record(ctx, name, v, out...)
+}
+
+// emit normalizes, filters and de-duplicates the caller attributes against
+// the metric's registration, then appends the package stamps. A nil slice
+// with a nil registration means the metric is unknown and nothing emits.
+func (m *Metrics) emit(name string, attrs []types.Attr) []types.Attr {
+	reg, ok := m.registered[name]
+	if !ok {
+		return nil
+	}
+	registered := make(map[string]bool, len(reg.Labels))
+	for _, l := range reg.Labels {
+		registered[l] = true
+	}
+	admitted := make([]types.Attr, 0, len(attrs))
+	for _, a := range attrs {
+		bare := normalizeLabel(a.Key)
+		if forbiddenLabels[bare] {
+			continue
+		}
+		if bare == "tenant" && !m.tenant {
+			continue
+		}
+		if (bare == "release" && m.release != "") || (bare == "variant" && m.variant != "") {
+			continue
+		}
+		if !registered[bare] {
+			continue
+		}
+		// The last admissible caller value for one normalized label wins.
+		admitted = append(admitted, types.Attr{Key: bare, Value: a.Value})
+	}
+	out := make([]types.Attr, 0, len(admitted)+2)
+	idx := make(map[string]int, len(admitted))
+	for _, a := range admitted {
+		if i, ok := idx[a.Key]; ok {
+			out[i] = a
+			continue
+		}
+		idx[a.Key] = len(out)
+		out = append(out, a)
+	}
+	return m.stamps(out)
+}
+
+// normalizeLabel reduces a canonical gohan.* spelling to the bare
+// registration vocabulary; a bare name passes through unchanged.
+func normalizeLabel(key string) string {
+	if bare, ok := labelCanonical[key]; ok {
+		return bare
+	}
+	return key
 }
 
 func (m *Metrics) stamps(attrs []types.Attr) []types.Attr {
