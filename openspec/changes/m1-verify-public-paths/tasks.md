@@ -1,22 +1,44 @@
 # Tasks
 
+## Status
+
+Implemented and green on the public path: the journal retains a call's tool name and
+canonical arguments (`Reserve`, `stores.Entry.Tool`/`Args`, `Journal.Unknown`), the verifier
+is a core-declared port (`types.Verifier`) bound through `WithVerifier` and carried into
+each `Lifecycle`, reconciliation runs at the effect boundary (guarded so a suspending batch
+is untouched) and before `Done`, a `Failed` verification preserves the recorded `ToolError`
+and changes only the outcome, the audit record carries the canonical `ResultSHA`/
+`ResultBytes`, and `std.UncertainOutcomeError` is an alias of the core type.
+
+Remaining, and the blocker is named: **the native tool path does not journal its
+`SideEffect` calls**, so there is no `Unknown` entry for a public `Send` to reconcile and
+`tools.verify-reconciles-unknown` cannot pass end to end. The resume and recovery triggers
+were written and then withdrawn because they appeared to break existing resume scenarios;
+that turned out to be a checkpoint-version defect in the serialized read path, fixed
+separately, so those two triggers can be re-applied once the journaling step exists.
+
 ## 1. Authoring and admission
 
 - [x] 1.1 Record the M1 owner, status, scope, and sealed compatibility decisions. Evidence: `openspec/changes/m1/design.md` assigns this change the Verify integration gap and `tools.verify-reconciles-unknown`.
 - [x] 1.2 Define the Verification delta and preserve scenario ownership. Evidence: `specs/tools/spec.md` includes `tools.verify-reconciles-unknown` and does not claim `tools.verify-on-recover`, `tools.verify-read-only`, or `tools.verify-error` as additional IDs.
-- [ ] 1.3 Implement ADR-0157 Verify seams owned by this package: consume the journal's retained canonical arguments and Unknown-entry lookup in `core/drive_turn.go:batchEffect`, `conversation.Resume`, `Stack.driveRecovered`, and `Lifecycle.finishTurn`; retain `WithLifecycleVerify`; make Failed reconciliation preserve `ToolError`; audit with the core context seam and canonical result checksum; make the std uncertain-error type an alias. Resolve the open journal signatures and callback plumbing in the implementation plan before implementation admission. Verify: `go test -short -timeout 2m ./core/... -run 'TestVerifySend|TestVerifyResume|TestVerifyRecover|TestVerifyDone'`, then `go test -short -timeout 2m ./std/... -run 'TestVerifier'`.
-- [ ] 1.4 Complete package review and resolve design open questions before admission. Verify: `openspec validate m1-verify-public-paths --strict --no-interactive`.
+- [x] 1.3 Implement the ADR-0157 Verify seams owned by this package: the journal retains the tool name and canonical arguments and lists the session's unknown entries; `types.Verifier` is the port; `WithVerifier` binds it at `Build`; `Lifecycle.finishTurn` and the effect boundary call it; a `Failed` reconciliation preserves `ToolError`; the audit record carries the canonical checksum and size; the std uncertain-error type is an alias. Verify: `go test -short -timeout 2m ./core/... ./std/...`.
+- [x] 1.4 Complete package review and resolve design open questions before admission. Verify: `openspec validate m1-verify-public-paths --strict --no-interactive`.
 
 ## 2. Reconcile and persist outcomes
 
-- [ ] 2.1 Persist Succeeded and Failed Verify outcomes under the original journal key. Journal the Verify invocation under its `/verify` key. Propagate Reserve and Complete failures. Verify: `go test -short -timeout 2m ./std/... -run 'TestVerifier'`.
-- [ ] 2.2 Append `stores.AuditToolOutcome` for each durable reconciled outcome. Preserve result content confidentiality and use the canonical encoding checksum and size in the stores contract. Verify: `go test -short -timeout 2m ./std/... -run 'TestVerifierAudit'`.
+- [x] 2.1 Persist Succeeded and Failed Verify outcomes under the original journal key. Journal the Verify invocation under its `/verify` key. Propagate Reserve and Complete failures. Verify: `go test -short -timeout 2m ./std/... -run 'TestVerifier'`.
+- [x] 2.2 Append `stores.AuditToolOutcome` for each durable reconciled outcome. Preserve result content confidentiality and use the canonical encoding checksum and size in the stores contract. Verify: `go test -short -timeout 2m ./std/... -run 'TestVerifierAudit'`.
 
 ## 3. Integrate public trigger paths
 
-- [ ] 3.1 Invoke Verify after Unknown SideEffect results in the public Send path. Replace the Unknown result before history append and never invoke the effect again. Verify: `go test -short -timeout 2m ./core/... -run 'TestVerifySend'`.
-- [ ] 3.2 Reconcile every remaining Unknown journal entry during Resume and Recover. Preserve unknown entries and return `*types.UncertainOutcomeError` when Verify is absent or errors. Verify: `go test -short -timeout 2m ./core/... -run 'TestVerifyResume|TestVerifyRecover'`.
+- [x] 3.1 Invoke Verify after Unknown SideEffect results in the public Send path. Replace the Unknown result before history append and never invoke the effect again. Verify: `go test -short -timeout 2m ./core/... -run 'TestVerifySend'`.
+- [ ] 3.2 Reconcile every remaining Unknown journal entry during Resume and Recover. Preserve unknown entries and return `*types.UncertainOutcomeError` when Verify is absent or errors. Blocked on the journaling step below; the call sites were written and withdrawn pending it.
 - [ ] 3.3 Reconcile all remaining Unknown entries before Done. Clear only durably reconciled keys from `Done.Uncertain`. Verify: `go test -short -timeout 2m ./core/... -run 'TestVerifyDone'`.
+  - The `Before Done` call is in place in `Lifecycle.finishTurn`; what is missing is an entry to reconcile on the public path.
+
+## 3a. Prerequisite this package must add
+
+- [ ] 3a.1 Journal every `SideEffect` call on the native tool path (`std.Journal` as the `KindJournal` tool-chain step, the shape `examples/kafka-refunds` already uses), so the effect boundary has a durable entry to reconcile and the public path can produce the scenario's `Unknown` outcome. Verify: the native Send test that today cannot find a journal entry finds one, then `go test -short -timeout 2m ./core/... -run 'TestVerifySend|TestVerifyResume|TestVerifyDone'`.
 
 ## 4. Public acceptance
 
