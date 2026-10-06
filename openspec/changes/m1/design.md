@@ -165,7 +165,7 @@ The eight IDs the `m1` proposal names for the two adapters map onto the rows abo
 | `lifecycle.deprecated-never-silent` | `m1-model-retirement-cost` | as above | done | `core/deprecated_test.go` (reroute to successor, else `ClassDeprecated` with no fallback) |
 | `lifecycle.successor-params-validated` | `m1-model-retirement-cost` | as above | done | `core/deprecated_test.go` (`checkSuccessorOptions` names the option) |
 | `lifecycle.cost-tags-forwarded` | `m1-model-retirement-cost` | provider contract | done | `core/cost_tags_test.go` (`lifecycle.cost-tags-forwarded`): tags reach `ModelRequest.Metadata` and `gohan.cost.per_run{flow}` carries the run total; the adapter mapping stays with the provider adapters |
-| `lifecycle.cache-write-socialized` | `m1-model-retirement-cost` | `m1-exact-match-cache` | blocked | the cache seam is unauthored; `Pricing.SocializeCacheWrites` is read by `core/chains/limits.go:136` already |
+| `lifecycle.cache-write-socialized` | `m1-model-retirement-cost` | `m1-exact-match-cache` | done | `core/cache_usage_test.go` (`lifecycle.cache-write-socialized`); the fold is `core/chains/limits.go` `LimitsState.charge` |
 | `lifecycle.upcast-on-read` | `m1-schema-read-paths` | — | done | `testkit/storetest/schema_lifecycle_scenarios_test.go`, `core/stores/schema_shapes_test.go`; shipped in `archive/2026-10-07-m1-schema-read-paths` |
 | `lifecycle.historical-fixtures` | `m1-schema-read-paths` | — | done | `testkit/storetest/serialized_schemas_test.go`, `testkit/storetest/schema_lifecycle_scenarios_test.go` |
 

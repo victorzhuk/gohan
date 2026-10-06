@@ -34,9 +34,10 @@ The provider-metadata contract now names the field (`ModelRequest.Metadata`, `Re
 
 ## 5. Cache-write socialisation
 
-Blocked on `m1-exact-match-cache`, which is not authored yet; the seam the fold needs does not exist.
+The cache seam landed with `m1-exact-match-cache`; the fold is implemented and verified below.
 
-- [ ] 5.1 Fold the cache-write premium of a run that repopulated the prefix cache into `Pricing.CachedInput` (`core/types/model_profile.go:81`) when `Pricing.SocializeCacheWrites` (`:85`) is on, so cached reads carry the overhead rate and the repopulating run is not charged. Verify: `go test -short -timeout 2m ./core/... -run 'TestCacheWriteSocialized'` once the cache seam exists.
+- [x] 5.1 Fold the cache-write premium of a run that repopulated the prefix cache into `Pricing.CachedInput` (`core/types/model_profile.go:81`) when `Pricing.SocializeCacheWrites` (`:85`) is on, so cached reads carry the overhead rate and the repopulating run is not charged. Verify: `go test -short -timeout 2m ./core/... -run 'TestCacheWriteSocialized'` once the cache seam exists.
+  - evidence: the fold is in `core/chains/limits.go` (`LimitsState.charge`: `Usage.CacheWriteTokens` price at `Pricing.CachedInput` under `SocializeCacheWrites`, cached reads always do), landed with the cache seam; `core/cache_usage_test.go` (`TestCacheWriteSocialized`, subtests `cache write socialized`, `cache write premium kept` and the bound `lifecycle.cache-write-socialized`) assert both the socialised and the flag-off arithmetic.
 
 ## 6. Repository gates
 
