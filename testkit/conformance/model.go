@@ -148,8 +148,67 @@ func runFixture(tb conformanceTB, m types.Model, fx Fixture) {
 		assertTruncationFixture(tb, m, fx)
 	case FixtureRawRoundTrip:
 		assertRawFixture(tb, m, fx)
+	case FixtureCacheBreakpoints:
+		assertCacheFixture(tb, m, fx)
+	case FixtureSchemaUnsupported:
+		assertSchemaFixture(tb, m, fx)
 	default:
 		return
+	}
+}
+
+// assertCacheFixture sends a request carrying the fixture's explicit cache
+// break markers and requires success with cache-write usage on the final
+// chunk: an adapter maps explicit breakpoints instead of dropping them.
+// The exact outgoing marker payload is inside the adapter harness.
+func assertCacheFixture(tb conformanceTB, m types.Model, fx Fixture) {
+	tb.Helper()
+	req := probeRequest()
+	for range fx.CacheBreaks {
+		req.Messages = append(req.Messages, types.Message{
+			Role:   types.RoleUser,
+			Blocks: []types.Block{types.CacheBreak{}},
+		})
+	}
+	chunks, err := collect(m, req)
+	if err != nil {
+		tb.Errorf("stream with cache breaks failed: %v", err)
+		return
+	}
+	if len(chunks) == 0 {
+		tb.Errorf("stream with cache breaks yielded no chunks")
+		return
+	}
+	u := chunks[len(chunks)-1].Usage
+	if u == nil {
+		tb.Errorf("no usage on final chunk")
+		return
+	}
+	if u.CacheWriteTokens <= 0 {
+		tb.Errorf("CacheWriteTokens %d, want cache writes for explicit breakpoints", u.CacheWriteTokens)
+	}
+}
+
+// assertSchemaFixture sends a request carrying a response schema and requires
+// a permanent ModelError with no chunk before it: an adapter without a
+// constrained-output capability must refuse rather than stream unconstrained.
+func assertSchemaFixture(tb conformanceTB, m types.Model, fx Fixture) {
+	tb.Helper()
+	req := probeRequest()
+	req.Options.ResponseSchema = json.RawMessage(`{"type":"object"}`)
+	var modelErr *types.ModelError
+	for chunk, err := range m.Generate(context.Background(), req) {
+		if err == nil {
+			tb.Errorf("streamed unconstrained %q chunk under a response schema", chunk.Delta)
+			continue
+		}
+		if !errors.As(err, &modelErr) {
+			tb.Errorf("error is %T, want *ModelError", err)
+			continue
+		}
+		if modelErr.Class != types.ClassPermanent {
+			tb.Errorf("class %d, want permanent for an unsupported schema", modelErr.Class)
+		}
 	}
 }
 

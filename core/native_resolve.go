@@ -82,6 +82,18 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 		if err := s.CheckFidelity(req, profiles, spec.Profile); err != nil {
 			return err
 		}
+		assemble := spec.Assemble
+		if staticOptionsSet(spec.ModelOptions) {
+			opts := spec.ModelOptions
+			assemble = func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+				req, err := spec.Assemble(ctx, in)
+				if err != nil {
+					return types.ModelRequest{}, err
+				}
+				mergeStaticOptions(&req.Options, opts)
+				return req, nil
+			}
+		}
 		if err := chains.ValidateModelChain(spec.ModelChain); err != nil {
 			return fmt.Errorf("flow %q: model chain: %w", name, err)
 		}
@@ -121,7 +133,7 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			tools:           cloneTools(spec.Tools),
 			specs:           req.Tools,
 			clients:         clients,
-			assemble:        spec.Assemble,
+			assemble:        assemble,
 			modelChain:      cloneModelChain(modelChain),
 			toolChain:       cloneToolChain(spec.ToolChain),
 			limits:          limits,
@@ -144,6 +156,43 @@ func governedExtraKey(extra map[string]any) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func staticOptionsSet(o types.ModelOptions) bool {
+	return o.MaxTokens != 0 || o.Temperature != nil || o.ToolChoice != "" ||
+		len(o.ResponseSchema) > 0 || o.Priority != 0 || o.AffinityKey != "" ||
+		len(o.Extra) > 0
+}
+
+// mergeStaticOptions fills the assembled request's unset fields from the
+// flow's static options; a field the assembler set wins.
+func mergeStaticOptions(dst *types.ModelOptions, src types.ModelOptions) {
+	if dst.MaxTokens == 0 {
+		dst.MaxTokens = src.MaxTokens
+	}
+	if dst.Temperature == nil {
+		dst.Temperature = src.Temperature
+	}
+	if dst.ToolChoice == "" {
+		dst.ToolChoice = src.ToolChoice
+	}
+	if len(dst.ResponseSchema) == 0 {
+		dst.ResponseSchema = src.ResponseSchema
+	}
+	if dst.Priority == 0 {
+		dst.Priority = src.Priority
+	}
+	if dst.AffinityKey == "" {
+		dst.AffinityKey = src.AffinityKey
+	}
+	for k, v := range src.Extra {
+		if _, ok := dst.Extra[k]; !ok {
+			if dst.Extra == nil {
+				dst.Extra = make(map[string]any, len(src.Extra))
+			}
+			dst.Extra[k] = v
+		}
+	}
 }
 
 // modelChainWithMiddleware appends the stack middleware as named KindUser

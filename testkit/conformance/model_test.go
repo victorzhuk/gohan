@@ -217,6 +217,33 @@ func (m fixtureModel) Generate(ctx context.Context, req types.ModelRequest) iter
 			yield(types.ModelChunk{Finish: types.FinishMaxTokens, Usage: &types.Usage{
 				InputTokens: 10, OutputTokens: 4, ModelVersion: confProfile.Version, Estimated: true,
 			}}, nil)
+		case m.fx.Kind == FixtureCacheBreakpoints:
+			var breaks int
+			for _, msg := range req.Messages {
+				for _, b := range msg.Blocks {
+					if _, ok := b.(types.CacheBreak); ok {
+						breaks++
+					}
+				}
+			}
+			if writes := min(breaks, m.fx.MaxBreakpoints); !yield(types.ModelChunk{Kind: types.DeltaText, Delta: "cached"}, nil) {
+				return
+			} else if writes == 0 {
+				yield(types.ModelChunk{Finish: types.FinishStop, Usage: &types.Usage{
+					InputTokens: 10, OutputTokens: 1, ModelVersion: confProfile.Version, Estimated: true,
+				}}, nil)
+			} else {
+				yield(types.ModelChunk{Finish: types.FinishStop, Usage: &types.Usage{
+					InputTokens: 10, CacheWriteTokens: writes, OutputTokens: 1, ModelVersion: confProfile.Version, Estimated: true,
+				}}, nil)
+			}
+		case m.fx.Kind == FixtureSchemaUnsupported:
+			yield(types.ModelChunk{}, &types.ModelError{
+				Class:    types.ClassPermanent,
+				Provider: confProfile.Name,
+				Status:   400,
+				Code:     "output_schema_unsupported",
+			})
 		default:
 			if !yield(types.ModelChunk{Kind: types.DeltaText, Delta: m.fx.Text}, nil) {
 				return
@@ -251,6 +278,172 @@ func (m swallowModel) Generate(ctx context.Context, req types.ModelRequest) iter
 				return
 			}
 			if !yield(chunk, nil) {
+				return
+			}
+		}
+	}
+}
+
+// TestModelConformanceRejects proves each shared assertion has teeth: a
+// deliberately non-conforming double that violates exactly one behaviour
+// must fail the suite, so a green run means the assertions fired.
+func TestModelConformanceRejects(t *testing.T) {
+	cases := []struct {
+		name     string
+		fixture  string
+		newModel func(Fixture) types.Model
+	}{
+		{"wrong error class", "transient", wrongClassFor},
+		{"dropped retry after", "rate limited with retry after", dropsRetryAfterFor},
+		{"unestimated usage", "usage estimated", unestimatedUsageFor},
+		{"truncation drops tool call", "truncated tool call", dropsToolFor},
+		{"raw block rejected", "raw round trip", rawRejectingFor},
+		{"cache breaks ignored", "cache breakpoints", cacheIgnoringFor},
+		{"schema streamed anyway", "schema unsupported", schemaIgnoringFor},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var fx Fixture
+			for _, f := range DefaultFixtures() {
+				if f.Name == tc.fixture {
+					fx = f
+				}
+			}
+			capture := &captureTB{}
+			runModel(capture, tc.newModel, Fixtures{fx})
+			if !capture.failed {
+				t.Fatalf("suite passed a model violating %q", tc.name)
+			}
+		})
+	}
+}
+
+// wrongClassFor maps every provider failure to the auth class.
+func wrongClassFor(fx Fixture) types.Model {
+	return rewriteModel(fixtureModelFor(fx), func(chunk types.ModelChunk, err error) (types.ModelChunk, error) {
+		if me, ok := errors.AsType[*types.ModelError](err); ok {
+			me.Class = types.ClassAuth
+		}
+		return chunk, err
+	})
+}
+
+// dropsRetryAfterFor strips RetryAfter from every ModelError.
+func dropsRetryAfterFor(fx Fixture) types.Model {
+	return rewriteModel(fixtureModelFor(fx), func(chunk types.ModelChunk, err error) (types.ModelChunk, error) {
+		if me, ok := errors.AsType[*types.ModelError](err); ok {
+			me.RetryAfter = 0
+		}
+		return chunk, err
+	})
+}
+
+// unestimatedUsageFor reports usage without the estimate mark and without
+// output tokens, violating the no-usage estimate rule.
+func unestimatedUsageFor(fx Fixture) types.Model {
+	return rewriteModel(fixtureModelFor(fx), func(chunk types.ModelChunk, err error) (types.ModelChunk, error) {
+		if chunk.Usage != nil {
+			chunk.Usage = &types.Usage{ModelVersion: chunk.Usage.ModelVersion}
+		}
+		return chunk, err
+	})
+}
+
+// dropsToolFor swallows the tool-call chunk but keeps the max_tokens finish.
+func dropsToolFor(fx Fixture) types.Model {
+	return rewriteModel(fixtureModelFor(fx), func(chunk types.ModelChunk, err error) (types.ModelChunk, error) {
+		chunk.ToolUse = nil
+		return chunk, err
+	})
+}
+
+// rawRejectingFor fails any call whose request carries a Raw block.
+type rawRejectingM struct{ fx Fixture }
+
+func rawRejectingFor(fx Fixture) types.Model { return rawRejectingM{fx: fx} }
+
+func (m rawRejectingM) Profile() types.ModelProfile { return confProfile }
+
+func (m rawRejectingM) Generate(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+	return func(yield func(types.ModelChunk, error) bool) {
+		for _, msg := range req.Messages {
+			for _, b := range msg.Blocks {
+				if _, ok := b.(types.Raw); ok {
+					yield(types.ModelChunk{}, &types.ModelError{
+						Class:    types.ClassPermanent,
+						Provider: confProfile.Name,
+						Status:   400,
+						Code:     "raw_unsupported",
+					})
+					return
+				}
+			}
+		}
+		inner := fixtureModelFor(m.fx)
+		for chunk, err := range inner.Generate(ctx, req) {
+			if !yield(chunk, err) {
+				return
+			}
+		}
+	}
+}
+
+// schemaIgnoringFor streams text under a response schema instead of
+// refusing permanently.
+type schemaIgnoringM struct{ fx Fixture }
+
+func schemaIgnoringFor(fx Fixture) types.Model { return schemaIgnoringM{fx: fx} }
+
+func (m schemaIgnoringM) Profile() types.ModelProfile { return confProfile }
+
+func (m schemaIgnoringM) Generate(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+	return func(yield func(types.ModelChunk, error) bool) {
+		if req.Options.ResponseSchema != nil {
+			if !yield(types.ModelChunk{Kind: types.DeltaText, Delta: "unconstrained"}, nil) {
+				return
+			}
+			yield(types.ModelChunk{Finish: types.FinishStop, Usage: &types.Usage{
+				InputTokens: 10, OutputTokens: 2, ModelVersion: confProfile.Version, Estimated: true,
+			}}, nil)
+			return
+		}
+		inner := fixtureModelFor(m.fx)
+		for chunk, err := range inner.Generate(ctx, req) {
+			if !yield(chunk, err) {
+				return
+			}
+		}
+	}
+}
+
+// cacheIgnoringFor reports usage without cache writes.
+func cacheIgnoringFor(fx Fixture) types.Model {
+	return rewriteModel(fixtureModelFor(fx), func(chunk types.ModelChunk, err error) (types.ModelChunk, error) {
+		if chunk.Usage != nil {
+			chunk.Usage.CacheWriteTokens = 0
+		}
+		return chunk, err
+	})
+}
+
+// rewriteModel adapts a model by replaying its stream through fn.
+func rewriteModel(inner types.Model, fn func(types.ModelChunk, error) (types.ModelChunk, error)) types.Model {
+	return rewrittenModel{inner: inner, fn: fn}
+}
+
+type rewrittenModel struct {
+	inner types.Model
+	fn    func(types.ModelChunk, error) (types.ModelChunk, error)
+}
+
+func (m rewrittenModel) Profile() types.ModelProfile { return m.inner.Profile() }
+
+func (m rewrittenModel) Generate(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+	return func(yield func(types.ModelChunk, error) bool) {
+		for chunk, err := range m.inner.Generate(ctx, req) {
+			c, e := m.fn(chunk, err)
+			if !yield(c, e) {
 				return
 			}
 		}
