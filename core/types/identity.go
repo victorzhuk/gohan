@@ -30,6 +30,14 @@ type SessionOwner struct {
 	Subject string
 }
 
+// Tenant names a principal's organization and pins the residency region
+// its data must stay in. A build for a residency-bound tenant refuses any
+// store or model profile outside the region.
+type Tenant struct {
+	ID        string
+	Residency string
+}
+
 // CostTags attribute run cost.
 type CostTags struct {
 	Feature     string

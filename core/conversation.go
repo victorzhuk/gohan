@@ -81,6 +81,7 @@ type conversation struct {
 	stallAction StallAction
 
 	allowAnonymous bool
+	tenant         types.Tenant
 
 	mu      sync.Mutex
 	live    map[string]string
@@ -157,6 +158,7 @@ func (c *conversation) verifyOptions(opts []LifecycleOption) []LifecycleOption {
 func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...ConversationOption) (Conversation, error) {
 	c := &conversation{spec: spec, rt: rt, live: map[string]string{}}
 	if stack != nil {
+		c.tenant = stack.Tenant()
 		c.log = stack.stores.SessionLog
 		c.creds = stack.credentials
 		c.policySrc = stack.approvalPolicy
@@ -288,6 +290,7 @@ func (c *conversation) runIdentityCtx(ctx context.Context, runID, sessionID stri
 		RunID:     runID,
 		RootRunID: runID,
 		Mode:      types.Primary,
+		Residency: c.tenant.Residency,
 	}
 	if p, ok := types.PrincipalFrom(ctx); ok {
 		info.Principal = p

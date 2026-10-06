@@ -10,3 +10,8 @@ type Stores struct {
 	Journal       Journal
 	RedactionMaps RedactionMaps
 }
+
+// RegionProvider reports the region where a store keeps its data.
+type RegionProvider interface {
+	Region() string
+}

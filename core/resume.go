@@ -405,6 +405,7 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			WithLifecycleRuns(c.runs, lease),
 			WithLifecycleSession(cp.SessionID),
 			WithLifecycleFlow(c.spec),
+			WithLifecycleResidency(c.tenant.Residency),
 			WithLifecycleOriginator(cp.Originator),
 			WithLifecycleResumeState(st),
 		}

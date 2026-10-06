@@ -70,6 +70,7 @@ type MemorySessionLog struct {
 	idSeq       int64
 	schemas     *SchemaRegistry
 	raw         *MemoryRawRecords
+	region      string
 }
 
 type MemorySessionOption func(*MemorySessionLog)
@@ -79,6 +80,12 @@ type MemorySessionOption func(*MemorySessionLog)
 func WithMemorySessionClock(now func() time.Time) MemorySessionOption {
 	return func(s *MemorySessionLog) { s.now = now }
 }
+
+func WithMemorySessionRegion(region string) MemorySessionOption {
+	return func(s *MemorySessionLog) { s.region = region }
+}
+
+func (s *MemorySessionLog) Region() string { return s.region }
 
 // WithSessionPrincipals injects the principal extractor used for the
 // ownership checks.

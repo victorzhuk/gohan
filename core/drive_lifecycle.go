@@ -116,6 +116,7 @@ type Lifecycle struct {
 	resumeState     *runtime.State
 	sessionID       string
 	flow            string
+	residency       string
 	originator      types.Principal
 	telemetry       types.Telemetry
 	reason          types.SuspendReason
@@ -163,6 +164,12 @@ func WithLifecycleLease(l stores.Lease) LifecycleOption {
 // WithLifecycleFlow sets the flow spec a suspended checkpoint records.
 func WithLifecycleFlow(flow string) LifecycleOption {
 	return func(lc *Lifecycle) { lc.flow = flow }
+}
+
+// WithLifecycleResidency sets the residency a suspended checkpoint
+// records in its run identity.
+func WithLifecycleResidency(region string) LifecycleOption {
+	return func(lc *Lifecycle) { lc.residency = region }
 }
 
 // WithLifecycleOriginator sets the principal a suspended checkpoint
@@ -552,6 +559,7 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 			SessionID: lc.sessionID,
 			RunID:     lc.lease.RunID,
 			Principal: lc.originator,
+			Residency: lc.residency,
 		},
 		Generation: 1,
 		State:      st,

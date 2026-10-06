@@ -38,7 +38,18 @@ type config struct {
 	stores           stores.Stores
 	redactor         types.Redactor
 	redactionPolicy  types.RedactionPolicy
+	tenant           types.Tenant
 	native           []NativeSpec
+}
+
+// WithTenant binds the build to a tenant identity. A tenant with a
+// Residency makes Build fail closed against stores and model profiles in
+// other regions.
+func WithTenant(t types.Tenant) Option {
+	return func(c *config) error {
+		c.tenant = t
+		return nil
+	}
 }
 
 // WithStores binds the store ports Recover runs against. A zero field

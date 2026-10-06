@@ -78,6 +78,10 @@ func WithMemoryJournalSchemas(reg *SchemaRegistry) MemoryJournalOption {
 	return func(s *MemoryJournal) { s.schemas = reg }
 }
 
+func WithMemoryJournalRegion(region string) MemoryJournalOption {
+	return func(s *MemoryJournal) { s.region = region }
+}
+
 func NewMemoryJournal(opts ...MemoryJournalOption) *MemoryJournal {
 	s := &MemoryJournal{
 		now:     time.Now,

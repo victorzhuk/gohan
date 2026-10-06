@@ -16,17 +16,30 @@ type RedactionMaps interface {
 }
 
 type MemoryRedactionMaps struct {
-	mu   sync.RWMutex
-	maps map[redactionMapKey]types.RedactionMap
+	mu     sync.RWMutex
+	maps   map[redactionMapKey]types.RedactionMap
+	region string
 }
+
+type MemoryRedactionMapsOption func(*MemoryRedactionMaps)
+
+func WithMemoryRedactionMapsRegion(region string) MemoryRedactionMapsOption {
+	return func(s *MemoryRedactionMaps) { s.region = region }
+}
+
+func (s *MemoryRedactionMaps) Region() string { return s.region }
 
 type redactionMapKey struct {
 	tenant  string
 	session string
 }
 
-func NewMemoryRedactionMaps() *MemoryRedactionMaps {
-	return &MemoryRedactionMaps{maps: make(map[redactionMapKey]types.RedactionMap)}
+func NewMemoryRedactionMaps(opts ...MemoryRedactionMapsOption) *MemoryRedactionMaps {
+	s := &MemoryRedactionMaps{maps: make(map[redactionMapKey]types.RedactionMap)}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *MemoryRedactionMaps) Put(ctx context.Context, tenant, session string, m types.RedactionMap) error {

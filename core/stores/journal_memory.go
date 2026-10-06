@@ -26,7 +26,10 @@ type MemoryJournal struct {
 	now     func() time.Time
 	ttl     time.Duration
 	schemas *SchemaRegistry
+	region  string
 }
+
+func (s *MemoryJournal) Region() string { return s.region }
 
 // decodeEntry reads the record's envelope through the registry. The stored
 // bytes are never rewritten.

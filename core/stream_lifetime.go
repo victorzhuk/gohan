@@ -46,6 +46,7 @@ func (c *conversation) lifecycleOptions(sessionID string, lease stores.Lease, or
 		WithLifecycleRuns(c.runs, lease),
 		WithLifecycleSession(sessionID),
 		WithLifecycleFlow(c.spec),
+		WithLifecycleResidency(c.tenant.Residency),
 	}
 	if c.policySrc != nil {
 		opts = append(opts, WithLifecycleApprovalPolicy(c.policySrc))

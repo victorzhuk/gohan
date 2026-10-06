@@ -35,6 +35,7 @@ type MemoryCheckpoints struct {
 	toks    map[types.ResumeToken]*checkpointRecord
 	byRun   map[string]types.ResumeToken
 	schemas *SchemaRegistry
+	region  string
 }
 
 type MemoryCheckpointOption func(*MemoryCheckpoints)
@@ -50,6 +51,12 @@ func WithMemoryCheckpointRunInfo(src RunInfoSource) MemoryCheckpointOption {
 func WithMemoryCheckpointClock(now func() time.Time) MemoryCheckpointOption {
 	return func(s *MemoryCheckpoints) { s.now = now }
 }
+
+func WithMemoryCheckpointRegion(region string) MemoryCheckpointOption {
+	return func(s *MemoryCheckpoints) { s.region = region }
+}
+
+func (s *MemoryCheckpoints) Region() string { return s.region }
 
 func WithMemoryCheckpointSchemas(reg *SchemaRegistry) MemoryCheckpointOption {
 	return func(s *MemoryCheckpoints) { s.schemas = reg }

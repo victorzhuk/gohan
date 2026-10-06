@@ -146,6 +146,7 @@ type MemoryRuns struct {
 	info       RunInfoSource
 	generation uint64
 	schemas    *SchemaRegistry
+	region     string
 
 	notices   []*noticeEntry
 	noticeSeq uint64
@@ -170,6 +171,12 @@ func WithMemoryRunInfo(src RunInfoSource) MemoryRunOption {
 func WithMemoryRunSchemas(reg *SchemaRegistry) MemoryRunOption {
 	return func(s *MemoryRuns) { s.schemas = reg }
 }
+
+func WithMemoryRunRegion(region string) MemoryRunOption {
+	return func(s *MemoryRuns) { s.region = region }
+}
+
+func (s *MemoryRuns) Region() string { return s.region }
 
 func NewMemoryRuns(opts ...MemoryRunOption) *MemoryRuns {
 	s := &MemoryRuns{

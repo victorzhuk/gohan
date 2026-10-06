@@ -87,6 +87,7 @@ type Stack struct {
 	maxParallelTools int
 	limits           map[string]types.RunLimits
 	stores           stores.Stores
+	tenant           types.Tenant
 	native           map[string]*resolvedNativeConfig
 	recovery         map[string]runtime.Runtime
 	manifest         ReleaseManifest
@@ -148,6 +149,10 @@ func Build(opts ...Option) (*Stack, error) {
 		limits:           limits,
 		recovery:         cfg.recovery,
 		stores:           cfg.stores,
+		tenant:           cfg.tenant,
+	}
+	if err := checkResidency(cfg.tenant, cfg.stores, profiles); err != nil {
+		return nil, err
 	}
 	if err := s.resolveNative(cfg.native, profiles, cfg.redactor, cfg.redactionPolicy); err != nil {
 		return nil, err
@@ -161,6 +166,46 @@ func Build(opts ...Option) (*Stack, error) {
 	// per profile. Flows resolve further via ResolveStrategies.
 	logResolvedMatrix(logger, nativeMatrixEntries(s.native))
 	return s, nil
+}
+
+// Tenant returns the tenant identity Build was bound to.
+func (s *Stack) Tenant() types.Tenant { return s.tenant }
+
+// checkResidency fails a residency-bound build against any store port or
+// reachable model profile outside the tenant region. A store port without
+// a region cannot prove where it keeps data, so it is refused too.
+func checkResidency(t types.Tenant, st stores.Stores, profiles map[string]types.ModelProfile) error {
+	if t.Residency == "" {
+		return nil
+	}
+	ports := []struct {
+		name string
+		port any
+	}{
+		{"session_log", st.SessionLog},
+		{"runs", st.Runs},
+		{"checkpoints", st.Checkpoints},
+		{"journal", st.Journal},
+		{"redaction_maps", st.RedactionMaps},
+	}
+	for _, p := range ports {
+		if p.port == nil {
+			continue
+		}
+		rp, ok := p.port.(stores.RegionProvider)
+		if !ok {
+			return fmt.Errorf("residency: tenant %q: store %q: no region, want %q", t.ID, p.name, t.Residency)
+		}
+		if region := rp.Region(); region != t.Residency {
+			return fmt.Errorf("residency: tenant %q: store %q region %q, want %q", t.ID, p.name, region, t.Residency)
+		}
+	}
+	for _, p := range profiles {
+		if p.Region != t.Residency {
+			return fmt.Errorf("residency: tenant %q: profile %q region %q, want %q", t.ID, p.Name, p.Region, t.Residency)
+		}
+	}
+	return nil
 }
 
 // ResolveStrategies resolves one flow's strategies against its primary
