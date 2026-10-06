@@ -33,7 +33,7 @@ MUST name the option. The capability check reads `Caps.Temperature` and the
 other `Caps` fields (`core/types/model_profile.go:55`); no successor validation
 exists today.
 
-A run's `CostTags` MUST reach the provider accounting path. The spans MUST
+A run's `CostTags` MUST reach the provider accounting path, travelling as `ModelRequest.Metadata` (`RequestMetadata.CostTags`). The spans MUST
 carry the tags and a provider that accepts request metadata MUST receive them;
 `gohan.cost.per_run{flow}` MUST record the run's total. Current state:
 `CostTags{Feature, Environment, CostCenter}` ships on `RunInfo`
