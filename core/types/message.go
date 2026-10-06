@@ -40,6 +40,14 @@ type Origin struct {
 	Name string
 }
 
+// Quarantined pairs a decoded extraction value with the origins of the
+// blocks it was read from. The call path, not the tool author, sets
+// provenance: the driver stamps the result origin.
+type Quarantined[Out any] struct {
+	Value   Out
+	Origins []Origin
+}
+
 type Block interface {
 	isBlock()
 	BlockOrigin() Origin
