@@ -34,17 +34,17 @@ Every entry of `openspec/scenarios.json` with `deferred_to: M1` — 85 IDs — a
 
 | ID | Owner | Depends on | Status | Evidence |
 |---|---|---|---|---|
-| `taint.substring-match` | `m1-taint-enforcement` | — | integration gap | `core/types/taint.go` declares the hook; no `std/taint` matcher exists |
-| `taint.short-untainted` | `m1-taint-enforcement` | — | integration gap | as above |
-| `taint.user-untainted` | `m1-taint-enforcement` | — | integration gap | as above |
-| `taint.window-since-user-turn` | `m1-taint-enforcement` | — | integration gap | as above |
-| `taint.exfil-denied` | `m1-taint-enforcement` | `m1-egress-policy` (Exfil derivation) | integration gap | gate runs the hook slot; no hook is ever installed (`core/permission/gate.go:161-190`) |
-| `taint.side-effect-asks` | `m1-taint-enforcement` | `m1-egress-policy` | integration gap | as above |
-| `taint.read-only-allowed` | `m1-taint-enforcement` | `m1-egress-policy` | integration gap | as above |
-| `taint.gate-order` | `m1-taint-enforcement` | — | integration gap | `gate.decideCall` order is scope → hook → grant → decider; no live-deny seam feeds it |
-| `taint.trifecta-fails-build` | `m1-taint-enforcement` | — | missing | no trifecta computation exists in `Build` |
-| `taint.trifecta-with-policy` | `m1-taint-enforcement` | — | missing | as above |
-| `taint.no-exfil` | `m1-taint-enforcement` | — | missing | as above |
+| `taint.substring-match` | `m1-taint-enforcement` | — | done | `core/taint_computation_scenarios_test.go`; shipped in `archive/2026-10-06-m1-taint-enforcement` |
+| `taint.short-untainted` | `m1-taint-enforcement` | — | done | as above |
+| `taint.user-untainted` | `m1-taint-enforcement` | — | done | as above |
+| `taint.window-since-user-turn` | `m1-taint-enforcement` | — | done | as above |
+| `taint.exfil-denied` | `m1-taint-enforcement` | `m1-egress-policy` (Exfil derivation) | done | `core/taint_enforcement_scenarios_test.go`, `core/taint_wiring_test.go` |
+| `taint.side-effect-asks` | `m1-taint-enforcement` | `m1-egress-policy` | done | as above |
+| `taint.read-only-allowed` | `m1-taint-enforcement` | `m1-egress-policy` | done | as above |
+| `taint.gate-order` | `m1-taint-enforcement` | — | done | as above |
+| `taint.trifecta-fails-build` | `m1-taint-enforcement` | — | done | `core/taint_trifecta_scenarios_test.go` |
+| `taint.trifecta-with-policy` | `m1-taint-enforcement` | — | done | as above |
+| `taint.no-exfil` | `m1-taint-enforcement` | — | done | as above |
 | `taint.quarantine-carries-origin` | `m1-extraction-provenance` | `m1-taint-enforcement` | missing | no `std/flow.Quarantine` exists; `std/flow` ships `Classify` and `Extract` only |
 | `taint.subflow-carries-origin` | moved to M3 (2.3) | — | moved | `FlowAsTool` belongs to `subflows` (M3); the registry now reads `deferred_to: M3` and the M3 `subflows` change owns it |
 | `taint.provider-tool-post-hoc` | `m1-provider-tool-governance` | `m1-taint-enforcement`, provider contract | missing | no provider tool path exists |
@@ -53,11 +53,11 @@ Every entry of `openspec/scenarios.json` with `deferred_to: M1` — 85 IDs — a
 
 | ID | Owner | Depends on | Status | Evidence |
 |---|---|---|---|---|
-| `tools.egress-metadata-blocked` | `m1-egress-policy` | — | missing | no `std/egress` client, no `std/tool/http` |
-| `tools.egress-redirect-revalidated` | `m1-egress-policy` | — | missing | as above |
-| `tools.egress-rebinding-safe` | `m1-egress-policy` | — | missing | as above |
-| `tools.egress-size-limit` | `m1-egress-policy` | — | missing | as above |
-| `tools.egress-audited` | `m1-egress-policy` | — | missing | as above |
+| `tools.egress-metadata-blocked` | `m1-egress-policy` | — | done | `core/tool_call_egress_test.go`; shipped in `archive/2026-10-06-m1-egress-policy` |
+| `tools.egress-redirect-revalidated` | `m1-egress-policy` | — | done | as above |
+| `tools.egress-rebinding-safe` | `m1-egress-policy` | — | done | as above |
+| `tools.egress-size-limit` | `m1-egress-policy` | — | done | as above |
+| `tools.egress-audited` | `m1-egress-policy` | — | done | as above |
 | `tools.provider-tool-registered` | `m1-provider-tool-governance` | provider contract | missing | no provider-executed tool path exists |
 | `tools.provider-tool-gate-before-call` | `m1-provider-tool-governance` | provider contract | missing | as above |
 | `tools.provider-approval-as-suspension` | `m1-provider-tool-governance` | provider contract | missing | as above |
@@ -67,7 +67,7 @@ M0-ranked, finished by M1:
 
 | ID | Owner | Status | Evidence |
 |---|---|---|---|
-| `tools.egress-policy-required` | `m1-egress-policy` | integration gap | `CheckEgress`/`RequiresEgress` ship and pass `core/types/tool_egress_test.go`; no `Build` caller wires them, and no `WithEgress` option exists |
+| `tools.egress-policy-required` | `m1-egress-policy` | done | `core/egress_build_test.go`, `core/tool_egress_test.go`; `Build` wires `CheckEgress`/`RequiresEgress` and the egress policy option |
 | `tools.verify-reconciles-unknown` | `m1-verify-public-paths` | integration gap | `std/verify.go` reconciles `Succeeded` and discards the `Reserve`/`Complete` result on the verify key |
 
 ### 2.3 Milestone conflict to settle in `m1-extraction-provenance`

@@ -22,5 +22,6 @@ Delivered in `feat(tools): enforce the egress policy on the governed tool path`.
 
 - [x] 3.1 Add public-path subtests named exactly `tools.egress-metadata-blocked`, `tools.egress-redirect-revalidated`, `tools.egress-rebinding-safe`, `tools.egress-size-limit`, and `tools.egress-audited`; verify `go test -short -timeout 2m ./... -run 'Test.*Egress'`.
 - [x] 3.2 Run the repository wrappers and resolve failures; verify `task lint` and `task test`.
-- [ ] 3.3 Validate the change and M1 milestone acceptance after all required M1 owners land; verify `openspec validate m1-egress-policy --strict --no-interactive` and `task spec:gate GATE=M1`.
+- [x] 3.3 Validate the change and M1 milestone acceptance after all required M1 owners land; verify `openspec validate m1-egress-policy --strict --no-interactive` and `task spec:gate GATE=M1`.
+  - evidence: `Change 'm1-egress-policy' is valid`; `task spec:gate GATE=M1` reports `unregistered=0` and no missing `tools.egress-*` id.
   - The package validates and its own ids pass; the milestone gate stays open until the remaining owners land.
