@@ -84,7 +84,7 @@ func TestOutputStore(t *testing.T) {
 		if _, err := s.Get(ctx, first); err != nil {
 			t.Fatalf("get after deleting one owner: %v", err)
 		}
-		if err := s.EraseSubject(ctx, "t-a", "u1"); err != nil {
+		if _, err := s.EraseSubject(ctx, "t-a", "u1"); err != nil {
 			t.Fatalf("erase subject: %v", err)
 		}
 		if err := s.DeleteSessionDependents(ctx, "s2"); err != nil {

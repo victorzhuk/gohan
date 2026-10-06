@@ -62,6 +62,7 @@ type conversation struct {
 	runs            stores.Runs
 	events          stores.EventLog
 	cps             stores.Checkpoints
+	outputs         stores.OutputStore
 	redactor        types.Redactor
 	redactionPolicy types.RedactionPolicy
 	redactionMaps   stores.RedactionMaps
@@ -163,6 +164,7 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 		c.creds = stack.credentials
 		c.policySrc = stack.approvalPolicy
 		c.redactionMaps = stack.stores.RedactionMaps
+		c.outputs = stack.stores.OutputStore
 		if cfg := stack.native[spec]; cfg != nil {
 			c.redactor = cfg.redactor
 			c.redactionPolicy = cfg.redactionPolicy
@@ -404,6 +406,14 @@ func (c *conversation) relay(ctx context.Context, runID string, ev Event, yield 
 	if err := c.events.Append(ctx, runID, stores.Event{Payload: stored, Meta: types.EventMeta{RunID: runID}}); err != nil {
 		yield(nil, fmt.Errorf("record event: %w", err))
 		return false
+	}
+	if msg, ok := stored.(types.AssistantMessage); ok && c.outputs != nil {
+		info, _ := types.RunInfoFrom(ctx)
+		info.RunID = runID
+		if _, err := c.outputs.Put(ctx, info, msg.Message.Blocks); err != nil {
+			yield(nil, fmt.Errorf("store output: %w", err))
+			return false
+		}
 	}
 	c.notify(runID)
 	return true

@@ -11,6 +11,10 @@ import (
 const (
 	AuditHoldSet     AuditKind = "hold_set"
 	AuditHoldCleared AuditKind = "hold_cleared"
+	// AuditErasure marks a subject-erasure record. It carries the subject
+	// and tenant and, for a held session, the session id; never entity
+	// content.
+	AuditErasure AuditKind = "erasure"
 )
 
 // WithSessionAudit attaches the trail that receives hold_set and
@@ -39,6 +43,17 @@ func (s *MemorySessionLog) auditHold(ctx context.Context, meta SessionMeta, from
 	}
 	if err := s.audit.Append(ctx, rec); err != nil {
 		return fmt.Errorf("audit %s for session %s: %w", kind, meta.ID, err)
+	}
+	return nil
+}
+
+func (s *MemorySessionLog) appendErasure(ctx context.Context, sessionID, tenant, subject, reason string) error {
+	if s.audit == nil {
+		return nil
+	}
+	rec := AuditRecord{Kind: AuditErasure, SessionID: sessionID, Tenant: tenant, Subject: subject, Reason: reason}
+	if err := s.audit.Append(ctx, rec); err != nil {
+		return fmt.Errorf("audit %s for session %s: %w", AuditErasure, sessionID, err)
 	}
 	return nil
 }

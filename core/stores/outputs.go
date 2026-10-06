@@ -138,11 +138,12 @@ func (s *MemoryOutputs) CopySessionDependents(_ context.Context, from, to string
 }
 
 // EraseSubject drops the subject's claims across all its sessions; a ref
-// another subject still claims stays.
-func (s *MemoryOutputs) EraseSubject(_ context.Context, tenant, subject string) error {
+// another subject still claims stays. It reports how many refs it removed.
+func (s *MemoryOutputs) EraseSubject(_ context.Context, tenant, subject string) (int, error) {
 	owner := types.SessionOwner{Tenant: tenant, Subject: subject}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	n := 0
 	for ref := range s.subject[owner] {
 		claims := s.claims[ref]
 		for claim := range claims {
@@ -151,9 +152,10 @@ func (s *MemoryOutputs) EraseSubject(_ context.Context, tenant, subject string) 
 			}
 		}
 		s.dropIfUnclaimed(ref, claims)
+		n++
 	}
 	delete(s.subject, owner)
-	return nil
+	return n, nil
 }
 
 // dropIfUnclaimed removes a ref with no claims left, from the blob map and

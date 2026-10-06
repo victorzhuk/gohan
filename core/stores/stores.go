@@ -7,6 +7,9 @@ type Stores struct {
 	SessionLog    SessionLog
 	Runs          Runs
 	Checkpoints   Checkpoints
+	OutputStore   OutputStore
+	EventLog      EventLog
+	Notes         NotesStore
 	Journal       Journal
 	RedactionMaps RedactionMaps
 }
