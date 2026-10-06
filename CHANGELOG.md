@@ -18,6 +18,7 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 - `std/flow.Extract` and `std/flow.Classify` now take the resolved `*gohan.Stack` and a profile name instead of a `types.Model`: `Extract[Out](stack, "cheap", opts...)` and `Classify[L](stack, "cheap", labels, opts...)`.
 - The `chains.Explanation`, `runtime.AgentRun` and `runtime.Batch` structs gained fields (`Explanation`: `Fallback`, `Granularity`, `Limits`, `Sample`, `Strategies`, `ToolSteps`; `AgentRun`: `ModelEffect`, `BatchEffect`; `Batch`: `Scheduler`). Unkeyed composite literals over these types break; keyed literals are unaffected.
 - The example-local shapes `examples/excursions.Trip` and `examples/temporal-travel`'s `(*LiveFlags).Snapshot` changed with the governed path; code copying those examples updates with them.
+- `Build` fails when a model profile's `Sunset` falls inside the notice window — 30 days by default, set with `gohan.WithSunsetNoticeWindow`. A flow pinned to a retiring model no longer builds and fails later at the provider instead: migrate the flow to the profile's declared `Successor` before the sunset, or pass `gohan.WithSunsetWarnOnly` to downgrade the failure to a warning while the migration is staged. `Build` also refuses a flow's static model options the declared successor's `Caps` cannot express, and a deprecated model call is never silent: it routes to the successor or returns `*types.ModelError{Class: types.ClassDeprecated}` with no fallback assistant message.
 
 ### Fixed
 
