@@ -507,26 +507,62 @@ func (c *conversation) redactEvent(ctx context.Context, event Event) (Event, err
 	if c.redactor == nil || len(c.redactionPolicy.Detectors) == 0 {
 		return event, nil
 	}
-	text, ok := event.(types.TextDelta)
-	if !ok {
-		if msg, yes := event.(types.AssistantMessage); yes {
-			info, _ := types.RunInfoFrom(ctx)
-			out, err := c.redactMessages(ctx, info.SessionID, []types.Message{msg.Message})
-			if err != nil {
-				return nil, err
-			}
-			msg.Message = out[0]
-			return msg, nil
+	info, _ := types.RunInfoFrom(ctx)
+	switch e := event.(type) {
+	case types.TextDelta:
+		msgs, err := c.redactMessages(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{types.Text{Text: e.Delta}}}})
+		if err != nil {
+			return nil, err
 		}
+		if len(msgs[0].Blocks) > 0 {
+			e.Delta = msgs[0].Blocks[0].(types.Text).Text
+		}
+		return e, nil
+	case types.ReasoningDelta:
+		msgs, err := c.redactMessages(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{types.Reasoning{Text: e.Delta}}}})
+		if err != nil {
+			return nil, err
+		}
+		e.Delta = msgs[0].Blocks[0].(types.Reasoning).Text
+		return e, nil
+	case types.ResultDelta:
+		msgs, err := c.redactMessages(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{types.Text{Text: e.Delta}}}})
+		if err != nil {
+			return nil, err
+		}
+		e.Delta = msgs[0].Blocks[0].(types.Text).Text
+		return e, nil
+	case types.ToolArgsDelta:
+		msgs, err := c.redactMessages(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{types.Text{Text: e.Delta}}}})
+		if err != nil {
+			return nil, err
+		}
+		e.Delta = msgs[0].Blocks[0].(types.Text).Text
+		return e, nil
+	case types.AssistantMessage:
+		out, err := c.redactMessages(ctx, info.SessionID, []types.Message{e.Message})
+		if err != nil {
+			return nil, err
+		}
+		e.Message = out[0]
+		return e, nil
+	case types.ToolStarted:
+		out, err := c.redactMessages(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{e.Call}}})
+		if err != nil {
+			return nil, err
+		}
+		e.Call = out[0].Blocks[0].(types.ToolUse)
+		return e, nil
+	case types.ToolFinished:
+		out, err := c.redactMessages(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{e.Result}}})
+		if err != nil {
+			return nil, err
+		}
+		e.Result = out[0].Blocks[0].(types.ToolResult)
+		return e, nil
+	case types.Suspended:
+		return e, nil
+	default:
 		return event, nil
 	}
-	info, _ := types.RunInfoFrom(ctx)
-	msgs, err := c.redactMessages(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{types.Text{Text: text.Delta}}}})
-	if err != nil {
-		return nil, err
-	}
-	if len(msgs[0].Blocks) > 0 {
-		text.Delta = msgs[0].Blocks[0].(types.Text).Text
-	}
-	return text, nil
 }

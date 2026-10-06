@@ -575,6 +575,11 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 			}
 		}
 	}
+	redactedState, err := lc.redactState(ctx, st)
+	if err != nil {
+		return nil, err
+	}
+	env.State = redactedState
 	data, err := encodeCheckpoint(env)
 	if err != nil {
 		return nil, err
@@ -604,6 +609,72 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 		}
 	}
 	return types.Suspended{Token: token, Reason: reason, Payload: payload, WakeAt: wakeAt}, nil
+}
+
+func (lc *Lifecycle) redactState(ctx context.Context, st runtime.State) (runtime.State, error) {
+	if lc.redactor == nil || len(lc.redactionPolicy.Detectors) == 0 {
+		return st, nil
+	}
+	if len(st.Pending) == 0 {
+		return st, nil
+	}
+	msgs := make([]types.Message, len(st.Pending))
+	for i, call := range st.Pending {
+		msgs[i] = types.Message{Blocks: []types.Block{call}}
+	}
+	redacted, err := lc.redactMessages(ctx, msgs)
+	if err != nil {
+		return st, err
+	}
+	for i := range st.Pending {
+		if len(redacted[i].Blocks) > 0 {
+			if call, ok := redacted[i].Blocks[0].(types.ToolUse); ok {
+				st.Pending[i] = call
+			}
+		}
+	}
+	return st, nil
+}
+
+func (lc *Lifecycle) redactMessages(ctx context.Context, msgs []types.Message) ([]types.Message, error) {
+	if lc.redactor == nil || len(lc.redactionPolicy.Detectors) == 0 {
+		return msgs, nil
+	}
+	blocks := make([]types.Block, 0)
+	for _, msg := range msgs {
+		blocks = append(blocks, msg.Blocks...)
+	}
+	redacted, m, err := lc.redactor.Redact(ctx, blocks, lc.redactionPolicy)
+	if err != nil {
+		return nil, fmt.Errorf("redact history: %w", err)
+	}
+	if lc.redactionMaps == nil {
+		return nil, fmt.Errorf("redaction map store missing")
+	}
+	info, _ := types.RunInfoFrom(ctx)
+	info.SessionID = lc.sessionID
+	m.Session, m.Tenant = lc.sessionID, info.Principal.Tenant
+	if old, err := lc.redactionMaps.Get(ctx, info.Principal.Tenant, lc.sessionID); err == nil {
+		for token, entity := range old.Entries {
+			if m.Entries == nil {
+				m.Entries = make(map[string]types.Entity)
+			}
+			m.Entries[token] = entity
+		}
+	} else if !errors.Is(err, stores.ErrRedactionMapNotFound) {
+		return nil, fmt.Errorf("load redaction map: %w", err)
+	}
+	if err := lc.redactionMaps.Put(ctx, info.Principal.Tenant, lc.sessionID, m); err != nil {
+		return nil, fmt.Errorf("store redaction map: %w", err)
+	}
+	out := append([]types.Message(nil), msgs...)
+	offset := 0
+	for i := range out {
+		n := len(out[i].Blocks)
+		out[i].Blocks = append([]types.Block(nil), redacted[offset:offset+n]...)
+		offset += n
+	}
+	return out, nil
 }
 
 // specFor resolves one registered tool spec the way approvalsFor does:
@@ -805,15 +876,26 @@ func (lc *Lifecycle) applySignals(ctx context.Context, st runtime.State, sigs []
 			steered = true
 			continue
 		}
-		v, aerr := lc.appender.Append(ctx, st.HistoryVersion, sig.Message)
+		messageID := sig.Message.ID
+		msg := sig.Message
+		if lc.redactor != nil && len(lc.redactionPolicy.Detectors) > 0 {
+			redacted, err := lc.redactMessages(ctx, []types.Message{sig.Message})
+			if err != nil {
+				return st, false, false, nil, err
+			}
+			msg = redacted[0]
+			msg.ID = messageID
+		}
+		v, aerr := lc.appender.Append(ctx, st.HistoryVersion, msg)
 		if aerr != nil {
 			return st, false, false, nil, aerr
 		}
+		sig.Message = msg
 		st.HistoryVersion = v
 		if n := steerNotesFrom(ctx); n != nil {
 			n.add(sig.Message)
 		}
-		evs = append(evs, types.SteerApplied{MessageID: sig.Message.ID})
+		evs = append(evs, types.SteerApplied{MessageID: messageID})
 		steered = true
 	}
 	if !steered {

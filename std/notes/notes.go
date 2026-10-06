@@ -8,6 +8,7 @@ package notes
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	gohan "github.com/victorzhuk/gohan/core"
@@ -19,11 +20,19 @@ import (
 const DefaultMaxNotes = 2048
 
 type config struct {
-	maxNotes int
+	maxNotes        int
+	redactor        types.Redactor
+	redactionPolicy types.RedactionPolicy
+	redactionMaps   stores.RedactionMaps
 }
 
-// Option adjusts the notes pair at construction.
 type Option func(*config)
+
+func WithRedaction(redactor types.Redactor, policy types.RedactionPolicy, maps stores.RedactionMaps) Option {
+	return func(c *config) {
+		c.redactor, c.redactionPolicy, c.redactionMaps = redactor, policy, maps
+	}
+}
 
 // WithMaxNotes caps the notes injected into the session slot, in bytes.
 func WithMaxNotes(n int) Option {
@@ -35,9 +44,12 @@ func WithMaxNotes(n int) Option {
 // the next run reads. The value is built once and shared by every run;
 // per-request state comes only from ctx and args.
 type Notes struct {
-	store stores.NotesStore
-	max   int
-	tool  types.Tool
+	store           stores.NotesStore
+	max             int
+	tool            types.Tool
+	redactor        types.Redactor
+	redactionPolicy types.RedactionPolicy
+	redactionMaps   stores.RedactionMaps
 }
 
 // New builds the notes pair over the store.
@@ -58,6 +70,31 @@ func New(store stores.NotesStore, opts ...Option) (*Notes, error) {
 			if args.ExpectedVersion != 0 {
 				version = args.ExpectedVersion
 			}
+			if cfg.redactor != nil && len(cfg.redactionPolicy.Detectors) > 0 {
+				info, _ := types.RunInfoFrom(ctx)
+				blocks, m, err := cfg.redactor.Redact(ctx, []types.Block{types.Text{Text: args.Notes}}, cfg.redactionPolicy)
+				if err != nil {
+					return "", fmt.Errorf("notes_write: redact: %w", err)
+				}
+				if cfg.redactionMaps == nil {
+					return "", fmt.Errorf("notes_write: redaction map store missing")
+				}
+				m.Tenant, m.Session = info.Principal.Tenant, info.SessionID
+				if old, err := cfg.redactionMaps.Get(ctx, m.Tenant, m.Session); err == nil {
+					for token, entity := range old.Entries {
+						if m.Entries == nil {
+							m.Entries = make(map[string]types.Entity)
+						}
+						m.Entries[token] = entity
+					}
+				} else if !errors.Is(err, stores.ErrRedactionMapNotFound) {
+					return "", fmt.Errorf("notes_write: load redaction map: %w", err)
+				}
+				if err := cfg.redactionMaps.Put(ctx, m.Tenant, m.Session, m); err != nil {
+					return "", fmt.Errorf("notes_write: store redaction map: %w", err)
+				}
+				args.Notes = blocks[0].(types.Text).Text
+			}
 			next, err := store.Write(ctx, key, version, args.Notes)
 			if err != nil {
 				return "", fmt.Errorf("notes_write: %w", err)
@@ -69,7 +106,7 @@ func New(store stores.NotesStore, opts ...Option) (*Notes, error) {
 	if err != nil {
 		return nil, fmt.Errorf("notes_write: %w", err)
 	}
-	return &Notes{store: store, max: cfg.maxNotes, tool: write}, nil
+	return &Notes{store: store, max: cfg.maxNotes, tool: write, redactor: cfg.redactor, redactionPolicy: cfg.redactionPolicy, redactionMaps: cfg.redactionMaps}, nil
 }
 
 // sessionKey addresses the session notes record for one run. The harness
