@@ -57,18 +57,21 @@ type conversation struct {
 	// fresh runtime over the resolved configuration, the restored
 	// history and a ledger seeded from what the run record reports as
 	// spent. nil keeps the fixed foreign runtime.
-	newResumeRun func(ctx context.Context, sessionID string, hist stores.History, seed float64) (context.Context, runtime.Runtime, runtime.AgentRun, *chains.LimitsState, error)
-	log          stores.SessionLog
-	runs         stores.Runs
-	events       stores.EventLog
-	cps          stores.Checkpoints
-	creds        types.CredentialSource
-	policySrc    permission.ApprovalPolicySource
-	toolSpecs    func(name string) (types.ToolSpec, bool)
-	verifier     types.Verifier
-	journal      stores.Journal
-	detached     bool
-	wall         time.Duration
+	newResumeRun    func(ctx context.Context, sessionID string, hist stores.History, seed float64) (context.Context, runtime.Runtime, runtime.AgentRun, *chains.LimitsState, error)
+	log             stores.SessionLog
+	runs            stores.Runs
+	events          stores.EventLog
+	cps             stores.Checkpoints
+	redactor        types.Redactor
+	redactionPolicy types.RedactionPolicy
+	redactionMaps   stores.RedactionMaps
+	creds           types.CredentialSource
+	policySrc       permission.ApprovalPolicySource
+	toolSpecs       func(name string) (types.ToolSpec, bool)
+	verifier        types.Verifier
+	journal         stores.Journal
+	detached        bool
+	wall            time.Duration
 	// stall bounds how long the attached consumer may take no event
 	// before the run preempts at its next safe point; zero disables
 	// detection.
@@ -157,8 +160,11 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 		c.log = stack.stores.SessionLog
 		c.creds = stack.credentials
 		c.policySrc = stack.approvalPolicy
-		c.verifier = stack.verifier
-		c.journal = stack.stores.Journal
+		c.redactionMaps = stack.stores.RedactionMaps
+		if cfg := stack.native[spec]; cfg != nil {
+			c.redactor = cfg.redactor
+			c.redactionPolicy = cfg.redactionPolicy
+		}
 		c.allowAnonymous = stack.allowAnonymous
 		if l, ok := stack.Limits(spec); ok {
 			c.wall = l.MaxWallClock
@@ -219,8 +225,13 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 				yield(nil, err)
 				return
 			}
-			if _, aerr := c.log.Append(ctx, sessionID, hist.Version, msg); aerr != nil {
-				yield(nil, aerr)
+			stored, err := c.redactMessages(ctx, sessionID, []types.Message{msg})
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			if _, err := c.log.Append(ctx, sessionID, hist.Version, stored...); err != nil {
+				yield(nil, err)
 				return
 			}
 			yield(types.Done{Reason: types.StopHandedOff}, nil)
@@ -291,7 +302,11 @@ func (c *conversation) runIdentityCtx(ctx context.Context, runID, sessionID stri
 func (c *conversation) appendInput(ctx context.Context, lease stores.Lease, sessionID string, msg Message, yield func(Event, error) bool) bool {
 	hist, err := c.load(ctx, sessionID)
 	if err == nil {
-		_, err = c.log.Append(ctx, sessionID, hist.Version, msg)
+		var stored []types.Message
+		stored, err = c.redactMessages(ctx, sessionID, []types.Message{msg})
+		if err == nil {
+			_, err = c.log.Append(ctx, sessionID, hist.Version, stored...)
+		}
 	}
 	if err != nil {
 		lc := NewLifecycle(c.verifyOptions([]LifecycleOption{WithLifecycleRuns(c.runs, lease), WithLifecycleApprovalPolicy(c.policySrc), WithLifecycleToolSpecs(c.toolSpecs)})...)
@@ -378,7 +393,12 @@ func (c *conversation) stream(ctx context.Context, lease stores.Lease, sessionID
 // reattaching later would otherwise miss the event, and an error tuple is
 // never followed by another tuple.
 func (c *conversation) relay(ctx context.Context, runID string, ev Event, yield func(Event, error) bool) bool {
-	if err := c.events.Append(ctx, runID, stores.Event{Payload: ev, Meta: types.EventMeta{RunID: runID}}); err != nil {
+	stored, err := c.redactEvent(ctx, ev)
+	if err != nil {
+		yield(nil, fmt.Errorf("redact event: %w", err))
+		return false
+	}
+	if err := c.events.Append(ctx, runID, stores.Event{Payload: stored, Meta: types.EventMeta{RunID: runID}}); err != nil {
 		yield(nil, fmt.Errorf("record event: %w", err))
 		return false
 	}
@@ -432,4 +452,81 @@ func newRunID() (string, error) {
 		return "", fmt.Errorf("mint run id: %w", err)
 	}
 	return "run-" + hex.EncodeToString(b[:]), nil
+}
+func (c *conversation) redactMessages(ctx context.Context, sessionID string, msgs []types.Message) ([]types.Message, error) {
+	if c.redactor == nil || len(c.redactionPolicy.Detectors) == 0 {
+		return msgs, nil
+	}
+	info, _ := types.RunInfoFrom(ctx)
+	info.SessionID = sessionID
+	ctx = types.WithRunInfo(ctx, info)
+	blocks := make([]types.Block, 0)
+	for _, msg := range msgs {
+		blocks = append(blocks, msg.Blocks...)
+	}
+	redacted, m, err := c.redactor.Redact(ctx, blocks, c.redactionPolicy)
+	if err != nil {
+		return nil, fmt.Errorf("redact messages: %w", err)
+	}
+	if c.redactionMaps == nil {
+		return nil, fmt.Errorf("redaction map store missing")
+	}
+	m, err = c.mergeRedactionMap(ctx, m)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.redactionMaps.Put(ctx, info.Principal.Tenant, sessionID, m); err != nil {
+		return nil, fmt.Errorf("store redaction map: %w", err)
+	}
+	out := append([]types.Message(nil), msgs...)
+	offset := 0
+	for i := range out {
+		n := len(out[i].Blocks)
+		out[i].Blocks = append([]types.Block(nil), redacted[offset:offset+n]...)
+		offset += n
+	}
+	return out, nil
+}
+
+func (c *conversation) mergeRedactionMap(ctx context.Context, m types.RedactionMap) (types.RedactionMap, error) {
+	info, _ := types.RunInfoFrom(ctx)
+	old, err := c.redactionMaps.Get(ctx, info.Principal.Tenant, info.SessionID)
+	if err != nil && !errors.Is(err, stores.ErrRedactionMapNotFound) {
+		return types.RedactionMap{}, fmt.Errorf("load redaction map: %w", err)
+	}
+	for token, entity := range old.Entries {
+		if m.Entries == nil {
+			m.Entries = make(map[string]types.Entity)
+		}
+		m.Entries[token] = entity
+	}
+	return m, nil
+}
+
+func (c *conversation) redactEvent(ctx context.Context, event Event) (Event, error) {
+	if c.redactor == nil || len(c.redactionPolicy.Detectors) == 0 {
+		return event, nil
+	}
+	text, ok := event.(types.TextDelta)
+	if !ok {
+		if msg, yes := event.(types.AssistantMessage); yes {
+			info, _ := types.RunInfoFrom(ctx)
+			out, err := c.redactMessages(ctx, info.SessionID, []types.Message{msg.Message})
+			if err != nil {
+				return nil, err
+			}
+			msg.Message = out[0]
+			return msg, nil
+		}
+		return event, nil
+	}
+	info, _ := types.RunInfoFrom(ctx)
+	msgs, err := c.redactMessages(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{types.Text{Text: text.Delta}}}})
+	if err != nil {
+		return nil, err
+	}
+	if len(msgs[0].Blocks) > 0 {
+		text.Delta = msgs[0].Blocks[0].(types.Text).Text
+	}
+	return text, nil
 }

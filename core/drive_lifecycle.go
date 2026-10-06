@@ -110,26 +110,29 @@ func AppendStepEnd(ctx context.Context, h HistoryAppender, expected int64, asst 
 // the lifecycle ordering runtime/spec.md fixes: history append before the
 // gate, Checkpoints.Put before Runs.Suspend, Runs.Finish before Done.
 type Lifecycle struct {
-	runs        stores.Runs
-	lease       stores.Lease
-	hb          *StreamHeartbeat
-	resumeState *runtime.State
-	sessionID   string
-	flow        string
-	originator  types.Principal
-	telemetry   types.Telemetry
-	reason      types.SuspendReason
-	appender    HistoryAppender
-	histVersion int64
-	uncertain   func(runtime.State) []types.CallKey
-	verify      types.Verifier
-	journal     stores.Journal
-	maxTurns    int
-	resultRef   string
-	waker       Waker
-	ledger      *chains.LimitsState
-	approval    permission.ApprovalPolicySource
-	toolLookup  func(name string) (types.ToolSpec, bool)
+	runs            stores.Runs
+	lease           stores.Lease
+	hb              *StreamHeartbeat
+	resumeState     *runtime.State
+	sessionID       string
+	flow            string
+	originator      types.Principal
+	telemetry       types.Telemetry
+	reason          types.SuspendReason
+	appender        HistoryAppender
+	histVersion     int64
+	uncertain       func(runtime.State) []types.CallKey
+	verify          types.Verifier
+	journal         stores.Journal
+	maxTurns        int
+	resultRef       string
+	waker           Waker
+	ledger          *chains.LimitsState
+	approval        permission.ApprovalPolicySource
+	toolLookup      func(name string) (types.ToolSpec, bool)
+	redactor        types.Redactor
+	redactionPolicy types.RedactionPolicy
+	redactionMaps   stores.RedactionMaps
 }
 
 // LifecycleOption configures a Lifecycle.
@@ -171,6 +174,11 @@ func WithLifecycleOriginator(p types.Principal) LifecycleOption {
 // WithLifecycleSession sets the session id a checkpoint records.
 func WithLifecycleSession(id string) LifecycleOption {
 	return func(lc *Lifecycle) { lc.sessionID = id }
+}
+func WithLifecycleRedaction(redactor types.Redactor, policy types.RedactionPolicy, maps stores.RedactionMaps, sessionID string) LifecycleOption {
+	return func(lc *Lifecycle) {
+		lc.redactor, lc.redactionPolicy, lc.redactionMaps, lc.sessionID = redactor, policy, maps, sessionID
+	}
 }
 
 // WithLifecycleAppender binds the history port a drained steer is appended
