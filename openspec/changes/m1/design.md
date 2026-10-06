@@ -104,13 +104,13 @@ The eight IDs the `m1` proposal names for the two adapters map onto the rows abo
 
 | ID | Owner | Depends on | Status | Evidence |
 |---|---|---|---|---|
-| `working-state.subject-memory-isolated` | `m1-subject-memory` | — | integration gap | `stores.MemoryStore` and `ErrMemoryStoreRequired` ship; no memory tool is registered by any preset |
-| `working-state.memory-write-untrusted-denied` | `m1-subject-memory` | `m1-taint-enforcement` | integration gap | as above; the untrusted-turn guard is `std/guard`'s `StageContext` |
-| `working-state.memory-write-schema` | `m1-subject-memory` | — | integration gap | as above |
-| `working-state.memory-read-carries-origin` | `m1-subject-memory` | `m1-taint-enforcement` | integration gap | as above |
-| `working-state.memory-consolidate-at-done` | `m1-subject-memory` | — | integration gap | as above |
-| `working-state.memory-forget` | `m1-subject-memory` | — | integration gap | as above |
-| `working-state.memory-ttl-eviction` | `m1-subject-memory` | — | missing | `MemoryEntry` carries no timestamps and the memory store enforces no TTL |
+| `working-state.subject-memory-isolated` | `m1-subject-memory` | — | done | `std/notes/memory_test.go`, `core/memory_test.go`; shipped in `archive/2026-10-07-m1-subject-memory` |
+| `working-state.memory-write-untrusted-denied` | `m1-subject-memory` | `m1-taint-enforcement` | done | `std/notes/memory_test.go` (guard route + `gohan.memory.write_denied`) |
+| `working-state.memory-write-schema` | `m1-subject-memory` | — | done | `core/stores/memory_test.go` (`ErrMemoryWriteInvalid`) |
+| `working-state.memory-read-carries-origin` | `m1-subject-memory` | `m1-taint-enforcement` | done | `std/notes/memory_test.go` (`OriginTool{"memory_read"}`) |
+| `working-state.memory-consolidate-at-done` | `m1-subject-memory` | — | done | `std/notes/consolidate_test.go`, `core/consolidation_test.go` |
+| `working-state.memory-forget` | `m1-subject-memory` | — | done | `core/memory_test.go` (`Stack.ForgetMemory`) |
+| `working-state.memory-ttl-eviction` | `m1-subject-memory` | — | done | `core/stores/memory_test.go` (TTL + `MaxEntries`, `gohan.memory.evicted`) |
 
 ### 2.6 redaction (8) and guards (1)
 
