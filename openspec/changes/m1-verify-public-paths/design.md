@@ -2,7 +2,7 @@
 
 ## Context
 
-The tools contract assigns Verify to three driver boundaries: after an Unknown SideEffect result, while Resume or Recover handles journal entries that remain Unknown, and before Done when uncertainty remains. `std.Verifier.ReconcileUnknown` currently discards journal results at `std/verify.go:39-40`; it only completes the original entry on success. The capability ports and journal argument retention are now decided by ADR-0157. This package owns the Verify integration gap and only `tools.verify-reconciles-unknown`; it does not claim `tools.verify-on-recover`, `tools.verify-read-only`, or `tools.verify-error` as additional scenario IDs.
+The tools contract assigns Verify to three driver boundaries: after an Unknown SideEffect result, while Resume or Recover handles journal entries that remain Unknown, and before Done when uncertainty remains. `std.Verifier.ReconcileUnknown` currently discards journal results at `std/verify.go:39-40`; it only completes the original entry on success. The capability ports and journal argument retention are now decided by ADR-0157. This package owns the Verify integration gap and only `tools.verify-reconciles-unknown`; coverage of `tools.verify-on-recover`, `tools.verify-read-only`, and `tools.verify-error` is unchanged. Their scenarios remain restated as part of the modified Verification requirement.
 
 ## Goals / Non-Goals
 
@@ -54,7 +54,7 @@ Seed an Unknown journal reservation through the public Build-created native flow
 
 1. Resolved by the driver: `Journal.Reserve` takes `args json.RawMessage`, `stores.Entry` gains `Args`, and `Journal.Unknown(ctx, sessionID)` lists the session's unknown entries with them. What remains is this package's own plumbing on the live path: the callback and the field that carry the verifier into `batchEffect`, `Resume`, `Recover` and `finishTurn`, and the configured-verifier binding at `Build`.
 2. The live native flow does not yet expose the exact callback plumbing from `turnConfig`/`batchEffect` or journal/tool-spec dependencies in Resume/Recover. The implementation design must identify those exact fields and constructors after the journal port contract lands. This blocks implementation admission; do not infer arguments from history or add a core-to-std dependency.
-3. The ADR specifies checksum encoding but does not specify behavior when `AuditLogFrom(ctx)` is absent. The implementation contract must state whether absence is an error or a permitted no-audit path, consistent with the tools requirement. This blocks admission until resolved.
+3. Resolved: a reconciliation needs its audit record, so an unbound audit log is an error, not a silent no-audit path. `core.AuditLogFrom(ctx)` returns `(stores.AuditLog, bool)` (`core/session_takeover.go:52`); when the second value is false the reconciliation returns that error and leaves the entry `Unknown`, which is the same rule the `tools` requirement now states for a reconciliation whose audit record cannot be persisted. The implementation names the error it returns and asserts the branch in its test.
 
 ## Risks / Trade-offs
 

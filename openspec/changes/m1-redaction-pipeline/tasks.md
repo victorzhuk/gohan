@@ -10,10 +10,10 @@
   - evidence: design public-path test seeding; tasks 2-6 require store interception and public Build/Send/Resume tests.
 - [ ] 1.4 Implement the package-owned ADR-0157 seams: declare redaction contracts in `core/types`, implement `types.Redactor` in `std/redact`, add `WithRedactor(types.Redactor) Option` to native config resolution, and add tenant/session-keyed `Stores.RedactionMaps` Put/Get integration without checkpoint storage.
   - acceptance: no second builder or `NativeSpec.Redactor`; resolved native flow carries the option through Build, Send, and Resume; map storage is independent of checkpoints and journal entries.
-  - verify: `openspec validate m1-redaction-pipeline --strict --no-interactive`
+  - verify: `go test -timeout 10m ./core -run 'Test.*Redactor.*(Build|Registration)'`
 - [ ] 1.5 Integrate residency through `RegionProvider.Region() string` at Build and freeze the map/region shapes consumed by `m1-subject-erasure-residency`; keep `EraseSubject` outside this package.
   - acceptance: every configured store and reachable profile is checked for residency-bound tenants; absent or empty store region fails closed; error identifies tenant, target, required region, and actual region.
-  - verify: `openspec validate m1-redaction-pipeline --strict --no-interactive`
+  - verify: `go test -timeout 10m ./core -run 'Test.*Residency.*Build'`
 
 ## Implementation
 
@@ -37,8 +37,8 @@
   - verify: `go test -timeout 10m ./core -run 'Test.*Redaction.*SessionLog'`
 - [ ] 4.2 Protect EventLog, checkpoints, OutputStore, and notes writes; persist maps separately with tenant/session binding and retention. Verify each configured sink using intercepting stores.
   - verify: `go test -timeout 10m ./core ./std/notes ./std/outputs -run 'Test.*Redaction.*(Event|Checkpoint|Output|Notes)'`
-- [ ] 4.3 Add opt-in telemetry content protection before capture. Verify raw entities are absent from captured content and telemetry labels.
-  - verify: `go test -timeout 2m ./core -run 'Test.*Redaction.*Telemetry'`
+- [ ] 4.3 Assert that no telemetry path receives content. Apply the redactor when a live content-capture seam lands.
+  - verify: `go test -timeout 10m ./core -run 'Test.*Redaction.*Telemetry'`
 
 ### 5. Output rehydration and residency
 

@@ -23,4 +23,4 @@ None.
 
 ## Impact
 
-Implementation affects versioned record declarations and decode/read paths in `core/stores`, schema conformance in `testkit/storetest`, and the store test bindings. It does not add a persistence adapter or change a serialized store in-place. Root module remains pre-v1 through M2; no release tags are part of this change (`openspec/changes/m1/design.md:27`).
+Implementation affects versioned record declarations, serialized memory-store backing paths and decode/read paths in `core/stores`, schema conformance in `testkit/storetest`, and store test bindings. It does not add a persistence adapter. Root module remains pre-v1 through M2; no release tags are part of this change (`openspec/changes/m1/design.md:27`).

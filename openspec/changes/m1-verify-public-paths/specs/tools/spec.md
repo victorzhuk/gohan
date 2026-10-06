@@ -15,6 +15,7 @@ ID: `tools.verify-reconciles-unknown`
 - WHEN a `SideEffect` call times out with `Outcome: Unknown` and the tool declares `Verify` that finds the booking exists
 - THEN the entry's recorded result becomes `Outcome: Succeeded`, the model receives the verified result, and `Done.Uncertain` is empty
 
+The following existing scenarios are restated as unchanged coverage of this modified requirement; this package claims only `tools.verify-reconciles-unknown`.
 #### Scenario: verify on recover
 ID: `tools.verify-on-recover`
 - WHEN a run is reclaimed after a crash with two `Unknown` entries, one with `Verify`
