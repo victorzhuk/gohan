@@ -62,3 +62,49 @@ func TestCacheUsageReported(t *testing.T) {
 		}
 	})
 }
+
+func TestCacheWriteSocialized(t *testing.T) {
+	model := func(_ context.Context, _ types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+		return func(yield func(types.ModelChunk, error) bool) {
+			yield(types.ModelChunk{Kind: types.DeltaText, Delta: "x", Usage: &types.Usage{InputTokens: 10}}, nil)
+		}
+	}
+	mark := func(hit bool) types.ModelRequest {
+		req := types.ModelRequest{Messages: []types.Message{{Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: "hi"}}}}}
+		return cache.Mark(req, cache.Outcome{Hit: hit, Tokens: 40})
+	}
+	run := func(t *testing.T, p types.Pricing) float64 {
+		st := chains.NewLimitsState()
+		mw := chains.Limits(types.RunLimits{MaxWallClock: time.Minute}, p, st)
+		for _, hit := range []bool{false, true} {
+			for _, err := range mw(model)(context.Background(), mark(hit)) {
+				if err != nil {
+					t.Fatalf("model: %v", err)
+				}
+			}
+		}
+		return st.TreeCost()
+	}
+	base := types.Pricing{Input: 1, CachedInput: 0.1, CacheWrite: 2}
+	socialized := base
+	socialized.SocializeCacheWrites = true
+
+	t.Run("cache write socialized", func(t *testing.T) {
+		if got := run(t, socialized); got != 2*(10.0+40*0.1) {
+			t.Fatalf("cost = %v, want %v with the write priced at the cached rate", got, 2*(10.0+40*0.1))
+		}
+	})
+	t.Run("lifecycle.cache-write-socialized", func(t *testing.T) {
+		if got := run(t, socialized); got != 2*(10.0+40*0.1) {
+			t.Fatalf("socialized run cost = %v, want %v with the write priced at the cached rate", got, 2*(10.0+40*0.1))
+		}
+		if got := run(t, base); got != 10.0+40*2+10.0+40*0.1 {
+			t.Fatalf("flag-off run cost = %v, want %v with the write premium kept", got, 10.0+40*2+10.0+40*0.1)
+		}
+	})
+	t.Run("cache write premium kept", func(t *testing.T) {
+		if got := run(t, base); got != 10.0+40*2+10.0+40*0.1 {
+			t.Fatalf("cost = %v, want %v with the write premium kept", got, 10.0+40*2+10.0+40*0.1)
+		}
+	})
+}
