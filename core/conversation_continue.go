@@ -66,7 +66,7 @@ func (c *conversation) Continue(ctx context.Context, sessionID string) iter.Seq2
 			err = types.ErrEmptyHistory
 		}
 		if err != nil {
-			lc := NewLifecycle(WithLifecycleRuns(c.runs, lease), WithLifecycleApprovalPolicy(c.policySrc), WithLifecycleToolSpecs(c.toolSpecs))
+			lc := NewLifecycle(c.verifyOptions([]LifecycleOption{WithLifecycleRuns(c.runs, lease), WithLifecycleApprovalPolicy(c.policySrc), WithLifecycleToolSpecs(c.toolSpecs)})...)
 			if ferr := lc.finishRun(ctx, runtime.State{}, stores.Failed, nil); ferr != nil {
 				yield(nil, ferr)
 				return

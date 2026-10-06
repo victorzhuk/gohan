@@ -1,6 +1,8 @@
 package stores
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -110,6 +112,9 @@ func (r *SchemaRegistry) Upcast(shape string, from SchemaVersion, raw []byte) ([
 	if from > r.current {
 		return nil, fmt.Errorf("gohan: %s at version %d is newer than %d: %w", shape, from, r.current, types.ErrCheckpointIncompatible)
 	}
+	if _, ok := r.declared[shape]; !ok {
+		return nil, fmt.Errorf("gohan: %s has no registered version: %w", shape, types.ErrSchemaTooOld)
+	}
 	for v := from; v < r.current; v++ {
 		up, ok := r.up[shape][v]
 		if !ok {
@@ -122,6 +127,43 @@ func (r *SchemaRegistry) Upcast(shape string, from SchemaVersion, raw []byte) ([
 		raw = next
 	}
 	return raw, nil
+}
+
+// RecordEnvelope stores schema metadata beside a serialized domain record.
+type RecordEnvelope struct {
+	Shape         string          `json:"shape"`
+	SchemaVersion int             `json:"schema_version"`
+	Payload       json.RawMessage `json:"payload"`
+}
+
+// DecodeRecord applies registered upcasters to a copy of the stored payload,
+// then decodes the current representation.
+func DecodeRecord[T any](ctx context.Context, reg *SchemaRegistry, env RecordEnvelope) (T, error) {
+	var zero T
+	if reg == nil {
+		return zero, fmt.Errorf("decode %s: nil schema registry", env.Shape)
+	}
+	payload := append([]byte(nil), env.Payload...)
+	decoded, err := reg.Upcast(env.Shape, SchemaVersion(env.SchemaVersion), payload)
+	if err != nil {
+		return zero, fmt.Errorf("decode %s at version %d: %w", env.Shape, env.SchemaVersion, err)
+	}
+	from := env.SchemaVersion
+	if from == 0 {
+		from = 1
+	}
+	if SchemaVersion(from) < reg.current {
+		if tel := types.TelemetryFrom(ctx); tel != nil {
+			tel.Count(ctx, "gohan.schema.upcast", 1,
+				types.Int("from", int64(from)),
+				types.Int("to", int64(reg.current)))
+		}
+	}
+	var value T
+	if err := json.Unmarshal(decoded, &value); err != nil {
+		return zero, fmt.Errorf("decode %s at version %d: %w", env.Shape, env.SchemaVersion, err)
+	}
+	return value, nil
 }
 
 // Unregistered lists declared shapes that are not at the current version and

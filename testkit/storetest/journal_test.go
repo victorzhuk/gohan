@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -31,7 +32,7 @@ func newFakeJournal(_ *testing.T, ttl time.Duration) JournalStore {
 	}
 }
 
-func (f *fakeJournal) Reserve(_ context.Context, k types.CallKey, fp string) (JournalEntry, bool, error) {
+func (f *fakeJournal) Reserve(_ context.Context, k types.CallKey, tool string, fp string, args json.RawMessage) (JournalEntry, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 

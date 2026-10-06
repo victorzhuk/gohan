@@ -122,7 +122,7 @@ var catalog = []catalogRow{
 	{CodeContentPolicy, Permanent, 422, 0, "Content policy", fixedDetail("provider refused the content")},
 	{CodeAborted, Permanent, 422, 0, "Aborted", fielded("run aborted", "run aborted: %s", "reason")},
 	{CodeStreamInterrupted, Retryable, 0, 0, "Stream interrupted", fixedDetail("stream closed without completing")},
-	{CodeConfiguration, Permanent, 500, 0, "Configuration error", fixedDetail("invalid or missing configuration")},
+	{CodeConfiguration, Permanent, 500, 0, "Configuration error", fielded("invalid or missing configuration", "model option %s conflicts with a governed field", "key")},
 	{CodeVersionConflict, Permanent, 409, 0, "Version conflict", fixedDetail("append with a stale version")},
 	{CodeStructuredOutput, Permanent, 422, 0, "Structured output", fixedDetail("model output failed schema validation")},
 	{CodeChainStep, Permanent, 500, 0, "Chain step failed", fielded("chain step failed", "chain step %s failed", "stage")},
@@ -198,6 +198,11 @@ func stageName(s GuardStage) string {
 
 func fieldsFor(row catalogRow, err error) map[string]string {
 	switch row.code {
+	case CodeConfiguration:
+		var e ErrExtraGovernedKey
+		if errors.As(err, &e) {
+			return map[string]string{"key": e.Key}
+		}
 	case CodeAborted:
 		var e *AbortError
 		if errors.As(err, &e) {
@@ -294,8 +299,11 @@ func ProblemOf(err error) Problem {
 	if errors.As(err, &partial) {
 		return buildProblem(catalog[34], nil)
 	}
+	var extraKey ErrExtraGovernedKey
+	if errors.As(err, &extraKey) {
+		return buildProblem(catalogByCode[CodeConfiguration], map[string]string{"key": extraKey.Key})
+	}
 	// ErrToolCollision and ErrToolSetDrift carry slices, so errors.Is
-	// cannot compare them; match by type.
 	var coll ErrToolCollision
 	if errors.As(err, &coll) {
 		return buildProblem(catalog[30], nil)

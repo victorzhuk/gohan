@@ -2,6 +2,7 @@ package gohan
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -16,8 +17,8 @@ type journalAdapter struct {
 	j *stores.MemoryJournal
 }
 
-func (a journalAdapter) Reserve(ctx context.Context, k types.CallKey, fp string) (storetest.JournalEntry, bool, error) {
-	e, created, err := a.j.Reserve(ctx, k, stores.Fingerprint(fp))
+func (a journalAdapter) Reserve(ctx context.Context, k types.CallKey, tool string, fp string, args json.RawMessage) (storetest.JournalEntry, bool, error) {
+	e, created, err := a.j.Reserve(ctx, k, tool, stores.Fingerprint(fp), args)
 	if err != nil {
 		return storetest.JournalEntry{}, false, err
 	}

@@ -14,6 +14,12 @@ import (
 	"github.com/victorzhuk/gohan/core/types"
 )
 
+type lcVerifierFunc func(context.Context, string, json.RawMessage, types.CallKey, types.ToolResult) (types.ToolResult, bool, error)
+
+func (f lcVerifierFunc) Reconcile(ctx context.Context, tool string, args json.RawMessage, key types.CallKey, res types.ToolResult) (types.ToolResult, bool, error) {
+	return f(ctx, tool, args, key, res)
+}
+
 // order records the sequence of observable lifecycle effects a test wants
 // to compare.
 type order struct {
@@ -512,16 +518,25 @@ func TestRuntimeLifecycle(t *testing.T) {
 		rt := &lcRuntime{histVer: 1, script: []lcStep{{status: runtime.DoneStatus}}}
 		runs := &lcRuns{rec: rec}
 		key := types.CallKey{SessionID: "s-1", CallID: "call-1"}
+		journal := stores.NewMemoryJournal()
+		if _, _, err := journal.Reserve(ctx, key, "writer", "fp", nil); err != nil {
+			t.Fatalf("reserve unknown call: %v", err)
+		}
+		if err := journal.Complete(ctx, key, types.ToolResult{Outcome: types.Unknown}); err != nil {
+			t.Fatalf("complete unknown call: %v", err)
+		}
 		lc := NewLifecycle(
 			WithLifecycleRuns(runs, stores.Lease{RunID: "run-1"}),
+			WithLifecycleSession(key.SessionID),
+			WithLifecycleJournal(journal),
 			WithLifecycleUncertain(func(runtime.State) []types.CallKey { return []types.CallKey{key} }),
-			WithLifecycleVerify(func(_ context.Context, keys []types.CallKey) ([]types.CallKey, error) {
+			WithLifecycleVerify(lcVerifierFunc(func(_ context.Context, _ string, _ json.RawMessage, got types.CallKey, _ types.ToolResult) (types.ToolResult, bool, error) {
 				rec.mark("verify")
-				if len(keys) != 1 || keys[0] != key {
-					t.Fatalf("verify keys = %v, want [call-1]", keys)
+				if got.SessionID != key.SessionID || got.CallID != key.CallID+"/verify" {
+					t.Fatalf("verify key = %v, want %s/%s/verify", got, key.SessionID, key.CallID)
 				}
-				return nil, nil
-			}),
+				return types.ToolResult{}, true, nil
+			})),
 		)
 		evs, err := lcDrive(t, lc, rt, rec)
 		if err != nil {

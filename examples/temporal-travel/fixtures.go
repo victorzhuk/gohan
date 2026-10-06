@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/json/jsontext"
 	"time"
 
@@ -47,8 +48,7 @@ func (t *Trip) toolChain() chains.ToolChain {
 				// The trip runs one session; recovery re-drives must
 				// reach the same journal key the live drive wrote.
 				key := types.CallKey{SessionID: flowName, CallID: call.ID}
-				entry, created, err := t.journal.Reserve(ctx, key,
-					stores.Fingerprint(call.Name+":"+string(call.Args)))
+				entry, created, err := t.journal.Reserve(ctx, key, call.Name, stores.Fingerprint(call.Name+":"+string(call.Args)), json.RawMessage(call.Args))
 				if err != nil {
 					return types.ToolResult{}, err
 				}

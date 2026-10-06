@@ -405,6 +405,12 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 		if c.policySrc != nil {
 			opts = append(opts, WithLifecycleApprovalPolicy(c.policySrc))
 		}
+		if c.verifier != nil {
+			opts = append(opts, WithLifecycleVerify(c.verifier))
+		}
+		if c.journal != nil {
+			opts = append(opts, WithLifecycleJournal(c.journal))
+		}
 		if c.toolSpecs != nil {
 			opts = append(opts, WithLifecycleToolSpecs(c.toolSpecs))
 		}

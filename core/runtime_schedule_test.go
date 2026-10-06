@@ -2,6 +2,7 @@ package gohan
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -111,7 +112,7 @@ func newFakeJournal() *fakeJournal {
 	return &fakeJournal{ended: map[types.CallKey]stores.Entry{}, res: map[types.CallKey]types.ToolResult{}, fps: map[types.CallKey]stores.Fingerprint{}}
 }
 
-func (j *fakeJournal) Reserve(_ context.Context, k types.CallKey, fp stores.Fingerprint) (stores.Entry, bool, error) {
+func (j *fakeJournal) Reserve(_ context.Context, k types.CallKey, _ string, fp stores.Fingerprint, args json.RawMessage) (stores.Entry, bool, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.seq = append(j.seq, "reserve:"+k.CallID)
@@ -120,7 +121,7 @@ func (j *fakeJournal) Reserve(_ context.Context, k types.CallKey, fp stores.Fing
 		return e, true, nil
 	}
 	j.fps[k] = fp
-	return stores.Entry{}, false, nil
+	return stores.Entry{Args: append(json.RawMessage(nil), args...)}, false, nil
 }
 
 // ByFingerprint answers the replay lookup: it returns every completed
@@ -134,6 +135,18 @@ func (j *fakeJournal) ByFingerprint(_ context.Context, sessionID string, fp stor
 			if e, ok := j.ended[k]; ok {
 				out = append(out, e)
 			}
+		}
+	}
+	return out, nil
+}
+
+func (j *fakeJournal) Unknown(_ context.Context, sessionID string) ([]stores.Entry, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	var out []stores.Entry
+	for key, entry := range j.ended {
+		if key.SessionID == sessionID && entry.Result.Outcome == types.Unknown {
+			out = append(out, entry)
 		}
 	}
 	return out, nil

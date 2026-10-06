@@ -19,7 +19,7 @@ func TestJournalLifecycle(t *testing.T) {
 		k := types.CallKey{SessionID: "s1", CallID: "c1"}
 		res := types.ToolResult{Outcome: types.Succeeded}
 
-		if _, created, err := j.Reserve(ctx, k, "fp"); err != nil || !created {
+		if _, created, err := j.Reserve(ctx, k, "create_booking", "fp", nil); err != nil || !created {
 			t.Fatalf("Reserve: created=%v err=%v", created, err)
 		}
 		if err := j.Complete(ctx, k, res); err != nil {
@@ -38,7 +38,7 @@ func TestJournalLifecycle(t *testing.T) {
 		if len(entries) != 0 {
 			t.Fatalf("after 25h: entries = %+v, want purged", entries)
 		}
-		if _, created, err := j.Reserve(ctx, k, "fp"); err != nil || !created {
+		if _, created, err := j.Reserve(ctx, k, "create_booking", "fp", nil); err != nil || !created {
 			t.Fatalf("Reserve after expiry: created=%v err=%v", created, err)
 		}
 	})
@@ -50,7 +50,7 @@ func TestJournalLifecycle(t *testing.T) {
 		k := types.CallKey{SessionID: "s1", CallID: "c1"}
 		res := types.ToolResult{Outcome: types.Succeeded}
 
-		if _, created, err := j.Reserve(ctx, k, "fp"); err != nil || !created {
+		if _, created, err := j.Reserve(ctx, k, "create_booking", "fp", nil); err != nil || !created {
 			t.Fatalf("Reserve: created=%v err=%v", created, err)
 		}
 		if err := j.Complete(ctx, k, res); err != nil {
@@ -74,7 +74,7 @@ func TestJournalLifecycle(t *testing.T) {
 			t.Fatalf("Result.Outcome = %v, want %v", e.Result.Outcome, res.Outcome)
 		}
 
-		got, created, err := j.Reserve(ctx, k, "fp")
+		got, created, err := j.Reserve(ctx, k, "create_booking", "fp", nil)
 		if err != nil {
 			t.Fatalf("Reserve: %v", err)
 		}

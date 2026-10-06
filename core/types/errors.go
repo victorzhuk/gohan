@@ -53,6 +53,7 @@ var (
 	ErrEgressPolicyRequired = errors.New("gohan: tool reaches the network without an EgressPolicy")
 	ErrToolName             = errors.New("gohan: tool name must match ^[a-z][a-z0-9_]{0,63}$")
 	ErrToolDescription      = errors.New("gohan: tool description carries an instruction directive")
+	ErrVerifyAuditUnbound   = errors.New("gohan: verify audit log is not bound")
 
 	// model
 	ErrNoProviderKey    = errors.New("gohan: no provider key for this tenant and profile")
@@ -214,6 +215,12 @@ func (e ErrToolCollision) Error() string {
 
 type ErrToolSetDrift struct {
 	Missing, Extra []string
+}
+
+type ErrExtraGovernedKey struct{ Key string }
+
+func (e ErrExtraGovernedKey) Error() string {
+	return "gohan: model extra overrides governed field " + e.Key
 }
 
 func (e ErrToolSetDrift) Error() string {

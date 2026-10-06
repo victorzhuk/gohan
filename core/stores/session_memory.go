@@ -39,11 +39,12 @@ const (
 type PrincipalSource func(ctx context.Context) (types.Principal, bool)
 
 type sessionRecord struct {
-	meta   SessionMeta
-	hist   History
-	kidsOf map[SessionKind][]string
-	linked bool
-	state  sharedStateRow
+	meta        SessionMeta
+	hist        History
+	rawMessages [][]byte
+	kidsOf      map[SessionKind][]string
+	linked      bool
+	state       sharedStateRow
 }
 
 // sharedStateRow is the session's persisted shared state: the JSON value
@@ -66,6 +67,7 @@ type MemorySessionLog struct {
 	sessions    map[string]*sessionRecord
 	msgSeq      int64
 	idSeq       int64
+	schemas     *SchemaRegistry
 }
 
 type MemorySessionOption func(*MemorySessionLog)
@@ -99,11 +101,16 @@ func WithArchivedRetention(d time.Duration) MemorySessionOption {
 	return func(s *MemorySessionLog) { s.archivedFor = d }
 }
 
+func WithMemorySessionSchemas(reg *SchemaRegistry) MemorySessionOption {
+	return func(s *MemorySessionLog) { s.schemas = reg }
+}
+
 func NewMemorySessionLog(opts ...MemorySessionOption) *MemorySessionLog {
 	s := &MemorySessionLog{
 		now:         time.Now,
 		archivedFor: defaultArchivedHold,
 		sessions:    make(map[string]*sessionRecord),
+		schemas:     NewSchemaRegistry(),
 	}
 	for _, o := range opts {
 		o(s)
@@ -161,7 +168,18 @@ func (s *MemorySessionLog) Load(ctx context.Context, sessionID string) (History,
 		return History{}, err
 	}
 	h := rec.hist
-	h.Messages = slices.Clone(rec.hist.Messages)
+	h.Messages = make([]types.Message, len(rec.rawMessages))
+	for i, raw := range rec.rawMessages {
+		var env RecordEnvelope
+		if err := json.Unmarshal(raw, &env); err != nil {
+			return History{}, fmt.Errorf("load message: %w", err)
+		}
+		msg, err := DecodeRecord[types.Message](ctx, s.schemas, env)
+		if err != nil {
+			return History{}, err
+		}
+		h.Messages[i] = msg
+	}
 	return h, nil
 }
 
@@ -196,11 +214,25 @@ func (s *MemorySessionLog) Append(ctx context.Context, sessionID string, expecte
 	if expectedVersion != rec.hist.Version {
 		return 0, fmt.Errorf("append session %s at version %d: %w", sessionID, expectedVersion, types.ErrVersionConflict)
 	}
+	raws := make([][]byte, len(msgs))
 	for i := range msgs {
 		s.msgSeq++
 		msgs[i].ID = fmt.Sprintf("m%016x", s.msgSeq)
+		payload, err := json.Marshal(msgs[i])
+		if err != nil {
+			return 0, fmt.Errorf("append message: %w", err)
+		}
+		raws[i], err = json.Marshal(RecordEnvelope{
+			Shape:         "Message",
+			SchemaVersion: int(CurrentSchemaVersion),
+			Payload:       payload,
+		})
+		if err != nil {
+			return 0, fmt.Errorf("append message: %w", err)
+		}
 	}
 	rec.hist.Messages = append(rec.hist.Messages, msgs...)
+	rec.rawMessages = append(rec.rawMessages, raws...)
 	rec.hist.Version += int64(len(msgs))
 	rec.hist.Owner = rec.meta.Owner
 	rec.meta.Messages = len(rec.hist.Messages)
@@ -349,6 +381,10 @@ func (s *MemorySessionLog) Fork(ctx context.Context, from, upTo string) (string,
 		Messages:   slices.Clone(rec.hist.Messages[:cut+1]),
 		Version:    int64(cut + 1),
 		ForkedFrom: point,
+	}
+	child.rawMessages = make([][]byte, cut+1)
+	for i := range child.rawMessages {
+		child.rawMessages[i] = slices.Clone(rec.rawMessages[i])
 	}
 	// A fork renumbers shared state from 1 so later writes in either
 	// session never conflict with the other.

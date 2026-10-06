@@ -39,7 +39,9 @@ func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 			Parallel:    cfg.plan.ParallelTools,
 			MaxParallel: cfg.plan.MaxParallelTools,
 		},
-		exec: governedToolExec(cfg.toolChain, toolset, specLookup(cfg.specs), cfg.clients),
+		exec:     governedToolExec(cfg.toolChain, toolset, specLookup(cfg.specs), cfg.clients),
+		verifier: cfg.verifier,
+		journal:  s.stores.Journal,
 	}
 }
 

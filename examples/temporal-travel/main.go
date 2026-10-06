@@ -154,11 +154,10 @@ func assemble(_ context.Context, in types.AssembleInput) (types.ModelRequest, er
 	return types.ModelRequest{Messages: slices.Clone(in.History)}, nil
 }
 
-// travelModel scripts the model from the persisted history alone: no
-// tool result in the history means the first turn asks for the search
-// and the booking, any result means the closing reply. A crash drops
-// the model with the rest of the process; the history replays its
-// turns without it.
+// travelModel scripts the model from the persisted history alone: until
+// the booking result appears it requests the search and booking; afterward
+// it returns the closing reply. A crash drops the model with the rest of
+// the process; the history replays its turns without it.
 type travelModel struct {
 	trip *Trip
 }
@@ -168,17 +167,17 @@ func (m *travelModel) Profile() types.ModelProfile {
 }
 
 func (m *travelModel) Generate(_ context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
-	results := 0
+	booked := false
 	for _, msg := range req.Messages {
 		for _, b := range msg.Blocks {
-			if _, ok := b.(types.ToolResult); ok {
-				results++
+			if result, ok := b.(types.ToolResult); ok && result.ID == "call_book_flight" {
+				booked = true
 			}
 		}
 	}
 	return func(yield func(types.ModelChunk, error) bool) {
 		m.trip.rt.mark("model-turn")
-		if results > 0 {
+		if booked {
 			yield(types.ModelChunk{Kind: types.DeltaText, Delta: "Flight AF123 Paris->Tokyo booked."}, nil)
 			yield(types.ModelChunk{Finish: types.FinishStop}, nil)
 			return

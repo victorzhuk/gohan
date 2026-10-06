@@ -6,6 +6,7 @@ package storetest
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -32,7 +33,7 @@ type JournalEntry struct {
 
 // JournalStore is the Journal port as the conformance suite sees it.
 type JournalStore interface {
-	Reserve(ctx context.Context, k types.CallKey, fp string) (JournalEntry, bool, error)
+	Reserve(ctx context.Context, k types.CallKey, tool string, fp string, args json.RawMessage) (JournalEntry, bool, error)
 	Complete(ctx context.Context, k types.CallKey, res types.ToolResult) error
 	ByFingerprint(ctx context.Context, sessionID string, fp string) ([]JournalEntry, error)
 }
@@ -60,7 +61,7 @@ func Journal(t *testing.T, newJournal JournalFactory) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, ok, err := j.Reserve(context.Background(), k, "fp")
+				_, ok, err := j.Reserve(context.Background(), k, "create_booking", "fp", nil)
 				mu.Lock()
 				defer mu.Unlock()
 				if err != nil {
@@ -87,7 +88,7 @@ func Journal(t *testing.T, newJournal JournalFactory) {
 		j := newJournal(t, time.Hour)
 		k := types.CallKey{SessionID: "s1", CallID: "c1"}
 
-		e, created, err := j.Reserve(ctx, k, "fp")
+		e, created, err := j.Reserve(ctx, k, "create_booking", "fp", nil)
 		if err != nil {
 			t.Fatalf("Reserve: %v", err)
 		}
@@ -111,7 +112,7 @@ func Journal(t *testing.T, newJournal JournalFactory) {
 		// stored result: replay returns what was recorded.
 		res.Content[0] = types.Text{Text: "mutated"}
 
-		e, created, err = j.Reserve(ctx, k, "fp")
+		e, created, err = j.Reserve(ctx, k, "create_booking", "fp", nil)
 		if err != nil {
 			t.Fatalf("second Reserve: %v", err)
 		}
@@ -136,7 +137,7 @@ func Journal(t *testing.T, newJournal JournalFactory) {
 		j := newJournal(t, ttl)
 		k := types.CallKey{SessionID: "s1", CallID: "c1"}
 
-		if _, _, err := j.Reserve(ctx, k, "fp"); err != nil {
+		if _, _, err := j.Reserve(ctx, k, "create_booking", "fp", nil); err != nil {
 			t.Fatalf("Reserve: %v", err)
 		}
 		if err := j.Complete(ctx, k, types.ToolResult{ID: "r1"}); err != nil {
@@ -144,7 +145,7 @@ func Journal(t *testing.T, newJournal JournalFactory) {
 		}
 		time.Sleep(2 * ttl)
 
-		e, created, err := j.Reserve(ctx, k, "fp")
+		e, created, err := j.Reserve(ctx, k, "create_booking", "fp", nil)
 		if err != nil {
 			t.Fatalf("Reserve after expiry: %v", err)
 		}
@@ -171,10 +172,10 @@ func Journal(t *testing.T, newJournal JournalFactory) {
 		j := newJournal(t, time.Hour)
 		k := types.CallKey{SessionID: "s1", CallID: "c1"}
 
-		if _, _, err := j.Reserve(ctx, k, "fp"); err != nil {
+		if _, _, err := j.Reserve(ctx, k, "create_booking", "fp", nil); err != nil {
 			t.Fatalf("first Reserve: %v", err)
 		}
-		e, created, err := j.Reserve(ctx, k, "fp2")
+		e, created, err := j.Reserve(ctx, k, "create_booking", "fp2", nil)
 		if err == nil {
 			t.Fatal("mismatched Reserve: err=nil, want a fingerprint refusal")
 		}
@@ -186,7 +187,7 @@ func Journal(t *testing.T, newJournal JournalFactory) {
 		}
 
 		// The stored entry survives the refusal for its own fingerprint.
-		e, created, err = j.Reserve(ctx, k, "fp")
+		e, created, err = j.Reserve(ctx, k, "create_booking", "fp", nil)
 		if err != nil || created {
 			t.Fatalf("Reserve with original fingerprint: created=%v err=%v", created, err)
 		}
@@ -210,7 +211,7 @@ func Journal(t *testing.T, newJournal JournalFactory) {
 		j := newJournal(t, time.Hour)
 		k := types.CallKey{SessionID: "s1", CallID: "c1"}
 
-		if _, _, err := j.Reserve(ctx, k, "fp"); err != nil {
+		if _, _, err := j.Reserve(ctx, k, "create_booking", "fp", nil); err != nil {
 			t.Fatalf("Reserve: %v", err)
 		}
 		if err := j.Complete(ctx, k, types.ToolResult{ID: "r1"}); err != nil {

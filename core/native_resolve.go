@@ -29,6 +29,7 @@ type resolvedNativeConfig struct {
 	decider     types.Decider[*permission.ToolInvocation, permission.Verdict]
 	taintPolicy types.TaintHook
 	liveDeny    func(context.Context, *permission.ToolInvocation) (string, bool)
+	verifier    types.Verifier
 }
 
 // resolvedNative returns the resolved configuration Build computed for the
@@ -53,6 +54,9 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			return fmt.Errorf("flow %q: profile %q not configured", name, spec.Profile)
 		}
 		req := spec.Request
+		if key, ok := governedExtraKey(spec.ModelOptions.Extra); ok {
+			return fmt.Errorf("flow %q: %w", name, types.ErrExtraGovernedKey{Key: key})
+		}
 		req.Tools = toolSpecs(spec.Tools)
 		clients := make(map[string]*http.Client)
 		for i := range req.Tools {
@@ -101,6 +105,10 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 		if exfil && privateRead && untrusted && spec.TaintPolicy == nil {
 			return types.ErrTaintTrifecta{Flow: name, Exfil: true, PrivateRead: true, Untrusted: true}
 		}
+		verifier := spec.Verifier
+		if verifier == nil {
+			verifier = s.verifier
+		}
 		resolved[name] = &resolvedNativeConfig{
 			flow:        name,
 			model:       model,
@@ -118,10 +126,20 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			decider:     spec.Decider,
 			taintPolicy: spec.TaintPolicy,
 			liveDeny:    spec.LiveDeny,
+			verifier:    verifier,
 		}
 	}
+
 	s.native = resolved
 	return nil
+}
+func governedExtraKey(extra map[string]any) (string, bool) {
+	for _, key := range types.GovernedModelOptionKeys() {
+		if _, ok := extra[key]; ok {
+			return key, true
+		}
+	}
+	return "", false
 }
 
 // modelChainWithMiddleware appends the stack middleware as named KindUser

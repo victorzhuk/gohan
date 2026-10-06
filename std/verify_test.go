@@ -6,18 +6,19 @@ import (
 	"errors"
 	"testing"
 
+	gohan "github.com/victorzhuk/gohan/core"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
-func reserveUnknown(t *testing.T, j stores.Journal, session, callID string) stores.Entry {
+func reserveUnknown(t *testing.T, j stores.Journal, session, callID, tool string) stores.Entry {
 	t.Helper()
 	key := types.CallKey{SessionID: session, CallID: callID}
 	fp := stores.Fingerprint("fp-" + callID)
-	if _, created, err := j.Reserve(context.Background(), key, fp); err != nil || !created {
+	if _, created, err := j.Reserve(context.Background(), key, tool, fp, nil); err != nil || !created {
 		t.Fatalf("Reserve: created=%v err=%v", created, err)
 	}
-	if err := j.Complete(context.Background(), key, types.ToolResult{Outcome: types.Unknown}); err != nil {
+	if err := j.Complete(context.Background(), key, types.ToolResult{ID: callID, Outcome: types.Unknown}); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := j.ByFingerprint(context.Background(), session, fp)
@@ -27,12 +28,19 @@ func reserveUnknown(t *testing.T, j stores.Journal, session, callID string) stor
 	return entries[0]
 }
 
+func toolFor(callID string) string {
+	if callID == "c2" {
+		return "send_fax"
+	}
+	return "create_booking"
+}
+
 func TestVerifyReconciliation(t *testing.T) {
-	ctx := context.Background()
+	ctx := gohan.WithDecisionAudit(context.Background(), stores.NewMemoryAuditLog())
 
 	t.Run("tools.verify-reconciles-unknown", func(t *testing.T) {
 		j := stores.NewMemoryJournal()
-		entry := reserveUnknown(t, j, "s1", "c1")
+		entry := reserveUnknown(t, j, "s1", "c1", toolFor("c1"))
 		verifyCalls := 0
 		specs := map[string]types.ToolSpec{
 			"create_booking": {
@@ -45,7 +53,7 @@ func TestVerifyReconciliation(t *testing.T) {
 			},
 		}
 		v := Verifier{Journal: j, Specs: lookupOf(specs)}
-		verified, reconciled, err := v.ReconcileUnknown(ctx, "s1", "create_booking", json.RawMessage(`{"room":7}`), types.CallKey{SessionID: "s1", CallID: "c1/verify"}, entry)
+		verified, reconciled, err := v.Reconcile(ctx, "create_booking", json.RawMessage(`{"room":7}`), types.CallKey{SessionID: "s1", CallID: "c1/verify"}, entry.Result)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -69,7 +77,7 @@ func TestVerifyReconciliation(t *testing.T) {
 
 	t.Run("tools.verify-read-only", func(t *testing.T) {
 		j := stores.NewMemoryJournal()
-		entry := reserveUnknown(t, j, "s1", "c1")
+		entry := reserveUnknown(t, j, "s1", "c1", toolFor("c1"))
 		toolCalls, verifyCalls := 0, 0
 		tool := &countingTool{onCall: func() { toolCalls++ }}
 		specs := map[string]types.ToolSpec{
@@ -84,7 +92,7 @@ func TestVerifyReconciliation(t *testing.T) {
 			},
 		}
 		v := Verifier{Journal: j, Specs: lookupOf(specs)}
-		if _, _, err := v.ReconcileUnknown(ctx, "s1", "create_booking", json.RawMessage(`{"room":7}`), types.CallKey{SessionID: "s1", CallID: "c1/verify"}, entry); err != nil {
+		if _, _, err := v.Reconcile(ctx, "create_booking", json.RawMessage(`{"room":7}`), types.CallKey{SessionID: "s1", CallID: "c1/verify"}, entry.Result); err != nil {
 			t.Fatal(err)
 		}
 		if toolCalls != 0 {
@@ -101,7 +109,7 @@ func TestVerifyReconciliation(t *testing.T) {
 
 	t.Run("tools.verify-error", func(t *testing.T) {
 		j := stores.NewMemoryJournal()
-		entry := reserveUnknown(t, j, "s1", "c1")
+		entry := reserveUnknown(t, j, "s1", "c1", toolFor("c1"))
 		specs := map[string]types.ToolSpec{
 			"create_booking": {
 				Name: "create_booking",
@@ -111,7 +119,7 @@ func TestVerifyReconciliation(t *testing.T) {
 			},
 		}
 		v := Verifier{Journal: j, Specs: lookupOf(specs)}
-		res, reconciled, err := v.ReconcileUnknown(ctx, "s1", "create_booking", json.RawMessage(`{}`), types.CallKey{SessionID: "s1", CallID: "c1/verify"}, entry)
+		res, reconciled, err := v.Reconcile(ctx, "create_booking", json.RawMessage(`{}`), types.CallKey{SessionID: "s1", CallID: "c1/verify"}, entry.Result)
 		if err == nil {
 			t.Fatal("want the verify error to surface")
 		}
@@ -129,8 +137,8 @@ func TestVerifyReconciliation(t *testing.T) {
 
 	t.Run("tools.verify-on-recover", func(t *testing.T) {
 		j := stores.NewMemoryJournal()
-		verifiedEntry := reserveUnknown(t, j, "s1", "c1")
-		plainEntry := reserveUnknown(t, j, "s1", "c2")
+		verifiedEntry := reserveUnknown(t, j, "s1", "c1", toolFor("c1"))
+		plainEntry := reserveUnknown(t, j, "s1", "c2", toolFor("c2"))
 		specs := map[string]types.ToolSpec{
 			"create_booking": {
 				Name:   "create_booking",
@@ -142,10 +150,10 @@ func TestVerifyReconciliation(t *testing.T) {
 			"send_fax": {Name: "send_fax", Effect: types.SideEffect},
 		}
 		v := Verifier{Journal: j, Specs: lookupOf(specs)}
-		if _, reconciled, err := v.ReconcileUnknown(ctx, "s1", "create_booking", json.RawMessage(`{}`), types.CallKey{SessionID: "s1", CallID: "c1/verify"}, verifiedEntry); err != nil || !reconciled {
+		if _, reconciled, err := v.Reconcile(ctx, "create_booking", json.RawMessage(`{}`), types.CallKey{SessionID: "s1", CallID: "c1/verify"}, verifiedEntry.Result); err != nil || !reconciled {
 			t.Fatalf("reconciled=%v err=%v, want true nil", reconciled, err)
 		}
-		res, reconciled, err := v.ReconcileUnknown(ctx, "s1", "send_fax", json.RawMessage(`{}`), types.CallKey{SessionID: "s1", CallID: "c2/verify"}, plainEntry)
+		res, reconciled, err := v.Reconcile(ctx, "send_fax", json.RawMessage(`{}`), types.CallKey{SessionID: "s1", CallID: "c2/verify"}, plainEntry.Result)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -160,6 +168,35 @@ func TestVerifyReconciliation(t *testing.T) {
 		keys := UncertainKeys("s1", append(e1, e2...))
 		if len(keys) != 1 || keys[0].CallID != "c2" {
 			t.Fatalf("uncertain = %v, want only c2", keys)
+		}
+	})
+
+	t.Run("unbound audit is an error", func(t *testing.T) {
+		j := stores.NewMemoryJournal()
+		entry := reserveUnknown(t, j, "s1", "c1", toolFor("c1"))
+		specs := map[string]types.ToolSpec{
+			"create_booking": {
+				Name:   "create_booking",
+				Effect: types.SideEffect,
+				Verify: func(ctx context.Context, args json.RawMessage, r types.ToolResult) (types.Outcome, error) {
+					return types.Succeeded, nil
+				},
+			},
+		}
+		v := Verifier{Journal: j, Specs: lookupOf(specs)}
+		res, reconciled, err := v.Reconcile(context.Background(), "create_booking", json.RawMessage(`{}`), types.CallKey{SessionID: "s1", CallID: "c1/verify"}, entry.Result)
+		if !errors.Is(err, types.ErrVerifyAuditUnbound) {
+			t.Fatalf("err = %v, want types.ErrVerifyAuditUnbound", err)
+		}
+		if reconciled {
+			t.Fatal("entry must not reconcile without an audit log")
+		}
+		if res.Outcome != types.Unknown {
+			t.Fatalf("outcome = %v, want Unknown", res.Outcome)
+		}
+		entries, _ := j.ByFingerprint(context.Background(), "s1", stores.Fingerprint("fp-c1"))
+		if len(entries) != 1 || entries[0].Result.Outcome != types.Unknown {
+			t.Fatalf("journal entry = %+v, want Unknown left in place", entries)
 		}
 	})
 }

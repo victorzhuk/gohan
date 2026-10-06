@@ -63,13 +63,13 @@ func TestUncertainty(t *testing.T) {
 		if !ok {
 			t.Fatalf("err type = %T, want *UncertainOutcomeError", err)
 		}
-		if !slices.Equal(got.Keys, want) {
-			t.Fatalf("error keys = %v, want %v", got.Keys, want)
+		if !slices.Equal(got.Uncertain, want) {
+			t.Fatalf("error keys = %v, want %v", got.Uncertain, want)
 		}
 		if got.Out != "partial answer" {
 			t.Fatalf("error out = %v, want the partial output", got.Out)
 		}
-		done := types.Done{Uncertain: got.Keys}
+		done := types.Done{Uncertain: got.Uncertain}
 		if len(done.Uncertain) != 2 || done.Uncertain[0].CallID != "c1" {
 			t.Fatalf("Done.Uncertain = %v, want c1 and c3", done.Uncertain)
 		}

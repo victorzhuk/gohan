@@ -70,7 +70,7 @@ func (r *recoverRuntime) Step(ctx context.Context, st runtime.State) (runtime.St
 		msg := types.Message{Role: types.RoleAssistant}
 		for _, call := range st.Pending {
 			key := types.CallKey{SessionID: r.session, CallID: call.ID}
-			entry, replayed, err := r.journal.Reserve(ctx, key, stores.Fingerprint("fp-"+call.ID))
+			entry, replayed, err := r.journal.Reserve(ctx, key, call.Name, stores.Fingerprint("fp-"+call.ID), nil)
 			if err != nil {
 				return st, nil, 0, err
 			}
@@ -192,7 +192,7 @@ func pendingArgs(s string) json.RawMessage {
 func (f *recoverFixture) completeInJournal(t *testing.T, id string) {
 	t.Helper()
 	k := types.CallKey{SessionID: "s1", CallID: id}
-	if _, _, err := f.jnl.Reserve(f.reaperCtx(), k, stores.Fingerprint("fp-"+id)); err != nil {
+	if _, _, err := f.jnl.Reserve(f.reaperCtx(), k, "create_booking", stores.Fingerprint("fp-"+id), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.jnl.Complete(f.reaperCtx(), k, types.ToolResult{ID: id, Outcome: types.Succeeded}); err != nil {
@@ -231,7 +231,7 @@ func TestRecover(t *testing.T) {
 		f := newRecoverFixture(t, "agent")
 		ctx := f.reaperCtx()
 		k := types.CallKey{SessionID: "s1", CallID: "c1"}
-		if _, _, err := f.jnl.Reserve(t.Context(), k, stores.Fingerprint("fp-c1")); err != nil {
+		if _, _, err := f.jnl.Reserve(t.Context(), k, "create_booking", stores.Fingerprint("fp-c1"), nil); err != nil {
 			t.Fatal(err)
 		}
 		f.seedHistory(t, 1)

@@ -27,11 +27,12 @@ type checkpointRecord struct {
 // The store clock is authoritative for ExpiresAt: a caller with a skewed
 // clock cannot consume an expired token or extend a live one.
 type MemoryCheckpoints struct {
-	mu    sync.Mutex
-	now   func() time.Time
-	runs  RunInfoSource
-	toks  map[types.ResumeToken]*checkpointRecord
-	byRun map[string]types.ResumeToken
+	mu      sync.Mutex
+	now     func() time.Time
+	runs    RunInfoSource
+	toks    map[types.ResumeToken]*checkpointRecord
+	byRun   map[string]types.ResumeToken
+	schemas *SchemaRegistry
 }
 
 type MemoryCheckpointOption func(*MemoryCheckpoints)
@@ -48,11 +49,16 @@ func WithMemoryCheckpointClock(now func() time.Time) MemoryCheckpointOption {
 	return func(s *MemoryCheckpoints) { s.now = now }
 }
 
+func WithMemoryCheckpointSchemas(reg *SchemaRegistry) MemoryCheckpointOption {
+	return func(s *MemoryCheckpoints) { s.schemas = reg }
+}
+
 func NewMemoryCheckpoints(opts ...MemoryCheckpointOption) *MemoryCheckpoints {
 	s := &MemoryCheckpoints{
-		now:   time.Now,
-		toks:  make(map[types.ResumeToken]*checkpointRecord),
-		byRun: make(map[string]types.ResumeToken),
+		now:     time.Now,
+		toks:    make(map[types.ResumeToken]*checkpointRecord),
+		byRun:   make(map[string]types.ResumeToken),
+		schemas: NewSchemaRegistry(),
 	}
 	for _, opt := range opts {
 		opt(s)

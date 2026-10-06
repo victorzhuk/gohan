@@ -82,7 +82,7 @@ func TestPermissionGate(t *testing.T) {
 		)
 		res, _ := gate(func(_ context.Context, _ types.ToolUse) (types.ToolResult, error) {
 			key := types.CallKey{SessionID: "s1", CallID: "c1"}
-			if _, _, err := journal.Reserve(ctx, key, "fp-booking"); err != nil {
+			if _, _, err := journal.Reserve(ctx, key, "create_booking", "fp-booking", nil); err != nil {
 				return types.ToolResult{}, err
 			}
 			return types.ToolResult{Outcome: types.Succeeded}, nil

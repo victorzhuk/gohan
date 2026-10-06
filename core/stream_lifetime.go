@@ -39,7 +39,8 @@ func detachedContext(ctx context.Context, wall time.Duration) (context.Context, 
 
 // lifecycleOptions lists the options every run lifecycle carries: the runs
 // store and lease, the session, the flow, the approval policy, the tool
-// specs, the session appender and the originator when one is known.
+// specs, the session appender, the originator when one is known, and the
+// verifier and journal when the stack wired them.
 func (c *conversation) lifecycleOptions(sessionID string, lease stores.Lease, originator types.Principal, hasOriginator bool) []LifecycleOption {
 	opts := []LifecycleOption{
 		WithLifecycleRuns(c.runs, lease),
@@ -63,7 +64,7 @@ func (c *conversation) lifecycleOptions(sessionID string, lease stores.Lease, or
 	if hasOriginator {
 		opts = append(opts, WithLifecycleOriginator(originator))
 	}
-	return opts
+	return c.verifyOptions(opts)
 }
 
 // failRun records one terminal error payload for a failed run and emits the

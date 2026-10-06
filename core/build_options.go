@@ -24,6 +24,7 @@ type config struct {
 	keys             types.ProviderKeySource
 	credentials      types.CredentialSource
 	approvalPolicy   permission.ApprovalPolicySource
+	verifier         types.Verifier
 	egressClient     func(p types.EgressPolicy) *http.Client
 	logger           *slog.Logger
 	telemetry        types.Telemetry

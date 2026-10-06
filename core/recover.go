@@ -182,6 +182,9 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 	if s.approvalPolicy != nil {
 		opts = append(opts, WithLifecycleApprovalPolicy(s.approvalPolicy))
 	}
+	if s.verifier != nil && s.stores.Journal != nil {
+		opts = append(opts, WithLifecycleVerify(s.verifier), WithLifecycleJournal(s.stores.Journal))
+	}
 	if app := s.recoveryAppender(run); app != nil {
 		opts = append(opts, WithLifecycleAppender(app))
 	}
@@ -233,15 +236,22 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 		opts = append(opts, WithLifecycleLedger(ledger))
 		lc = NewLifecycle(opts...)
 	}
-	for _, err := range DriveLifecycle(ctx, lc, rt, ag) {
+	var uncertain []types.CallKey
+	for ev, err := range DriveLifecycle(ctx, lc, rt, ag) {
 		if err != nil {
 			driveErr = fmt.Errorf("recover run %s: %w", run.RunID, err)
 			break
+		}
+		if d, ok := ev.(types.Done); ok && len(d.Uncertain) > 0 {
+			uncertain = d.Uncertain
 		}
 	}
 	state, terminal := s.terminalRun(ctx, run.RunID)
 	if !terminal {
 		return s.abandonRun(ctx, lc.lease, run)
+	}
+	if driveErr == nil && len(uncertain) > 0 {
+		return &types.UncertainOutcomeError{Uncertain: uncertain}
 	}
 	if state == stores.Finished {
 		countRecovered(ctx, s.telemetry, run)

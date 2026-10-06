@@ -122,7 +122,8 @@ type Lifecycle struct {
 	appender    HistoryAppender
 	histVersion int64
 	uncertain   func(runtime.State) []types.CallKey
-	verify      func(ctx context.Context, keys []types.CallKey) ([]types.CallKey, error)
+	verify      types.Verifier
+	journal     stores.Journal
 	maxTurns    int
 	resultRef   string
 	waker       Waker
@@ -190,10 +191,19 @@ func WithLifecycleUncertain(fn func(runtime.State) []types.CallKey) LifecycleOpt
 	return func(lc *Lifecycle) { lc.uncertain = fn }
 }
 
-// WithLifecycleVerify injects the verifier that reconciles unknown entries
-// before Finish. It returns the keys still unknown after verification.
-func WithLifecycleVerify(fn func(ctx context.Context, keys []types.CallKey) ([]types.CallKey, error)) LifecycleOption {
-	return func(lc *Lifecycle) { lc.verify = fn }
+// WithLifecycleVerify injects the verifier that reconciles the session's
+// Unknown journal entries before Finish. Each entry the verifier settles
+// returns its result to the durable batch record; the rest stay in the
+// uncertainty set.
+func WithLifecycleVerify(v types.Verifier) LifecycleOption {
+	return func(lc *Lifecycle) { lc.verify = v }
+}
+
+// WithLifecycleJournal binds the journal whose Unknown entries the
+// verifier reconciles. A lifecycle with a verifier and no journal refuses
+// the reconciliation instead of skipping it.
+func WithLifecycleJournal(j stores.Journal) LifecycleOption {
+	return func(lc *Lifecycle) { lc.journal = j }
 }
 
 // WithLifecycleMaxTurns bounds the turns a run takes. A steer that arrives
@@ -661,6 +671,57 @@ func (lc *Lifecycle) approvalsFor(ctx context.Context, r runtime.AgentRun, st ru
 	return aps, nil
 }
 
+// reconcileUnknown enumerates the session's Unknown journal entries and
+// reconciles each through the verifier: a settled entry's reconciled
+// result returns to the durable batch record, an entry the verifier could
+// not settle keeps its key in the uncertainty set. Arguments come from
+// the entry the journal reserved, never from projected history.
+func (lc *Lifecycle) reconcileUnknown(ctx context.Context, st runtime.State) (runtime.State, []types.CallKey, error) {
+	if lc.verify == nil {
+		return st, lc.callKeys(st), nil
+	}
+	if lc.journal == nil || lc.sessionID == "" {
+		return st, lc.callKeys(st), fmt.Errorf("gohan: verifier wired without a journal to enumerate unknown entries")
+	}
+	keys := lc.callKeys(st)
+	entries, err := lc.journal.Unknown(ctx, lc.sessionID)
+	if err != nil {
+		return st, keys, fmt.Errorf("enumerate unknown journal entries: %w", err)
+	}
+	wanted := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		wanted[k.CallID] = true
+	}
+	settled := false
+	for _, e := range entries {
+		key := types.CallKey{SessionID: lc.sessionID, CallID: e.Key}
+		if !wanted[key.CallID] {
+			continue
+		}
+		res, ok, rerr := lc.verify.Reconcile(ctx, e.Tool, e.Args, types.CallKey{SessionID: lc.sessionID, CallID: e.Key + "/verify"}, e.Result)
+		if rerr != nil || !ok {
+			// An errored or absent Verify leaves the entry uncertain
+			// with the outcome the effect recorded.
+			continue
+		}
+		wanted[key.CallID] = false
+		if aerr := applySettledResult(&st, res); aerr != nil {
+			return st, keys, aerr
+		}
+		settled = true
+	}
+	if !settled {
+		return st, keys, nil
+	}
+	rest := make([]types.CallKey, 0, len(keys))
+	for _, k := range keys {
+		if wanted[k.CallID] {
+			rest = append(rest, k)
+		}
+	}
+	return st, rest, nil
+}
+
 // finishTurn verifies every Uncertain entry, closes the run and returns
 // the terminal events ending in Done. A Finish refused with
 // ErrSignalsPending drains the mailbox, appends the steers to history and
@@ -680,12 +741,12 @@ func (lc *Lifecycle) finishTurn(ctx context.Context, st runtime.State) (runtime.
 		}
 	}
 	unknown := lc.callKeys(st)
-	if lc.verify != nil && len(unknown) > 0 {
-		rest, err := lc.verify(ctx, unknown)
+	if len(unknown) > 0 {
+		var err error
+		st, unknown, err = lc.reconcileUnknown(ctx, st)
 		if err != nil {
 			return st, nil, false, err
 		}
-		unknown = rest
 	}
 	err := lc.finishRun(ctx, st, stores.Finished, unknown)
 	if errors.Is(err, types.ErrSignalsPending) {

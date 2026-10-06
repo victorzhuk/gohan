@@ -105,7 +105,7 @@ func Journal(j stores.Journal, opts ...JournalOption) chains.ToolMiddleware {
 					}
 				}
 			}
-			entry, created, err := j.Reserve(ctx, key, fp)
+			entry, created, err := j.Reserve(ctx, key, call.Name, fp, json.RawMessage(call.Args))
 			if err != nil {
 				// A refused identity must not run the effect: the tool
 				// would execute under a call key the journal declined.

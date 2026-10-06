@@ -65,6 +65,8 @@ type conversation struct {
 	creds        types.CredentialSource
 	policySrc    permission.ApprovalPolicySource
 	toolSpecs    func(name string) (types.ToolSpec, bool)
+	verifier     types.Verifier
+	journal      stores.Journal
 	detached     bool
 	wall         time.Duration
 	// stall bounds how long the attached consumer may take no event
@@ -133,6 +135,19 @@ func WithConversationToolSpecs(lookup func(name string) (types.ToolSpec, bool)) 
 	return func(c *conversation) { c.toolSpecs = lookup }
 }
 
+// verifyOptions appends the verifier and journal the lifecycle's Unknown
+// reconciliation needs; each binding is independent, matching the
+// resume path's guards.
+func (c *conversation) verifyOptions(opts []LifecycleOption) []LifecycleOption {
+	if c.verifier != nil {
+		opts = append(opts, WithLifecycleVerify(c.verifier))
+	}
+	if c.journal != nil {
+		opts = append(opts, WithLifecycleJournal(c.journal))
+	}
+	return opts
+}
+
 // NewConversation builds the streaming conversation for spec over rt.
 // The flow spec names this constructor agent.NewConversation; no agent
 // package exists in the M0 package table, so the driver freezes the name.
@@ -142,6 +157,8 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 		c.log = stack.stores.SessionLog
 		c.creds = stack.credentials
 		c.policySrc = stack.approvalPolicy
+		c.verifier = stack.verifier
+		c.journal = stack.stores.Journal
 		c.allowAnonymous = stack.allowAnonymous
 		if l, ok := stack.Limits(spec); ok {
 			c.wall = l.MaxWallClock
@@ -277,7 +294,7 @@ func (c *conversation) appendInput(ctx context.Context, lease stores.Lease, sess
 		_, err = c.log.Append(ctx, sessionID, hist.Version, msg)
 	}
 	if err != nil {
-		lc := NewLifecycle(WithLifecycleRuns(c.runs, lease), WithLifecycleApprovalPolicy(c.policySrc), WithLifecycleToolSpecs(c.toolSpecs))
+		lc := NewLifecycle(c.verifyOptions([]LifecycleOption{WithLifecycleRuns(c.runs, lease), WithLifecycleApprovalPolicy(c.policySrc), WithLifecycleToolSpecs(c.toolSpecs)})...)
 		if ferr := lc.finishRun(ctx, runtime.State{}, stores.Failed, nil); ferr != nil {
 			yield(nil, ferr)
 			return false

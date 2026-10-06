@@ -21,10 +21,11 @@ func WithFingerprintFields(fields ...string) ToolOption {
 // keys, so equal arguments in any order share a fingerprint.
 func ToolFingerprint(spec types.ToolSpec, args json.RawMessage) stores.Fingerprint {
 	var full map[string]any
-	selected := any(args)
 	if err := json.Unmarshal(args, &full); err != nil || full == nil {
-		selected = map[string]any{}
-	} else if len(spec.FingerprintFields) > 0 {
+		full = map[string]any{}
+	}
+	selected := any(full)
+	if len(spec.FingerprintFields) > 0 {
 		picked := make(map[string]any, len(spec.FingerprintFields))
 		for _, f := range spec.FingerprintFields {
 			if v, ok := full[f]; ok {

@@ -78,6 +78,7 @@ type Stack struct {
 	keys             types.ProviderKeySource
 	credentials      types.CredentialSource
 	approvalPolicy   permission.ApprovalPolicySource
+	verifier         types.Verifier
 	egressClient     func(p types.EgressPolicy) *http.Client
 	pinned           *types.PinnedManifest
 	prompts          chains.PromptSet
@@ -137,6 +138,7 @@ func Build(opts ...Option) (*Stack, error) {
 		keys:             cfg.keys,
 		credentials:      cfg.credentials,
 		approvalPolicy:   cfg.approvalPolicy,
+		verifier:         cfg.verifier,
 		egressClient:     cfg.egressClient,
 		pinned:           cfg.pinned,
 		prompts:          cfg.prompts,

@@ -14,18 +14,20 @@ import (
 // Request.Tools is derived from Tools during resolution, never supplied
 // independently.
 type NativeSpec struct {
-	Request     FlowRequest
-	Profile     string
-	Instruction []types.Block
-	Tools       []types.Tool
-	Assemble    func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error)
-	ModelChain  chains.ModelChain
-	ToolChain   chains.ToolChain
-	// Decider states the flow's own tool policy. The batch gate consults
-	// it before any call executes; a nil Decider keeps the core defaults
-	// (read-only and idempotent calls pass, side effects ask).
+	Request      FlowRequest
+	Profile      string
+	Instruction  []types.Block
+	Tools        []types.Tool
+	ModelOptions types.ModelOptions
+	Assemble     func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error)
+	ModelChain   chains.ModelChain
+	ToolChain    chains.ToolChain
 	// TaintPolicy declares this flow's taint hook. A nil hook disables taint enforcement.
 	TaintPolicy types.TaintHook
+	// Verifier reconciles this flow's Unknown journal entries at the
+	// verification triggers. A nil verifier falls back to the stack-level
+	// one; a nil stack-level one leaves unknown keys to the uncertainty set.
+	Verifier types.Verifier
 	// LiveDeny declares this flow's live deny source. A nil source adds no live denies.
 	LiveDeny func(ctx context.Context, inv *permission.ToolInvocation) (string, bool)
 	// Decider states the flow's own tool policy. The batch gate consults

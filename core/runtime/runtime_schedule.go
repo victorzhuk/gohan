@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 
 	"github.com/victorzhuk/gohan/core/stores"
@@ -105,7 +106,7 @@ func execOne(ctx context.Context, call types.ToolUse, exec ToolFunc, cfg Schedul
 		return exec(ctx, call)
 	}
 	key := cfg.Key(call)
-	entry, replayed, err := cfg.Journal.Reserve(ctx, key, cfg.Fingerprint(call))
+	entry, replayed, err := cfg.Journal.Reserve(ctx, key, call.Name, cfg.Fingerprint(call), json.RawMessage(call.Args))
 	if err != nil {
 		return types.ToolResult{}, err
 	}

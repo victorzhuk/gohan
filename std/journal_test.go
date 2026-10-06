@@ -20,9 +20,9 @@ type countingJournal struct {
 	completes int
 }
 
-func (c *countingJournal) Reserve(ctx context.Context, k types.CallKey, fp stores.Fingerprint) (stores.Entry, bool, error) {
+func (c *countingJournal) Reserve(ctx context.Context, k types.CallKey, tool string, fp stores.Fingerprint, args json.RawMessage) (stores.Entry, bool, error) {
 	c.reserves++
-	return c.Journal.Reserve(ctx, k, fp)
+	return c.Journal.Reserve(ctx, k, tool, fp, args)
 }
 
 func (c *countingJournal) Complete(ctx context.Context, k types.CallKey, res types.ToolResult) error {
@@ -48,7 +48,7 @@ type failReserve struct{ stores.Journal }
 
 func newFailReserve() failReserve { return failReserve{stores.NewMemoryJournal()} }
 
-func (failReserve) Reserve(context.Context, types.CallKey, stores.Fingerprint) (stores.Entry, bool, error) {
+func (failReserve) Reserve(context.Context, types.CallKey, string, stores.Fingerprint, json.RawMessage) (stores.Entry, bool, error) {
 	return stores.Entry{}, false, stores.ErrJournalFingerprintMismatch
 }
 
@@ -138,7 +138,7 @@ func TestJournalIntent(t *testing.T) {
 		j := &countingJournal{Journal: mem}
 		ctx := context.Background()
 		fp := CanonicalFingerprint("create_booking", json.RawMessage(`{"room":7}`))
-		if _, _, err := mem.Reserve(ctx, types.CallKey{CallID: "c1"}, fp); err != nil {
+		if _, _, err := mem.Reserve(ctx, types.CallKey{CallID: "c1"}, "create_booking", fp, nil); err != nil {
 			t.Fatal(err)
 		}
 		var sawKey string

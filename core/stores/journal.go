@@ -2,6 +2,7 @@ package stores
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -28,7 +29,9 @@ type Fingerprint string
 type Entry struct {
 	State       EntryState
 	Fingerprint Fingerprint
+	Tool        string
 	Key         string
+	Args        json.RawMessage
 	Result      types.ToolResult
 	At          time.Time
 }
@@ -45,9 +48,10 @@ var ErrJournalCompleteMissed = errors.New("gohan: journal completion found no li
 // instead of re-executing. Results are needed for replay during a run's
 // lifetime only; the audit record keeps ResultSHA and ResultBytes.
 type Journal interface {
-	Reserve(ctx context.Context, k types.CallKey, fp Fingerprint) (Entry, bool, error)
+	Reserve(ctx context.Context, k types.CallKey, tool string, fp Fingerprint, args json.RawMessage) (Entry, bool, error)
 	Complete(ctx context.Context, k types.CallKey, res types.ToolResult) error
 	ByFingerprint(ctx context.Context, sessionID string, fp Fingerprint) ([]Entry, error)
+	Unknown(ctx context.Context, sessionID string) ([]Entry, error)
 }
 
 // DefaultJournalTTL is how long an entry stays replayable after it was

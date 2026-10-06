@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/victorzhuk/gohan/core/runtime"
+	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -31,19 +32,11 @@ type turnConfig struct {
 	gate      runtime.BatchGate
 	limits    types.RunLimits
 	clients   map[string]*http.Client
-	// scheduler carries the resolved batch strategy. A zero value runs
-	// every call sequentially.
 	scheduler runtime.SchedulerConfig
-	// exec is the governed call path for one batch call: the tool chain
-	// around CallTool with the call's original identity. nil uses the
-	// direct CallTool path.
-	exec func(context.Context, types.ToolUse) (types.ToolResult, error)
-	// reserve reserves the batch's whole call set against the run ledger
-	// before any tool executes; the returned context carries the
-	// reservation, so the batch's executions consume it instead of
-	// charging again, and the returned func refunds the reservation when
-	// the batch is refused. The ledger stays outside core.
-	reserve func(ctx context.Context, n int) (context.Context, func(), error)
+	exec      func(context.Context, types.ToolUse) (types.ToolResult, error)
+	reserve   func(ctx context.Context, n int) (context.Context, func(), error)
+	verifier  types.Verifier
+	journal   stores.Journal
 
 	// onTruncated decides the retry turn a truncated tool call earns. It
 	// returns the larger output allowance for the retry and the truncation
@@ -694,6 +687,57 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	for _, res := range settled {
 		results.Blocks = append(results.Blocks, res)
 	}
+	// Reconciliation belongs to the continuing path only. A batch that
+	// suspends for approval has not settled its ask: the pending call
+	// keeps its empty slot and the resume owns the outcome, so neither a
+	// journal enumeration nor a verified rewrite may touch it here.
+	if c.verifier != nil && c.journal != nil && report.Suspend == nil {
+		info, ok := types.RunInfoFrom(ctx)
+		if !ok || info.SessionID == "" {
+			return st, nil, runtime.Continue, fmt.Errorf("verify unknown result: missing session identity")
+		}
+		entries, err := c.journal.Unknown(ctx, info.SessionID)
+		if err != nil {
+			return st, nil, runtime.Continue, fmt.Errorf("enumerate unknown journal entries: %w", err)
+		}
+		for i, res := range settled {
+			if res.Outcome != types.Unknown {
+				continue
+			}
+			for _, call := range calls {
+				if call.ID != res.ID {
+					continue
+				}
+				effect := types.SideEffect
+				if c.scheduler.EffectOf != nil {
+					effect = c.scheduler.EffectOf(call)
+				}
+				if effect != types.SideEffect {
+					break
+				}
+				for _, entry := range entries {
+					if entry.Key != call.ID {
+						continue
+					}
+					verified, settledOK, verr := c.verifier.Reconcile(ctx, entry.Tool, entry.Args, types.CallKey{SessionID: info.SessionID, CallID: entry.Key + "/verify"}, entry.Result)
+					if verr != nil {
+						return st, nil, runtime.Continue, fmt.Errorf("reconcile unknown tool result: %w", verr)
+					}
+					if settledOK {
+						verified.ID = call.ID
+						settled[i] = verified
+						aligned[index[call.ID]] = verified
+					}
+					break
+				}
+				break
+			}
+		}
+		results.Blocks = results.Blocks[:0]
+		for _, res := range settled {
+			results.Blocks = append(results.Blocks, res)
+		}
+	}
 	*msgs = append(*msgs, results)
 	// Results persist before any acknowledgement or suspension: a result
 	// a resume cannot find in the session log was never settled. A
@@ -958,6 +1002,44 @@ func settleNativePending(st *runtime.State, res types.ToolResult) error {
 		return err
 	}
 	st.Backend = enc
+	return nil
+}
+
+// applySettledResult writes a reconciled result into the durable batch
+// record's slot for its call, so the settled outcome replays from the
+// state instead of the Unknown the crash left there. A call the record
+// does not name, or a slot another result already settles, is left alone.
+func applySettledResult(st *runtime.State, res types.ToolResult) error {
+	if res.ID == "" {
+		return nil
+	}
+	b, err := decodeNativeBackend(*st)
+	if err != nil {
+		return err
+	}
+	if b.Driver == nil || b.Driver.Batch == nil {
+		return nil
+	}
+	for i, cu := range b.Driver.Batch.Calls {
+		if cu.ID != res.ID {
+			continue
+		}
+		if cur := b.Driver.Batch.Results[i]; cur.ID != "" {
+			if cur.ID != res.ID {
+				return fmt.Errorf("%w: batch slot for %q names call %q", types.ErrCheckpointIncompatible, res.ID, cur.ID)
+			}
+			if cur.Outcome != types.Unknown {
+				return nil
+			}
+		}
+		b.Driver.Batch.Results[i] = res
+		enc, err := encodeNativeBackend(b)
+		if err != nil {
+			return err
+		}
+		st.Backend = enc
+		return nil
+	}
 	return nil
 }
 

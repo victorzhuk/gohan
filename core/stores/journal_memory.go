@@ -2,6 +2,7 @@ package stores
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -30,7 +31,7 @@ type MemoryJournal struct {
 // the outcome is already pinned. A key hit whose fingerprint differs from
 // the stored entry's returns ErrJournalFingerprintMismatch. An expired
 // entry is dropped and a fresh one created.
-func (s *MemoryJournal) Reserve(ctx context.Context, k types.CallKey, fp Fingerprint) (Entry, bool, error) {
+func (s *MemoryJournal) Reserve(ctx context.Context, k types.CallKey, tool string, fp Fingerprint, args json.RawMessage) (Entry, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -45,7 +46,9 @@ func (s *MemoryJournal) Reserve(ctx context.Context, k types.CallKey, fp Fingerp
 		entry: Entry{
 			State:       Reserved,
 			Fingerprint: fp,
+			Tool:        tool,
 			Key:         k.CallID,
+			Args:        append(json.RawMessage(nil), args...),
 			At:          now,
 		},
 		key:      k,
@@ -91,7 +94,28 @@ func (s *MemoryJournal) ByFingerprint(ctx context.Context, sessionID string, fp 
 		if !now.Before(rec.expireAt) {
 			continue
 		}
-		out = append(out, rec.entry)
+		e := rec.entry
+		e.Args = append(json.RawMessage(nil), e.Args...)
+		e.Result = copyToolResult(e.Result)
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// Unknown lists non-expired entries whose outcome is unknown.
+func (s *MemoryJournal) Unknown(ctx context.Context, sessionID string) ([]Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	var out []Entry
+	for _, rec := range s.byKey {
+		if rec.key.SessionID != sessionID || !now.Before(rec.expireAt) || rec.entry.Result.Outcome != types.Unknown {
+			continue
+		}
+		e := rec.entry
+		e.Args = append(json.RawMessage(nil), e.Args...)
+		e.Result = copyToolResult(e.Result)
+		out = append(out, e)
 	}
 	return out, nil
 }
