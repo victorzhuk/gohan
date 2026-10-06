@@ -11,9 +11,11 @@ import (
 
 // Metric names this package records on behalf of a run.
 const (
-	MetricTTFT         = "gohan.model.ttft"
-	MetricTPOT         = "gohan.model.tpot"
-	MetricLoopDetected = "gohan.loop.detected"
+	MetricTTFT            = "gohan.model.ttft"
+	MetricTPOT            = "gohan.model.tpot"
+	MetricLoopDetected    = "gohan.loop.detected"
+	MetricMemoryEvicted   = "gohan.memory.evicted"
+	MetricMemoryWriteDeny = "gohan.memory.write_denied"
 )
 
 // Metric is one metric registration: its name and the label names it

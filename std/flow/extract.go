@@ -21,9 +21,16 @@ type Option func(*config)
 
 type config struct {
 	repairs int
+	schema  json.RawMessage
 }
 
 func (c config) attempts() int { return 1 + c.repairs }
+
+// WithSchema pins the request's response schema instead of the one
+// derived for Out, for a caller whose schema is runtime data.
+func WithSchema(schema json.RawMessage) Option {
+	return func(c *config) { c.schema = schema }
+}
 
 // WithRepairs bounds the repair turns a recipe spends before it refuses
 // (structured-output.validate-and-repair). The default is one.
@@ -45,6 +52,9 @@ func WithRepairs(n int) Option {
 func Extract[Out any](s *gohan.Stack, profile string, opts ...Option) gohan.Flow[[]types.Block, Out] {
 	c := newConfig(opts)
 	schema, schemaErr := schemaFor[Out]()
+	if c.schema != nil {
+		schema, schemaErr = c.schema, nil
+	}
 	rc, repair, buildErr := bind(s, profile, "flow.extract")
 	if buildErr == nil {
 		buildErr = schemaErr

@@ -24,6 +24,7 @@ type config struct {
 	redactor        types.Redactor
 	redactionPolicy types.RedactionPolicy
 	redactionMaps   stores.RedactionMaps
+	allowUntrusted  bool
 }
 
 type Option func(*config)

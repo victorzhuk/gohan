@@ -91,6 +91,7 @@ type Stack struct {
 	native           map[string]*resolvedNativeConfig
 	recovery         map[string]runtime.Runtime
 	manifest         ReleaseManifest
+	consolidator     func(ConsolidationWiring) MemoryConsolidator
 }
 
 // Limits returns the resolved run limits installed for a flow.
@@ -150,6 +151,7 @@ func Build(opts ...Option) (*Stack, error) {
 		recovery:         cfg.recovery,
 		stores:           cfg.stores,
 		tenant:           cfg.tenant,
+		consolidator:     cfg.consolidator,
 	}
 	if err := checkResidency(cfg.tenant, cfg.stores, profiles); err != nil {
 		return nil, err

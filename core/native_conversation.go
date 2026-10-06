@@ -42,6 +42,8 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 	c.redactionMaps = stack.stores.RedactionMaps
 	c.redactor = cfg.redactor
 	c.redactionPolicy = cfg.redactionPolicy
+	c.consolidator = stack.consolidation(name)
+	c.consolidationAudit = stack.stores.Audit
 	c.newRun = func(ctx context.Context, sessionID string, lease stores.Lease, input []Message) (context.Context, runtime.AgentRun, error) {
 		ledger := chains.NewLimitsState()
 		ctx = chains.WithLimitsState(ctx, ledger)

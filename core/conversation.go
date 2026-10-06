@@ -57,23 +57,25 @@ type conversation struct {
 	// fresh runtime over the resolved configuration, the restored
 	// history and a ledger seeded from what the run record reports as
 	// spent. nil keeps the fixed foreign runtime.
-	newResumeRun    func(ctx context.Context, sessionID string, hist stores.History, seed float64) (context.Context, runtime.Runtime, runtime.AgentRun, *chains.LimitsState, error)
-	log             stores.SessionLog
-	runs            stores.Runs
-	events          stores.EventLog
-	cps             stores.Checkpoints
-	outputs         stores.OutputStore
-	redactor        types.Redactor
-	redactionPolicy types.RedactionPolicy
-	redactionMaps   stores.RedactionMaps
-	creds           types.CredentialSource
-	policySrc       permission.ApprovalPolicySource
-	toolSpecs       func(name string) (types.ToolSpec, bool)
-	verifier        types.Verifier
-	journal         stores.Journal
-	telemetry       types.Telemetry
-	detached        bool
-	wall            time.Duration
+	newResumeRun       func(ctx context.Context, sessionID string, hist stores.History, seed float64) (context.Context, runtime.Runtime, runtime.AgentRun, *chains.LimitsState, error)
+	log                stores.SessionLog
+	runs               stores.Runs
+	events             stores.EventLog
+	cps                stores.Checkpoints
+	outputs            stores.OutputStore
+	redactor           types.Redactor
+	redactionPolicy    types.RedactionPolicy
+	redactionMaps      stores.RedactionMaps
+	creds              types.CredentialSource
+	policySrc          permission.ApprovalPolicySource
+	toolSpecs          func(name string) (types.ToolSpec, bool)
+	verifier           types.Verifier
+	journal            stores.Journal
+	consolidator       MemoryConsolidator
+	consolidationAudit stores.AuditLog
+	telemetry          types.Telemetry
+	detached           bool
+	wall               time.Duration
 	// stall bounds how long the attached consumer may take no event
 	// before the run preempts at its next safe point; zero disables
 	// detection.
@@ -170,6 +172,8 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 			c.redactor = cfg.redactor
 			c.redactionPolicy = cfg.redactionPolicy
 		}
+		c.consolidator = stack.consolidation(spec)
+		c.consolidationAudit = stack.stores.Audit
 		c.allowAnonymous = stack.allowAnonymous
 		c.telemetry = stack.telemetry
 		if l, ok := stack.Limits(spec); ok {

@@ -110,30 +110,32 @@ func AppendStepEnd(ctx context.Context, h HistoryAppender, expected int64, asst 
 // the lifecycle ordering runtime/spec.md fixes: history append before the
 // gate, Checkpoints.Put before Runs.Suspend, Runs.Finish before Done.
 type Lifecycle struct {
-	runs            stores.Runs
-	lease           stores.Lease
-	hb              *StreamHeartbeat
-	resumeState     *runtime.State
-	sessionID       string
-	flow            string
-	residency       string
-	originator      types.Principal
-	telemetry       types.Telemetry
-	reason          types.SuspendReason
-	appender        HistoryAppender
-	histVersion     int64
-	uncertain       func(runtime.State) []types.CallKey
-	verify          types.Verifier
-	journal         stores.Journal
-	maxTurns        int
-	resultRef       string
-	waker           Waker
-	ledger          *chains.LimitsState
-	approval        permission.ApprovalPolicySource
-	toolLookup      func(name string) (types.ToolSpec, bool)
-	redactor        types.Redactor
-	redactionPolicy types.RedactionPolicy
-	redactionMaps   stores.RedactionMaps
+	runs               stores.Runs
+	lease              stores.Lease
+	hb                 *StreamHeartbeat
+	resumeState        *runtime.State
+	sessionID          string
+	flow               string
+	residency          string
+	originator         types.Principal
+	telemetry          types.Telemetry
+	reason             types.SuspendReason
+	appender           HistoryAppender
+	histVersion        int64
+	uncertain          func(runtime.State) []types.CallKey
+	verify             types.Verifier
+	journal            stores.Journal
+	maxTurns           int
+	resultRef          string
+	waker              Waker
+	ledger             *chains.LimitsState
+	approval           permission.ApprovalPolicySource
+	toolLookup         func(name string) (types.ToolSpec, bool)
+	redactor           types.Redactor
+	redactionPolicy    types.RedactionPolicy
+	redactionMaps      stores.RedactionMaps
+	consolidator       MemoryConsolidator
+	consolidationAudit stores.AuditLog
 }
 
 // LifecycleOption configures a Lifecycle.
@@ -251,6 +253,13 @@ func WithLifecycleTelemetry(t types.Telemetry) LifecycleOption {
 // ledger, and the terminal Done projects the accrued cost.
 func WithLifecycleLedger(s *chains.LimitsState) LifecycleOption {
 	return func(lc *Lifecycle) { lc.ledger = s }
+}
+
+// WithLifecycleConsolidation binds the Done seam that writes the closed
+// run's subject memory, and the audit port a failed consolidation records
+// through. A lifecycle without one finishes without consolidating.
+func WithLifecycleConsolidation(c MemoryConsolidator, audit stores.AuditLog) LifecycleOption {
+	return func(lc *Lifecycle) { lc.consolidator, lc.consolidationAudit = c, audit }
 }
 
 // WithLifecycleApprovalPolicy binds the source the suspension resolves each
@@ -858,6 +867,7 @@ func (lc *Lifecycle) finishTurn(ctx context.Context, st runtime.State) (runtime.
 	if err != nil {
 		return st, nil, false, err
 	}
+	lc.consolidate(ctx)
 	return st, []types.Event{lc.done(st, unknown, types.StopCompleted)}, false, nil
 }
 
@@ -932,6 +942,19 @@ func (lc *Lifecycle) callKeys(st runtime.State) []types.CallKey {
 		return nil
 	}
 	return lc.uncertain(st)
+}
+
+// consolidate runs the Done seam after the run closed. A failure is
+// logged and, while an audit port can still carry a record, audited; it
+// never fails the terminal Done.
+func (lc *Lifecycle) consolidate(ctx context.Context) {
+	if lc.consolidator == nil {
+		return
+	}
+	ri := types.RunInfo{SessionID: lc.sessionID, RunID: lc.lease.RunID, Principal: lc.originator}
+	if err := lc.consolidator.Run(ctx, ri); err != nil {
+		consolidateFailure(ctx, lc.consolidationAudit, ri, err)
+	}
 }
 
 func (lc *Lifecycle) done(st runtime.State, uncertain []types.CallKey, reason types.StopReason) types.Event {

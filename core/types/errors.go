@@ -61,6 +61,7 @@ var (
 
 	// working-state
 	ErrMemoryStoreRequired = errors.New("gohan: subject memory needs a MemoryStore")
+	ErrMemoryWriteInvalid  = errors.New("gohan: memory value does not match the schema")
 )
 
 type ResumeToken string

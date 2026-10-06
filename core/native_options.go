@@ -5,6 +5,7 @@ import (
 
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/permission"
+	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -30,6 +31,9 @@ type NativeSpec struct {
 	Verifier types.Verifier
 	// LiveDeny declares this flow's live deny source. A nil source adds no live denies.
 	LiveDeny func(ctx context.Context, inv *permission.ToolInvocation) (string, bool)
+	// MemoryPolicy declares this flow's subject-memory policy. A zero
+	// value declares no subject memory: the flow never consolidates.
+	MemoryPolicy stores.MemoryPolicy
 	// Decider states the flow's own tool policy. The batch gate consults
 	// it before any call executes; a nil Decider keeps the core defaults
 	// (read-only and idempotent calls pass, side effects ask).

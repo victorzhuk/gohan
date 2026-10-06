@@ -40,6 +40,7 @@ type config struct {
 	redactionPolicy  types.RedactionPolicy
 	tenant           types.Tenant
 	native           []NativeSpec
+	consolidator     func(ConsolidationWiring) MemoryConsolidator
 }
 
 // WithTenant binds the build to a tenant identity. A tenant with a

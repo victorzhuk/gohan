@@ -164,6 +164,34 @@ func TestTelemetryMetrics(t *testing.T) {
 		}
 	})
 
+	t.Run("memoryEvictedRegistration", func(t *testing.T) {
+		_, err := Build(&recordingSink{}, []Metric{
+			{Name: MetricMemoryEvicted, Labels: []string{"tenant"}},
+		})
+		if err == nil {
+			t.Fatal("Build admitted tenant without WithTenantLabel")
+		}
+		if _, err := Build(&recordingSink{}, []Metric{
+			{Name: MetricMemoryEvicted, Labels: []string{"tenant"}},
+		}, WithTenantLabel()); err != nil {
+			t.Fatalf("Build refused tenant with the option: %v", err)
+		}
+	})
+
+	t.Run("memoryWriteDeniedRegistration", func(t *testing.T) {
+		_, err := Build(&recordingSink{}, []Metric{
+			{Name: MetricMemoryWriteDeny, Labels: []string{"tenant"}},
+		})
+		if err == nil {
+			t.Fatal("Build admitted tenant without WithTenantLabel")
+		}
+		if _, err := Build(&recordingSink{}, []Metric{
+			{Name: MetricMemoryWriteDeny, Labels: []string{"tenant"}},
+		}, WithTenantLabel()); err != nil {
+			t.Fatalf("Build refused tenant with the option: %v", err)
+		}
+	})
+
 	t.Run("repeat below threshold not counted", func(t *testing.T) {
 		sink := &recordingSink{}
 		metrics := mustBuild(t, sink)

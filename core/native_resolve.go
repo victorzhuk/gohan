@@ -7,6 +7,7 @@ import (
 
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/permission"
+	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -32,6 +33,7 @@ type resolvedNativeConfig struct {
 	verifier        types.Verifier
 	redactor        types.Redactor
 	redactionPolicy types.RedactionPolicy
+	memoryPolicy    stores.MemoryPolicy
 }
 
 // resolvedNative returns the resolved configuration Build computed for the
@@ -123,6 +125,11 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 		if verifier == nil {
 			verifier = s.verifier
 		}
+		if spec.MemoryPolicy.Schema != nil || spec.MemoryPolicy.MaxEntries != 0 || spec.MemoryPolicy.TTL != 0 {
+			if _, ok := s.stores.Notes.(stores.MemoryStore); !ok {
+				return fmt.Errorf("flow %q: memory policy: %w", name, types.ErrMemoryStoreRequired)
+			}
+		}
 		resolved[name] = &resolvedNativeConfig{
 			flow:            name,
 			model:           model,
@@ -143,6 +150,7 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			verifier:        verifier,
 			redactor:        redactor,
 			redactionPolicy: redactionPolicy,
+			memoryPolicy:    spec.MemoryPolicy,
 		}
 	}
 

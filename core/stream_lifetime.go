@@ -65,6 +65,9 @@ func (c *conversation) lifecycleOptions(sessionID string, lease stores.Lease, or
 			return c.log.Append(ctx, sessionID, expected, msgs...)
 		})))
 	}
+	if c.consolidator != nil {
+		opts = append(opts, WithLifecycleConsolidation(c.consolidator, c.consolidationAudit))
+	}
 	if hasOriginator {
 		opts = append(opts, WithLifecycleOriginator(originator))
 	}

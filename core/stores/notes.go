@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -43,6 +44,10 @@ type MemoryNotes struct {
 	// memory backs the optional MemoryStore surface; session notes and
 	// subject memory share the key space but not the records.
 	memory map[NotesKey][]memoryRecord
+	// memNow and memPolicy govern subject memory only: the stamp, the TTL
+	// comparison and the schema check.
+	memNow    func() time.Time
+	memPolicy MemoryPolicy
 }
 
 type notesRecord struct {
