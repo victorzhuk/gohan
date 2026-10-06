@@ -3,11 +3,13 @@ package guard
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/victorzhuk/gohan/core/guards"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std/redact"
 )
 
 // DefaultWindow is the window size the Interactive profile maps to.
@@ -70,6 +72,9 @@ type Windowed struct {
 	Window   int
 	Idle     time.Duration
 	Fallback guards.Fallback
+	Redactor types.Redactor
+	Map      types.RedactionMap
+	Counter  redact.Counter
 }
 
 // NewWindowed builds a windowed output guard with the given window size.
@@ -83,10 +88,13 @@ func NewWindowed(inner guards.Guard, window int, fallback guards.Fallback) *Wind
 // Name reports the decider name recorded by decision observability.
 func (w *Windowed) Name() string { return "output-windowed" }
 
+var tokenPattern = regexp.MustCompile(`<gohan:[^<>]*>`)
+
 // GuardStream consumes chunks, guards and emits them window by window, and
 // emits the fallback message before returning a *types.GuardBlockedError.
 func (w *Windowed) GuardStream(ctx context.Context, chunks <-chan types.Text, emit func(types.Text) error) error {
 	var pending []types.Text
+	carry := ""
 	count := 0
 	var timer *time.Timer
 	if w.Idle > 0 {
@@ -100,17 +108,58 @@ func (w *Windowed) GuardStream(ctx context.Context, chunks <-chan types.Text, em
 			}
 		}()
 	}
-	flush := func() error {
-		if len(pending) == 0 {
+	flush := func(final bool) error {
+		if len(pending) == 0 && carry == "" {
 			return nil
 		}
-		parts := make([]string, len(pending))
+		var text strings.Builder
+		text.WriteString(carry)
 		for i, t := range pending {
-			parts[i] = t.Text
+			if i > 0 {
+				text.WriteByte(' ')
+			}
+			text.WriteString(t.Text)
 		}
 		pending = nil
 		count = 0
-		blocks, err := release(ctx, w.Inner, []types.Block{types.Text{Text: strings.Join(parts, " ")}}, w.Fallback)
+		value := text.String()
+		carry = ""
+		if w.Redactor != nil {
+			if start := strings.LastIndex(value, "<gohan:"); start >= 0 && !strings.Contains(value[start:], ">") {
+				carry = value[start:]
+				value = value[:start]
+			}
+			if final && carry != "" {
+				redact.UnknownToken(w.Counter, ctx)
+				carry = ""
+			}
+		}
+		if value == "" {
+			return nil
+		}
+		blocks := []types.Block{types.Text{Text: value}}
+		if w.Redactor != nil {
+			var err error
+			blocks, err = w.Redactor.Rehydrate(ctx, blocks, w.Map)
+			if err != nil {
+				return err
+			}
+			for i, b := range blocks {
+				txt, ok := b.(types.Text)
+				if !ok {
+					continue
+				}
+				matches := tokenPattern.FindAllString(txt.Text, -1)
+				for _, token := range matches {
+					if _, ok := w.Map.Entries[token]; !ok {
+						txt.Text = strings.ReplaceAll(txt.Text, token, "")
+						redact.UnknownToken(w.Counter, ctx)
+					}
+				}
+				blocks[i] = txt
+			}
+		}
+		blocks, err := release(ctx, w.Inner, blocks, w.Fallback)
 		if err != nil {
 			var gbe *types.GuardBlockedError
 			if errors.As(err, &gbe) && gbe.Fallback.Blocks != nil {
@@ -147,17 +196,21 @@ func (w *Windowed) GuardStream(ctx context.Context, chunks <-chan types.Text, em
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timerC:
-			if err := flush(); err != nil {
+			if err := flush(false); err != nil {
 				return err
 			}
 		case chunk, ok := <-chunks:
 			if !ok {
-				return flush()
+				return flush(true)
+			}
+			if w.Redactor != nil && carry != "" {
+				chunk.Text = carry + chunk.Text
+				carry = ""
 			}
 			pending = append(pending, chunk)
 			count += tokenCount(chunk.Text)
 			if count >= w.Window {
-				if err := flush(); err != nil {
+				if err := flush(false); err != nil {
 					return err
 				}
 			}

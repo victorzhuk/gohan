@@ -228,12 +228,9 @@ func redactModelRequest(ctx context.Context, req types.ModelRequest, run types.R
 		req.Messages[i].Blocks = append([]types.Block(nil), redacted[offset:offset+count]...)
 		offset += count
 	}
-	if maps == nil {
-		return types.ModelRequest{}, fmt.Errorf("redaction map store missing")
-	}
-	old, err := maps.Get(ctx, run.Principal.Tenant, run.SessionID)
-	if err != nil && !errors.Is(err, stores.ErrRedactionMapNotFound) {
-		return types.ModelRequest{}, fmt.Errorf("load redaction map: %w", err)
+	old, err := loadRedactionMap(ctx, run, maps)
+	if err != nil {
+		return types.ModelRequest{}, err
 	}
 	if len(old.Entries) > 0 {
 		if m.Entries == nil {
@@ -247,6 +244,20 @@ func redactModelRequest(ctx context.Context, req types.ModelRequest, run types.R
 		return types.ModelRequest{}, fmt.Errorf("store redaction map: %w", err)
 	}
 	return req, nil
+}
+
+func loadRedactionMap(ctx context.Context, run types.RunInfo, maps stores.RedactionMaps) (types.RedactionMap, error) {
+	if maps == nil {
+		return types.RedactionMap{}, fmt.Errorf("redaction map store missing")
+	}
+	m, err := maps.Get(ctx, run.Principal.Tenant, run.SessionID)
+	if errors.Is(err, stores.ErrRedactionMapNotFound) {
+		return types.RedactionMap{Tenant: run.Principal.Tenant, Session: run.SessionID}, nil
+	}
+	if err != nil {
+		return types.RedactionMap{}, fmt.Errorf("load redaction map: %w", err)
+	}
+	return m, nil
 }
 
 // promptBlock renders the model-facing PromptSet strings as one system

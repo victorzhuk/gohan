@@ -164,3 +164,97 @@ func TestOutputGuard(t *testing.T) {
 		}
 	})
 }
+
+type outputRedactor struct{}
+
+func (outputRedactor) Redact(_ context.Context, blocks []types.Block, _ types.RedactionPolicy) ([]types.Block, types.RedactionMap, error) {
+	return blocks, types.RedactionMap{}, nil
+}
+
+func (outputRedactor) Rehydrate(_ context.Context, blocks []types.Block, m types.RedactionMap) ([]types.Block, error) {
+	for i, block := range blocks {
+		text, ok := block.(types.Text)
+		if !ok {
+			continue
+		}
+		for token, entity := range m.Entries {
+			text.Text = strings.ReplaceAll(text.Text, token, entity.Value)
+		}
+		blocks[i] = text
+	}
+	return blocks, nil
+}
+
+type outputCounter struct{ n int64 }
+
+func (c *outputCounter) Add(_ context.Context, name string, value int64) {
+	if name == "gohan.redact.unknown_token" {
+		c.n += value
+	}
+}
+
+func TestWindowedRedactionOutput(t *testing.T) {
+	t.Run("split-token", func(t *testing.T) {
+		const token = "<gohan:email:abcd>"
+		w := NewWindowed(&fakeGuard{decide: func(context.Context, guards.GuardInput) (guards.GuardVerdict, error) {
+			return guards.GuardVerdict{Action: guards.Pass}, nil
+		}}, 1, nil)
+		w.Redactor = outputRedactor{}
+		w.Map = types.RedactionMap{Entries: map[string]types.Entity{token: {Kind: types.EntityEmail, Value: "ada@example.com"}}}
+		chunks := make(chan types.Text, 2)
+		chunks <- types.Text{Text: "<gohan:email:abcd"}
+		chunks <- types.Text{Text: ">"}
+		close(chunks)
+		var got strings.Builder
+		if err := w.GuardStream(context.Background(), chunks, func(text types.Text) error {
+			got.WriteString(text.Text)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got.String() != "ada@example.com" {
+			t.Fatalf("output = %q", got.String())
+		}
+	})
+
+	t.Run("invented-token", func(t *testing.T) {
+		counter := &outputCounter{}
+		w := NewWindowed(&fakeGuard{decide: func(context.Context, guards.GuardInput) (guards.GuardVerdict, error) {
+			return guards.GuardVerdict{Action: guards.Pass}, nil
+		}}, 1, nil)
+		w.Redactor, w.Counter = outputRedactor{}, counter
+		chunks := make(chan types.Text, 1)
+		chunks <- types.Text{Text: "x <gohan:email:invented> y"}
+		close(chunks)
+		var got strings.Builder
+		if err := w.GuardStream(context.Background(), chunks, func(text types.Text) error {
+			got.WriteString(text.Text)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got.String() != "x  y" || counter.n != 1 {
+			t.Fatalf("output = %q, count = %d", got.String(), counter.n)
+		}
+	})
+
+	t.Run("without-redactor", func(t *testing.T) {
+		w := NewWindowed(&fakeGuard{decide: func(context.Context, guards.GuardInput) (guards.GuardVerdict, error) {
+			return guards.GuardVerdict{Action: guards.Pass}, nil
+		}}, 3, nil)
+		chunks := make(chan types.Text, 2)
+		chunks <- types.Text{Text: "one"}
+		chunks <- types.Text{Text: "two"}
+		close(chunks)
+		var got strings.Builder
+		if err := w.GuardStream(context.Background(), chunks, func(text types.Text) error {
+			got.WriteString(text.Text)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got.String() != "one two" {
+			t.Fatalf("output = %q", got.String())
+		}
+	})
+}
