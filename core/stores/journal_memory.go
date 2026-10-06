@@ -3,6 +3,7 @@ package stores
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 
 type journalRecord struct {
 	entry    Entry
+	raw      []byte
 	key      types.CallKey
 	expireAt time.Time
 }
@@ -19,10 +21,21 @@ type journalRecord struct {
 // store clock is authoritative for expiry: a caller with a skewed clock
 // cannot extend or cut short a replay window.
 type MemoryJournal struct {
-	mu    sync.Mutex
-	byKey map[types.CallKey]*journalRecord
-	now   func() time.Time
-	ttl   time.Duration
+	mu      sync.Mutex
+	byKey   map[types.CallKey]*journalRecord
+	now     func() time.Time
+	ttl     time.Duration
+	schemas *SchemaRegistry
+}
+
+// decodeEntry reads the record's envelope through the registry. The stored
+// bytes are never rewritten.
+func (s *MemoryJournal) decodeEntry(ctx context.Context, rec *journalRecord) (Entry, error) {
+	var env RecordEnvelope
+	if err := json.Unmarshal(rec.raw, &env); err != nil {
+		return Entry{}, fmt.Errorf("decode Entry envelope: %w", err)
+	}
+	return DecodeRecord[Entry](ctx, s.schemas, env)
 }
 
 // Reserve atomically claims the call key. For a new key it returns
@@ -37,20 +50,30 @@ func (s *MemoryJournal) Reserve(ctx context.Context, k types.CallKey, tool strin
 
 	now := s.now()
 	if rec, ok := s.byKey[k]; ok && now.Before(rec.expireAt) {
-		if rec.entry.Fingerprint != fp {
+		entry, err := s.decodeEntry(ctx, rec)
+		if err != nil {
+			return Entry{}, false, err
+		}
+		if entry.Fingerprint != fp {
 			return Entry{}, false, ErrJournalFingerprintMismatch
 		}
-		return rec.entry, false, nil
+		return entry, false, nil
+	}
+	entry := Entry{
+		State:       Reserved,
+		Fingerprint: fp,
+		Tool:        tool,
+		Key:         k.CallID,
+		Args:        append(json.RawMessage(nil), args...),
+		At:          now,
+	}
+	raw, err := encodeEnvelope("Entry", entry)
+	if err != nil {
+		return Entry{}, false, err
 	}
 	rec := &journalRecord{
-		entry: Entry{
-			State:       Reserved,
-			Fingerprint: fp,
-			Tool:        tool,
-			Key:         k.CallID,
-			Args:        append(json.RawMessage(nil), args...),
-			At:          now,
-		},
+		entry:    entry,
+		raw:      raw,
 		key:      k,
 		expireAt: now.Add(s.ttl),
 	}
@@ -77,6 +100,11 @@ func (s *MemoryJournal) Complete(ctx context.Context, k types.CallKey, res types
 	rec.entry.State = Completed
 	rec.entry.Result = copyToolResult(res)
 	rec.entry.At = s.now()
+	raw, err := encodeEnvelope("Entry", rec.entry)
+	if err != nil {
+		return err
+	}
+	rec.raw = raw
 	return nil
 }
 
@@ -94,9 +122,10 @@ func (s *MemoryJournal) ByFingerprint(ctx context.Context, sessionID string, fp 
 		if !now.Before(rec.expireAt) {
 			continue
 		}
-		e := rec.entry
-		e.Args = append(json.RawMessage(nil), e.Args...)
-		e.Result = copyToolResult(e.Result)
+		e, err := s.decodeEntry(ctx, rec)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, e)
 	}
 	return out, nil
@@ -112,9 +141,10 @@ func (s *MemoryJournal) Unknown(ctx context.Context, sessionID string) ([]Entry,
 		if rec.key.SessionID != sessionID || !now.Before(rec.expireAt) || rec.entry.Result.Outcome != types.Unknown {
 			continue
 		}
-		e := rec.entry
-		e.Args = append(json.RawMessage(nil), e.Args...)
-		e.Result = copyToolResult(e.Result)
+		e, err := s.decodeEntry(ctx, rec)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, e)
 	}
 	return out, nil

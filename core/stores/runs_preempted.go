@@ -17,7 +17,11 @@ func (s *MemoryRuns) Preempted(ctx context.Context, limit int) ([]Run, error) {
 		if rec.run.State != Suspended {
 			continue
 		}
-		parked = append(parked, cloneRun(rec.run))
+		run, err := s.decodeRun(ctx, rec)
+		if err != nil {
+			return nil, err
+		}
+		parked = append(parked, run)
 	}
 	sort.Slice(parked, func(i, j int) bool { return parked[i].Heartbeat.Before(parked[j].Heartbeat) })
 	if len(parked) > limit {

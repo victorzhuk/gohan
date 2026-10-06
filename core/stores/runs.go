@@ -2,6 +2,7 @@ package stores
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -125,6 +126,7 @@ type PreemptedLister interface {
 
 type runRecord struct {
 	run     Run
+	raw     []byte
 	lease   Lease
 	ttl     time.Duration
 	token   types.ResumeToken
@@ -143,6 +145,7 @@ type MemoryRuns struct {
 	now        func() time.Time
 	info       RunInfoSource
 	generation uint64
+	schemas    *SchemaRegistry
 
 	notices   []*noticeEntry
 	noticeSeq uint64
@@ -162,12 +165,19 @@ func WithMemoryRunInfo(src RunInfoSource) MemoryRunOption {
 	return func(s *MemoryRuns) { s.info = src }
 }
 
+// WithMemoryRunSchemas injects the schema registry run reads decode
+// through.
+func WithMemoryRunSchemas(reg *SchemaRegistry) MemoryRunOption {
+	return func(s *MemoryRuns) { s.schemas = reg }
+}
+
 func NewMemoryRuns(opts ...MemoryRunOption) *MemoryRuns {
 	s := &MemoryRuns{
-		runs:   map[string]*runRecord{},
-		byOp:   map[string]string{},
-		onSess: map[string]string{},
-		now:    time.Now,
+		runs:    map[string]*runRecord{},
+		byOp:    map[string]string{},
+		onSess:  map[string]string{},
+		now:     time.Now,
+		schemas: NewSchemaRegistry(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -187,6 +197,31 @@ func cloneRun(r Run) Run {
 	r.Uncertain = append([]types.CallKey(nil), r.Uncertain...)
 	r.Pending = append([]types.ToolUse(nil), r.Pending...)
 	return r
+}
+
+// encodeRunLocked persists rec.run's envelope bytes after a mutation. The
+// envelope is the record as stored; the typed row stays the working copy.
+func (s *MemoryRuns) encodeRunLocked(rec *runRecord) error {
+	raw, err := encodeEnvelope("Run", rec.run)
+	if err != nil {
+		return err
+	}
+	rec.raw = raw
+	return nil
+}
+
+// decodeRun reads the record's envelope through the registry. The stored
+// bytes are never rewritten.
+func (s *MemoryRuns) decodeRun(ctx context.Context, rec *runRecord) (Run, error) {
+	var env RecordEnvelope
+	if err := json.Unmarshal(rec.raw, &env); err != nil {
+		return Run{}, fmt.Errorf("decode Run envelope: %w", err)
+	}
+	run, err := DecodeRecord[Run](ctx, s.schemas, env)
+	if err != nil {
+		return Run{}, err
+	}
+	return cloneRun(run), nil
 }
 
 func (rec *runRecord) expiredAt(now time.Time) bool {
@@ -243,6 +278,9 @@ func (s *MemoryRuns) Start(ctx context.Context, r Run, ttl time.Duration) (Lease
 	if r.OperationID != "" {
 		s.byOp[opKey] = r.RunID
 	}
+	if err := s.encodeRunLocked(rec); err != nil {
+		return Lease{}, err
+	}
 	return rec.lease, nil
 }
 
@@ -268,21 +306,21 @@ func (s *MemoryRuns) ByOperation(ctx context.Context, tenant, operationID string
 	if !ok {
 		return Run{}, fmt.Errorf("%w: operation %s", ErrRunNotFound, operationID)
 	}
-	return cloneRun(s.runs[runID].run), nil
+	return s.decodeRun(ctx, s.runs[runID])
 }
 
 // ByID returns the run with the given id in any state, including finished
 // and failed ones. Cross-pod inspection reads through it; like
 // PreemptedLister it is an optional surface on Runs, discovered by type
 // assertion.
-func (s *MemoryRuns) ByID(_ context.Context, runID string) (Run, error) {
+func (s *MemoryRuns) ByID(ctx context.Context, runID string) (Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.runs[runID]
 	if !ok {
 		return Run{}, fmt.Errorf("%w: run %s", ErrRunNotFound, runID)
 	}
-	return cloneRun(rec.run), nil
+	return s.decodeRun(ctx, rec)
 }
 
 // Finish closes the run with the given terminal state. An expired or
@@ -304,6 +342,9 @@ func (s *MemoryRuns) Finish(ctx context.Context, l Lease, state RunState, uncert
 	rec.run.ResultRef = resultRef
 	rec.lease = Lease{}
 	rec.live = false
+	if err := s.encodeRunLocked(rec); err != nil {
+		return err
+	}
 	s.appendNoticeLocked(ctx, rec, state)
 	return nil
 }
@@ -321,6 +362,9 @@ func (s *MemoryRuns) Suspend(ctx context.Context, l Lease, t types.ResumeToken) 
 	rec.token = t
 	rec.lease = Lease{}
 	rec.live = false
+	if err := s.encodeRunLocked(rec); err != nil {
+		return err
+	}
 	s.appendNoticeLocked(ctx, rec, Suspended)
 	return nil
 }
@@ -347,6 +391,9 @@ func (s *MemoryRuns) Resuming(ctx context.Context, runID string, ttl time.Durati
 	rec.ttl = ttl
 	rec.lease = Lease{RunID: runID, Generation: generation, Expires: now.Add(ttl)}
 	rec.live = true
+	if err := s.encodeRunLocked(rec); err != nil {
+		return Lease{}, err
+	}
 	return rec.lease, nil
 
 }
@@ -366,7 +413,11 @@ func (s *MemoryRuns) Stale(ctx context.Context, staleAfter time.Duration, limit 
 		if rec.run.Heartbeat.After(cutoff) {
 			continue
 		}
-		stale = append(stale, cloneRun(rec.run))
+		run, err := s.decodeRun(ctx, rec)
+		if err != nil {
+			return nil, err
+		}
+		stale = append(stale, run)
 	}
 	sort.Slice(stale, func(i, j int) bool { return stale[i].Heartbeat.Before(stale[j].Heartbeat) })
 	if len(stale) > limit {

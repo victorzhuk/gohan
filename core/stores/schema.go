@@ -129,6 +129,20 @@ func (r *SchemaRegistry) Upcast(shape string, from SchemaVersion, raw []byte) ([
 	return raw, nil
 }
 
+// encodeEnvelope serializes payload and wraps it in the record envelope
+// the release writes: the shape name at CurrentSchemaVersion.
+func encodeEnvelope(shape string, payload any) ([]byte, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encode %s: %w", shape, err)
+	}
+	envelope, err := json.Marshal(RecordEnvelope{Shape: shape, SchemaVersion: int(CurrentSchemaVersion), Payload: raw})
+	if err != nil {
+		return nil, fmt.Errorf("encode %s envelope: %w", shape, err)
+	}
+	return envelope, nil
+}
+
 // RecordEnvelope stores schema metadata beside a serialized domain record.
 type RecordEnvelope struct {
 	Shape         string          `json:"shape"`

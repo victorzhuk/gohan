@@ -51,6 +51,7 @@ type sessionRecord struct {
 // and the state's own monotonic version, independent of history versions.
 type sharedStateRow struct {
 	value   json.RawMessage
+	raw     []byte
 	version int64
 }
 
@@ -395,7 +396,7 @@ func (s *MemorySessionLog) Fork(ctx context.Context, from, upTo string) (string,
 	// A fork renumbers shared state from 1 so later writes in either
 	// session never conflict with the other.
 	if rec.state.version > 0 {
-		child.state = sharedStateRow{value: slices.Clone(rec.state.value), version: 1}
+		child.state = sharedStateRow{value: slices.Clone(rec.state.value), raw: slices.Clone(rec.state.raw), version: 1}
 	}
 	s.sessions[childID] = child
 	for _, d := range s.dependents {
@@ -587,7 +588,18 @@ func (s *MemorySessionLog) SharedStateMeta(ctx context.Context, sessionID string
 	if err != nil {
 		return nil, 0, err
 	}
-	return slices.Clone(rec.state.value), rec.state.version, nil
+	if rec.state.raw == nil {
+		return nil, rec.state.version, nil
+	}
+	var env RecordEnvelope
+	if err := json.Unmarshal(rec.state.raw, &env); err != nil {
+		return nil, 0, fmt.Errorf("decode State envelope: %w", err)
+	}
+	value, err := DecodeRecord[json.RawMessage](ctx, s.schemas, env)
+	if err != nil {
+		return nil, 0, err
+	}
+	return value, rec.state.version, nil
 }
 
 // SetSharedStateMeta writes the shared state under an expected-version
@@ -602,7 +614,12 @@ func (s *MemorySessionLog) SetSharedStateMeta(ctx context.Context, sessionID str
 	if rec.state.version != expectedVersion {
 		return 0, fmt.Errorf("shared state session %s at version %d: %w", sessionID, expectedVersion, types.ErrVersionConflict)
 	}
+	raw, err := encodeEnvelope("State", value)
+	if err != nil {
+		return 0, err
+	}
 	rec.state.value = slices.Clone(value)
+	rec.state.raw = raw
 	rec.state.version = expectedVersion + 1
 	return rec.state.version, nil
 }

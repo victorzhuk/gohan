@@ -21,6 +21,9 @@ func (s *MemoryRuns) Heartbeat(ctx context.Context, l Lease) (Lease, error) {
 
 	rec.run.Heartbeat = now
 	rec.lease = Lease{RunID: rec.run.RunID, Generation: l.Generation, Expires: now.Add(rec.ttl)}
+	if err := s.encodeRunLocked(rec); err != nil {
+		return Lease{}, err
+	}
 	return rec.lease, nil
 }
 
@@ -49,5 +52,8 @@ func (s *MemoryRuns) Reclaim(ctx context.Context, r Run, ttl time.Duration) (Lea
 	rec.lease = Lease{RunID: r.RunID, Generation: generation, Expires: now.Add(ttl)}
 	rec.run.Heartbeat = now
 	rec.live = true
+	if err := s.encodeRunLocked(rec); err != nil {
+		return Lease{}, err
+	}
 	return rec.lease, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"iter"
 	"strconv"
@@ -71,14 +72,22 @@ type AuditLog interface {
 	Purge(ctx context.Context, tenant string, olderThan time.Time) (int, error)
 }
 
+// auditRow is one persisted audit record: the decoded value the chain
+// logic reads and the envelope bytes the public read decodes through.
+type auditRow struct {
+	rec AuditRecord
+	raw []byte
+}
+
 // MemoryAuditLog is the in-memory AuditLog reference implementation. The
 // store clock is authoritative for the persisted At instant; the per-session
 // hash chain and At are computed inside Append and no exported path lets a
 // caller set them.
 type MemoryAuditLog struct {
 	mu       sync.Mutex
-	byTenant map[string][]*AuditRecord
+	byTenant map[string][]auditRow
 	now      func() time.Time
+	schemas  *SchemaRegistry
 }
 
 // MemoryAuditLogOption configures NewMemoryAuditLog.
@@ -90,8 +99,14 @@ func WithMemoryAuditClock(now func() time.Time) MemoryAuditLogOption {
 	return func(s *MemoryAuditLog) { s.now = now }
 }
 
+// WithMemoryAuditSchemas injects the schema registry record reads decode
+// through.
+func WithMemoryAuditSchemas(reg *SchemaRegistry) MemoryAuditLogOption {
+	return func(s *MemoryAuditLog) { s.schemas = reg }
+}
+
 func NewMemoryAuditLog(opts ...MemoryAuditLogOption) *MemoryAuditLog {
-	s := &MemoryAuditLog{now: time.Now}
+	s := &MemoryAuditLog{now: time.Now, schemas: NewSchemaRegistry()}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -110,19 +125,23 @@ func (s *MemoryAuditLog) Append(ctx context.Context, r AuditRecord) error {
 	defer s.mu.Unlock()
 
 	if s.byTenant == nil {
-		s.byTenant = make(map[string][]*AuditRecord)
+		s.byTenant = make(map[string][]auditRow)
 	}
 	rec := r
 	rec.At = s.now()
 	chain := s.byTenant[rec.Tenant]
 	for i := len(chain) - 1; i >= 0; i-- {
-		if chain[i].SessionID == rec.SessionID {
-			rec.PrevHash = chain[i].Hash
+		if chain[i].rec.SessionID == rec.SessionID {
+			rec.PrevHash = chain[i].rec.Hash
 			break
 		}
 	}
 	rec.Hash = auditHash(rec)
-	s.byTenant[rec.Tenant] = append(chain, &rec)
+	raw, err := encodeEnvelope("AuditRecord", rec)
+	if err != nil {
+		return err
+	}
+	s.byTenant[rec.Tenant] = append(chain, auditRow{rec: rec, raw: raw})
 	return nil
 }
 
@@ -132,8 +151,20 @@ func (s *MemoryAuditLog) Read(ctx context.Context, sessionID string) iter.Seq2[A
 		s.mu.Lock()
 		chain := s.recordsLocked(sessionID)
 		out := make([]AuditRecord, len(chain))
-		for i, rec := range chain {
-			out[i] = *rec
+		for i, row := range chain {
+			var env RecordEnvelope
+			if err := json.Unmarshal(row.raw, &env); err != nil {
+				s.mu.Unlock()
+				yield(AuditRecord{}, fmt.Errorf("decode AuditRecord envelope: %w", err))
+				return
+			}
+			rec, err := DecodeRecord[AuditRecord](ctx, s.schemas, env)
+			if err != nil {
+				s.mu.Unlock()
+				yield(AuditRecord{}, err)
+				return
+			}
+			out[i] = rec
 		}
 		s.mu.Unlock()
 
@@ -154,45 +185,54 @@ func (s *MemoryAuditLog) Purge(ctx context.Context, tenant string, olderThan tim
 	chain := s.byTenant[tenant]
 	kept := chain[:0]
 	removed := 0
-	for _, rec := range chain {
-		if rec.At.Before(olderThan) {
+	for _, row := range chain {
+		if row.rec.At.Before(olderThan) {
 			removed++
 			continue
 		}
-		kept = append(kept, rec)
+		kept = append(kept, row)
 	}
 	if removed == 0 {
 		return 0, nil
 	}
 	s.byTenant[tenant] = kept
-	s.resealLocked(tenant)
+	if err := s.resealLocked(tenant); err != nil {
+		return 0, err
+	}
 	return removed, nil
 }
 
-func (s *MemoryAuditLog) recordsLocked(sessionID string) []*AuditRecord {
-	var out []*AuditRecord
+func (s *MemoryAuditLog) recordsLocked(sessionID string) []auditRow {
+	var out []auditRow
 	for _, chain := range s.byTenant {
-		for _, rec := range chain {
-			if rec.SessionID == sessionID {
-				out = append(out, rec)
+		for _, row := range chain {
+			if row.rec.SessionID == sessionID {
+				out = append(out, row)
 			}
 		}
 	}
 	return out
 }
 
-func (s *MemoryAuditLog) resealLocked(tenant string) {
+func (s *MemoryAuditLog) resealLocked(tenant string) error {
 	chain := s.byTenant[tenant]
 	var prev *AuditRecord
-	for _, rec := range chain {
+	for i := range chain {
+		rec := chain[i].rec
 		if prev == nil || prev.SessionID != rec.SessionID {
 			rec.PrevHash = ""
 		} else {
 			rec.PrevHash = prev.Hash
 		}
-		rec.Hash = auditHash(*rec)
-		prev = rec
+		rec.Hash = auditHash(rec)
+		raw, err := encodeEnvelope("AuditRecord", rec)
+		if err != nil {
+			return err
+		}
+		chain[i] = auditRow{rec: rec, raw: raw}
+		prev = &chain[i].rec
 	}
+	return nil
 }
 
 // auditHash seals the record: SHA-256 over the previous hash and the
