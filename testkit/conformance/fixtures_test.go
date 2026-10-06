@@ -19,6 +19,12 @@ func TestDefaultFixturesCoversScenarioSet(t *testing.T) {
 		"usage estimated":               false,
 		"truncated tool call":           false,
 		"raw round trip":                false,
+		"cache breakpoints":             false,
+		"schema unsupported":            false,
+		"per-key isolation":             false,
+		"key redaction":                 false,
+		"extra collision":               false,
+		"undeclared fidelity":           false,
 	}
 	for _, fx := range fs {
 		if _, ok := want[fx.Name]; !ok {

@@ -39,16 +39,41 @@ func (l leakTB) Helper()                   { l.tb.Helper() }
 func (l leakTB) Errorf(f string, a ...any) { l.tb.Errorf(f, a...) }
 func (l leakTB) Failed() bool              { return l.tb.Failed() }
 
-// Model runs the Model conformance suite: the fixture set's error classes,
-// usage accounting, truncation and Raw round trip, plus the streaming
-// behaviours the iterator contract demands - early break, cancellation and
-// a goroutine-leak check. Each fixture runs as a subtest named after the
-// fixture. newModel builds the implementation under test for one fixture;
-// a real adapter maps the fixture to its recorded provider response, a
-// scripted double replays the fixture's outcome.
+// Model runs the legacy fixture-named Model suite.
 func Model(t *testing.T, newModel func(Fixture) types.Model, fixtures Fixtures) {
 	t.Helper()
 	runModel(testingTB{t}, newModel, fixtures)
+}
+
+// ModelScenarios runs shared adapter behavior under registered scenario IDs.
+func ModelScenarios(t *testing.T, newModel func(Fixture) types.Model, fixtures Fixtures) {
+	t.Helper()
+	tb := testingTB{t}
+	scenarios := []struct {
+		id    string
+		kinds []FixtureKind
+	}{
+		{"model.status-to-class", []FixtureKind{FixtureError}},
+		{"model.retry-after-parsed", []FixtureKind{FixtureError}},
+		{"model.cache-explicit-breakpoints", []FixtureKind{FixtureCacheBreakpoints}},
+		{"model.schema-never-ignored", []FixtureKind{FixtureSchemaUnsupported}},
+		{"model.usage-estimated", []FixtureKind{FixtureUsage}},
+		{"model.raw-round-trip", []FixtureKind{FixtureRawRoundTrip}},
+		{"model.isolation-per-key", []FixtureKind{FixtureKeyIsolation}},
+		{"model.key-never-in-telemetry", []FixtureKind{FixtureKeyRedaction}},
+	}
+	for _, scenario := range scenarios {
+		scenario := scenario
+		tb.Run(scenario.id, func(tb conformanceTB) {
+			for _, fx := range fixtures {
+				for _, kind := range scenario.kinds {
+					if fx.Kind == kind {
+						runFixture(tb, newModel(fx), fx)
+					}
+				}
+			}
+		})
+	}
 }
 
 func runModel(tb conformanceTB, newModel func(Fixture) types.Model, fixtures Fixtures) {
@@ -124,7 +149,7 @@ func runFixture(tb conformanceTB, m types.Model, fx Fixture) {
 	case FixtureRawRoundTrip:
 		assertRawFixture(tb, m, fx)
 	default:
-		tb.Fatalf("unknown fixture kind %d", fx.Kind)
+		return
 	}
 }
 

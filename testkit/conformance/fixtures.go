@@ -17,17 +17,16 @@ import (
 type FixtureKind int
 
 const (
-	// FixtureError checks the failure mapping: the adapter must surface the
-	// recorded provider failure as a *ModelError with the fixture's class.
 	FixtureError FixtureKind = iota + 1
-	// FixtureUsage checks the usage contract on a successful stream.
 	FixtureUsage
-	// FixtureTruncation checks a max_tokens finish that ends an open tool
-	// call: the tool use must be complete and the finish carried through.
 	FixtureTruncation
-	// FixtureRawRoundTrip checks that a Raw block the model does not
-	// interpret travels through a call unchanged and without error.
 	FixtureRawRoundTrip
+	FixtureCacheBreakpoints
+	FixtureSchemaUnsupported
+	FixtureKeyIsolation
+	FixtureKeyRedaction
+	FixtureExtraCollision
+	FixtureFidelity
 )
 
 // Fixture is one recorded provider response in model-level terms. Status,
@@ -35,16 +34,20 @@ const (
 // test maps them onto the model-level outcome the suite asserts. A fixture
 // is data: no network call, no clock, no goroutine.
 type Fixture struct {
-	Name       string
-	Kind       FixtureKind
-	Status     int
-	Code       string
-	RetryAfter time.Duration
-	Class      types.ErrorClass
-	Text       string
-	ToolName   string
-	Usage      *types.Usage
-	Raw        types.Raw
+	Name           string
+	Kind           FixtureKind
+	Status         int
+	Code           string
+	RetryAfter     time.Duration
+	Class          types.ErrorClass
+	Text           string
+	ToolName       string
+	Usage          *types.Usage
+	Raw            types.Raw
+	TargetProvider string
+	CacheBreaks    int
+	MaxBreakpoints int
+	ExtraField     string
 }
 
 // Fixtures is the fixture set an adapter ships with its conformance run.
@@ -54,7 +57,7 @@ type Fixtures []Fixture
 // fixture to the recorded provider response instead of calling the network.
 const FixtureKey = "gohan.conformance.fixture"
 
-// DefaultFixtures returns the fixture set every provider adapter ships:
+// DefaultFixtures returns deterministic inputs for shared model conformance scenarios.
 // the status-to-class table with Retry-After, the usage contract including
 // the no-usage estimate rule, a max_tokens truncation mid tool call and the
 // unmodelled-block Raw round trip.
@@ -133,6 +136,33 @@ func DefaultFixtures() Fixtures {
 			Name: "raw round trip",
 			Kind: FixtureRawRoundTrip,
 			Raw:  types.Raw{Provider: "acme", Value: map[string]any{"acme_kind": "trace"}},
+		},
+		{
+			Name:           "cache breakpoints",
+			Kind:           FixtureCacheBreakpoints,
+			CacheBreaks:    3,
+			MaxBreakpoints: 2,
+		},
+		{
+			Name: "schema unsupported",
+			Kind: FixtureSchemaUnsupported,
+		},
+		{
+			Name: "per-key isolation",
+			Kind: FixtureKeyIsolation,
+		},
+		{
+			Name: "key redaction",
+			Kind: FixtureKeyRedaction,
+		},
+		{
+			Name:       "extra collision",
+			Kind:       FixtureExtraCollision,
+			ExtraField: "max_tokens",
+		},
+		{
+			Name: "undeclared fidelity",
+			Kind: FixtureFidelity,
 		},
 	}
 }

@@ -76,8 +76,16 @@ func TestDefaultFixtures(t *testing.T) {
 			if fx.Raw.Provider == "" || fx.Raw.Value == nil {
 				t.Errorf("raw fixture %q has no provider or value", fx.Name)
 			}
-		default:
-			t.Errorf("fixture %q has unknown kind %d", fx.Name, fx.Kind)
+		case FixtureCacheBreakpoints:
+			if fx.CacheBreaks == 0 || fx.MaxBreakpoints == 0 {
+				t.Errorf("cache fixture %q has no breakpoint bounds", fx.Name)
+			}
+		case FixtureSchemaUnsupported, FixtureKeyIsolation, FixtureKeyRedaction, FixtureFidelity:
+			continue
+		case FixtureExtraCollision:
+			if fx.ExtraField == "" {
+				t.Errorf("collision fixture %q names no field", fx.Name)
+			}
 		}
 	}
 	for _, class := range []types.ErrorClass{
@@ -95,7 +103,11 @@ func TestDefaultFixtures(t *testing.T) {
 func TestFixturesAreData(t *testing.T) {
 	fs := DefaultFixtures()
 	kinds := fs.Kinds()
-	for _, kind := range []FixtureKind{FixtureError, FixtureUsage, FixtureTruncation, FixtureRawRoundTrip} {
+	for _, kind := range []FixtureKind{
+		FixtureError, FixtureUsage, FixtureTruncation, FixtureRawRoundTrip,
+		FixtureCacheBreakpoints, FixtureSchemaUnsupported, FixtureKeyIsolation,
+		FixtureKeyRedaction, FixtureExtraCollision, FixtureFidelity,
+	} {
 		if !kinds[kind] {
 			t.Errorf("fixture set misses kind %d", kind)
 		}

@@ -26,6 +26,20 @@ type ModelOptions struct {
 	Extra          map[string]any
 }
 
+func GovernedModelOptionKeys() [9]string {
+	return [9]string{
+		"model",
+		"messages",
+		"tools",
+		"tool_choice",
+		"max_tokens",
+		"temperature",
+		"response_format",
+		"output_schema",
+		"stream",
+	}
+}
+
 // ToolChoice governs whether the provider may call tools.
 type ToolChoice string
 
