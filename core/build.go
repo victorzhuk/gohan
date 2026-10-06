@@ -149,7 +149,7 @@ func Build(opts ...Option) (*Stack, error) {
 		recovery:         cfg.recovery,
 		stores:           cfg.stores,
 	}
-	if err := s.resolveNative(cfg.native, profiles); err != nil {
+	if err := s.resolveNative(cfg.native, profiles, cfg.redactor); err != nil {
 		return nil, err
 	}
 	s.manifest = computeReleaseManifest(profiles, cfg.prompts, cfg.pinned)

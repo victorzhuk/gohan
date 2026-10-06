@@ -30,6 +30,7 @@ type resolvedNativeConfig struct {
 	taintPolicy types.TaintHook
 	liveDeny    func(context.Context, *permission.ToolInvocation) (string, bool)
 	verifier    types.Verifier
+	redactor    types.Redactor
 }
 
 // resolvedNative returns the resolved configuration Build computed for the
@@ -42,7 +43,7 @@ func (s *Stack) resolvedNative(flow string) (*resolvedNativeConfig, bool) {
 // resolveNative resolves every registered definition once: model by profile
 // name, strategies, fidelity, then chain ordering. A rejected definition
 // fails the build before any provider call happens.
-func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.ModelProfile) error {
+func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.ModelProfile, redactor types.Redactor) error {
 	resolved := make(map[string]*resolvedNativeConfig, len(defs))
 	for _, spec := range defs {
 		name := spec.Request.Name
@@ -127,6 +128,7 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			taintPolicy: spec.TaintPolicy,
 			liveDeny:    spec.LiveDeny,
 			verifier:    verifier,
+			redactor:    redactor,
 		}
 	}
 
