@@ -153,9 +153,9 @@ The eight IDs the `m1` proposal names for the two adapters map onto the rows abo
 
 | ID | Owner | Depends on | Status | Evidence |
 |---|---|---|---|---|
-| `cache.key-includes-manifest` | `m1-exact-match-cache` | final guard acceptance | missing | no `std/cache` package exists |
-| `cache.never-cache-failures` | `m1-exact-match-cache` | final guard acceptance | missing | as above |
-| `cache.refused-on-conversation` | `m1-exact-match-cache` | — | missing | as above |
+| `cache.key-includes-manifest` | `m1-exact-match-cache` | final guard acceptance | done | `std/cache/cache_test.go`, `std/assembly_cache_test.go`; shipped in `archive/2026-10-07-m1-exact-match-cache` |
+| `cache.never-cache-failures` | `m1-exact-match-cache` | final guard acceptance | done | `core/cache_step_test.go` (`writeCacheEntry` gate) |
+| `cache.refused-on-conversation` | `m1-exact-match-cache` | — | done | `core/cache_step_test.go` (`AllowCache()` waiver) |
 
 ### 2.10 lifecycle (7)
 
