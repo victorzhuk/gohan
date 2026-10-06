@@ -116,15 +116,15 @@ The eight IDs the `m1` proposal names for the two adapters map onto the rows abo
 
 | ID | Owner | Depends on | Status | Evidence |
 |---|---|---|---|---|
-| `redaction.pseudonym-stable-within-session` | `m1-redaction-pipeline` | — | missing | no `std/redact` package exists |
-| `redaction.stores-never-see-raw-entities` | `m1-redaction-pipeline` | — | missing | as above |
-| `redaction.streaming-rehydration` | `m1-redaction-pipeline` | — | missing | as above |
-| `redaction.hallucinated-token-dropped` | `m1-redaction-pipeline` | — | missing | as above |
-| `redaction.residency-enforced-at-build` | `m1-redaction-pipeline` | — | missing | as above |
-| `guards.redaction` | `m1-redaction-pipeline` | — | missing | `std/guard` ships six stage files; none redacts |
-| `redaction.erasure` | `m1-subject-erasure-residency` | redaction, subject memory | missing | as above |
-| `redaction.erase-removes-memory` | `m1-subject-erasure-residency` | `m1-subject-memory` | missing | as above |
-| `redaction.erase-removes-blobs` | `m1-subject-erasure-residency` | blob retention | missing | as above |
+| `redaction.pseudonym-stable-within-session` | `m1-redaction-pipeline` | — | done | `core/redaction_scenarios_test.go`; shipped in `archive/2026-10-06-m1-redaction-pipeline` |
+| `redaction.stores-never-see-raw-entities` | `m1-redaction-pipeline` | — | done | `core/redaction_sinks_test.go`, `core/redaction_native_wiring_test.go` |
+| `redaction.streaming-rehydration` | `m1-redaction-pipeline` | — | done | `core/redaction_scenarios_test.go` |
+| `redaction.hallucinated-token-dropped` | `m1-redaction-pipeline` | — | done | `core/redaction_scenarios_test.go` |
+| `redaction.residency-enforced-at-build` | `m1-redaction-pipeline` | — | done | `core/residency_build_test.go` |
+| `guards.redaction` | `m1-redaction-pipeline` | — | done | `core/redaction_scenarios_test.go` |
+| `redaction.erasure` | `m1-subject-erasure-residency` | redaction, subject memory | done early | `core/erasure_test.go`; `Stack.EraseSubject` landed inside the redaction change, so `m1-subject-erasure-residency` records evidence and keeps any remaining scope (blob store, memory store) |
+| `redaction.erase-removes-memory` | `m1-subject-erasure-residency` | `m1-subject-memory` | done early | `core/erasure_test.go`, through the `Notes` port |
+| `redaction.erase-removes-blobs` | `m1-subject-erasure-residency` | blob retention | done early | `core/erasure_test.go`; `EraseReport.BlobRefs` reports refs for a later blob-store erasure |
 
 ### 2.7 flags (5)
 
