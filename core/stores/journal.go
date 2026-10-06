@@ -72,10 +72,17 @@ func WithJournalTTL(ttl time.Duration) MemoryJournalOption {
 	return func(s *MemoryJournal) { s.ttl = ttl }
 }
 
+// WithMemoryJournalSchemas injects the schema registry entry reads decode
+// through.
+func WithMemoryJournalSchemas(reg *SchemaRegistry) MemoryJournalOption {
+	return func(s *MemoryJournal) { s.schemas = reg }
+}
+
 func NewMemoryJournal(opts ...MemoryJournalOption) *MemoryJournal {
 	s := &MemoryJournal{
-		now: time.Now,
-		ttl: DefaultJournalTTL,
+		now:     time.Now,
+		ttl:     DefaultJournalTTL,
+		schemas: NewSchemaRegistry(),
 	}
 	for _, opt := range opts {
 		opt(s)
