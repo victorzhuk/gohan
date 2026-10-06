@@ -37,6 +37,7 @@ type Stores struct {
 	OutputStore OutputStore
 	NotesStore  NotesStore
 	Feedback    FeedbackStore
+	RedactionMaps RedactionMaps
 }
 
 // (illustrative) names may change during M0; see contract tiers
@@ -56,7 +57,7 @@ func WithSandbox(sb Sandbox) Option
 
 Options not listed in the code block are `(illustrative)` until M0: `SequentialTools()`, `AllowDrop(kinds ...BlockKind)`, `OnStall(Detach)`, `WithStreamBuffer(n)`, `WithLimits(RunLimits)`, `WithBudget(scope, Budget)`, `WithToolPolicy(source, ToolPolicy)`, `WithPinnedManifest(path)`, `WithRouter`, `WithLimiter`, `WithRetry`, `WithGuards(stage, ...Guard)`, `WithFallback`, `WithWaker`, `WithTracerProvider`, `WithMeterProvider`, `WithRetention(RetentionPolicy)`, `WithRetentionSource`, `Ephemeral()`, `WithNotifier(Notifier)`, `WithHealthTimeout(d)`. `memory.New() Stores` bundles the memory implementations.
 
-`Build` also computes the `ReleaseManifest` and its `ID` (`release`); `Stack.Manifest()` returns it. Validation happens in `Build` and in every flow constructor for everything knowable at build time; a value supplied per request — a dynamic `Extra` entry or a `ResponseSchema` on a profile without `Caps.Constrained` — is checked at call time and fails the call (`ClassPermanent`). Rejected combinations include: `Constrained` without `Caps.Constrained`; `AnthropicExplicitCache` on a non-Anthropic endpoint; `SessionHash` affinity without a configured affinity header; `Windowed` on a non-streaming model; `Native` resume on a backend without native checkpoints; `SideEffect` tools without idempotency acknowledgement; `Scheduled` suspension without a `Waker`. The resolved flow × profile × strategy matrix is logged once at startup.
+`Build` also computes the `ReleaseManifest` and its `ID` (`release`); `Stack.Manifest()` returns it. Validation happens in `Build` and in every flow constructor for everything knowable at build time; a value supplied per request — a dynamic `Extra` entry or a `ResponseSchema` on a profile without `Caps.Constrained` — is checked at call time and fails the call (`ClassPermanent`). Rejected combinations include: `Constrained` without `Caps.Constrained`; `AnthropicExplicitCache` on a non-Anthropic endpoint; `SessionHash` affinity without a configured affinity header; `Windowed` on a non-streaming model; `Native` resume on a backend without native checkpoints; `SideEffect` tools without idempotency acknowledgement; `Scheduled` suspension without a `Waker`; a residency-bound tenant whose configured store does not state its region, states an empty one, or states another (`redaction`). A native flow declares its static model options through `NativeSpec.ModelOptions`, and `Build` refuses an `Extra` entry whose key collides with a governed request field (`model`); an entry supplied per request is refused at call time with `ClassPermanent`. The resolved flow × profile × strategy matrix is logged once at startup.
 
 
 ## Requirements

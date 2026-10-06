@@ -223,9 +223,9 @@ These come from the `m1` proposal scope and the M1 row of `docs/overview.md` and
 
 `m1-s1-s2-acceptance` owns four scenario IDs (`messages.blob-provider-id-reused`, `identity.idempotency-key-transport-only`, `identity.values-survive-shield`, `identity.detached-reissues-credential`) that belong to capabilities no other M1 change covers. Its first task is to decompose them into their own bounded change (`m1-messages-blobs`, `m1-identity-detach`) before either can enter implementation. Until that decomposition exists, those IDs have an owner but no implementation plan.
 
-### 2.15 Later-lane status
+### 2.15 Lane status
 
-Only `m1-egress-policy` and `m1-taint-enforcement` are authored in this execution. Every other change named above is recorded here as the M1 owner of its obligations and is authored after its dependencies settle, each with its own contract review. No implementation starts before its change package is authored and reviewed.
+`m1-egress-policy` and `m1-taint-enforcement` are implemented and their scenario ids pass on the public path. `m1-verify-public-paths`, `m1-schema-read-paths`, `m1-redaction-pipeline` and `m1-provider-conformance-contract` are authored and validate with `openspec validate --strict`; their seams are sealed in §3.1 (ADR-0157) and enter implementation once their designs cite them and the package review closes. Every other change named above is the recorded M1 owner of its obligations and is authored after its dependencies settle, each with its own contract review. No implementation starts before its change package is authored, its seams are sealed and the package is reviewed.
 
 ## 3. Shared contract decisions
 
@@ -240,6 +240,18 @@ Sealed. The first changes implement these; they do not re-decide them. ADR-0155 
 - **D7 — Taint window input.** The window is computed over the run's raw blocks since the last `OriginUser` message, taken from the turn's own messages at the gate invocation. Projection and compaction never launder taint: the computation never reads a projected view, and it is capped by D1.
 
 - **D8 — Network declaration and egress audit.** `ToolSpec` gains `Network bool`, the reach fact `Build` consumes; `WithHTTP()` ships in the egress change because the Egress requirement names it; `stores.AuditRecord` gains `Host` and `Reason` and `AuditEgressDenied` joins the kind list, carrying host and reason only. Reach never implies `Capabilities.Exfil` (ADR-0156).
+
+### 3.1 Lane-3 seams (ADR-0157)
+
+`m1-verify-public-paths`, `m1-schema-read-paths`, `m1-redaction-pipeline` and `m1-provider-conformance-contract` were authored against the live code and each stopped on a port that did not exist or did not carry the data its requirement is written against. ADR-0157 seals them:
+
+- **Redaction.** `core` declares `Redactor` and the policy value types, `std/redact` implements them, and registration is the `WithRedactor` option the `build` contract already lists — no second builder, no `std` import in core. The map is a store of its own, `Stores.RedactionMaps`, tenant-keyed and retained apart from run state.
+- **Residency.** A store serving a residency-bound tenant implements `RegionProvider`; `Build` is fail-closed when the interface is missing, the region is empty, or it differs from the tenant's.
+- **Verification.** The journal retains each call's canonical arguments and lists the session's `Unknown` entries with them; `WithLifecycleVerify` stays the lifecycle carrier; a `Failed` reconciliation preserves the recorded `ToolError`; `std.UncertainOutcomeError` becomes an alias of the `types` type so a run that ends uncertain is classified as uncertain rather than internal.
+- **Schema.** A stored record is persisted in a `RecordEnvelope` naming the shape and the version it was written at; one generic decoder upcasts a copy on read and emits `gohan.schema.upcast{from,to}` per successful chain; domain types stay version-free.
+- **Provider options.** `NativeSpec.ModelOptions` carries the flow's static `Extra`, and `Build` refuses a governed-key collision; a per-request entry stays the adapter's call-time duty.
+
+Coverage honesty for `m1-provider-conformance-contract`: this lane earns `model.undeclared-fidelity` and `model.extra-collision`, both `Build`-side. The other eight `model.*` ids name what an adapter returns and stay unearned until `m1-openai-provider` and `m1-anthropic-provider` run the shared `conformance.Model` suite. The reference double proves the suite fails a non-conforming implementation; it is not counted as scenario coverage.
 
 ## 4. What the first changes must not do
 

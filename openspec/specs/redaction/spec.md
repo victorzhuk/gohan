@@ -78,17 +78,23 @@ type KeySource interface {
 	Key(ctx context.Context, tenant string) ([]byte, error)
 }
 
+type RedactionMaps interface {
+	Put(ctx context.Context, tenant, session string, m RedactionMap) error
+	Get(ctx context.Context, tenant, session string) (RedactionMap, error)
+}
+
 func (s *Stack) EraseSubject(ctx context.Context, tenant, subject string) (EraseReport, error)
 ```
 
 Placement is fixed in the chains and the harness, not chosen by callers:
-
 1. **Before the prompt** (assembler): user input, tool results and provider context are redacted under the flow's policy; the model sees stable pseudonyms (same entity → same token within a session, tenant-keyed via `KeySource`), so it can still reason about "the customer" and "the booking".
 2. **Before every store write**: `SessionLog`, `EventLog`, `OutputStore`, `Checkpoints` and `notes` receive redacted blocks; the `RedactionMap` is stored separately, tenant-keyed, with its own retention.
 3. **Before telemetry content capture** (when enabled).
 4. **Rehydration at egress** inside the output stage: the `Windowed` output guard already holds back a token window; rehydration runs on each released window so a pseudonym is never split across chunks. Tokens the model invents that are not in the map are dropped and counted (`gohan.redact.unknown_token`); never leaked.
 
 Detection is layered: `std/redact` ships rules with checksums (cards, IBANs, phone, email, national ID formats); NER and LLM detectors plug in as `Decider`s. Erasure: `EraseSubject` deletes the subject's sessions, events, outputs, checkpoints, grants and redaction maps across all stores, records `AuditErasure`, and returns a report; audit records remain (checksums only). Residency: `ModelProfile.Region`, `Region` on every store implementation, `Tenant.Residency` in `RunInfo`; `Build` fails when any reachable router target or configured store for a residency-bound tenant is outside the region; runtime routing never overrides it. An external PII proxy or vendor service is an implementation of `Redactor`, not a substitute for the placement rules.
+
+`Redactor` and the policy it takes are declared in `core` and implemented by `std/redact`: a flow registers one through `WithRedactor`, the harness applies it at the four placements above, and `core` never imports a redaction implementation. The `RedactionMap` is persisted through `Stores.RedactionMaps` (`stores`), retained independently of checkpoints and journal entries and keyed by tenant and session, so a resumed run reads the map back before it releases output and an erasure request finds it without scanning run state.
 
 
 ## Requirements
