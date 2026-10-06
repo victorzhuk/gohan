@@ -1,0 +1,6 @@
+{
+  "name": "usage reported",
+  "status": 200,
+  "header": {"Content-Type": ["text/event-stream"]},
+  "body": "data: {\"model\":\"served-1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hel\"}}]}\n\ndata: {\"model\":\"served-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"}}]}\n\ndata: {\"model\":\"served-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":30,\"prompt_tokens_details\":{\"cached_tokens\":20},\"cache_write_tokens\":15}}\n\ndata: [DONE]\n\n"
+}

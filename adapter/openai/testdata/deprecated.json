@@ -1,0 +1,6 @@
+{
+  "name": "deprecated",
+  "status": 404,
+  "header": {"Content-Type": ["application/json"]},
+  "body": "{\"error\":{\"message\":\"No such model.\",\"type\":\"invalid_request_error\",\"code\":\"model_not_found\"}}"
+}

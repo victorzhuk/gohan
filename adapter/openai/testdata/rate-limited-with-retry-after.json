@@ -1,0 +1,9 @@
+{
+  "name": "rate limited with retry after",
+  "status": 429,
+  "header": {
+    "Content-Type": ["application/json"],
+    "Retry-After": ["7"]
+  },
+  "body": "{\"error\":{\"message\":\"Slow down.\",\"type\":\"rate_limit_error\"}}"
+}

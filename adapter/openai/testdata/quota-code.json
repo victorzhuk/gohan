@@ -1,0 +1,6 @@
+{
+  "name": "quota code",
+  "status": 400,
+  "header": {"Content-Type": ["application/json"]},
+  "body": "{\"error\":{\"message\":\"Quota exhausted.\",\"type\":\"insufficient_quota\",\"code\":\"insufficient_quota\"}}"
+}

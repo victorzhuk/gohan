@@ -1,0 +1,6 @@
+{
+  "name": "schema unsupported",
+  "status": 200,
+  "header": {"Content-Type": ["text/event-stream"]},
+  "body": "data: {\"model\":\"served-1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hel\"}}]}\n\ndata: {\"model\":\"served-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+}

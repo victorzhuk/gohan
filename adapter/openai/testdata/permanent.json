@@ -1,0 +1,6 @@
+{
+  "name": "permanent",
+  "status": 400,
+  "header": {"Content-Type": ["application/json"]},
+  "body": "{\"error\":{\"message\":\"Bad request.\",\"type\":\"invalid_request_error\"}}"
+}

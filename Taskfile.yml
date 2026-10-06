@@ -18,6 +18,8 @@ tasks:
         set -euo pipefail
         { go test -json -timeout 2m -short ./...;
           go -C adapter/otel test -json -timeout 2m -short ./...;
+          go -C adapter/openai test -json -timeout 2m -short ./...;
+          go -C adapter/anthropic test -json -timeout 2m -short ./...;
           go -C examples test -json -timeout 2m -short ./...; } |
           python3 tools/spec_coverage.py {{.CLI_ARGS}}
 
@@ -30,6 +32,8 @@ tasks:
         set -euo pipefail
         { go test -json -timeout 2m -short ./...;
           go -C adapter/otel test -json -timeout 2m -short ./...;
+          go -C adapter/openai test -json -timeout 2m -short ./...;
+          go -C adapter/anthropic test -json -timeout 2m -short ./...;
           go -C examples test -json -timeout 2m -short ./...; } |
           python3 tools/spec_coverage.py --gate '{{.GATE}}'
 
@@ -68,6 +72,8 @@ tasks:
     cmds:
       - go test -timeout 2m -short ./...
       - go -C adapter/otel test -timeout 2m -short ./...
+      - go -C adapter/openai test -timeout 2m -short ./...
+      - go -C adapter/anthropic test -timeout 2m -short ./...
       - go -C examples test -timeout 2m -short ./...
 
   examples:test:
@@ -80,6 +86,8 @@ tasks:
     cmds:
       - go test -timeout 10m -race -short ./...
       - go -C adapter/otel test -timeout 10m -race -short ./...
+      - go -C adapter/openai test -timeout 10m -race -short ./...
+      - go -C adapter/anthropic test -timeout 10m -race -short ./...
       - go -C examples test -timeout 10m -race -short ./...
 
   bench:

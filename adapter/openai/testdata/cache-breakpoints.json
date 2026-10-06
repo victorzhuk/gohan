@@ -1,0 +1,6 @@
+{
+  "name": "cache breakpoints",
+  "status": 200,
+  "header": {"Content-Type": ["text/event-stream"]},
+  "body": "data: {\"model\":\"served-1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"cached\"}}]}\n\ndata: {\"model\":\"served-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":2,\"cache_write_tokens\":12}}\n\ndata: [DONE]\n\n"
+}

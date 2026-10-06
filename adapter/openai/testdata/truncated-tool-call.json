@@ -1,0 +1,6 @@
+{
+  "name": "truncated tool call",
+  "status": 200,
+  "header": {"Content-Type": ["text/event-stream"]},
+  "body": "data: {\"model\":\"served-1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"search\",\"arguments\":\"\"}}]}}]}\n\ndata: {\"model\":\"served-1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"q\\\":\\\"go\\\"}\"}}]}}]}\n\ndata: {\"model\":\"served-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n"
+}

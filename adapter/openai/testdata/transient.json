@@ -1,0 +1,6 @@
+{
+  "name": "transient",
+  "status": 500,
+  "header": {"Content-Type": ["application/json"]},
+  "body": "{\"error\":{\"message\":\"Internal error.\",\"type\":\"api_error\"}}"
+}
