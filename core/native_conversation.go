@@ -30,6 +30,7 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 	c.creds = stack.credentials
 	c.policySrc = stack.approvalPolicy
 	c.allowAnonymous = stack.allowAnonymous
+	c.telemetry = stack.telemetry
 	if l, ok := stack.Limits(name); ok {
 		c.wall = l.MaxWallClock
 		c.stall = l.ConsumerStall

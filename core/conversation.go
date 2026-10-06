@@ -71,6 +71,7 @@ type conversation struct {
 	toolSpecs       func(name string) (types.ToolSpec, bool)
 	verifier        types.Verifier
 	journal         stores.Journal
+	telemetry       types.Telemetry
 	detached        bool
 	wall            time.Duration
 	// stall bounds how long the attached consumer may take no event
@@ -170,6 +171,7 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 			c.redactionPolicy = cfg.redactionPolicy
 		}
 		c.allowAnonymous = stack.allowAnonymous
+		c.telemetry = stack.telemetry
 		if l, ok := stack.Limits(spec); ok {
 			c.wall = l.MaxWallClock
 			c.stall = l.ConsumerStall
