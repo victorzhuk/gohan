@@ -45,7 +45,7 @@ Every entry of `openspec/scenarios.json` with `deferred_to: M1` — 85 IDs — a
 | `taint.trifecta-fails-build` | `m1-taint-enforcement` | — | done | `core/taint_trifecta_scenarios_test.go` |
 | `taint.trifecta-with-policy` | `m1-taint-enforcement` | — | done | as above |
 | `taint.no-exfil` | `m1-taint-enforcement` | — | done | as above |
-| `taint.quarantine-carries-origin` | `m1-extraction-provenance` | `m1-taint-enforcement` | missing | no `std/flow.Quarantine` exists; `std/flow` ships `Classify` and `Extract` only |
+| `taint.quarantine-carries-origin` | `m1-extraction-provenance` | `m1-taint-enforcement` | done | `core/quarantine_test.go` (`gohan.RecordQuarantined`, window proof); shipped in `archive/2026-10-07-m1-extraction-provenance` |
 | `taint.subflow-carries-origin` | moved to M3 (2.3) | — | moved | `FlowAsTool` belongs to `subflows` (M3); the registry now reads `deferred_to: M3` and the M3 `subflows` change owns it |
 | `taint.provider-tool-post-hoc` | `m1-provider-tool-governance` | `m1-taint-enforcement`, provider contract | missing | no provider tool path exists |
 

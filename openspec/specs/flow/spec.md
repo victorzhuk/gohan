@@ -85,6 +85,7 @@ Implementations:
 | `adkflow.FromAgent[In, Out](stack, a, opts...)` | adk-go `agent.Agent` incl. workflow agents |
 | `flow.Extract[Out](stack, profile string, opts...) Flow[[]Block, Out]` | single model call with `StructuredOutput`; no tools (M0) |
 | `flow.Classify[L ~string](stack, profile string, labels []L, opts...) Flow[[]Block, L]` | constrained single-label choice (M0) |
+| `flow.Quarantine[Out](stack, profile string, opts...) Flow[[]Block, types.Quarantined[Out]]` | untrusted-content extraction that carries the origins of the blocks it read (M1) |
 | `flow.Route[In, Out](stack, decider, routes map[string]Flow[In, Out]) Flow[In, Out]` | decider-selected sub-flow (M1) |
 | `flow.Pipeline[A, B, C](f Flow[A, B], g Flow[B, C]) Flow[A, C]` | sequential composition (M1) |
 | `flow.MapReduce[In, Item, Out](stack, split, each Flow[Item, Out], reduce, opts...)` | fan-out with `OnError`, `MaxParallelChildren` (M3, `subflows`) |
@@ -115,6 +116,13 @@ Agent flows map `In` to the user message via `Render func(In) []Block` (default:
 ## Requirements
 
 ### Requirement: Flow contract
+
+The recipe surface MUST stay the governed single-call recipes `flow.Extract`,
+`flow.Classify` and `flow.Quarantine`. `Quarantine[Out]` MUST be `Extract`
+restricted to untrusted content, offering no tool, and MUST return
+`Quarantined[Out]`: the decoded value with the origins of the blocks it was
+extracted from. The recording path MUST attach those origins to the recorded
+result blocks.
 
 #### Scenario: plain invoke
 ID: `flow.plain-invoke`
