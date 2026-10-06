@@ -13,24 +13,25 @@ import (
 // resolvedNativeConfig is the immutable resolution of one NativeSpec: the
 // constructor reads this instead of resolving a profile or a strategy again.
 type resolvedNativeConfig struct {
-	flow        string
-	model       types.Model
-	profile     types.ModelProfile
-	plan        StrategyPlan
-	request     FlowRequest
-	instruction []types.Block
-	tools       []types.Tool
-	specs       []types.ToolSpec
-	clients     map[string]*http.Client
-	assemble    func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error)
-	modelChain  chains.ModelChain
-	toolChain   chains.ToolChain
-	limits      types.RunLimits
-	decider     types.Decider[*permission.ToolInvocation, permission.Verdict]
-	taintPolicy types.TaintHook
-	liveDeny    func(context.Context, *permission.ToolInvocation) (string, bool)
-	verifier    types.Verifier
-	redactor    types.Redactor
+	flow            string
+	model           types.Model
+	profile         types.ModelProfile
+	plan            StrategyPlan
+	request         FlowRequest
+	instruction     []types.Block
+	tools           []types.Tool
+	specs           []types.ToolSpec
+	clients         map[string]*http.Client
+	assemble        func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error)
+	modelChain      chains.ModelChain
+	toolChain       chains.ToolChain
+	limits          types.RunLimits
+	decider         types.Decider[*permission.ToolInvocation, permission.Verdict]
+	taintPolicy     types.TaintHook
+	liveDeny        func(context.Context, *permission.ToolInvocation) (string, bool)
+	verifier        types.Verifier
+	redactor        types.Redactor
+	redactionPolicy types.RedactionPolicy
 }
 
 // resolvedNative returns the resolved configuration Build computed for the
@@ -43,7 +44,7 @@ func (s *Stack) resolvedNative(flow string) (*resolvedNativeConfig, bool) {
 // resolveNative resolves every registered definition once: model by profile
 // name, strategies, fidelity, then chain ordering. A rejected definition
 // fails the build before any provider call happens.
-func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.ModelProfile, redactor types.Redactor) error {
+func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.ModelProfile, redactor types.Redactor, redactionPolicy types.RedactionPolicy) error {
 	resolved := make(map[string]*resolvedNativeConfig, len(defs))
 	for _, spec := range defs {
 		name := spec.Request.Name
@@ -111,24 +112,25 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			verifier = s.verifier
 		}
 		resolved[name] = &resolvedNativeConfig{
-			flow:        name,
-			model:       model,
-			profile:     profiles[spec.Profile],
-			plan:        plan,
-			request:     req,
-			instruction: cloneBlocks(spec.Instruction),
-			tools:       cloneTools(spec.Tools),
-			specs:       req.Tools,
-			clients:     clients,
-			assemble:    spec.Assemble,
-			modelChain:  cloneModelChain(modelChain),
-			toolChain:   cloneToolChain(spec.ToolChain),
-			limits:      limits,
-			decider:     spec.Decider,
-			taintPolicy: spec.TaintPolicy,
-			liveDeny:    spec.LiveDeny,
-			verifier:    verifier,
-			redactor:    redactor,
+			flow:            name,
+			model:           model,
+			profile:         profiles[spec.Profile],
+			plan:            plan,
+			request:         req,
+			instruction:     cloneBlocks(spec.Instruction),
+			tools:           cloneTools(spec.Tools),
+			specs:           req.Tools,
+			clients:         clients,
+			assemble:        spec.Assemble,
+			modelChain:      cloneModelChain(modelChain),
+			toolChain:       cloneToolChain(spec.ToolChain),
+			limits:          limits,
+			decider:         spec.Decider,
+			taintPolicy:     spec.TaintPolicy,
+			liveDeny:        spec.LiveDeny,
+			verifier:        verifier,
+			redactor:        redactor,
+			redactionPolicy: redactionPolicy,
 		}
 	}
 

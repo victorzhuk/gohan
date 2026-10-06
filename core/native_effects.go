@@ -2,6 +2,7 @@ package gohan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/runtime"
+	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -26,8 +28,7 @@ func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 		// Supervision wraps only the provider, so the chain steps and
 		// the middleware above it keep running on the caller's goroutine.
 		model:       runModelChain(cfg.modelChain, NewModelStream(cfg.model).Generate),
-		assemble:    nativeAssemble(s.prompts, cfg.assemble),
-		tools:       toolset,
+		assemble:    nativeAssemble(s.prompts, cfg.assemble, cfg.redactor, cfg.redactionPolicy, s.stores.RedactionMaps),
 		maxTurns:    cfg.limits.MaxTurns,
 		limits:      cfg.limits,
 		profile:     cfg.profile,
@@ -183,17 +184,69 @@ func (env *turnEnv) assemblyInput(ctx context.Context, history []types.Message) 
 // nativeAssemble applies the resolved assembler and prepends the PromptSet
 // block. This is the single prompt insertion point of the native path; a
 // set without one model-facing string inserts nothing.
-func nativeAssemble(ps chains.PromptSet, assemble func(context.Context, types.AssembleInput) (types.ModelRequest, error)) func(context.Context, types.AssembleInput) (types.ModelRequest, error) {
+func nativeAssemble(
+	ps chains.PromptSet,
+	assemble func(context.Context, types.AssembleInput) (types.ModelRequest, error),
+	redactor types.Redactor,
+	policy types.RedactionPolicy,
+	maps stores.RedactionMaps,
+) func(context.Context, types.AssembleInput) (types.ModelRequest, error) {
 	return func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error) {
 		req, err := assemble(ctx, in)
 		if err != nil {
 			return types.ModelRequest{}, err
+		}
+		if redactor != nil && len(policy.Detectors) > 0 {
+			req, err = redactModelRequest(ctx, req, in.Run, redactor, policy, maps)
+			if err != nil {
+				return types.ModelRequest{}, err
+			}
 		}
 		if block, ok := promptBlock(ps); ok {
 			req.System = append([]types.Block{block}, req.System...)
 		}
 		return req, nil
 	}
+}
+
+func redactModelRequest(ctx context.Context, req types.ModelRequest, run types.RunInfo, redactor types.Redactor, policy types.RedactionPolicy, maps stores.RedactionMaps) (types.ModelRequest, error) {
+	ctx = types.WithRunInfo(ctx, run)
+	blocks := append([]types.Block(nil), req.System...)
+	for _, msg := range req.Messages {
+		blocks = append(blocks, msg.Blocks...)
+	}
+	redacted, m, err := redactor.Redact(ctx, blocks, policy)
+	if err != nil {
+		return types.ModelRequest{}, fmt.Errorf("redact model request: %w", err)
+	}
+	systemCount := len(req.System)
+	req.System = append([]types.Block(nil), redacted[:systemCount]...)
+	offset := systemCount
+	req.Messages = append([]types.Message(nil), req.Messages...)
+	for i := range req.Messages {
+		count := len(req.Messages[i].Blocks)
+		req.Messages[i].Blocks = append([]types.Block(nil), redacted[offset:offset+count]...)
+		offset += count
+	}
+	if maps == nil {
+		return types.ModelRequest{}, fmt.Errorf("redaction map store missing")
+	}
+	old, err := maps.Get(ctx, run.Principal.Tenant, run.SessionID)
+	if err != nil && !errors.Is(err, stores.ErrRedactionMapNotFound) {
+		return types.ModelRequest{}, fmt.Errorf("load redaction map: %w", err)
+	}
+	if len(old.Entries) > 0 {
+		if m.Entries == nil {
+			m.Entries = make(map[string]types.Entity, len(old.Entries))
+		}
+		for token, entity := range old.Entries {
+			m.Entries[token] = entity
+		}
+	}
+	if err := maps.Put(ctx, run.Principal.Tenant, run.SessionID, m); err != nil {
+		return types.ModelRequest{}, fmt.Errorf("store redaction map: %w", err)
+	}
+	return req, nil
 }
 
 // promptBlock renders the model-facing PromptSet strings as one system

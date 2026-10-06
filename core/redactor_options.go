@@ -9,3 +9,10 @@ func WithRedactor(redactor types.Redactor) Option {
 		return nil
 	}
 }
+
+func WithRedactionPolicy(policy types.RedactionPolicy) Option {
+	return func(c *config) error {
+		c.redactionPolicy = policy
+		return nil
+	}
+}

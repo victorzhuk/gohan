@@ -37,6 +37,7 @@ type config struct {
 	recovery         map[string]runtime.Runtime
 	stores           stores.Stores
 	redactor         types.Redactor
+	redactionPolicy  types.RedactionPolicy
 	native           []NativeSpec
 }
 
