@@ -43,9 +43,13 @@ or do not carry the data the requirement is written against.
 ## Decision
 
 1. **Every capability port is declared in `core` and implemented outside it.**
-   `core/types/redaction.go` gains `Redactor`, `RedactionPolicy`, `TokenMode`,
-   `EntityKind`, `Entity`, `Span`, `Detector` and `RedactionMap`; `std/redact` implements
-   `Redactor`. Registration uses the option the `build` contract already declares,
+   ADR-0086 already sealed the redactor's shape — layered detection, tenant-keyed
+   reversible pseudonymisation, the four placements, streaming-safe rehydration — and left
+   it unimplemented. This ADR adds only what that record did not fix: where the port lives
+   in the code, how it is registered, and where the map is persisted.
+   `core/types/redaction.go` gains `Redactor`, `RedactionPolicy`, `TokenMode`, `EntityKind`,
+   `Entity`, `Span`, `Detector` and `RedactionMap`; `std/redact` implements `Redactor`.
+   Registration uses the option the `build` contract already declares,
    `WithRedactor(types.Redactor)`, resolved into the native configuration the same way
    `NativeSpec.Decider` and `NativeSpec.TaintPolicy` are. No second builder and no
    `any`-typed field: a flow that wants redaction configures a `Redactor`.
@@ -123,3 +127,10 @@ or do not carry the data the requirement is written against.
   outlive both); inferring a call's arguments from history for `Verify` (projection and
   compaction are allowed to change history, and `tools.verify-reconciles-unknown` has to
   hold after a resumed run).
+- **Telemetry content capture is a placement without a seam today.** Content capture is
+  opt-in and nothing in the tree emits message content to telemetry
+  (`docs/design/go-baseline.md:14`), so the third placement has no call site to join and
+  the redaction change does not invent one: it asserts that no telemetry path receives
+  content, and it applies the redactor at the capture seam when that seam lands. The
+  placement rule stands; only its insertion point is deferred, and the deferral is
+  recorded rather than papered over with a test of `Convention.ApplyAttrs`.

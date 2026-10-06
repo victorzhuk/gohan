@@ -5,12 +5,14 @@
 - [x] 1.1 Assign the six M1 scenario IDs and preserve separate subject-erasure ownership.
   - evidence: `openspec/changes/m1/design.md:115-128`; package delta lists only the five redaction IDs and `guards.redaction`.
 - [x] 1.2 Map the current assembly, output, store, and Build seams. Record absent policy registration, map persistence, and store-region contracts as blockers.
-  - evidence: `design.md` D2-D6; `core/native_options.go`, `core/native_resolve.go`, `core/stores/stores.go`, `std/guard/output.go`.
+  - evidence: initial design survey; superseded by ADR-0157 decisions 1-3 and current design D2-D6.
 - [x] 1.3 Define deterministic public-path test seeding and existing-service-strict evidence requirements.
-  - evidence: `design.md` D7; tasks 2-6 require store interception and public Build/Send/Resume tests.
-- [ ] 1.4 Resolve the core-owned policy/map registration contract and any required normative amendment/ADR before implementation admission.
+  - evidence: design public-path test seeding; tasks 2-6 require store interception and public Build/Send/Resume tests.
+- [ ] 1.4 Implement the package-owned ADR-0157 seams: declare redaction contracts in `core/types`, implement `types.Redactor` in `std/redact`, add `WithRedactor(types.Redactor) Option` to native config resolution, and add tenant/session-keyed `Stores.RedactionMaps` Put/Get integration without checkpoint storage.
+  - acceptance: no second builder or `NativeSpec.Redactor`; resolved native flow carries the option through Build, Send, and Resume; map storage is independent of checkpoints and journal entries.
   - verify: `openspec validate m1-redaction-pipeline --strict --no-interactive`
-- [ ] 1.5 Define redaction-map persistence/retention and region metadata for every configured store and event/output/notes port. Do not admit implementation while a named sink lacks a concrete port or region source.
+- [ ] 1.5 Integrate residency through `RegionProvider.Region() string` at Build and freeze the map/region shapes consumed by `m1-subject-erasure-residency`; keep `EraseSubject` outside this package.
+  - acceptance: every configured store and reachable profile is checked for residency-bound tenants; absent or empty store region fails closed; error identifies tenant, target, required region, and actual region.
   - verify: `openspec validate m1-redaction-pipeline --strict --no-interactive`
 
 ## Implementation

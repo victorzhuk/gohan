@@ -2,16 +2,18 @@
 
 ## 1. Authoring
 
-- [x] 1.1 Record the ten assigned matrix IDs, the two IDs this change can earn, and the eight adapter-owned IDs that remain unearned. Evidence: `design.md` Context and D1.
-- [x] 1.2 Record fixture requirements, existing seams, and unresolved live implementation identifiers. Evidence: `design.md` D2–D5. The unresolved `Extra` assembly and key telemetry call sites block implementation admission.
-- [x] 1.3 Add the model capability delta with scenario sections and normative keywords. Evidence: `specs/model/spec.md`.
-- [x] 1.4 Validate this package. Evidence: `openspec validate m1-provider-conformance-contract --strict --no-interactive` → `Change 'm1-provider-conformance-contract' is valid`.
+- [x] 1.1 Record the assigned model IDs, the two Build-actor claims, and the adapter-actor IDs that remain unearned. Evidence: `design.md` Context, D1, and D5.
+- [x] 1.2 Replace undecided seams with ADR-0157 decisions and live registration, Build validation, error, and test entry points. Evidence: `design.md` D3-D5 and Open questions.
+- [x] 1.3 Record deterministic fixtures by behavior and `FixtureKind`, including Build seeding for fidelity and static `Extra`. Evidence: `design.md` D5.
+- [x] 1.4 Add the model capability delta with scenario sections and normative keywords. Evidence: `specs/model/spec.md`.
+- [x] 1.5 Validate this package. Evidence: `openspec validate m1-provider-conformance-contract --strict --no-interactive` → `Change 'm1-provider-conformance-contract' is valid`.
 ## 2. Shared reference contract implementation
 
-- [ ] 2.1 Extend `testkit/conformance/fixtures.go` and `model.go` with the fixtures and public suite entry points in design D2–D3. Preserve existing `Model` callers. Verify: `go test -short -timeout 2m ./testkit/conformance -run 'TestModelConformance|TestDefaultFixtures'`.
-- [ ] 2.2 Add deterministic reference-double cases for cache break order and limit, unsupported schema with zero sends, Raw same-provider round trip and cross-provider drop accounting, key isolation, key redaction, static/dynamic Extra collision, and missing fidelity. Use exact registered IDs as subtest names only for the two Build-owned IDs. Verify: `go test -short -timeout 2m ./testkit/conformance -run 'Test.*(Conformance|Scenario)'`.
-- [ ] 2.3 Prove suite sensitivity with a deliberately non-conforming reference double for each new assertion family. Verify: `go test -short -timeout 2m ./testkit/conformance -run 'TestModelConformanceRejects'`.
-- [ ] 2.4 Add a public Build test for missing `KindFile` fidelity and static `max_tokens` collision. Dynamic collision must be tested at the adapter call boundary by later adapter owners. Verify: `go test -short -timeout 2m ./core/... -run 'Test.*(Fidelity|Extra)'`.
+- [ ] 2.1 Implement ADR-0157 decision 8: add `NativeSpec.ModelOptions types.ModelOptions` and reject static governed-field collisions in `Stack.resolveNative` before Build succeeds. Preserve dynamic per-request collision handling as the adapter's call-time `ClassPermanent` duty. Verify: `go test -short -timeout 2m ./core/... -run 'Test.*(Fidelity|Extra)'`.
+- [ ] 2.2 Extend `testkit/conformance/fixtures.go` and `model.go` with the fixtures and public suite entry points in design D2–D3. Preserve existing `Model` callers. Verify: `go test -short -timeout 2m ./testkit/conformance -run 'TestModelConformance|TestDefaultFixtures'`.
+- [ ] 2.3 Add deterministic reference-double cases for cache break order and limit, unsupported schema with zero sends, Raw same-provider round trip and cross-provider drop accounting, key isolation, key redaction, static/dynamic Extra collision, and missing fidelity. Use exact registered IDs as subtest names only for the two Build-owned IDs. Verify: `go test -short -timeout 2m ./testkit/conformance -run 'Test.*(Conformance|Scenario)'`.
+- [ ] 2.4 Prove suite sensitivity with a deliberately non-conforming reference double for each new assertion family. Verify: `go test -short -timeout 2m ./testkit/conformance -run 'TestModelConformanceRejects'`.
+- [ ] 2.5 Add a public Build test for missing `KindFile` fidelity and static `max_tokens` collision. Dynamic collision must be tested at the adapter call boundary by later adapter owners. Verify: `go test -short -timeout 2m ./core/... -run 'Test.*(Fidelity|Extra)'`.
 
 ## 3. Adapter conformance obligations
 

@@ -1,9 +1,12 @@
 # Tasks
 
+- [ ] 1.0 Apply ADR-0157 decision 7: add `stores.RecordEnvelope` and generic `DecodeRecord[T]` at the schema boundary, use `types.TelemetryFrom(ctx)` for per-step metrics, and bind fixtures only to serialized seeds and public readers. Record adapter bindings as deferred where no serialized path exists.
+  - Evidence: `docs/adr/0157-capability-ports-record-envelopes-and-journal-arguments.md:81-88`; `core/stores/schema.go`; `core/types/telemetry.go`; design § Existing public-path inventory and serialized-read scope.
+  - verify: `openspec validate m1-schema-read-paths --strict --no-interactive`
 ## 1. Authoring
 
-- [x] 1.1 Record ownership, current read-path inventory, sealed M1 decisions, and explicit public-path/telemetry blockers in `design.md`; do not claim memory clones or registry-only tests as coverage.
-  - Evidence: `openspec/changes/m1/design.md:160-170,230-242`; live `core/stores/*.go` inventory in design § Existing public-path inventory and blocking boundary.
+- [x] 1.1 Record ADR-0157's envelope and telemetry decisions, the concrete proposed API, all existing typed read paths that remain unbound, and the open adapter/fixture binding questions in `design.md`.
+  - Evidence: ADR-0157 decision 7; `core/stores/schema.go`; `core/types/telemetry.go`; design § D1–D4.
   - verify: `openspec validate m1-schema-read-paths --strict --no-interactive`
 - [x] 1.2 Bind only `lifecycle.upcast-on-read` and `lifecycle.historical-fixtures` in the lifecycle delta; require upcast error behavior, byte preservation, metric attributes, and fixture reader replay.
   - Evidence: assigned rows `openspec/changes/m1/design.md:169-170`; normative requirement `openspec/specs/stores/spec.md:334`; lifecycle scenarios `openspec/specs/lifecycle/spec.md:38-46`.

@@ -41,33 +41,51 @@ Add a `Fixture` field for structured inputs only when needed by these cases: `Ta
 
 ### D3 — Reference double and suite entry points
 
-Place the reference double in `testkit/conformance/model_test.go` beside existing `fixtureModel`, `swallowModel`, and `captureTB`. Keep it test-only. Extend its request capture so tests can inspect provider request values, endpoint attempts, returned Raw data, and telemetry-like outputs. It replays `Fixture` values deterministically and performs no network access.
+Place the test-only reference double in `testkit/conformance/model_test.go` beside `fixtureModel`, `swallowModel`, and `captureTB`. The double replays `Fixture` without network access. Negative controls use the existing `conformanceTB`/`captureTB` seam and assert `captureTB.Failed()`.
 
-Existing adapter entry point is `conformance.Model(t *testing.T, newModel func(Fixture) types.Model, fixtures Fixtures)` in `testkit/conformance/model.go`. Add an exported `ModelScenarios` entry point for adapter packages. It accepts the testing handle, fixture-to-model factory, and recorded fixture set, then emits exact scenario-ID subtests. Add a separate `BuildScenarios` entry point for the two Build-owned checks. The concrete signature remains BLOCKED until the existing conformance `conformanceTB` interface is exported or the wrapper stays entirely inside this package. Prefer keeping the adapter API test-only and accepting `*testing.T`; define exact signature during implementation planning after confirming downstream adapter package import/test visibility. Do not expose a placeholder API.
+The existing adapter entry point is `conformance.Model(t *testing.T, newModel func(Fixture) types.Model, fixtures Fixtures)` in `testkit/conformance/model.go`. Preserve this signature. Add exported `ModelScenarios(t *testing.T, newModel func(Fixture) types.Model, fixtures Fixtures)` in that package. It runs adapter behavior under exact scenario-ID subtest names. Add `BuildScenarios(t *testing.T)` for Build-owned scenarios; it seeds public `Build` options and does not claim adapter coverage. Adapter packages call `conformance.ModelScenarios(t, newModel, fixtures)` from their `TestModelConformance` entry point. The reference double and fixture tests prove suite sensitivity only.
 
-The existing `conformanceTB` and `captureTB` are the negative-proof seam. Add a negative control that wraps the reference double with a deliberate violation, runs the relevant scenario against `captureTB`, and asserts `captureTB.Failed()` is true. Existing proof at `model_test.go:30-39` demonstrates swallowed-error sensitivity. Keep scenario-level failures isolated so the outer Go test passes when it observes the expected failure.
+### D4 — Build registration and validation
 
-### D4 — Build and Extra call sites
+ADR-0157 §8 settles the static source: add `ModelOptions types.ModelOptions` to `NativeSpec` in `core/native_options.go`; register it through `WithNativeAgent(spec NativeSpec) Option`. In `core/native_resolve.go`, `Stack.resolveNative` validates the registered `spec.ModelOptions.Extra` against the governed request fields before Build succeeds. A collision returns a Build error that names the governed field. Per-request `ModelRequest.Options.Extra` remains an adapter call-time check and returns a permanent `ModelError` (`ClassPermanent`); no live adapter Send function exists yet, so each adapter lane must name its concrete Send function when authored.
 
-Fidelity validation already runs in `Stack.resolveNative` at `core/native_resolve.go:76`, through `s.CheckFidelity(req, profiles, spec.Profile)`. The check receives `req.Tools` from `toolSpecs(spec.Tools)` at line 56 and the resolved profile. The implementation must add a negative fixture through public `Build` and prove the error names `profile.Name` and `types.KindFile`. The exact location of static `ModelOptions.Extra` assembly is unresolved: live core has `ModelOptions.Extra` in `core/types/model_request.go`, but no provider adapter assembles provider JSON and no static-versus-dynamic request-value distinction exists. Do not claim the design pins a call site. This blocks implementation admission for that part until the live option registration and assembly path are identified.
+The exact existing fidelity validation site is `core/native_resolve.go`, `Stack.resolveNative`, at `s.CheckFidelity(req, profiles, spec.Profile)`. `Stack.CheckFidelity(req FlowRequest, profiles map[string]types.ModelProfile, primary string) error` is defined in `core/build_fidelity.go`; missing fidelity wraps `ErrFidelityUndeclared` and identifies flow, profile, and block kind. Seed `model.undeclared-fidelity` through public `Build` using `WithNativeAgent(NativeSpec{Request: FlowRequest{Blocks: []types.BlockKind{types.KindFile}}, Profile: ...})` and a profile whose `Caps.Fidelity` omits `KindFile`. Seed `model.extra-collision` through public `Build` using `WithNativeAgent(NativeSpec{ModelOptions: types.ModelOptions{Extra: map[string]any{"max_tokens": ...}}})`; assert Build refusal names `max_tokens`, before any model call.
 
-The matrix scenario says Build rejects a static value and a dynamic value fails permanently at call time. No current `Build` option or adapter call site represents dynamic `Extra`; no adapter exists. The package specifies the contract only. Later implementation plans must name exact option types, validation function, error value, and provider Send call site. No coder may choose these APIs without that evidence.
+### D5 — Coverage boundary and key telemetry
 
-### D5 — Key privacy and telemetry boundary
+This package earns only the two Build-actor IDs, `model.undeclared-fidelity` and `model.extra-collision`. The eight adapter-actor IDs remain unearned until both `adapter/openai` and `adapter/anthropic` run the shared `conformance.Model` suite through `ModelScenarios` with recorded responses. Do not claim `model.isolation-per-key` or `model.key-never-in-telemetry` here: `ProviderKeySource` is defined in `core/types/model_keys.go`, and `types.KeyModelKeyID` is defined in `core/types/telemetry.go`, but no emitter exists. Both remain adapter-lane obligations.
 
-`types.KeyModelKeyID` is defined as `gohan.model.key_id` in `core/types/telemetry.go:73`. No live provider adapter emits it. `ProviderKeySource` and `ProviderCredential` exist in `core/types/model_keys.go`, but there is no consumer yet. The adapter implementation must attach only credential `ID` to the model-call span and must exclude `Token` from spans, audit records, cassette serialization, and errors. This design cannot name a live emission function because none exists. Record exact emission call site as an implementation-admission blocker until each adapter implementation identifies its Send function and credential boundary.
+Fixture seeding by behavior:
+
+| Behavior | FixtureKind | Public behavior proof |
+|---|---|---|
+| Status classes and Retry-After | `FixtureError` | Recorded provider response; distinct 429, 500, 401, 400, context-length, and retired fixtures |
+| Cache breakpoints and cache-write usage | `FixtureCacheBreakpoints` | Recorded response plus exact outgoing payload and usage |
+| Schema unsupported | `FixtureSchemaUnsupported` | Public adapter Send; assert zero requests |
+| Missing usage estimate | `FixtureUsage` | Recorded successful response with `Usage == nil` |
+| Raw round trip and cross-provider drop | `FixtureRawRoundTrip` | Public Send; assert outgoing payload and drop accounting |
+| Per-key breaker isolation | `FixtureKeyIsolation` | Two-tenant adapter harness |
+| Key secret exclusion | `FixtureKeyRedaction` | Adapter harness creates sentinel credential at runtime |
+| Static/dynamic Extra collision | `FixtureExtraCollision` | Public Build for static key; adapter Send for per-request key |
+| Missing fidelity | `FixtureFidelity` | Public Build with omitted `KindFile` fidelity |
+
+Existing kinds are `FixtureError`, `FixtureUsage`, `FixtureTruncation`, and `FixtureRawRoundTrip` in `testkit/conformance/fixtures.go`. The named new kinds are required additions there. Do not place secret tokens in fixtures.
 
 ### D6 — Strict test evidence
 
-Use `existing-service-strict`. Deterministic fixture boundary tests are required. The two earned Build IDs require public `Build` evidence. Adapter-owned tests require recorded-response calls through each adapter's public `types.Model.Generate` path. Unit-only checks and the reference double cannot establish adapter coverage. Add no external network or credentials.
+Use `existing-service-strict`. Deterministic fixture-boundary tests are required. The two earned IDs require public Build evidence. Adapter-owned scenarios require recorded-response execution through each adapter's public `types.Model.Generate` path. Reference-double and unit-only results do not establish adapter scenario coverage. Use no external network or credentials.
 
 ### D7 — Sealed decisions
 
-Preserve the M1 decisions in `openspec/changes/m1/design.md` §3. This package does not alter taint, egress, permission, or key policy. Keep root pre-v1 through M2, HTTP comparison in M4, and no release tags. Provider transport configuration is distinct from model-directed network access.
+Preserve `openspec/changes/m1/design.md` §3. This package does not alter taint, egress, permission, or key policy. Keep root pre-v1 through M2, HTTP comparison in M4, and no release tags. Provider transport configuration is distinct from model-directed network access.
 
-## Risks and blockers
+## Open questions
 
-- The adapter suite scenarios need adapter-owned captured-response harnesses. They do not exist today.
-- `ModelOptions.Extra` has no live adapter serialization point. Static/dynamic collision implementation cannot enter a coder lane until that point and its value source are named.
-- No provider key consumer or model span emission site exists. Key isolation and redaction remain unverified until adapter changes supply those public paths.
-- The current `Model` suite fixture subtests use descriptive names. The future adapter wrapper must use scenario IDs without claiming registered coverage in this package.
+- Adapter implementation packages and their public Send function names do not exist yet. This blocks exact per-request `Extra` validation call sites and key telemetry-emission call sites; each adapter design must name them before implementation admission.
+- The driver pins the governed inventory and the error. `core/types` declares the set once beside `ModelOptions` — the provider keys the harness maps from it on every call, `max_tokens` among them — and `Build` refuses a static `NativeSpec.ModelOptions.Extra` key in that set with `types.ErrExtraGovernedKey{Key string}`, mapped to the build problem the way `ErrToolCollision` is. An adapter reuses the same set for the per-request check and returns `ClassPermanent` naming the key. The adapter call sites themselves stay open until the adapter packages exist, and those packages own them.
+
+## Risks
+
+- Adapter-owned recorded-response harnesses do not exist yet. The eight adapter-actor IDs remain unearned until both provider lanes execute the shared suite.
+- The current `Model` suite uses fixture-name subtests. `ModelScenarios` must expose scenario-ID subtests without changing coverage ownership.
+
