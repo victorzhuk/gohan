@@ -112,7 +112,7 @@ func (s *Stack) Manifest() ReleaseManifest { return s.manifest }
 // first call: option bounds, and the strategy resolution each configured
 // flow resolves to. Flows validate further in their constructors.
 func Build(opts ...Option) (*Stack, error) {
-	cfg := config{logger: slog.New(slog.DiscardHandler)}
+	cfg := config{logger: slog.New(slog.DiscardHandler), sunsetWindow: DefaultSunsetNoticeWindow}
 	for _, opt := range opts {
 		if err := opt(&cfg); err != nil {
 			return nil, err
@@ -130,6 +130,9 @@ func Build(opts ...Option) (*Stack, error) {
 	for _, m := range cfg.models {
 		p := m.Profile()
 		profiles[p.Name] = p
+	}
+	if err := checkSunsets(cfg.logger, cfg.telemetry, cfg.sunsetWindow, cfg.sunsetWarnOnly, profiles); err != nil {
+		return nil, err
 	}
 	s := &Stack{
 		logger:           cfg.logger,

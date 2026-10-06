@@ -57,6 +57,9 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 		if !ok {
 			return fmt.Errorf("flow %q: profile %q not configured", name, spec.Profile)
 		}
+		if err := checkSuccessorOptions(name, spec.ModelOptions, profiles[spec.Profile], profiles); err != nil {
+			return err
+		}
 		req := spec.Request
 		if key, ok := governedExtraKey(spec.ModelOptions.Extra); ok {
 			return fmt.Errorf("flow %q: %w", name, types.ErrExtraGovernedKey{Key: key})

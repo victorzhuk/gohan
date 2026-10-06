@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/permission"
@@ -16,6 +17,32 @@ import (
 // Option adjusts Build. Every option takes a floor type or interface: the
 // driver never imports std, so the caller passes the std policy value.
 type Option func(*config) error
+
+// DefaultSunsetNoticeWindow is the notice window Build applies when no
+// option narrows or widens it.
+const DefaultSunsetNoticeWindow = 30 * 24 * time.Hour
+
+// WithSunsetNoticeWindow sets how long before ModelProfile.Sunset a
+// pinned profile must still be at Build. A profile inside the window
+// fails the build unless WithSunsetWarnOnly is set.
+func WithSunsetNoticeWindow(d time.Duration) Option {
+	return func(c *config) error {
+		if d <= 0 {
+			return fmt.Errorf("gohan: sunset notice window must be positive, got %s", d)
+		}
+		c.sunsetWindow = d
+		return nil
+	}
+}
+
+// WithSunsetWarnOnly downgrades the sunset notice-window failure to a
+// warning: the build proceeds and emits gohan.model.sunset_warning.
+func WithSunsetWarnOnly() Option {
+	return func(c *config) error {
+		c.sunsetWarnOnly = true
+		return nil
+	}
+}
 
 type config struct {
 	models           []types.Model
@@ -41,6 +68,8 @@ type config struct {
 	tenant           types.Tenant
 	native           []NativeSpec
 	consolidator     func(ConsolidationWiring) MemoryConsolidator
+	sunsetWindow     time.Duration
+	sunsetWarnOnly   bool
 }
 
 // WithTenant binds the build to a tenant identity. A tenant with a

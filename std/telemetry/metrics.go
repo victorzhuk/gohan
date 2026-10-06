@@ -16,6 +16,10 @@ const (
 	MetricLoopDetected    = "gohan.loop.detected"
 	MetricMemoryEvicted   = "gohan.memory.evicted"
 	MetricMemoryWriteDeny = "gohan.memory.write_denied"
+
+	MetricModelSunsetWarning    = "gohan.model.sunset_warning"
+	MetricModelDeprecatedCalls  = "gohan.model.deprecated_calls"
+	MetricModelDeprecatedRouted = "gohan.model.deprecated_routed"
 )
 
 // Metric is one metric registration: its name and the label names it
@@ -35,6 +39,7 @@ var labelAllowlist = map[string]bool{
 	"reason": true, "kind": true, "limit": true, "lifecycle": true,
 	"source": true, "judge": true, "name": true, "target": true,
 	"provider": true, "notes": true, "from": true, "to": true,
+	"successor": true,
 }
 
 var forbiddenLabels = map[string]bool{

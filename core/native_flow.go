@@ -25,9 +25,23 @@ func (s *Stack) RecipeModel(profile string) (RecipeCall, error) {
 		return RecipeCall{}, fmt.Errorf("gohan: recipe profile %q not configured", profile)
 	}
 	return RecipeCall{
-		Call:     runModelChain(modelChainWithMiddleware(nil, s.middleware), m.Generate),
+		Call:     deprecatedRoute(s.telemetry, m.Profile(), runModelChain(modelChainWithMiddleware(nil, s.middleware), m.Generate), s.successorModelFunc(m.Profile())),
 		Provider: m.Profile().Name,
 	}, nil
+}
+
+// successorModelFunc resolves the successor profile's model stream when the
+// given profile declares one that is configured; nil otherwise, which keeps
+// the original deprecation error on the call.
+func (s *Stack) successorModelFunc(profile types.ModelProfile) types.ModelFunc {
+	if profile.Successor == "" {
+		return nil
+	}
+	m, ok := modelForProfile(s.models, profile.Successor)
+	if !ok {
+		return nil
+	}
+	return NewModelStream(m).Generate
 }
 
 // RequirePrompts refuses a declared prompt consumer when one of its

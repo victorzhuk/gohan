@@ -192,6 +192,17 @@ func TestTelemetryMetrics(t *testing.T) {
 		}
 	})
 
+	t.Run("lifecycleMetricRegistration", func(t *testing.T) {
+		_, err := Build(&recordingSink{}, []Metric{
+			{Name: MetricModelSunsetWarning, Labels: []string{"profile"}},
+			{Name: MetricModelDeprecatedCalls, Labels: []string{"profile"}},
+			{Name: MetricModelDeprecatedRouted, Labels: []string{"profile", "successor"}},
+		})
+		if err != nil {
+			t.Fatalf("Build refused the lifecycle metrics: %v", err)
+		}
+	})
+
 	t.Run("repeat below threshold not counted", func(t *testing.T) {
 		sink := &recordingSink{}
 		metrics := mustBuild(t, sink)
