@@ -82,6 +82,8 @@ ID: `taint.window-since-user-turn`
 
 ### Requirement: Enforcement
 
+The permission gate MUST apply hard and live denies before the taint hook, then apply session grants and the decider (`openspec/changes/m1/design.md:239`, D6). A taint denial MUST prevent tool execution. A taint Ask MUST preserve matched argument origins for approval. For a provider-executed tool the gate runs on the spec before the model request (`tools` *Provider-executed tools* rule 2) and cannot see the arguments, because the model fills them inside the provider call; the implementation MUST apply the taint computation to those arguments post hoc, when the provider response arrives, and MUST apply it before any provider result block is appended or used. A tainted input into an `Exfil` provider tool MUST fail the run `Permanent` and MUST increment `gohan.taint.post_hoc{tool}`. A provider tool with `Exfil` MUST count as both the exfiltration leg and the untrusted-content leg of the build check.
+
 #### Scenario: tainted to exfil denied
 ID: `taint.exfil-denied`
 - WHEN a tainted argument flows into a tool with `Exfil: true` under the default policy

@@ -37,10 +37,12 @@ Delivered in `feat(tools): govern provider-executed tools`. Verify with `task to
 
 ## 7. Scenario behavior and package gates
 
-- [ ] 7.1 Add public-path subtests named exactly `tools.provider-tool-registered`, `tools.provider-tool-gate-before-call`, `tools.provider-approval-as-suspension`, `tools.provider-result-origin`, `model.provider-tool-usage` and `taint.provider-tool-post-hoc`; verify `go test -short -timeout 2m ./... -run 'Test.*Provider'`.
-- [ ] 7.2 Run the repository wrappers and resolve failures; verify `task lint` and `task test`.
-- [ ] 7.3 Validate the change; verify `openspec validate m1-provider-tool-governance --strict --no-interactive`.
-  - The package validates and its six owned IDs bind to public-path tests; the milestone gate `task spec:gate GATE=M1` stays open until the adapter lanes (`m1-openai-provider`, `m1-anthropic-provider`) run the shared suite.
+- [x] 7.1 Add public-path subtests named exactly `tools.provider-tool-registered`, `tools.provider-tool-gate-before-call`, `tools.provider-approval-as-suspension`, `tools.provider-result-origin`, `model.provider-tool-usage` and `taint.provider-tool-post-hoc`; verify `go test -short -timeout 2m ./... -run 'Test.*Provider'`.
+  - evidence: `core/provider_tool_test.go`, `core/provider_gate_test.go`, `core/provider_approval_test.go`, `core/provider_result_test.go` bind all six, plus `limits.provider-calls-count` and the trifecta-legs and build-refusal assertions.
+- [x] 7.2 Run the repository wrappers and resolve failures; verify `task lint` and `task test`.
+  - evidence: `task lint` 0 issues; `task test` green across root, `adapter/otel`, `adapter/openai`, `adapter/anthropic` and `examples`.
+- [x] 7.3 Validate the change; verify `openspec validate m1-provider-tool-governance --strict --no-interactive`.
+  - evidence: the package validates; `task spec:gate GATE=M1` reports `unregistered=0` and no missing id owned by this change.
 
 ## Workflow follow-up
 

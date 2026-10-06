@@ -47,7 +47,7 @@ Every entry of `openspec/scenarios.json` with `deferred_to: M1` — 85 IDs — a
 | `taint.no-exfil` | `m1-taint-enforcement` | — | done | as above |
 | `taint.quarantine-carries-origin` | `m1-extraction-provenance` | `m1-taint-enforcement` | done | `core/quarantine_test.go` (`gohan.RecordQuarantined`, window proof); shipped in `archive/2026-10-07-m1-extraction-provenance` |
 | `taint.subflow-carries-origin` | moved to M3 (2.3) | — | moved | `FlowAsTool` belongs to `subflows` (M3); the registry now reads `deferred_to: M3` and the M3 `subflows` change owns it |
-| `taint.provider-tool-post-hoc` | `m1-provider-tool-governance` | `m1-taint-enforcement`, provider contract | missing | no provider tool path exists |
+| `taint.provider-tool-post-hoc` | `m1-provider-tool-governance` | `m1-taint-enforcement`, provider contract | done | `core/provider_result_test.go` (permanent abort before the result lands, `gohan.taint.post_hoc`) |
 
 ### 2.2 tools (9 M1-ranked)
 
@@ -58,10 +58,10 @@ Every entry of `openspec/scenarios.json` with `deferred_to: M1` — 85 IDs — a
 | `tools.egress-rebinding-safe` | `m1-egress-policy` | — | done | as above |
 | `tools.egress-size-limit` | `m1-egress-policy` | — | done | as above |
 | `tools.egress-audited` | `m1-egress-policy` | — | done | as above |
-| `tools.provider-tool-registered` | `m1-provider-tool-governance` | provider contract | missing | no provider-executed tool path exists |
-| `tools.provider-tool-gate-before-call` | `m1-provider-tool-governance` | provider contract | missing | as above |
-| `tools.provider-approval-as-suspension` | `m1-provider-tool-governance` | provider contract | missing | as above |
-| `tools.provider-result-origin` | `m1-provider-tool-governance` | `m1-taint-enforcement` | missing | as above |
+| `tools.provider-tool-registered` | `m1-provider-tool-governance` | provider contract | done | `core/provider_tool_test.go`, `std/tool/provider/provider_test.go`; shipped in `archive/2026-10-07-m1-provider-tool-governance` |
+| `tools.provider-tool-gate-before-call` | `m1-provider-tool-governance` | provider contract | done | `core/provider_gate_test.go` (verdict → declaration) |
+| `tools.provider-approval-as-suspension` | `m1-provider-tool-governance` | provider contract | done | `core/provider_approval_test.go` (suspension + replay under the original call key) |
+| `tools.provider-result-origin` | `m1-provider-tool-governance` | `m1-taint-enforcement` | done | `core/provider_result_test.go` (`OriginProvider{Name}`, `Raw` round-trip) |
 
 M0-ranked, finished by M1:
 
@@ -95,7 +95,7 @@ This is a scope reduction, approved explicitly; it is the one place in this matr
 | `model.raw-round-trip` | `m1-provider-conformance-contract` | — | done | shared suite + `adapter/*/send_test.go` |
 | `model.isolation-per-key` | `m1-provider-conformance-contract` | — | done | `adapter/openai/keys_test.go`, `adapter/anthropic/send_test.go` |
 | `model.key-never-in-telemetry` | `m1-provider-conformance-contract` | — | done | as above |
-| `model.provider-tool-usage` | `m1-provider-tool-governance` | provider contract | missing | `Usage.ProviderToolCalls` ships as a field; nothing increments it |
+| `model.provider-tool-usage` | `m1-provider-tool-governance` | provider contract | done | `core/provider_result_test.go` (`ProviderToolCalls["web_search"] == 2`, priced through `chains.Limits`) |
 | `model.undeclared-fidelity` | `m1-provider-conformance-contract` | — | done | `core/model_build_scenarios_test.go`; re-verified against both adapters without re-claiming the id |
 
 The eight IDs the `m1` proposal names for the two adapters map onto the rows above. The two adapters (`m1-openai-provider`, `m1-anthropic-provider`) run the shared `conformance.Model` suite that `m1-provider-conformance-contract` extends; an ID is claimed once, by the suite, and both adapters must run it. An adapter-specific requirement — error-class normalization, version reporting, cache markers — lands in that adapter's own design without claiming a second ID for the same behaviour.
@@ -174,7 +174,7 @@ The eight IDs the `m1` proposal names for the two adapters map onto the rows abo
 | ID | Owner | Depends on | Status | Evidence |
 |---|---|---|---|---|
 | `stores.same-transaction-journal` | `m1-postgres-stores` | schema-read, erasure contracts | missing | no `adapter/postgres` module exists; `CompleteTx` is unimplemented |
-| `limits.provider-calls-count` | `m1-provider-tool-governance` | provider contract | integration gap | `RunLimits` ships; the provider-call counter has no increment site |
+| `limits.provider-calls-count` | `m1-provider-tool-governance` | provider contract | done | `core/provider_result_test.go` (`limits.provider-calls-count`: three provider searches consume `MaxToolCalls`, the next reservation is refused) |
 | `messages.blob-provider-id-reused` | `m1-s1-s2-acceptance` | decomposition (below) | missing | `messages` spec declares the provider-id rule; no adapter exercises it |
 
 ### 2.12 streams (2), suspension (1), identity (4), telemetry (1), flow (4)
