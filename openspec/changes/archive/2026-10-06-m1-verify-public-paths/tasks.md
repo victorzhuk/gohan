@@ -32,15 +32,19 @@ separately, so those two triggers can be re-applied once the journaling step exi
 ## 3. Integrate public trigger paths
 
 - [x] 3.1 Invoke Verify after Unknown SideEffect results in the public Send path. Replace the Unknown result before history append and never invoke the effect again. Verify: `go test -short -timeout 2m ./core/... -run 'TestVerifySend'`.
-- [ ] 3.2 Reconcile every remaining Unknown journal entry during Resume and Recover. Preserve unknown entries and return `*types.UncertainOutcomeError` when Verify is absent or errors. Blocked on the journaling step below; the call sites were written and withdrawn pending it.
-- [ ] 3.3 Reconcile all remaining Unknown entries before Done. Clear only durably reconciled keys from `Done.Uncertain`. Verify: `go test -short -timeout 2m ./core/... -run 'TestVerifyDone'`.
-  - The `Before Done` call is in place in `Lifecycle.finishTurn`; what is missing is an entry to reconcile on the public path.
+- [x] 3.2 Reconcile every remaining Unknown journal entry during Resume and Recover. Preserve unknown entries and return `*types.UncertainOutcomeError` when Verify is absent or errors. Blocked on the journaling step below; the call sites were written and withdrawn pending it.
+  - evidence: `core/native_conversation.go` wires the stack verifier and journal into the native conversation so the resume reconcile sees them; `core/verify_resume_done_scenarios_test.go` `TestVerifyResume` (4/4) covers settlement, verify error, absent verify and journal-enumeration failure. The Recover call site in `core/recover.go` is wired and covered by the seeded-run recovery contract tests, since a suspended run cannot become stale through a public `Send`.
+- [x] 3.3 Reconcile all remaining Unknown entries before Done. Clear only durably reconciled keys from `Done.Uncertain`. Verify: `go test -short -timeout 2m ./core/... -run 'TestVerifyDone'`.
+  - evidence: `core/verify_resume_done_scenarios_test.go` `TestVerifyDone` (3/3): a key errored at the resume reconcile is retried before Done and cleared only when durably settled, kept when Verify is absent, and the run fails when journal enumeration fails.
 
 ## 3a. Prerequisite this package must add
 
-- [ ] 3a.1 Journal every `SideEffect` call on the native tool path (`std.Journal` as the `KindJournal` tool-chain step, the shape `examples/kafka-refunds` already uses), so the effect boundary has a durable entry to reconcile and the public path can produce the scenario's `Unknown` outcome. Verify: the native Send test that today cannot find a journal entry finds one, then `go test -short -timeout 2m ./core/... -run 'TestVerifySend|TestVerifyResume|TestVerifyDone'`.
+- [x] 3a.1 Journal every `SideEffect` call on the native tool path (`std.Journal` as the `KindJournal` tool-chain step, the shape `examples/kafka-refunds` already uses), so the effect boundary has a durable entry to reconcile and the public path can produce the scenario's `Unknown` outcome. Verify: the native Send test that today cannot find a journal entry finds one, then `go test -short -timeout 2m ./core/... -run 'TestVerifySend|TestVerifyResume|TestVerifyDone'`.
+  - evidence: already landed before this package resumed — `governedToolExec` composes the journal step inside the gate so an entry is reserved before the effect runs and completed after; `TestVerifySend/tools.verify-reconciles-unknown` finds the entry and passes.
 
 ## 4. Public acceptance
 
-- [ ] 4.1 Add deterministic public Build/Send/Resume coverage for success, failure, Verify error, absent Verify, and journal failures. Assert model-visible result, journal state, audit outcome, no effect retry, and Done uncertainty. Verify: `go test -short -timeout 2m ./... -run 'Test.*Verify'`.
-- [ ] 4.2 Run package and repository gates after implementation and review. Verify: `task lint && task test && openspec validate m1-verify-public-paths --strict --no-interactive`.
+- [x] 4.1 Add deterministic public Build/Send/Resume coverage for success, failure, Verify error, absent Verify, and journal failures. Assert model-visible result, journal state, audit outcome, no effect retry, and Done uncertainty. Verify: `go test -short -timeout 2m ./... -run 'Test.*Verify'`.
+  - evidence: `core/verify_reconciliation_scenarios_test.go` and `core/verify_resume_done_scenarios_test.go` cover all five outcomes on the public path with a deterministic verifier and a fault-injecting journal.
+- [x] 4.2 Run package and repository gates after implementation and review. Verify: `task lint && task test && openspec validate m1-verify-public-paths --strict --no-interactive`.
+  - evidence: `task lint` 0 issues; `task test` green; `task spec:gate GATE=M1` `unregistered=0` with every id this package owns covered; `Change 'm1-verify-public-paths' is valid`.

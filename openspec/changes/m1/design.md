@@ -68,7 +68,7 @@ M0-ranked, finished by M1:
 | ID | Owner | Status | Evidence |
 |---|---|---|---|
 | `tools.egress-policy-required` | `m1-egress-policy` | done | `core/egress_build_test.go`, `core/tool_egress_test.go`; `Build` wires `CheckEgress`/`RequiresEgress` and the egress policy option |
-| `tools.verify-reconciles-unknown` | `m1-verify-public-paths` | integration gap | `std/verify.go` reconciles `Succeeded` and discards the `Reserve`/`Complete` result on the verify key |
+| `tools.verify-reconciles-unknown` | `m1-verify-public-paths` | done | `core/verify_reconciliation_scenarios_test.go`, `core/verify_resume_done_scenarios_test.go`; shipped in `archive/2026-10-06-m1-verify-public-paths` |
 
 ### 2.3 Milestone conflict to settle in `m1-extraction-provenance`
 
