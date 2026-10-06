@@ -17,6 +17,9 @@ const (
 	MetricMemoryEvicted   = "gohan.memory.evicted"
 	MetricMemoryWriteDeny = "gohan.memory.write_denied"
 
+	MetricCacheHit  = "gohan.cache.hit"
+	MetricCacheMiss = "gohan.cache.miss"
+
 	MetricModelSunsetWarning    = "gohan.model.sunset_warning"
 	MetricModelDeprecatedCalls  = "gohan.model.deprecated_calls"
 	MetricModelDeprecatedRouted = "gohan.model.deprecated_routed"

@@ -49,6 +49,46 @@ func steerNotesFrom(ctx context.Context) *steerNotes {
 	return n
 }
 
+// finishMemo records the last model finish reason a turn produced, so the
+// terminal cache-write gate can refuse a max_tokens or refusal finish
+// without threading the finish through the runtime state.
+type finishMemo struct {
+	mu     sync.Mutex
+	finish types.FinishReason
+}
+
+func (m *finishMemo) record(f types.FinishReason) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.finish = f
+}
+
+func (m *finishMemo) last() types.FinishReason {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.finish
+}
+
+type finishMemoKey struct{}
+
+func withFinishMemo(ctx context.Context, m *finishMemo) context.Context {
+	return context.WithValue(ctx, finishMemoKey{}, m)
+}
+
+func recordFinish(ctx context.Context, f types.FinishReason) {
+	if m, ok := ctx.Value(finishMemoKey{}).(*finishMemo); ok {
+		m.record(f)
+	}
+}
+
+func lastFinishFrom(ctx context.Context) types.FinishReason {
+	m, _ := ctx.Value(finishMemoKey{}).(*finishMemo)
+	if m == nil {
+		return ""
+	}
+	return m.last()
+}
+
 // HistoryAppender is the append port a turn uses, with the session id
 // already bound. expectedVersion is mandatory: an append against a stale
 // version fails with types.ErrVersionConflict.
@@ -136,7 +176,14 @@ type Lifecycle struct {
 	redactionMaps      stores.RedactionMaps
 	consolidator       MemoryConsolidator
 	consolidationAudit stores.AuditLog
+	cacheWrite         CacheWriteFunc
 }
+
+// CacheWriteFunc is the terminal cache-write seam DriveLifecycle consults
+// after the run closed. It fires only for a clean completion: the gate
+// refuses an Uncertain run, a guard block, a refusal, or a max_tokens
+// finish, so no entry is ever written for a failure shape.
+type CacheWriteFunc func(ctx context.Context, st runtime.State)
 
 // LifecycleOption configures a Lifecycle.
 type LifecycleOption func(*Lifecycle)
@@ -276,6 +323,12 @@ func WithLifecycleToolSpecs(lookup func(name string) (types.ToolSpec, bool)) Lif
 	return func(lc *Lifecycle) { lc.toolLookup = lookup }
 }
 
+// WithLifecycleCacheWrite binds the terminal cache-write seam. A lifecycle
+// without one writes nothing.
+func WithLifecycleCacheWrite(fn CacheWriteFunc) LifecycleOption {
+	return func(lc *Lifecycle) { lc.cacheWrite = fn }
+}
+
 // NewLifecycle builds the driver-side lifecycle with its defaults.
 func NewLifecycle(opts ...LifecycleOption) *Lifecycle {
 	lc := &Lifecycle{reason: types.AwaitingTool}
@@ -381,6 +434,8 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 	sctx := types.WithSink(hbCtx, relay)
 	notes := &steerNotes{}
 	sctx = withSteerNotes(sctx, notes)
+	memo := &finishMemo{}
+	sctx = withFinishMemo(sctx, memo)
 	for {
 		if err := hbCtx.Err(); err != nil {
 			yield(nil, err)
@@ -442,7 +497,11 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 			yield(ev, nil)
 			return
 		case runtime.DoneStatus:
-			next, evs, again, err := lc.finishTurn(sctx, st)
+			terminal := types.StopCompleted
+			if hasCarried {
+				terminal = carried.Reason
+			}
+			next, evs, again, err := lc.finishTurn(sctx, st, terminal)
 			if hasCarried && !again {
 				if lc.ledger != nil {
 					carried.Cost = lc.ledger.TreeCost()
@@ -825,7 +884,7 @@ func (lc *Lifecycle) reconcileUnknown(ctx context.Context, st runtime.State) (ru
 // with Done{StopLimit} instead, and a pending cancel stops it with
 // Done{cancelled}. The returned state carries the history version the
 // drained steers advanced to, so the next step appends against it.
-func (lc *Lifecycle) finishTurn(ctx context.Context, st runtime.State) (runtime.State, []types.Event, bool, error) {
+func (lc *Lifecycle) finishTurn(ctx context.Context, st runtime.State, terminal types.StopReason) (runtime.State, []types.Event, bool, error) {
 	if lc.runs != nil {
 		sigs, err := lc.runs.Drain(ctx, lc.lease)
 		if err != nil {
@@ -867,8 +926,24 @@ func (lc *Lifecycle) finishTurn(ctx context.Context, st runtime.State) (runtime.
 	if err != nil {
 		return st, nil, false, err
 	}
+	lc.writeCacheEntry(ctx, st, terminal, unknown)
 	lc.consolidate(ctx)
 	return st, []types.Event{lc.done(st, unknown, types.StopCompleted)}, false, nil
+}
+
+// writeCacheEntry applies the never-cache-failures gate before the
+// terminal seam fires: only a clean completion with nothing uncertain and
+// a cacheable finish writes an entry. A guard block or a refusal never
+// reaches this path with a completed terminal reason.
+func (lc *Lifecycle) writeCacheEntry(ctx context.Context, st runtime.State, terminal types.StopReason, uncertain []types.CallKey) {
+	if lc.cacheWrite == nil || terminal != types.StopCompleted || len(uncertain) > 0 {
+		return
+	}
+	switch lastFinishFrom(ctx) {
+	case types.FinishMaxTokens, types.FinishRefusal:
+		return
+	}
+	lc.cacheWrite(ctx, st)
 }
 
 // applySignals acts on the drained mailbox. A cancel stops the run with

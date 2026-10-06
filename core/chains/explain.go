@@ -49,6 +49,9 @@ type Explanation struct {
 	Prompts     map[string]string
 	Skills      map[string]string
 	Release     string
+	// Warnings carries the build-time waivers Explain reports, such as a
+	// flow whose AllowCache opts out of the cache refusals.
+	Warnings []string
 }
 
 // StrategyInfo is the resolved strategy plan as Explain reports it.

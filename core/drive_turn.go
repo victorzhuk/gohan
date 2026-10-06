@@ -320,6 +320,7 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 		}
 	}
 	endChat()
+	recordFinish(ctx, finish)
 
 	// A truncated finish earns a retry turn before anything executes:
 	// the pending calls are never run, the truncation result goes back

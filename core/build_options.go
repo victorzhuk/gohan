@@ -59,6 +59,7 @@ type config struct {
 	prompts          chains.PromptSet
 	sequentialTools  bool
 	allowAnonymous   bool
+	allowCache       bool
 	maxParallelTools int
 	limits           map[string]types.RunLimits
 	recovery         map[string]runtime.Runtime
@@ -219,6 +220,16 @@ func SequentialTools() Option {
 func AllowAnonymous() Option {
 	return func(c *config) error {
 		c.allowAnonymous = true
+		return nil
+	}
+}
+
+// AllowCache opts a flow's CacheStep out of the conversation and
+// read-only refusals. The opt-out is never silent: Explain prints it as a
+// warning on every flow that carries a cache step.
+func AllowCache() Option {
+	return func(c *config) error {
+		c.allowCache = true
 		return nil
 	}
 }

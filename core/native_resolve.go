@@ -105,6 +105,11 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 		if err := chains.ValidateToolChain(spec.ToolChain); err != nil {
 			return fmt.Errorf("flow %q: tool chain: %w", name, err)
 		}
+		if step, ok := cacheStep(spec.ModelChain); ok && !s.allowCache {
+			if reason := cacheRefusal(req.Tools); reason != "" {
+				return fmt.Errorf("flow %q: cache step %q: %s", name, step, reason)
+			}
+		}
 		limits, _ := s.Limits(name)
 		modelChain := modelChainWithMiddleware(spec.ModelChain, s.middleware)
 		var exfil, privateRead, untrusted bool
@@ -160,6 +165,30 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 	s.native = resolved
 	return nil
 }
+
+// cacheStep names the first cache step of a chain: the outer slot the
+// cache contract governs.
+func cacheStep[M any](ch []chains.Step[M]) (string, bool) {
+	for _, s := range ch {
+		if s.Kind == chains.KindCache {
+			return s.Name, true
+		}
+	}
+	return "", false
+}
+
+// cacheRefusal names the rule a CacheStep trips. Every registered native
+// definition constructs a conversation, so the conversation rule applies
+// first; a registered tool with a non-read-only effect names itself.
+func cacheRefusal(specs []types.ToolSpec) string {
+	for _, spec := range specs {
+		if spec.Effect != types.ReadOnly {
+			return fmt.Sprintf("refused on tool %q with a non-read-only effect", spec.Name)
+		}
+	}
+	return "refused on a conversation flow"
+}
+
 func governedExtraKey(extra map[string]any) (string, bool) {
 	for _, key := range types.GovernedModelOptionKeys() {
 		if _, ok := extra[key]; ok {

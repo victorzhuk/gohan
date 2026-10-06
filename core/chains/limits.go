@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std/cache"
 )
 
 const metricCostPerRun = "gohan.cost.per_run"
@@ -304,6 +305,7 @@ func Limits(l types.RunLimits, p types.Pricing, st *LimitsState) types.ModelMidd
 					yield(types.ModelChunk{}, &types.LimitExceededError{Limit: "MaxWallClock", Value: l.MaxWallClock.Seconds()})
 					return
 				}
+				usage = ApplyCacheUsage(usage, req)
 				st.charge(usage, p)
 				st.recordCost(ctx)
 				if err := st.afterCharge(l); err != nil {
@@ -364,6 +366,27 @@ func ToolLimits(l types.RunLimits, st *LimitsState) types.ToolMiddleware {
 // the new total.
 func (s *LimitsState) Charge(u types.Usage, p types.Pricing) float64 {
 	return s.charge(u, p)
+}
+
+// ApplyCacheUsage folds the assembly cache's outcome mark into a usage
+// record: a hit reports the served prefix as CachedInputTokens, a
+// repopulating miss as CacheWriteTokens. A field the provider already
+// reported is left alone, and an unmarked request changes nothing.
+func ApplyCacheUsage(u types.Usage, req types.ModelRequest) types.Usage {
+	o, ok := cache.OutcomeOf(req)
+	if !ok || o.Tokens <= 0 {
+		return u
+	}
+	if o.Hit {
+		if u.CachedInputTokens == 0 {
+			u.CachedInputTokens = o.Tokens
+		}
+		return u
+	}
+	if u.CacheWriteTokens == 0 {
+		u.CacheWriteTokens = o.Tokens
+	}
+	return u
 }
 
 // ChargeModelCall records one model turn and returns the wall clock the call

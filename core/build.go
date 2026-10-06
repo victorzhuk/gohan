@@ -84,6 +84,7 @@ type Stack struct {
 	prompts          chains.PromptSet
 	sequentialTools  bool
 	allowAnonymous   bool
+	allowCache       bool
 	maxParallelTools int
 	limits           map[string]types.RunLimits
 	stores           stores.Stores
@@ -149,6 +150,7 @@ func Build(opts ...Option) (*Stack, error) {
 		prompts:          cfg.prompts,
 		sequentialTools:  cfg.sequentialTools,
 		allowAnonymous:   cfg.allowAnonymous,
+		allowCache:       cfg.allowCache,
 		maxParallelTools: cfg.maxParallelTools,
 		limits:           limits,
 		recovery:         cfg.recovery,

@@ -2,6 +2,7 @@ package gohan
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
 	"github.com/victorzhuk/gohan/core/chains"
@@ -47,6 +48,10 @@ func (s *Stack) Explain(f any) chains.Explanation {
 		Prompts:     chains.PromptFields(s.prompts),
 		Skills:      map[string]string{},
 		Release:     s.manifest.ID(),
+	}
+	if step, ok := cacheStep(cfg.modelChain); ok && s.allowCache {
+		ex.Warnings = append(ex.Warnings,
+			fmt.Sprintf("flow %q: cache step %q runs under AllowCache: the conversation and read-only refusals are waived", cfg.flow, step))
 	}
 	if req, err := s.nativeTurnConfig(cfg).assemble(context.Background(), types.AssembleInput{}); err == nil {
 		ex.Sample = req
