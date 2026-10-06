@@ -13,6 +13,13 @@ type ModelRequest struct {
 	Tools    []ToolSpec
 	Messages []Message
 	Options  ModelOptions
+	Metadata RequestMetadata
+}
+
+// RequestMetadata carries the run attributes a provider may map onto its
+// request-metadata channel. The values are run attribution, never content.
+type RequestMetadata struct {
+	CostTags CostTags
 }
 
 // ModelOptions carries the per-call knobs a provider maps onto its API.
@@ -85,6 +92,7 @@ type wireModelRequest struct {
 	Tools    []wireToolSpec
 	Messages []Message
 	Options  ModelOptions
+	Metadata RequestMetadata `json:"Metadata,omitzero"`
 }
 
 func marshalToolSpecs(ts []ToolSpec) []wireToolSpec {
@@ -119,7 +127,7 @@ func (r ModelRequest) MarshalJSONTo(enc *jsontext.Encoder) error {
 		return err
 	}
 	tools := marshalToolSpecs(r.Tools)
-	w := wireModelRequest{System: ws, Tools: tools, Messages: r.Messages, Options: r.Options}
+	w := wireModelRequest{System: ws, Tools: tools, Messages: r.Messages, Options: r.Options, Metadata: r.Metadata}
 	return jsonv2.MarshalEncode(enc, w)
 }
 
@@ -156,5 +164,6 @@ func (r *ModelRequest) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 	}
 	r.Messages = w.Messages
 	r.Options = w.Options
+	r.Metadata = w.Metadata
 	return nil
 }

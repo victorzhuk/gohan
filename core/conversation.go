@@ -303,6 +303,11 @@ func (c *conversation) runIdentityCtx(ctx context.Context, runID, sessionID stri
 	if p, ok := types.PrincipalFrom(ctx); ok {
 		info.Principal = p
 	}
+	// Cost attribution follows the caller's tags even though the run
+	// identity itself is rebuilt; identity must not survive, tags may.
+	if a, ok := types.RunInfoFrom(ctx); ok {
+		info.CostTags = a.CostTags
+	}
 	return types.WithRunInfo(ctx, info)
 }
 

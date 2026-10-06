@@ -10,6 +10,8 @@ import (
 	"github.com/victorzhuk/gohan/core/types"
 )
 
+const metricCostPerRun = "gohan.cost.per_run"
+
 // LimitsState accumulates what one run's limit steps spend and warn. A
 // run keeps one state across every call its chains make; the tree
 // accounting projects the root's Done.Cost from it.
@@ -22,6 +24,19 @@ type LimitsState struct {
 	warned   bool
 	warnings []types.LimitWarning
 	tree     *treeSpend
+	tel      types.Telemetry
+
+	recorded    float64
+	hasRecorded bool
+}
+
+// LedgerOption adjusts the ledger constructors.
+type LedgerOption func(*LimitsState)
+
+// WithCostTelemetry attaches the sink the ledger records gohan.cost.per_run
+// on. Without it the ledger emits nothing.
+func WithCostTelemetry(tel types.Telemetry) LedgerOption {
+	return func(s *LimitsState) { s.tel = tel }
 }
 
 // treeSpend is the cost the whole run tree charged; a tree's MaxCost is
@@ -74,14 +89,24 @@ func (s *LimitsState) TreeCost() float64 {
 
 // NewLimitsState returns the accumulator one run shares across its
 // chain steps.
-func NewLimitsState() *LimitsState { return &LimitsState{} }
+func NewLimitsState(opts ...LedgerOption) *LimitsState {
+	s := &LimitsState{}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
 
 // NewLimitsStateSeeded returns an accumulator whose cost starts at seed,
 // the spend the persisted run record already reports. The counters a
 // checkpoint does not carry start at zero: only the spent cost survives
 // the store record.
-func NewLimitsStateSeeded(seed float64) *LimitsState {
-	return &LimitsState{cost: seed}
+func NewLimitsStateSeeded(seed float64, opts ...LedgerOption) *LimitsState {
+	s := &LimitsState{cost: seed}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Cost reports the cost charged so far.
@@ -151,6 +176,34 @@ func (s *LimitsState) charge(u types.Usage, p types.Pricing) float64 {
 		s.tree.add(spent)
 	}
 	return s.cost
+}
+
+// recordCost reports the run's cumulative cost on the telemetry the ledger
+// carries, labeled by the run's flow. The emission carries no cost tag
+// values and no identity labels. Repeat calls at an unchanged cumulative
+// cost emit nothing, so a charge site and the composing path can both
+// record without duplicating the metric.
+func (s *LimitsState) recordCost(ctx context.Context) {
+	s.mu.Lock()
+	if s.tel == nil || (s.hasRecorded && s.recorded == s.cost) {
+		s.mu.Unlock()
+		return
+	}
+	s.recorded = s.cost
+	s.hasRecorded = true
+	cost := s.cost
+	s.mu.Unlock()
+	flow := ""
+	if ri, ok := types.RunInfoFrom(ctx); ok {
+		flow = ri.Flow
+	}
+	s.tel.Record(ctx, metricCostPerRun, cost, types.String(types.KeyFlow, flow))
+}
+
+// RecordCost reports the run's cumulative cost on the ledger's telemetry.
+// Charging steps that run outside this package call it after they spend.
+func (s *LimitsState) RecordCost(ctx context.Context) {
+	s.recordCost(ctx)
 }
 
 func (s *LimitsState) warn(w types.LimitWarning) {
@@ -252,6 +305,7 @@ func Limits(l types.RunLimits, p types.Pricing, st *LimitsState) types.ModelMidd
 					return
 				}
 				st.charge(usage, p)
+				st.recordCost(ctx)
 				if err := st.afterCharge(l); err != nil {
 					yield(types.ModelChunk{}, err)
 				}

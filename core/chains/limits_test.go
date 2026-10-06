@@ -324,3 +324,80 @@ func collect(seq iter.Seq2[types.ModelChunk, error]) ([]types.ModelChunk, error)
 	}
 	return chunks, nil
 }
+
+type recordingTelemetry struct {
+	records []struct {
+		name  string
+		value float64
+		attrs []types.Attr
+	}
+}
+
+func (t *recordingTelemetry) StartSpan(ctx context.Context, _ string, _ ...types.Attr) (context.Context, func(...types.Attr)) {
+	return ctx, func(...types.Attr) {}
+}
+
+func (t *recordingTelemetry) Count(context.Context, string, int64, ...types.Attr) {}
+
+func (t *recordingTelemetry) Record(_ context.Context, name string, v float64, attrs ...types.Attr) {
+	t.records = append(t.records, struct {
+		name  string
+		value float64
+		attrs []types.Attr
+	}{name, v, attrs})
+}
+
+func TestCostPerRunMetric(t *testing.T) {
+	pending := types.Pricing{Input: 0.04}
+	spend := func(n int) types.ModelFunc {
+		return func(ctx context.Context, _ types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+			return func(yield func(types.ModelChunk, error) bool) {
+				yield(types.ModelChunk{Usage: &types.Usage{InputTokens: n}}, nil)
+			}
+		}
+	}
+	tel := &recordingTelemetry{}
+	st := NewLimitsState(WithCostTelemetry(tel))
+	limits := types.RunLimits{MaxCost: 1.0, MaxWallClock: time.Minute, SoftRatio: 0.8}
+	ctx := types.WithRunInfo(context.Background(), types.RunInfo{
+		Flow:     "chat",
+		CostTags: types.CostTags{Feature: "search", Environment: "prod", CostCenter: "cc-9"},
+	})
+	mw := Limits(limits, pending, st)
+	for chunk, err := range mw(spend(2))(ctx, types.ModelRequest{}) {
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		_ = chunk
+	}
+	if len(tel.records) != 1 {
+		t.Fatalf("got %d records, want 1", len(tel.records))
+	}
+	rec := tel.records[0]
+	if rec.name != metricCostPerRun {
+		t.Errorf("metric = %s, want %s", rec.name, metricCostPerRun)
+	}
+	if diff := rec.value - 0.08; diff < -1e-9 || diff > 1e-9 {
+		t.Errorf("value = %v, want 0.08", rec.value)
+	}
+	var sawFlow bool
+	for _, a := range rec.attrs {
+		if a.Key == types.KeyFlow && a.Value == "chat" {
+			sawFlow = true
+			continue
+		}
+		t.Errorf("emission carries unexpected attribute %+v", a)
+	}
+	if !sawFlow {
+		t.Error("emission carries no flow label")
+	}
+
+	// Without telemetry the ledger emits nothing.
+	silent := NewLimitsState()
+	mw = Limits(limits, pending, silent)
+	for _, err := range mw(spend(1))(ctx, types.ModelRequest{}) {
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+	}
+}

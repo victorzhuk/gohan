@@ -249,7 +249,7 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 	}
 	var driveErr error
 	if cfg, ok := s.resolvedNative(run.Flow); ok {
-		ledger := chains.NewLimitsStateSeeded(run.Cost)
+		ledger := chains.NewLimitsStateSeeded(run.Cost, chains.WithCostTelemetry(s.telemetry))
 		ctx = chains.WithLimitsState(ctx, ledger)
 		var hist stores.History
 		if s.stores.SessionLog != nil {

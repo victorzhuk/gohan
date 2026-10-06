@@ -27,7 +27,7 @@ func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 	return turnConfig{
 		// Supervision wraps only the provider, so the chain steps and
 		// the middleware above it keep running on the caller's goroutine.
-		model:       runModelChain(cfg.modelChain, deprecatedRoute(s.telemetry, cfg.profile, NewModelStream(cfg.model).Generate, s.successorModelFunc(cfg.profile))),
+		model:       recordRunCost(runModelChain(cfg.modelChain, deprecatedRoute(s.telemetry, cfg.profile, NewModelStream(cfg.model).Generate, s.successorModelFunc(cfg.profile)))),
 		assemble:    nativeAssemble(s.prompts, cfg.assemble, cfg.redactor, cfg.redactionPolicy, s.stores.RedactionMaps),
 		maxTurns:    cfg.limits.MaxTurns,
 		limits:      cfg.limits,
@@ -81,6 +81,24 @@ func rawTaintWindow(msgs []types.Message) []types.Block {
 		blocks = append(blocks, msg.Blocks...)
 	}
 	return blocks
+}
+
+// recordRunCost reports the run ledger's cumulative cost after one model
+// invocation. Charging steps composed inside the chain record too; the
+// ledger suppresses repeat emissions at an unchanged cost.
+func recordRunCost(next types.ModelFunc) types.ModelFunc {
+	return func(ctx context.Context, req types.ModelRequest) (out iter.Seq2[types.ModelChunk, error]) {
+		return func(yield func(types.ModelChunk, error) bool) {
+			for chunk, err := range next(ctx, req) {
+				if !yield(chunk, err) {
+					return
+				}
+			}
+			if st, ok := chains.LimitsStateFrom(ctx); ok {
+				st.RecordCost(ctx)
+			}
+		}
+	}
 }
 
 // runModelChain composes the chain around the model: step 0 outermost, the

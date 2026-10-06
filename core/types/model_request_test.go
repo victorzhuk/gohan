@@ -33,6 +33,11 @@ func TestModelRequest(t *testing.T) {
 			AffinityKey:    "tenant-a",
 			Extra:          map[string]any{"extra_body": map[string]any{"seed": 7.0}},
 		},
+		Metadata: RequestMetadata{CostTags: CostTags{
+			Feature:     "search",
+			Environment: "prod",
+			CostCenter:  "cc-9",
+		}},
 	}
 
 	b, err := json.Marshal(in) //nolint:staticcheck // MarshalJSONTo strips Verify, which has no wire form
@@ -57,7 +62,7 @@ func TestModelRequest(t *testing.T) {
 
 	// The record/replay key hashes these bytes, so the declared field order
 	// is the wire order; a reordered field would silently break replay.
-	order := []string{`"System"`, `"Tools"`, `"Messages"`, `"Options"`}
+	order := []string{`"System"`, `"Tools"`, `"Messages"`, `"Options"`, `"Metadata"`}
 	last := -1
 	for _, field := range order {
 		at := bytes.Index(b[last+1:], []byte(field))
@@ -65,5 +70,17 @@ func TestModelRequest(t *testing.T) {
 			t.Fatalf("field %s missing from wire form", field)
 		}
 		last += at + 1
+	}
+
+	// A zero Metadata never appears on the wire: the record/replay key
+	// hashes these bytes, so adding the field must not change a cassette
+	// recorded before it existed.
+	plain := ModelRequest{Messages: in.Messages}
+	pb, err := json.Marshal(plain) //nolint:staticcheck // MarshalJSONTo strips Verify, which has no wire form
+	if err != nil {
+		t.Fatalf("marshal plain: %v", err)
+	}
+	if bytes.Contains(pb, []byte("Metadata")) {
+		t.Fatalf("zero Metadata reached the wire: %s", pb)
 	}
 }

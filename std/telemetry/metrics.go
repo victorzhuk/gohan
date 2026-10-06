@@ -20,6 +20,8 @@ const (
 	MetricModelSunsetWarning    = "gohan.model.sunset_warning"
 	MetricModelDeprecatedCalls  = "gohan.model.deprecated_calls"
 	MetricModelDeprecatedRouted = "gohan.model.deprecated_routed"
+
+	MetricCostPerRun = "gohan.cost.per_run"
 )
 
 // Metric is one metric registration: its name and the label names it

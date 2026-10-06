@@ -64,6 +64,29 @@ func baseInput() AssembleInput {
 	}
 }
 
+func TestAssembleCarriesCostTags(t *testing.T) {
+	tags := types.CostTags{Feature: "search", Environment: "prod", CostCenter: "cc-9"}
+	in := baseInput()
+	in.Run.CostTags = tags
+	req := assemble(t, in)
+	if req.Metadata.CostTags != tags {
+		t.Fatalf("metadata = %+v, want %+v", req.Metadata.CostTags, tags)
+	}
+	// The tags are run attribution, never content: no block payload
+	// carries them.
+	for _, b := range req.System {
+		payload, err := json.Marshal(b)
+		if err != nil {
+			t.Fatalf("marshal block: %v", err)
+		}
+		for _, v := range []string{tags.Feature, tags.Environment, tags.CostCenter} {
+			if bytes.Contains(payload, []byte(v)) {
+				t.Fatalf("cost tag %q leaked into a system block: %s", v, payload)
+			}
+		}
+	}
+}
+
 func TestStablePrefix(t *testing.T) {
 	t.Run("assembly.prefix-stability", func(t *testing.T) {
 		providerFor := func(user string) types.ContextProvider {

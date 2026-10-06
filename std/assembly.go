@@ -168,7 +168,12 @@ func build(ctx context.Context, in AssembleInput) (types.ModelRequest, error) {
 	}
 	messages = append(messages, in.Input...)
 
-	return types.ModelRequest{System: system, Tools: sorted, Messages: messages}, nil
+	return types.ModelRequest{
+		System:   system,
+		Tools:    sorted,
+		Messages: messages,
+		Metadata: types.RequestMetadata{CostTags: in.Run.CostTags},
+	}, nil
 }
 
 func appendSlot(ctx context.Context, system []types.Block, in AssembleInput, slot types.ContextSlot, ri types.RunInfo) ([]types.Block, error) {

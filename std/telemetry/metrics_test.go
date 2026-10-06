@@ -197,9 +197,39 @@ func TestTelemetryMetrics(t *testing.T) {
 			{Name: MetricModelSunsetWarning, Labels: []string{"profile"}},
 			{Name: MetricModelDeprecatedCalls, Labels: []string{"profile"}},
 			{Name: MetricModelDeprecatedRouted, Labels: []string{"profile", "successor"}},
+			{Name: MetricCostPerRun, Labels: []string{"flow"}},
 		})
 		if err != nil {
 			t.Fatalf("Build refused the lifecycle metrics: %v", err)
+		}
+	})
+
+	t.Run("costPerRunDropsIdentityLabels", func(t *testing.T) {
+		sink := &recordingSink{}
+		metrics, err := Build(sink, []Metric{
+			{Name: MetricCostPerRun, Labels: []string{"flow"}},
+		}, WithRelease("r7"))
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		metrics.Record(ctx, MetricCostPerRun, 0.25,
+			types.String(types.KeyFlow, "chat"),
+			types.String(types.KeyRunID, "r-1"),
+			types.String("feature", "search"))
+		if len(sink.records) != 1 {
+			t.Fatalf("got %d records, want 1", len(sink.records))
+		}
+		rec := sink.records[0]
+		if rec.name != MetricCostPerRun {
+			t.Errorf("record = %s, want %s", rec.name, MetricCostPerRun)
+		}
+		for _, a := range rec.attrs {
+			if a.Key != types.KeyRelease && a.Key != "flow" {
+				t.Errorf("emission carries label %q outside the registration", a.Key)
+			}
+			if v, ok := a.Value.(string); ok && strings.Contains(v, "search") {
+				t.Errorf("emission carries a cost tag value in %q", a.Key)
+			}
 		}
 	})
 

@@ -45,7 +45,7 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 	c.consolidator = stack.consolidation(name)
 	c.consolidationAudit = stack.stores.Audit
 	c.newRun = func(ctx context.Context, sessionID string, lease stores.Lease, input []Message) (context.Context, runtime.AgentRun, error) {
-		ledger := chains.NewLimitsState()
+		ledger := chains.NewLimitsState(chains.WithCostTelemetry(c.telemetry))
 		ctx = chains.WithLimitsState(ctx, ledger)
 
 		hist, err := c.load(ctx, sessionID)
@@ -80,7 +80,7 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 		return ctx, ag, nil
 	}
 	c.newResumeRun = func(ctx context.Context, sessionID string, hist stores.History, seed float64) (context.Context, runtime.Runtime, runtime.AgentRun, *chains.LimitsState, error) {
-		ledger := chains.NewLimitsStateSeeded(seed)
+		ledger := chains.NewLimitsStateSeeded(seed, chains.WithCostTelemetry(c.telemetry))
 		ctx = chains.WithLimitsState(ctx, ledger)
 
 		tc := stack.nativeTurnConfig(cfg)
