@@ -25,9 +25,10 @@
 
 ## 4. Cost tags forwarded
 
-Blocked on the provider-metadata contract: the `model` provider adapter contract (`openspec/specs/model/spec.md`) names no request-metadata field, so there is nothing to forward `CostTags` onto without inventing a wire field. No code was written; the acceptance test is blocked with it.
+The provider-metadata contract now names the field (`ModelRequest.Metadata`, `RequestMetadata{CostTags}`), so the request-side forwarding is unblocked and landed below. The adapter-side mapping onto a real provider's metadata channel stays with the provider-adapter work.
 
-- [ ] 4.1 Forward a run's `CostTags` (`core/types/identity.go:80`) onto the provider request accounting path for a provider that accepts request metadata, and record `gohan.cost.per_run{flow}`. Depends on the `model` provider-metadata contract naming the request-metadata field. Verify: `go test -short -timeout 2m ./core/... -run 'TestCostTagsForwarded'` asserts the tags reach the request seam and the metric carries the run total.
+- [x] 4.1 Forward a run's `CostTags` (`core/types/identity.go:80`) onto the provider request accounting path for a provider that accepts request metadata, and record `gohan.cost.per_run{flow}`. Depends on the `model` provider-metadata contract naming the request-metadata field. Verify: `go test -short -timeout 2m ./core/... -run 'TestCostTagsForwarded'` asserts the tags reach the request seam and the metric carries the run total.
+  - evidence: `m1-provider-metadata-contract` names the field `ModelRequest.Metadata` (`RequestMetadata{CostTags}`); `core/types/model_request.go` carries it in the frozen wire order (zero value stays off the wire, cassette replay keys unchanged), `std/assembly.go` populates it from `in.Run.CostTags`, and `core/chains/limits.go` records `gohan.cost.per_run{flow}` at the charge site with `RecordCost` dedupe. `core/cost_tags_test.go` (`lifecycle.cost-tags-forwarded`) drives `Build` + `Send` and asserts both halves. The adapter-side mapping onto a real provider's metadata channel is still the adapters' duty.
 - [x] 4.2 Record the adapter-side forwarding as a blocker owned by the provider-adapter work: `adapter/` holds only `otel`, so no adapter forwards the tags yet. Verify: blocker recorded in `design.md` and this task; unblock when a provider adapter lands.
   - evidence: recorded here and in `design.md` D4/Non-Goals; `adapter/` contains only `otel`.
 
