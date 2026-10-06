@@ -136,6 +136,48 @@ type RecordEnvelope struct {
 	Payload       json.RawMessage `json:"payload"`
 }
 
+// RawRecords stores serialized records by their implementation-defined identity.
+type RawRecords interface {
+	PutRaw(ctx context.Context, identity string, envelope RecordEnvelope) error
+	GetRaw(ctx context.Context, identity string) (RecordEnvelope, error)
+}
+
+// MemoryRawRecords stores immutable serialized records for memory-backed stores.
+type MemoryRawRecords struct {
+	mu      sync.RWMutex
+	records map[string][]byte
+}
+
+func NewMemoryRawRecords() *MemoryRawRecords {
+	return &MemoryRawRecords{records: make(map[string][]byte)}
+}
+
+func (r *MemoryRawRecords) PutRaw(_ context.Context, identity string, envelope RecordEnvelope) error {
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("encode raw record: %w", err)
+	}
+	r.mu.Lock()
+	r.records[identity] = append([]byte(nil), raw...)
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *MemoryRawRecords) GetRaw(_ context.Context, identity string) (RecordEnvelope, error) {
+	r.mu.RLock()
+	raw, ok := r.records[identity]
+	raw = append([]byte(nil), raw...)
+	r.mu.RUnlock()
+	if !ok {
+		return RecordEnvelope{}, fmt.Errorf("raw record %s: not found", identity)
+	}
+	var envelope RecordEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return RecordEnvelope{}, fmt.Errorf("decode raw record: %w", err)
+	}
+	return envelope, nil
+}
+
 // DecodeRecord applies registered upcasters to a copy of the stored payload,
 // then decodes the current representation.
 func DecodeRecord[T any](ctx context.Context, reg *SchemaRegistry, env RecordEnvelope) (T, error) {

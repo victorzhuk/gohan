@@ -68,6 +68,7 @@ type MemorySessionLog struct {
 	msgSeq      int64
 	idSeq       int64
 	schemas     *SchemaRegistry
+	raw         *MemoryRawRecords
 }
 
 type MemorySessionOption func(*MemorySessionLog)
@@ -105,12 +106,17 @@ func WithMemorySessionSchemas(reg *SchemaRegistry) MemorySessionOption {
 	return func(s *MemorySessionLog) { s.schemas = reg }
 }
 
+func (s *MemorySessionLog) RawRecords() RawRecords {
+	return s.raw
+}
+
 func NewMemorySessionLog(opts ...MemorySessionOption) *MemorySessionLog {
 	s := &MemorySessionLog{
 		now:         time.Now,
 		archivedFor: defaultArchivedHold,
 		sessions:    make(map[string]*sessionRecord),
 		schemas:     NewSchemaRegistry(),
+		raw:         NewMemoryRawRecords(),
 	}
 	for _, o := range opts {
 		o(s)

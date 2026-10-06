@@ -39,21 +39,26 @@ type SchemasFactory func(ctx context.Context, current SchemaVersion) (SchemaRegi
 type SchemaFixture struct {
 	Shape   string
 	Version SchemaVersion
-	Data    string
+	Payload []byte
+	Current SchemaVersion
 }
 
 // schemaFixtures are recorded shapes replayed through current readers. Each
 // released version of every stored shape gets one entry here; the entry stays
 // once added so older records keep a covered upcast path forever.
 var schemaFixtures = []SchemaFixture{
-	{"Message", 1, `{"role":"user","blocks":[{"type":"text","text":"hi"}]}`},
-	{"State", 1, `{"values":{"topic":"gohan"},"version":7}`},
-	{"Checkpoint", 1, `{"token":"tok","expires_at":"2026-01-01T00:00:00Z"}`},
-	{"AuditRecord", 1, `{"kind":"tool","hash":"abc123"}`},
-	{"Event", 1, `{"name":"gohan.session.forked","tenant":"t1"}`},
-	{"Entry", 1, `{"key":"k1","outcome":"succeeded"}`},
-	{"Run", 1, `{"state":"running","attempt":1}`},
-	{"RedactionMap", 1, `{"paths":["a.b"]}`},
+	{Shape: "Message", Version: 1, Payload: []byte(`{"role":"user","blocks":[{"type":"text","text":"hi"}]}`), Current: 3},
+	{Shape: "Message", Version: 2, Payload: []byte(`{"role":"user","blocks":[{"type":"text","text":"hi"}]}`), Current: 3},
+	{Shape: "Message", Version: 3, Payload: []byte(`{"role":"user","blocks":[{"type":"text","text":"hi"}]}`), Current: 3},
+	{Shape: "State", Version: 1, Payload: []byte(`{"values":{"topic":"gohan"},"version":7}`), Current: 1},
+	{Shape: "Checkpoint", Version: 1, Payload: []byte(`{"token":"tok","expires_at":"2026-01-01T00:00:00Z"}`), Current: 3},
+	{Shape: "Checkpoint", Version: 2, Payload: []byte(`{"token":"tok","expires_at":"2026-01-01T00:00:00Z"}`), Current: 3},
+	{Shape: "Checkpoint", Version: 3, Payload: []byte(`{"token":"tok","expires_at":"2026-01-01T00:00:00Z"}`), Current: 3},
+	{Shape: "AuditRecord", Version: 1, Payload: []byte(`{"kind":"tool","hash":"abc123"}`), Current: 1},
+	{Shape: "Event", Version: 1, Payload: []byte(`{"name":"gohan.session.forked","tenant":"t1"}`), Current: 1},
+	{Shape: "Entry", Version: 1, Payload: []byte(`{"key":"k1","outcome":"succeeded"}`), Current: 1},
+	{Shape: "Run", Version: 1, Payload: []byte(`{"state":"running","attempt":1}`), Current: 1},
+	{Shape: "RedactionMap", Version: 1, Payload: []byte(`{"paths":["a.b"]}`), Current: 1},
 }
 
 // Schemas runs the schema registry conformance suite against one
@@ -63,50 +68,57 @@ var schemaFixtures = []SchemaFixture{
 func Schemas(t *testing.T, factory SchemasFactory) {
 	t.Helper()
 	t.Run("fixtures_replay_at_current", func(t *testing.T) {
-		r := openRegistry(t, factory, schemaCurrent)
 		for _, f := range schemaFixtures {
 			f := f
 			t.Run(f.Shape, func(t *testing.T) {
-				if f.Version > schemaCurrent {
-					t.Fatalf("fixture %s at version %d is newer than current %d", f.Shape, f.Version, schemaCurrent)
-				}
-				if f.Version < schemaCurrent {
+				r := openRegistry(t, factory, f.Current)
+				if f.Version < f.Current {
 					if err := r.Declare(f.Shape, f.Version); err != nil {
 						t.Fatalf("Declare %s at version %d: %v", f.Shape, f.Version, err)
 					}
 				}
-				first, err := r.Upcast(f.Shape, f.Version, []byte(f.Data))
+				first, err := r.Upcast(f.Shape, f.Version, bytes.Clone(f.Payload))
 				if err != nil {
 					t.Fatalf("Upcast %s from version %d has no reachable path to current: %v", f.Shape, f.Version, err)
 				}
 				if !json.Valid(first) {
 					t.Fatalf("Upcast %s produced invalid JSON: %q", f.Shape, first)
 				}
-				second, err := r.Upcast(f.Shape, f.Version, []byte(f.Data))
+				second, err := r.Upcast(f.Shape, f.Version, bytes.Clone(f.Payload))
 				if err != nil {
 					t.Fatalf("Upcast %s again: %v", f.Shape, err)
 				}
 				if !bytes.Equal(first, second) {
 					t.Fatalf("Upcast %s is not deterministic: %q vs %q", f.Shape, first, second)
 				}
-				if f.Version == schemaCurrent && !bytes.Equal(first, []byte(f.Data)) {
-					t.Fatalf("record already at current version was rewritten: %q vs %q", first, f.Data)
+				if f.Version == f.Current && !bytes.Equal(first, f.Payload) {
+					t.Fatalf("record already at current version was rewritten: %q vs %q", first, f.Payload)
 				}
 			})
 		}
 	})
 
 	t.Run("no_unregistered_shapes_at_current", func(t *testing.T) {
-		r := openRegistry(t, factory, schemaCurrent)
+		registries := map[SchemaVersion]SchemaRegistry{}
+		declared := map[SchemaVersion]map[string]bool{}
 		for _, f := range schemaFixtures {
-			if f.Version < schemaCurrent {
+			r := registries[f.Current]
+			if r == nil {
+				r = openRegistry(t, factory, f.Current)
+				registries[f.Current] = r
+				declared[f.Current] = map[string]bool{}
+			}
+			if f.Version < f.Current && !declared[f.Current][f.Shape] {
 				if err := r.Declare(f.Shape, f.Version); err != nil {
 					t.Fatalf("Declare %s at version %d: %v", f.Shape, f.Version, err)
 				}
+				declared[f.Current][f.Shape] = true
 			}
 		}
-		if missing := r.Unregistered(); len(missing) != 0 {
-			t.Fatalf("Unregistered at current version: got %v, want none", missing)
+		for current, r := range registries {
+			if missing := r.Unregistered(); len(missing) != 0 {
+				t.Fatalf("Unregistered at current version %d: got %v, want none", current, missing)
+			}
 		}
 	})
 

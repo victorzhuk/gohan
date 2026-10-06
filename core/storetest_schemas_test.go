@@ -2,6 +2,8 @@ package gohan
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/victorzhuk/gohan/core/stores"
@@ -32,6 +34,23 @@ func (a schemaRegistryAdapter) Unregistered() []string {
 
 func TestStoretestSchemasBind(t *testing.T) {
 	storetest.Schemas(t, func(_ context.Context, current storetest.SchemaVersion) (storetest.SchemaRegistry, error) {
-		return schemaRegistryAdapter{inner: stores.NewSchemaRegistryFor(stores.SchemaVersion(current))}, nil
+		registry := stores.NewSchemaRegistryFor(stores.SchemaVersion(current))
+		for _, shape := range []string{"Message", "Checkpoint"} {
+			for from := storetest.SchemaVersion(1); from < current; from++ {
+				from := from
+				version := from + 1
+				if err := registry.Register(shape, stores.SchemaVersion(from), func(raw []byte) ([]byte, error) {
+					var record map[string]json.RawMessage
+					if err := json.Unmarshal(raw, &record); err != nil {
+						return nil, err
+					}
+					record[fmt.Sprintf("schema_v%d", version)] = json.RawMessage("true")
+					return json.Marshal(record)
+				}); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return schemaRegistryAdapter{inner: registry}, nil
 	})
 }
