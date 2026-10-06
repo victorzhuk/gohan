@@ -22,6 +22,17 @@ func (g *RedactionGuard) Decide(ctx context.Context, in guards.GuardInput) (type
 	if g.redactor == nil || len(g.policy.Detectors) == 0 {
 		return types.Decision[guards.GuardVerdict]{Value: guards.GuardVerdict{Action: guards.Pass}, Confidence: 1}, nil
 	}
+	// The guard discards the returned map, so identity only feeds token
+	// derivation; a caller without a run identity still gets rewrites,
+	// under an ephemeral identity rather than an error.
+	run, ok := types.RunInfoFrom(ctx)
+	switch {
+	case ok && run.SessionID != "":
+	case in.Run.SessionID != "":
+		ctx = types.WithRunInfo(ctx, in.Run)
+	default:
+		ctx = types.WithRunInfo(ctx, types.RunInfo{SessionID: "ephemeral", Principal: types.Principal{Tenant: "ephemeral"}})
+	}
 	blocks, _, err := g.redactor.Redact(ctx, in.Blocks, g.policy)
 	if err != nil {
 		return types.Decision[guards.GuardVerdict]{}, err

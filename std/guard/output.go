@@ -139,10 +139,12 @@ func (w *Windowed) GuardStream(ctx context.Context, chunks <-chan types.Text, em
 		}
 		blocks := []types.Block{types.Text{Text: value}}
 		if w.Redactor != nil {
-			var err error
-			blocks, err = w.Redactor.Rehydrate(ctx, blocks, w.Map)
-			if err != nil {
-				return err
+			if len(w.Map.Entries) != 0 {
+				var err error
+				blocks, err = w.Redactor.Rehydrate(ctx, blocks, w.Map)
+				if err != nil {
+					return err
+				}
 			}
 			for i, b := range blocks {
 				txt, ok := b.(types.Text)
@@ -224,6 +226,9 @@ func tokenCount(s string) int { return len(strings.Fields(s)) }
 // Rewrite releases the replacement, and a Block emits nothing and fails
 // with the guarded error carrying the fallback message.
 func release(ctx context.Context, inner guards.Guard, blocks []types.Block, fallback guards.Fallback) ([]types.Block, error) {
+	if inner == nil {
+		return blocks, nil
+	}
 	d, err := inner.Decide(ctx, guards.GuardInput{Stage: types.StageOutput, Blocks: blocks})
 	if err != nil {
 		return nil, err
