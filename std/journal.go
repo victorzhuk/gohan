@@ -126,6 +126,11 @@ func Journal(j stores.Journal, opts ...JournalOption) chains.ToolMiddleware {
 					res = ReadBackResult(spec, cfg.prompts, res)
 				}
 			}
+			// The recorded result carries the pinned entry identity, not
+			// the caller's: reconciliation resolves the entry by the
+			// recorded ID, and a retried call completes under the key it
+			// inherited.
+			res.ID = entry.Key
 			// The effect already ran, so a lost completion leaves
 			// uncertainty, not a failed call that invites a retry.
 			if err := j.Complete(ctx, key, res); err != nil {

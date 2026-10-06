@@ -392,6 +392,15 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			}
 		}
 		runCtx = types.WithRunInfo(runCtx, info)
+		var unresolved []types.CallKey
+		if c.verifier != nil && c.journal != nil {
+			var rerr error
+			unresolved, rerr = reconcileJournalUnknowns(runCtx, cp.SessionID, c.journal, c.verifier, &st)
+			if rerr != nil {
+				prepFail(rerr)
+				return
+			}
+		}
 		opts := []LifecycleOption{
 			WithLifecycleRuns(c.runs, lease),
 			WithLifecycleSession(cp.SessionID),
@@ -410,6 +419,11 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 		}
 		if c.journal != nil {
 			opts = append(opts, WithLifecycleJournal(c.journal))
+		}
+		if len(unresolved) > 0 {
+			opts = append(opts, WithLifecycleUncertain(func(runtime.State) []types.CallKey {
+				return append([]types.CallKey(nil), unresolved...)
+			}))
 		}
 		if c.toolSpecs != nil {
 			opts = append(opts, WithLifecycleToolSpecs(c.toolSpecs))

@@ -2,6 +2,7 @@ package gohan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -148,6 +149,41 @@ func (s *Stack) recoverRun(ctx context.Context, run stores.Run) error {
 	return s.driveRecovered(rctx, lease, run, rt, st, cp, in, p)
 }
 
+// reconcileJournalUnknowns reconciles every Unknown journal entry the
+// session still holds before a resumed or recovered drive replays its
+// state: one Reconcile call per entry, with the arguments and result the
+// journal reserved. A settled entry's result is written into the state's
+// durable batch record; an entry Verify cannot settle keeps its key in
+// the returned uncertainty set. A journal enumeration error or an
+// unbound audit log is returned with the entry left Unknown; every other
+// Reconcile error leaves the entry Unknown and only its key uncertain.
+func reconcileJournalUnknowns(ctx context.Context, sessionID string, j stores.Journal, v types.Verifier, st *runtime.State) ([]types.CallKey, error) {
+	entries, err := j.Unknown(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("enumerate unknown journal entries: %w", err)
+	}
+	var uncertain []types.CallKey
+	for _, e := range entries {
+		key := types.CallKey{SessionID: sessionID, CallID: e.Key}
+		res, settled, rerr := v.Reconcile(ctx, e.Tool, e.Args, types.CallKey{SessionID: sessionID, CallID: e.Key + "/verify"}, e.Result)
+		if rerr != nil {
+			if errors.Is(rerr, types.ErrVerifyAuditUnbound) {
+				return uncertain, fmt.Errorf("reconcile %s: %w", e.Key, rerr)
+			}
+			uncertain = append(uncertain, key)
+			continue
+		}
+		if !settled {
+			uncertain = append(uncertain, key)
+			continue
+		}
+		if aerr := applySettledResult(st, res); aerr != nil {
+			return uncertain, aerr
+		}
+	}
+	return uncertain, nil
+}
+
 // driveRecovered re-drives one recovered run through the shared lifecycle:
 // the lifecycle holds the lease, owns the heartbeat, suspension
 // persistence, terminal store transitions and failure cleanup. When the
@@ -169,6 +205,14 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 			return s.abandonWith(ctx, lease, run, err)
 		}
 	}
+	var unresolved []types.CallKey
+	if s.verifier != nil && s.stores.Journal != nil && run.SessionID != "" {
+		var rerr error
+		unresolved, rerr = reconcileJournalUnknowns(ctx, run.SessionID, s.stores.Journal, s.verifier, &st)
+		if rerr != nil {
+			return s.abandonWith(ctx, lease, run, fmt.Errorf("recover run %s: %w", run.RunID, rerr))
+		}
+	}
 	opts := []LifecycleOption{
 		WithLifecycleRuns(s.stores.Runs, lease),
 		WithLifecycleResumeState(st),
@@ -184,6 +228,11 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 	}
 	if s.verifier != nil && s.stores.Journal != nil {
 		opts = append(opts, WithLifecycleVerify(s.verifier), WithLifecycleJournal(s.stores.Journal))
+		if len(unresolved) > 0 {
+			opts = append(opts, WithLifecycleUncertain(func(runtime.State) []types.CallKey {
+				return append([]types.CallKey(nil), unresolved...)
+			}))
+		}
 	}
 	if app := s.recoveryAppender(run); app != nil {
 		opts = append(opts, WithLifecycleAppender(app))
