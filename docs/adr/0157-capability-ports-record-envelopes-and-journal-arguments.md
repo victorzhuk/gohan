@@ -78,6 +78,21 @@ or do not carry the data the requirement is written against.
    for a reconciliation pins `ResultSHA` and `ResultBytes` to the canonical encoding of
    `types.Message{Blocks: result.Content}`, the same recipe `OutputStore` uses, so a
    checksum in the audit trail can be recomputed from the stored output.
+10. **The verifier is a port, not a callback the driver invents.** `core/types` declares
+   `Verifier` with one method,
+   `Reconcile(ctx context.Context, tool string, args json.RawMessage, key types.CallKey, res types.ToolResult) (types.ToolResult, bool, error)`,
+   which settles one journal entry the session still holds as `Unknown`: it runs the
+   tool's `Verify`, records the reconciled outcome and the audit record, and reports
+   whether the entry was settled. `std.Verifier` implements it. The driver enumerates the
+   session's unknown entries through the journal — which is why the entry carries the tool
+   name beside the reserved arguments — calls `Reconcile` for each, replaces the settled
+   results on the batch, and leaves every key the verifier could not settle in the
+   uncertainty set, which reaches the caller as `*UncertainOutcomeError`. The driver binds
+   the port through a `Build` option (`WithVerifier`), resolves it like every other
+   capability, and hands it to each `Lifecycle` it constructs — the send path, `Resume`
+   and `Recover` — as a `LifecycleOption`, which is what the existing, never-wired
+   `WithLifecycleVerify` becomes. Core calls it at the four triggers the `tools`
+   requirement names and never reconstructs an entry itself.
 6. **One `UncertainOutcomeError`.** `std.UncertainOutcomeError` becomes a type alias of
    `types.UncertainOutcomeError` and `std.NewUncertainOutcomeError` returns that type, so
    `types.ProblemOf` classifies a run that ends uncertain as uncertain rather than as an
