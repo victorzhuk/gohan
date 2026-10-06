@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sync"
@@ -19,6 +20,7 @@ type RunInfoSource func(ctx context.Context) (types.RunInfo, bool)
 
 type checkpointRecord struct {
 	cp       Checkpoint
+	raw      []byte
 	input    ResumeInput
 	consumed bool
 }
@@ -87,6 +89,18 @@ func checkpointEqual(a, b Checkpoint) bool {
 	return reflect.DeepEqual(a, b)
 }
 
+func (s *MemoryCheckpoints) decode(ctx context.Context, rec *checkpointRecord) (Checkpoint, error) {
+	var env RecordEnvelope
+	if err := json.Unmarshal(rec.raw, &env); err != nil {
+		return Checkpoint{}, fmt.Errorf("decode Checkpoint envelope: %w", err)
+	}
+	cp, err := DecodeRecord[Checkpoint](ctx, s.schemas, env)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	return cloneCheckpoint(cp), nil
+}
+
 // Put mints a fresh single-use token for cp. The run id comes from the
 // RunInfo in ctx so PendingInput can find the checkpoint after a crash; a
 // token put outside a run is reachable by Consume only.
@@ -98,10 +112,21 @@ func (s *MemoryCheckpoints) Put(ctx context.Context, cp Checkpoint) (types.Resum
 	t := types.ResumeToken("cp_" + hex.EncodeToString(raw[:]))
 
 	cp = cloneCheckpoint(cp)
+	if cp.SchemaVersion == 0 {
+		cp.SchemaVersion = SchemaVersion(s.schemas.current)
+	}
+	payload, err := json.Marshal(cp)
+	if err != nil {
+		return "", fmt.Errorf("encode Checkpoint: %w", err)
+	}
+	encoded, err := json.Marshal(RecordEnvelope{Shape: "Checkpoint", SchemaVersion: int(cp.SchemaVersion), Payload: payload})
+	if err != nil {
+		return "", fmt.Errorf("encode Checkpoint envelope: %w", err)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.toks[t] = &checkpointRecord{cp: cp}
+	s.toks[t] = &checkpointRecord{cp: cp, raw: encoded}
 	runID := cp.RunID
 	if runID == "" && s.runs != nil {
 		if ri, ok := s.runs(ctx); ok {
@@ -131,9 +156,13 @@ func (s *MemoryCheckpoints) Consume(ctx context.Context, t types.ResumeToken, in
 	if !rec.cp.ExpiresAt.IsZero() && !s.now().Before(rec.cp.ExpiresAt) {
 		return Checkpoint{}, fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenExpired)
 	}
+	cp, err := s.decode(ctx, rec)
+	if err != nil {
+		return Checkpoint{}, err
+	}
 	rec.consumed = true
 	rec.input = cloneResumeInput(in)
-	return cloneCheckpoint(rec.cp), nil
+	return cp, nil
 
 }
 
@@ -142,12 +171,13 @@ func (s *MemoryCheckpoints) Consume(ctx context.Context, t types.ResumeToken, in
 func (s *MemoryCheckpoints) PendingInput(ctx context.Context, runID string) (Checkpoint, ResumeInput, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t, ok := s.byRun[runID]
+	token, ok := s.byRun[runID]
 	if !ok {
 		return Checkpoint{}, ResumeInput{}, fmt.Errorf("gohan: no checkpoint for run %s", runID)
 	}
-	rec := s.toks[t]
-	return cloneCheckpoint(rec.cp), cloneResumeInput(rec.input), nil
+	rec := s.toks[token]
+	cp, err := s.decode(ctx, rec)
+	return cp, cloneResumeInput(rec.input), err
 }
 
 func (s *MemoryCheckpoints) Peek(ctx context.Context, t types.ResumeToken) (Checkpoint, error) {
@@ -163,7 +193,7 @@ func (s *MemoryCheckpoints) Peek(ctx context.Context, t types.ResumeToken) (Chec
 	if !rec.cp.ExpiresAt.IsZero() && !s.now().Before(rec.cp.ExpiresAt) {
 		return Checkpoint{}, fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenExpired)
 	}
-	return cloneCheckpoint(rec.cp), nil
+	return s.decode(ctx, rec)
 }
 
 func (s *MemoryCheckpoints) ConsumeIf(ctx context.Context, t types.ResumeToken, expected Checkpoint, in ResumeInput) (Checkpoint, error) {
@@ -179,12 +209,16 @@ func (s *MemoryCheckpoints) ConsumeIf(ctx context.Context, t types.ResumeToken, 
 	if !rec.cp.ExpiresAt.IsZero() && !s.now().Before(rec.cp.ExpiresAt) {
 		return Checkpoint{}, fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenExpired)
 	}
-	if !checkpointEqual(expected, rec.cp) {
+	cp, err := s.decode(ctx, rec)
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	if !checkpointEqual(expected, cp) {
 		return Checkpoint{}, types.ErrVersionConflict
 	}
 	rec.consumed = true
 	rec.input = cloneResumeInput(in)
-	return cloneCheckpoint(rec.cp), nil
+	return cp, nil
 }
 
 func (s *MemoryCheckpoints) UpdatePending(ctx context.Context, t types.ResumeToken, expected, next Checkpoint) error {
@@ -200,15 +234,27 @@ func (s *MemoryCheckpoints) UpdatePending(ctx context.Context, t types.ResumeTok
 	if !rec.cp.ExpiresAt.IsZero() && !s.now().Before(rec.cp.ExpiresAt) {
 		return fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenExpired)
 	}
-	if !checkpointEqual(expected, rec.cp) {
+	candidate, err := s.decode(ctx, rec)
+	if err != nil {
+		return err
+	}
+	if !checkpointEqual(expected, candidate) {
 		return types.ErrVersionConflict
 	}
-	candidate := cloneCheckpoint(rec.cp)
 	candidate.Data = append(candidate.Data[:0], next.Data...)
 	if !checkpointEqual(candidate, next) {
 		return types.ErrVersionConflict
 	}
+	payload, err := json.Marshal(candidate)
+	if err != nil {
+		return fmt.Errorf("encode Checkpoint: %w", err)
+	}
+	raw, err := json.Marshal(RecordEnvelope{Shape: "Checkpoint", SchemaVersion: int(candidate.SchemaVersion), Payload: payload})
+	if err != nil {
+		return fmt.Errorf("encode Checkpoint envelope: %w", err)
+	}
 	rec.cp = candidate
+	rec.raw = raw
 	return nil
 }
 
@@ -218,11 +264,16 @@ func (s *MemoryCheckpoints) ResumeReady(ctx context.Context, limit int) ([]Check
 	out := make([]Checkpoint, 0)
 	for _, rec := range s.toks {
 		if rec.consumed {
-			out = append(out, cloneCheckpoint(rec.cp))
+			cp, err := s.decode(ctx, rec)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, cp)
 			if limit > 0 && len(out) >= limit {
 				break
 			}
 		}
 	}
 	return out, nil
+
 }
