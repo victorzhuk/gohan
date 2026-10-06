@@ -166,8 +166,8 @@ The eight IDs the `m1` proposal names for the two adapters map onto the rows abo
 | `lifecycle.successor-params-validated` | `m1-model-retirement-cost` | as above | missing | as above |
 | `lifecycle.cost-tags-forwarded` | `m1-model-retirement-cost` | provider contract | integration gap | `CostTags` ships on `RunInfo`; no adapter forwards them |
 | `lifecycle.cache-write-socialized` | `m1-model-retirement-cost` | `m1-exact-match-cache` | missing | as above |
-| `lifecycle.upcast-on-read` | `m1-schema-read-paths` | — | integration gap | `core/stores/schema.go` declares the upcaster registry and `testkit/storetest/schemas.go` the suite; no reader calls the registry |
-| `lifecycle.historical-fixtures` | `m1-schema-read-paths` | — | integration gap | as above |
+| `lifecycle.upcast-on-read` | `m1-schema-read-paths` | — | done | `testkit/storetest/schema_lifecycle_scenarios_test.go`, `core/stores/schema_shapes_test.go`; shipped in `archive/2026-10-07-m1-schema-read-paths` |
+| `lifecycle.historical-fixtures` | `m1-schema-read-paths` | — | done | `testkit/storetest/serialized_schemas_test.go`, `testkit/storetest/schema_lifecycle_scenarios_test.go` |
 
 ### 2.11 stores (1), limits (1), messages (1)
 
