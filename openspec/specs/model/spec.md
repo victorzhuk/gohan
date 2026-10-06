@@ -336,6 +336,14 @@ ID: `model.provider-tool-usage`
 - WHEN a response contains two provider search calls
 - THEN `Usage.ProviderToolCalls["web_search"]` is 2 and the run's cost includes `2 × Pricing.ProviderCall["web_search"]`
 
+### Requirement: Shared provider conformance contract
+
+The implementation MUST provide deterministic shared conformance inputs, and each adapter MUST run the shared suite through its public model call path against recorded responses. Build MUST reject an unsupported output fidelity combination and a static governed-field collision, and a dynamic collision MUST return a permanent model error before the request is sent. Adapters MUST NOT ignore `ResponseSchema` without `Caps.Constrained`.
+
+#### Scenario: shared suite coverage
+- WHEN the shared suite runs against an adapter's recorded responses
+- THEN it checks error class mapping, Retry-After preservation, cache breakpoint order and limit, constrained-schema refusal before sending, usage estimation, Raw provider fidelity, per-key isolation and key redaction, and a reference double that violates an assertion fails the suite
+
 ### Requirement: Provider keys
 
 #### Scenario: tenant key selected

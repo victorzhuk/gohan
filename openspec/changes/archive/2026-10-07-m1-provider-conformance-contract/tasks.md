@@ -22,15 +22,18 @@
 
 ## 3. Adapter conformance obligations
 
-Blocked: `adapter/` holds only `otel`. `adapter/openai` and `adapter/anthropic` do not exist, so these three tasks cannot start here. They stay open and owned by the provider-adapter work that introduces those modules; the suite, fixtures and reference doubles section 2 lands are what those adapters run. Recorded in `design.md` under "Blocker resolution (live seams)".
+The two provider adapters landed as their own modules (`adapter/openai`, `adapter/anthropic`) and run the shared suite these tasks specify; the obligations below are recorded against them.
 
-- [ ] 3.1 OpenAI provider owner runs recorded fixtures for `model.status-to-class`, `model.retry-after-parsed`, `model.cache-explicit-breakpoints`, `model.schema-never-ignored`, `model.usage-estimated`, `model.raw-round-trip`, `model.isolation-per-key`, and `model.key-never-in-telemetry`. Verify: `go test -short -timeout 2m ./adapter/openai/... -run 'TestModelConformance'`.
-- [ ] 3.2 Anthropic provider owner runs the same eight registered cases against its recorded fixtures. Verify: `go test -short -timeout 2m ./adapter/anthropic/... -run 'TestModelConformance'`.
-- [ ] 3.3 Prove public Send behavior for `Extra` collision, schema refusal, cache markers, Retry-After propagation, Raw fidelity, and key secrecy in each real adapter. Verify: `go test -short -timeout 2m ./adapter/... -run 'Test.*(Conformance|Send)'`.
+- [x] 3.1 OpenAI provider owner runs recorded fixtures for `model.status-to-class`, `model.retry-after-parsed`, `model.cache-explicit-breakpoints`, `model.schema-never-ignored`, `model.usage-estimated`, `model.raw-round-trip`, `model.isolation-per-key`, and `model.key-never-in-telemetry`. Verify: `go test -short -timeout 2m ./adapter/openai/... -run 'TestModelConformance'`.
+  - evidence: `adapter/openai/conformance_test.go` (`TestModelConformance` over `conformance.ModelScenarios` with 17 recorded `testdata` recordings) and `adapter/openai/keys_test.go` (`model.isolation-per-key`, `model.key-never-in-telemetry` — `runFixture` has no case for those two, so they live in dedicated tests).
+- [x] 3.2 Anthropic provider owner runs the same eight registered cases against its recorded fixtures. Verify: `go test -short -timeout 2m ./adapter/anthropic/... -run 'TestModelConformance'`.
+  - evidence: `adapter/anthropic/conformance_test.go` (`TestModelConformance`) with `adapter/anthropic/fixtures.go` recordings; all eight subtests pass.
+- [x] 3.3 Prove public Send behavior for `Extra` collision, schema refusal, cache markers, Retry-After propagation, Raw fidelity, and key secrecy in each real adapter. Verify: `go test -short -timeout 2m ./adapter/... -run 'Test.*(Conformance|Send)'`.
+  - evidence: `adapter/openai/send_test.go` and `adapter/anthropic/send_test.go` cover all six behaviours through each adapter's public `Generate`.
 
 ## 4. Admission and repository gates
 
 - [x] 4.1 Resolve the design blockers by naming the live static/dynamic Extra construction and serialization functions, error representation, and key telemetry emission site before coder admission. Verify: `openspec validate m1-provider-conformance-contract --strict --no-interactive`.
   - evidence: `design.md` "Blocker resolution (live seams)" names all four with `file:line`; `openspec validate m1-provider-conformance-contract --strict --no-interactive` → valid.
-- [ ] 4.2 Run repository gates after implementation and adapter owners land. Verify: `task lint && task test && task spec && task api:check`.
-  - state: `task lint` 0 issues, `task test` green, `task spec` `missing_in_scope=0`, `task api:check` reports the `otel` module compatible; the gate is re-run once the adapter owners land.
+- [x] 4.2 Run repository gates after implementation and adapter owners land. Verify: `task lint && task test && task spec && task api:check`.
+  - evidence: `task lint` 0 issues; `task test` green across root, `adapter/otel`, `adapter/openai`, `adapter/anthropic` and `examples`; `task spec` `missing_in_scope=0`, `unregistered=0`; `task api:check` skips the two untagged adapter modules and reports `otel` compatible.
