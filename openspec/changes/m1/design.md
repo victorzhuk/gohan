@@ -86,17 +86,17 @@ This is a scope reduction, approved explicitly; it is the one place in this matr
 
 | ID | Owner | Depends on | Status | Evidence |
 |---|---|---|---|---|
-| `model.status-to-class` | `m1-provider-conformance-contract` | — | missing | no provider adapter exists; `adapter/openai` and `adapter/anthropic` are not directories |
-| `model.retry-after-parsed` | `m1-provider-conformance-contract` | — | missing | as above |
-| `model.cache-explicit-breakpoints` | `m1-provider-conformance-contract` | — | missing | as above |
-| `model.schema-never-ignored` | `m1-provider-conformance-contract` | — | missing | as above |
-| `model.usage-estimated` | `m1-provider-conformance-contract` | — | missing | as above |
-| `model.extra-collision` | `m1-provider-conformance-contract` | — | missing | as above |
-| `model.raw-round-trip` | `m1-provider-conformance-contract` | — | missing | as above |
-| `model.isolation-per-key` | `m1-provider-conformance-contract` | — | missing | provider-key selection ships in core; no adapter consumes it |
-| `model.key-never-in-telemetry` | `m1-provider-conformance-contract` | — | missing | as above |
+| `model.status-to-class` | `m1-provider-conformance-contract` | — | done | `adapter/openai/conformance_test.go`, `adapter/anthropic/conformance_test.go` (shared suite over recorded fixtures) |
+| `model.retry-after-parsed` | `m1-provider-conformance-contract` | — | done | as above |
+| `model.cache-explicit-breakpoints` | `m1-provider-conformance-contract` | — | done | as above |
+| `model.schema-never-ignored` | `m1-provider-conformance-contract` | — | done | as above |
+| `model.usage-estimated` | `m1-provider-conformance-contract` | — | done | as above |
+| `model.extra-collision` | `m1-provider-conformance-contract` | — | done | `core/model_build_scenarios_test.go`, `adapter/*/send_test.go` (dynamic collision `ClassPermanent`) |
+| `model.raw-round-trip` | `m1-provider-conformance-contract` | — | done | shared suite + `adapter/*/send_test.go` |
+| `model.isolation-per-key` | `m1-provider-conformance-contract` | — | done | `adapter/openai/keys_test.go`, `adapter/anthropic/send_test.go` |
+| `model.key-never-in-telemetry` | `m1-provider-conformance-contract` | — | done | as above |
 | `model.provider-tool-usage` | `m1-provider-tool-governance` | provider contract | missing | `Usage.ProviderToolCalls` ships as a field; nothing increments it |
-| `model.undeclared-fidelity` | `m1-provider-conformance-contract` | — | integration gap | M0-ranked; a subtest exists, and the proposal names the ID as an adapter conformance obligation. The change re-verifies it against a real adapter without re-claiming the ID |
+| `model.undeclared-fidelity` | `m1-provider-conformance-contract` | — | done | `core/model_build_scenarios_test.go`; re-verified against both adapters without re-claiming the id |
 
 The eight IDs the `m1` proposal names for the two adapters map onto the rows above. The two adapters (`m1-openai-provider`, `m1-anthropic-provider`) run the shared `conformance.Model` suite that `m1-provider-conformance-contract` extends; an ID is claimed once, by the suite, and both adapters must run it. An adapter-specific requirement — error-class normalization, version reporting, cache markers — lands in that adapter's own design without claiming a second ID for the same behaviour.
 
