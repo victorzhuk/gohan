@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,6 +118,91 @@ func WithMemorySessionSchemas(reg *SchemaRegistry) MemorySessionOption {
 
 func (s *MemorySessionLog) RawRecords() RawRecords {
 	return s.raw
+}
+
+// SeedRecord installs envelope as the stored bytes of identity, so the next
+// public read consumes them as persisted bytes. Seeding bypasses ownership
+// checks: fixtures replay historical bytes, not client writes.
+func (s *MemorySessionLog) SeedRecord(_ context.Context, identity string, envelope RecordEnvelope) error {
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("seed %s: %w", identity, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.HasSuffix(identity, "/state") {
+		rec, err := s.stateSlot(identity)
+		if err != nil {
+			return err
+		}
+		rec.state.raw = raw
+		return nil
+	}
+	rec, index, err := s.messageSlot(identity)
+	if err != nil {
+		return err
+	}
+	rec.rawMessages[index] = raw
+	return nil
+}
+
+// StoredRecord returns the stored bytes of identity unchanged.
+func (s *MemorySessionLog) StoredRecord(_ context.Context, identity string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.HasSuffix(identity, "/state") {
+		rec, err := s.stateSlot(identity)
+		if err != nil {
+			return nil, err
+		}
+		return append([]byte(nil), rec.state.raw...), nil
+	}
+	rec, index, err := s.messageSlot(identity)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), rec.rawMessages[index]...), nil
+}
+
+// stateSlot resolves a "session/<id>/state" identity to the record holding
+// the shared state's stored bytes. Session ids must not carry a slash.
+func (s *MemorySessionLog) stateSlot(identity string) (*sessionRecord, error) {
+	rest, ok := strings.CutPrefix(identity, "session/")
+	if !ok {
+		return nil, fmt.Errorf("record identity %s: not a session identity", identity)
+	}
+	sid, kind, _ := strings.Cut(rest, "/")
+	if kind != "state" {
+		return nil, fmt.Errorf("record identity %s: unknown kind %q", identity, kind)
+	}
+	rec, ok := s.sessions[sid]
+	if !ok {
+		return nil, fmt.Errorf("record identity %s: not found", identity)
+	}
+	return rec, nil
+}
+
+// messageSlot resolves a "session/<id>/message/<i>" identity to the record
+// holding that message's stored bytes. Session ids must not carry a slash.
+func (s *MemorySessionLog) messageSlot(identity string) (*sessionRecord, int, error) {
+	rest, ok := strings.CutPrefix(identity, "session/")
+	if !ok {
+		return nil, 0, fmt.Errorf("record identity %s: not a session identity", identity)
+	}
+	sid, rest, _ := strings.Cut(rest, "/")
+	kind, index, _ := strings.Cut(rest, "/")
+	if kind != "message" {
+		return nil, 0, fmt.Errorf("record identity %s: unknown kind %q", identity, kind)
+	}
+	i, err := strconv.Atoi(index)
+	if err != nil || i < 0 {
+		return nil, 0, fmt.Errorf("record identity %s: bad index %q", identity, index)
+	}
+	rec, ok := s.sessions[sid]
+	if !ok || i >= len(rec.rawMessages) {
+		return nil, 0, fmt.Errorf("record identity %s: not found", identity)
+	}
+	return rec, i, nil
 }
 
 func NewMemorySessionLog(opts ...MemorySessionOption) *MemorySessionLog {

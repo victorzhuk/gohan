@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -229,6 +230,48 @@ func (s *MemoryRuns) decodeRun(ctx context.Context, rec *runRecord) (Run, error)
 		return Run{}, err
 	}
 	return cloneRun(run), nil
+}
+
+// SeedRecord installs envelope as the stored bytes of identity, so the next
+// public read consumes them as persisted bytes. Seeding bypasses lease
+// checks: fixtures replay historical bytes, not client writes.
+func (s *MemoryRuns) SeedRecord(_ context.Context, identity string, envelope RecordEnvelope) error {
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("seed %s: %w", identity, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.runSlot(identity)
+	if err != nil {
+		return err
+	}
+	rec.raw = raw
+	return nil
+}
+
+// StoredRecord returns the stored bytes of identity unchanged.
+func (s *MemoryRuns) StoredRecord(_ context.Context, identity string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.runSlot(identity)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), rec.raw...), nil
+}
+
+// runSlot resolves a "run/<id>" identity. Run ids must not carry a slash.
+func (s *MemoryRuns) runSlot(identity string) (*runRecord, error) {
+	runID, ok := strings.CutPrefix(identity, "run/")
+	if !ok || runID == "" || strings.Contains(runID, "/") {
+		return nil, fmt.Errorf("record identity %s: not a run identity", identity)
+	}
+	rec, ok := s.runs[runID]
+	if !ok {
+		return nil, fmt.Errorf("record identity %s: not found", identity)
+	}
+	return rec, nil
 }
 
 func (rec *runRecord) expiredAt(now time.Time) bool {

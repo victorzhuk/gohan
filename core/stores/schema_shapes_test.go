@@ -70,6 +70,32 @@ func seedSessionState(t *testing.T, s *MemorySessionLog, sessionID, raw string) 
 	return append([]byte(nil), rec.state.raw...)
 }
 
+// mapSuffixEvent mutates a string field inside the event record's payload
+// for the upcaster test chain.
+func mapSuffixEvent(field string) func([]byte, string) ([]byte, error) {
+	return func(raw []byte, suffix string) ([]byte, error) {
+		var rec eventRecord
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			return nil, err
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Payload, &payload); err != nil {
+			return nil, err
+		}
+		value, ok := payload[field].(string)
+		if !ok {
+			return nil, fmt.Errorf("field %q is %T, want a string", field, payload[field])
+		}
+		payload[field] = value + suffix
+		updated, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		rec.Payload = updated
+		return json.Marshal(rec)
+	}
+}
+
 func TestStateUpcastRead(t *testing.T) {
 	reg := NewSchemaRegistryFor(3)
 	schemaUpcasters(t, reg, "State", mapSuffix("goal"))
@@ -207,6 +233,88 @@ func TestRunUpcastRead(t *testing.T) {
 	}
 }
 
+func TestEventUpcastRead(t *testing.T) {
+	reg := NewSchemaRegistryFor(3)
+	schemaUpcasters(t, reg, "Event", mapSuffixEvent("MessageID"))
+	s := NewMemoryEventLog(WithMemoryEventLogSchemas(reg))
+	ctx := types.WithTelemetry(context.Background(), &schemaTelemetry{})
+
+	e := Event{Payload: types.SteerApplied{MessageID: "m1"}}
+	e.Meta.RunID = "r1"
+	e.Meta.Seq = 1
+	if err := s.Append(ctx, "r1", e); err != nil {
+		t.Fatal(err)
+	}
+	rec := eventRecord{Kind: "steer_applied", Payload: mustJSON(t, e.Payload), Meta: e.Meta}
+	env := RecordEnvelope{Shape: "Event", SchemaVersion: 1, Payload: mustJSON(t, rec)}
+	if err := s.SeedRecord(ctx, "event/r1/1", env); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.StoredRecord(ctx, "event/r1/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got Event
+	for ev, err := range s.Read(ctx, "r1", 0) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = ev
+	}
+	payload, ok := got.Payload.(types.SteerApplied)
+	if !ok || payload.MessageID != "m1-v2-v3" {
+		t.Fatalf("payload = %#v, want steer_applied with m1-v2-v3", got.Payload)
+	}
+	if got.Meta.RunID != "r1" || got.Meta.Seq != 1 {
+		t.Fatalf("meta = %+v, want run r1 seq 1", got.Meta)
+	}
+	after, err := s.StoredRecord(ctx, "event/r1/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("stored bytes changed: before %s after %s", before, after)
+	}
+}
+
+func TestRedactionMapUpcastRead(t *testing.T) {
+	reg := NewSchemaRegistryFor(3)
+	schemaUpcasters(t, reg, "RedactionMap", mapSuffix("Tenant"))
+	s := NewMemoryRedactionMaps(WithMemoryRedactionMapsSchemas(reg))
+	ctx := types.WithTelemetry(context.Background(), &schemaTelemetry{})
+
+	m := types.RedactionMap{Tenant: "t", Session: "s1", Entries: map[string]types.Entity{"a@b.c": {Kind: types.EntityEmail, Value: "a@b.c"}}}
+	if err := s.Put(ctx, "t", "s1", m); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SeedRecord(ctx, "redaction/t/s1", RecordEnvelope{Shape: "RedactionMap", SchemaVersion: 1, Payload: mustJSON(t, m)}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.StoredRecord(ctx, "redaction/t/s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Get(ctx, "t", "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tenant != "t-v2-v3" {
+		t.Fatalf("Tenant = %q, want t-v2-v3", got.Tenant)
+	}
+	if got.Entries["a@b.c"].Kind != types.EntityEmail {
+		t.Fatalf("entries = %+v, want email entity preserved", got.Entries)
+	}
+	after, err := s.StoredRecord(ctx, "redaction/t/s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("stored bytes changed: before %s after %s", before, after)
+	}
+}
+
 func TestShapesIncompleteChainReadsFail(t *testing.T) {
 	ctx := types.WithTelemetry(context.Background(), &schemaTelemetry{})
 
@@ -289,6 +397,70 @@ func TestShapesIncompleteChainReadsFail(t *testing.T) {
 			t.Fatalf("ByID = %+v, %v; want zero run and ErrSchemaTooOld", got, err)
 		}
 	})
+
+	t.Run("Event", func(t *testing.T) {
+		reg := NewSchemaRegistryFor(3)
+		schemaUpcastersIncomplete(t, reg, "Event", noopUpcaster)
+		s := NewMemoryEventLog(WithMemoryEventLogSchemas(reg))
+		e := Event{Payload: types.SteerApplied{MessageID: "m1"}}
+		e.Meta.RunID = "r1"
+		if err := s.Append(ctx, "r1", e); err != nil {
+			t.Fatal(err)
+		}
+		rec := eventRecord{Kind: "steer_applied", Payload: mustJSON(t, e.Payload), Meta: e.Meta}
+		if err := s.SeedRecord(ctx, "event/r1/1", RecordEnvelope{Shape: "Event", SchemaVersion: 1, Payload: mustJSON(t, rec)}); err != nil {
+			t.Fatal(err)
+		}
+		before, err := s.StoredRecord(ctx, "event/r1/1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got Event
+		for ev, err := range s.Read(ctx, "r1", 0) {
+			if !errors.Is(err, types.ErrSchemaTooOld) {
+				t.Fatalf("Read error = %v, want ErrSchemaTooOld", err)
+			}
+			got = ev
+		}
+		if got.Payload != nil {
+			t.Fatalf("stale event returned: %+v", got)
+		}
+		after, err := s.StoredRecord(ctx, "event/r1/1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(before) != string(after) {
+			t.Fatalf("stored bytes changed")
+		}
+	})
+
+	t.Run("RedactionMap", func(t *testing.T) {
+		reg := NewSchemaRegistryFor(3)
+		schemaUpcastersIncomplete(t, reg, "RedactionMap", noopUpcaster)
+		s := NewMemoryRedactionMaps(WithMemoryRedactionMapsSchemas(reg))
+		m := types.RedactionMap{Entries: map[string]types.Entity{"a@b.c": {Kind: types.EntityEmail, Value: "a@b.c"}}}
+		if err := s.Put(ctx, "t", "s1", m); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SeedRecord(ctx, "redaction/t/s1", RecordEnvelope{Shape: "RedactionMap", SchemaVersion: 1, Payload: mustJSON(t, m)}); err != nil {
+			t.Fatal(err)
+		}
+		before, err := s.StoredRecord(ctx, "redaction/t/s1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.Get(ctx, "t", "s1")
+		if !errors.Is(err, types.ErrSchemaTooOld) || got.Tenant != "" || got.Entries != nil {
+			t.Fatalf("Get = %+v, %v; want zero map and ErrSchemaTooOld", got, err)
+		}
+		after, err := s.StoredRecord(ctx, "redaction/t/s1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(before) != string(after) {
+			t.Fatalf("stored bytes changed")
+		}
+	})
 }
 
 func TestShapesUpcastMetricEmittedOnce(t *testing.T) {
@@ -351,6 +523,40 @@ func TestShapesUpcastMetricEmittedOnce(t *testing.T) {
 			s.runs["r1"].raw, _ = json.Marshal(RecordEnvelope{Shape: "Run", SchemaVersion: 1, Payload: mustJSON(t, s.runs["r1"].run)})
 			s.mu.Unlock()
 			if _, err := s.ByID(ctx, "r1"); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"Event": func(t *testing.T, ctx context.Context) {
+			reg := NewSchemaRegistryFor(3)
+			schemaUpcasters(t, reg, "Event", mapSuffixEvent("MessageID"))
+			s := NewMemoryEventLog(WithMemoryEventLogSchemas(reg))
+			e := Event{Payload: types.SteerApplied{MessageID: "m1"}}
+			e.Meta.RunID = "r1"
+			if err := s.Append(ctx, "r1", e); err != nil {
+				t.Fatal(err)
+			}
+			rec := eventRecord{Kind: "steer_applied", Payload: mustJSON(t, e.Payload), Meta: e.Meta}
+			if err := s.SeedRecord(ctx, "event/r1/1", RecordEnvelope{Shape: "Event", SchemaVersion: 1, Payload: mustJSON(t, rec)}); err != nil {
+				t.Fatal(err)
+			}
+			for _, err := range s.Read(ctx, "r1", 0) {
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+		},
+		"RedactionMap": func(t *testing.T, ctx context.Context) {
+			reg := NewSchemaRegistryFor(3)
+			schemaUpcasters(t, reg, "RedactionMap", mapSuffix("Tenant"))
+			s := NewMemoryRedactionMaps(WithMemoryRedactionMapsSchemas(reg))
+			m := types.RedactionMap{Entries: map[string]types.Entity{"a@b.c": {Kind: types.EntityEmail, Value: "a@b.c"}}}
+			if err := s.Put(ctx, "t", "s1", m); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.SeedRecord(ctx, "redaction/t/s1", RecordEnvelope{Shape: "RedactionMap", SchemaVersion: 1, Payload: mustJSON(t, m)}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Get(ctx, "t", "s1"); err != nil {
 				t.Fatal(err)
 			}
 		},

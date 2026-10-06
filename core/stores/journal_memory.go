@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,50 @@ type MemoryJournal struct {
 }
 
 func (s *MemoryJournal) Region() string { return s.region }
+
+// SeedRecord installs envelope as the stored bytes of identity, so the next
+// public read consumes them as persisted bytes. Seeding bypasses expiry:
+// fixtures replay historical bytes, not client writes.
+func (s *MemoryJournal) SeedRecord(_ context.Context, identity string, envelope RecordEnvelope) error {
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("seed %s: %w", identity, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.entrySlot(identity)
+	if err != nil {
+		return err
+	}
+	rec.raw = raw
+	return nil
+}
+
+// StoredRecord returns the stored bytes of identity unchanged.
+func (s *MemoryJournal) StoredRecord(_ context.Context, identity string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.entrySlot(identity)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), rec.raw...), nil
+}
+
+// entrySlot resolves a "journal/<session>/<call>" identity. Session and
+// call ids must not carry a slash.
+func (s *MemoryJournal) entrySlot(identity string) (*journalRecord, error) {
+	rest, ok := strings.CutPrefix(identity, "journal/")
+	if !ok {
+		return nil, fmt.Errorf("record identity %s: not a journal identity", identity)
+	}
+	sessionID, callID, _ := strings.Cut(rest, "/")
+	rec, ok := s.byKey[types.CallKey{SessionID: sessionID, CallID: callID}]
+	if !ok {
+		return nil, fmt.Errorf("record identity %s: not found", identity)
+	}
+	return rec, nil
+}
 
 // decodeEntry reads the record's envelope through the registry. The stored
 // bytes are never rewritten.

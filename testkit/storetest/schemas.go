@@ -47,9 +47,9 @@ type SchemaFixture struct {
 // released version of every stored shape gets one entry here; the entry stays
 // once added so older records keep a covered upcast path forever.
 var schemaFixtures = []SchemaFixture{
-	{Shape: "Message", Version: 1, Payload: []byte(`{"role":"user","blocks":[{"type":"text","text":"hi"}]}`), Current: 3},
-	{Shape: "Message", Version: 2, Payload: []byte(`{"role":"user","blocks":[{"type":"text","text":"hi"}]}`), Current: 3},
-	{Shape: "Message", Version: 3, Payload: []byte(`{"role":"user","blocks":[{"type":"text","text":"hi"}]}`), Current: 3},
+	{Shape: "Message", Version: 1, Payload: []byte(`{"role":"user","blocks":[{"Kind":"text","Block":{"Text":"hi"}}]}`), Current: 3},
+	{Shape: "Message", Version: 2, Payload: []byte(`{"role":"user","blocks":[{"Kind":"text","Block":{"Text":"hi"}}]}`), Current: 3},
+	{Shape: "Message", Version: 3, Payload: []byte(`{"role":"user","blocks":[{"Kind":"text","Block":{"Text":"hi"}}]}`), Current: 3},
 	{Shape: "State", Version: 1, Payload: []byte(`{"values":{"topic":"gohan"},"version":7}`), Current: 1},
 	{Shape: "Checkpoint", Version: 1, Payload: []byte(`{"token":"tok","expires_at":"2026-01-01T00:00:00Z"}`), Current: 3},
 	{Shape: "Checkpoint", Version: 2, Payload: []byte(`{"token":"tok","expires_at":"2026-01-01T00:00:00Z"}`), Current: 3},

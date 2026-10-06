@@ -156,6 +156,15 @@ type RawRecords interface {
 	GetRaw(ctx context.Context, identity string) (RecordEnvelope, error)
 }
 
+// SerializedRecordStore seeds a store from serialized envelope bytes and
+// returns the stored bytes through the store's own path. Memory
+// implementations share this seam; a new shape adds identities without a
+// further change to the store interfaces.
+type SerializedRecordStore interface {
+	SeedRecord(ctx context.Context, identity string, envelope RecordEnvelope) error
+	StoredRecord(ctx context.Context, identity string) ([]byte, error)
+}
+
 // MemoryRawRecords stores immutable serialized records for memory-backed stores.
 type MemoryRawRecords struct {
 	mu      sync.RWMutex

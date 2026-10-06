@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -185,6 +186,49 @@ func (s *MemoryCheckpoints) PendingInput(ctx context.Context, runID string) (Che
 	rec := s.toks[token]
 	cp, err := s.decode(ctx, rec)
 	return cp, cloneResumeInput(rec.input), err
+}
+
+// SeedRecord installs envelope as the stored bytes of identity, so the next
+// public read consumes them as persisted bytes. Seeding bypasses expiry:
+// fixtures replay historical bytes, not client writes.
+func (s *MemoryCheckpoints) SeedRecord(_ context.Context, identity string, envelope RecordEnvelope) error {
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("seed %s: %w", identity, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.checkpointSlot(identity)
+	if err != nil {
+		return err
+	}
+	rec.raw = raw
+	return nil
+}
+
+// StoredRecord returns the stored bytes of identity unchanged.
+func (s *MemoryCheckpoints) StoredRecord(_ context.Context, identity string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.checkpointSlot(identity)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), rec.raw...), nil
+}
+
+// checkpointSlot resolves a "checkpoint/<token>" identity. Tokens must not
+// carry a slash.
+func (s *MemoryCheckpoints) checkpointSlot(identity string) (*checkpointRecord, error) {
+	token, ok := strings.CutPrefix(identity, "checkpoint/")
+	if !ok || token == "" || strings.Contains(token, "/") {
+		return nil, fmt.Errorf("record identity %s: not a checkpoint identity", identity)
+	}
+	rec, ok := s.toks[types.ResumeToken(token)]
+	if !ok {
+		return nil, fmt.Errorf("record identity %s: not found", identity)
+	}
+	return rec, nil
 }
 
 func (s *MemoryCheckpoints) Peek(ctx context.Context, t types.ResumeToken) (Checkpoint, error) {

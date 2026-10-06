@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"iter"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -143,6 +144,54 @@ func (s *MemoryAuditLog) Append(ctx context.Context, r AuditRecord) error {
 	}
 	s.byTenant[rec.Tenant] = append(chain, auditRow{rec: rec, raw: raw})
 	return nil
+}
+
+// SeedRecord installs envelope as the stored bytes of identity, so the next
+// public read consumes them as persisted bytes. Seeding bypasses the chain
+// seal: fixtures replay historical bytes, not client writes.
+func (s *MemoryAuditLog) SeedRecord(_ context.Context, identity string, envelope RecordEnvelope) error {
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("seed %s: %w", identity, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row, err := s.auditSlot(identity)
+	if err != nil {
+		return err
+	}
+	row.raw = raw
+	return nil
+}
+
+// StoredRecord returns the stored bytes of identity unchanged.
+func (s *MemoryAuditLog) StoredRecord(_ context.Context, identity string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row, err := s.auditSlot(identity)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), row.raw...), nil
+}
+
+// auditSlot resolves an "audit/<tenant>/<index>" identity. Tenants must not
+// carry a slash.
+func (s *MemoryAuditLog) auditSlot(identity string) (*auditRow, error) {
+	rest, ok := strings.CutPrefix(identity, "audit/")
+	if !ok {
+		return nil, fmt.Errorf("record identity %s: not an audit identity", identity)
+	}
+	tenant, index, _ := strings.Cut(rest, "/")
+	i, err := strconv.Atoi(index)
+	if err != nil || i < 0 || strings.Contains(tenant, "/") {
+		return nil, fmt.Errorf("record identity %s: bad identity", identity)
+	}
+	rows := s.byTenant[tenant]
+	if i >= len(rows) {
+		return nil, fmt.Errorf("record identity %s: not found", identity)
+	}
+	return &rows[i], nil
 }
 
 // Read yields the session's records in append order.
