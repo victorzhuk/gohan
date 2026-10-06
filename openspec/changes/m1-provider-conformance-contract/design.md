@@ -79,6 +79,17 @@ Use `existing-service-strict`. Deterministic fixture-boundary tests are required
 
 Preserve `openspec/changes/m1/design.md` §3. This package does not alter taint, egress, permission, or key policy. Keep root pre-v1 through M2, HTTP comparison in M4, and no release tags. Provider transport configuration is distinct from model-directed network access.
 
+## Blocker resolution (live seams)
+
+Task 4.1 names the four live facts the design wrote against. Measured on the tree, 2026-10-07:
+
+1. **Static and dynamic `Extra`.** Static: `NativeSpec.ModelOptions types.ModelOptions` (`core/native_options.go:21`), validated in `Stack.resolveNative` (`core/native_resolve.go:59-61`) against `types.GovernedModelOptionKeys()` (`core/types/model_request.go:29-41`, nine keys: `model`, `messages`, `tools`, `tool_choice`, `max_tokens`, `temperature`, `response_format`, `output_schema`, `stream`). The static value is validated and then dropped: nothing merges it into the assembled `ModelRequest`, which is the missing step this change adds. Dynamic: `ModelOptions.Extra` (`core/types/model_request.go:26`) is produced per request at assembly (`core/drive_turn.go:253` via `c.assemble`); no call-time collision check exists anywhere, so a dynamic governed key is the adapter's `ClassPermanent` duty at the call boundary, exactly as D4 states. Serialization: `ModelRequest.MarshalJSONTo` (`core/types/model_request.go:113-122`) writes `Options` verbatim into the frozen wire order the record/replay key hashes (`testkit/gohantest/cassette.go:244-248`); no provider payload serializer exists in the repository.
+2. **Error representation.** `types.ModelError{Class, Provider, Status, Code, RetryAfter, Err}` (`core/types/errors.go:179-186`) over `ErrorClass` (`:166-177`), `Retryable()` true only for `ClassRateLimited` and `ClassTransient` (`:197-199`). `ClassifyProviderError(status, code)` (`core/types/model_profile.go:132`) is the single classifier and has no live caller yet; the problem catalog maps `retry_after` from `ModelError.RetryAfter` (`core/types/problem.go:225-256`).
+3. **Key telemetry emission site.** `KeyModelKeyID` is declared and never emitted. The emission surfaces are the span helpers (`startSpan`, `telemetryFrom`) and the structured logger; no path puts key material in them today, so the suite asserts absence rather than redaction of a leak.
+4. **`NativeSpec` and `ModelOptions`.** `NativeSpec` (`core/native_options.go:16-22`) carries `ModelOptions` and `Assemble`; `Stack.resolveNative` binds the model chain and rejects a static governed key before `Build` succeeds. The nine governed keys above are the frozen list; `KindFile` fidelity is a separate obligation of the assembled request's block kinds.
+
+**Adapter reality (blocks section 3).** `adapter/` holds only `otel`. `adapter/openai` and `adapter/anthropic` do not exist, so tasks 3.1–3.3 — recorded fixtures and public Send behaviour in each real adapter — cannot land inside this change. They stay open and unstarted, owned by the provider-adapter work that introduces those modules; the suite, fixtures and reference doubles this change lands are what those adapters will run.
+
 ## Open questions
 
 - Adapter implementation packages and their public Send function names do not exist yet. This blocks exact per-request `Extra` validation call sites and key telemetry-emission call sites; each adapter design must name them before implementation admission.
