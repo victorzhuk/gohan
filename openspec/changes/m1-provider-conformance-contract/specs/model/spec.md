@@ -4,9 +4,11 @@
 
 ### Requirement: Shared provider conformance contract
 
-The implementation MUST provide deterministic shared conformance inputs for provider adapters. Each adapter MUST run the shared suite through its public model call path against recorded provider responses. Adapter scenario subtests MUST use the registered scenario ID as the subtest name. The suite MUST check error class mapping, Retry-After preservation, explicit cache breakpoint ordering and limit, constrained-schema refusal before sending, usage estimation, Raw provider fidelity, per-key isolation, and provider-key redaction. A reference double MAY prove that the assertions detect a deliberate non-conforming result. A reference-double result does not establish adapter coverage.
+The implementation MUST provide deterministic shared conformance inputs, and each adapter MUST run the shared suite through its public model call path against recorded responses. Build MUST reject an unsupported output fidelity combination and a static governed-field collision, and a dynamic collision MUST return a permanent model error before the request is sent. Adapters MUST NOT ignore `ResponseSchema` without `Caps.Constrained`.
 
-The implementation MUST reject an unsupported output fidelity combination during public Build. The error MUST identify the profile and missing block kind. The implementation MUST reject a static governed-field collision in `ModelOptions.Extra` during Build and MUST return a permanent model error for a dynamic collision before the provider request is sent. Provider adapters MUST NOT ignore `ResponseSchema` when the profile lacks `Caps.Constrained`.
+#### Scenario: shared suite coverage
+- WHEN the shared suite runs against an adapter's recorded responses
+- THEN it checks error class mapping, Retry-After preservation, cache breakpoint order and limit, constrained-schema refusal before sending, usage estimation, Raw provider fidelity, per-key isolation and key redaction, and a reference double that violates an assertion fails the suite
 
 #### Scenario: model extra collision
 ID: `model.extra-collision`
