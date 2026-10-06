@@ -34,6 +34,12 @@ func PromptFields(set PromptSet) map[string]string {
 	return out
 }
 
+// ToolInfo is one registered tool as Explain reports it.
+type ToolInfo struct {
+	Name     string
+	Executor types.Executor
+}
+
 // Explanation describes a resolved flow: its chains step by step, every
 // prompt string in place, and the release it was built from.
 type Explanation struct {
@@ -41,6 +47,7 @@ type Explanation struct {
 	Profile     string
 	Steps       []StepInfo
 	ToolSteps   []StepInfo
+	Tools       []ToolInfo
 	Strategies  StrategyInfo
 	Fallback    string
 	Limits      types.RunLimits

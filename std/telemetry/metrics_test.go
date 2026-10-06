@@ -254,6 +254,15 @@ func TestTelemetryMetrics(t *testing.T) {
 			t.Errorf("Build refused permitted labels: %v", err)
 		}
 	})
+
+	t.Run("providerUnsupportedRegistration", func(t *testing.T) {
+		_, err := Build(&recordingSink{}, []Metric{
+			{Name: MetricToolUnsupported, Labels: []string{"tool"}},
+		}, WithRelease("r7"))
+		if err != nil {
+			t.Fatalf("Build refused the tool label: %v", err)
+		}
+	})
 }
 
 func mustBuild(t *testing.T, sink *recordingSink) *Metrics {

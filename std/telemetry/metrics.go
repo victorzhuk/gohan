@@ -16,6 +16,8 @@ const (
 	MetricLoopDetected    = "gohan.loop.detected"
 	MetricMemoryEvicted   = "gohan.memory.evicted"
 	MetricMemoryWriteDeny = "gohan.memory.write_denied"
+	MetricToolUnsupported = "gohan.tool.provider_unsupported"
+	MetricTaintPostHoc    = "gohan.taint.post_hoc"
 
 	MetricCacheHit  = "gohan.cache.hit"
 	MetricCacheMiss = "gohan.cache.miss"

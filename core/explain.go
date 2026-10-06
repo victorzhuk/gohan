@@ -53,6 +53,7 @@ func (s *Stack) Explain(f any) chains.Explanation {
 		ex.Warnings = append(ex.Warnings,
 			fmt.Sprintf("flow %q: cache step %q runs under AllowCache: the conversation and read-only refusals are waived", cfg.flow, step))
 	}
+	ex.Tools = toolInfos(cfg.specs)
 	if req, err := s.nativeTurnConfig(cfg).assemble(context.Background(), types.AssembleInput{}); err == nil {
 		ex.Sample = req
 	}
@@ -67,6 +68,17 @@ func explainFlowName(f any) (string, bool) {
 		return h.explainFlow(), true
 	}
 	return "", false
+}
+
+// toolInfos projects the registered specs onto Explain's tool list,
+// ordered by name so the projection is deterministic.
+func toolInfos(specs []types.ToolSpec) []chains.ToolInfo {
+	out := make([]chains.ToolInfo, 0, len(specs))
+	for _, spec := range specs {
+		out = append(out, chains.ToolInfo{Name: spec.Name, Executor: spec.Executor})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func stepInfos[M any](ch []chains.Step[M], specs []types.ToolSpec) []chains.StepInfo {

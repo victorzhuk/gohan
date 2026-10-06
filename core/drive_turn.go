@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
@@ -38,6 +39,10 @@ type turnConfig struct {
 	verifier  types.Verifier
 	journal   stores.Journal
 
+	// providerGate runs the pre-call permission gate on registered
+	// provider-executed specs before the request is sent and drops the
+	// declarations the verdict refuses; nil leaves the request untouched.
+	providerGate func(ctx context.Context, req types.ModelRequest) (types.ModelRequest, error)
 	// onTruncated decides the retry turn a truncated tool call earns. It
 	// returns the larger output allowance for the retry and the truncation
 	// result handed back to the model; an error ends the run when the
@@ -70,6 +75,7 @@ type turnConfig struct {
 	// a run without a resolution leaves them unset.
 	profile     types.ModelProfile
 	specs       []types.ToolSpec
+	taintPolicy types.TaintHook
 	instruction []types.Block
 }
 
@@ -257,6 +263,12 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	if env.maxTokens > 0 {
 		req.Options.MaxTokens = env.maxTokens
 	}
+	if c.providerGate != nil {
+		req, err = c.providerGate(ctx, req)
+		if err != nil {
+			return st, nil, runtime.Continue, err
+		}
+	}
 	env.turn++
 	n := 0
 	for _, msg := range env.msgs {
@@ -340,6 +352,23 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 			env.msgs = append(env.msgs, truncatedTurn(tu, *result, env.turn))
 			env.flushDeltas(ctx)
 			return st, nil, runtime.Continue, nil
+		}
+	}
+
+	// The provider reported any provider-executed calls it ran inside the
+	// response: their reported arguments are checked post hoc before any
+	// result block is appended or the calls are parked.
+	for _, call := range calls {
+		if err := providerPostHoc(ctx, c.taintPolicy, c.specs, call); err != nil {
+			env.flushDeltas(ctx)
+			return st, nil, runtime.Continue, err
+		}
+	}
+	if ledger, ok := chains.LimitsStateFrom(ctx); ok {
+		var u types.Usage
+		CountProviderCalls(c.specs, calls, &u)
+		if len(u.ProviderToolCalls) > 0 {
+			ledger.Charge(u, c.profile.Pricing)
 		}
 	}
 
@@ -739,6 +768,37 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 			results.Blocks = append(results.Blocks, res)
 		}
 	}
+	// A provider-executed call skips the tool chain's journal step when its
+	// effect is read-only, so the settled result is journaled here: a
+	// recovery re-drive replays it instead of re-billing the provider.
+	if c.journal != nil && report.Suspend == nil {
+		if info, ok := types.RunInfoFrom(ctx); ok && info.SessionID != "" {
+			for i, res := range settled {
+				call := calls[index[res.ID]]
+				spec, isProvider := providerSpecOf(c.specs, call.Name)
+				if !isProvider {
+					continue
+				}
+				key := types.CallKey{SessionID: info.SessionID, CallID: res.ID}
+				entry, created, err := c.journal.Reserve(ctx, key, call.Name, ToolFingerprint(spec, json.RawMessage(call.Args)), json.RawMessage(call.Args))
+				if err != nil {
+					return st, nil, runtime.Continue, fmt.Errorf("reserve provider call %s: %w", call.Name, err)
+				}
+				if !created {
+					settled[i] = entry.Result
+					aligned[index[res.ID]] = entry.Result
+					continue
+				}
+				if err := c.journal.Complete(ctx, key, res); err != nil {
+					return st, nil, runtime.Continue, fmt.Errorf("complete provider call %s: %w", call.Name, err)
+				}
+			}
+			results.Blocks = results.Blocks[:0]
+			for _, res := range settled {
+				results.Blocks = append(results.Blocks, res)
+			}
+		}
+	}
 	*msgs = append(*msgs, results)
 	// Results persist before any acknowledgement or suspension: a result
 	// a resume cannot find in the session log was never settled. A
@@ -828,6 +888,14 @@ func replayAskEffect(ctx context.Context, st runtime.State) (runtime.State, []ty
 	}
 	if slot < 0 {
 		return st, nil, runtime.Continue, fmt.Errorf("%w: pending call %q has no batch slot", types.ErrCheckpointIncompatible, head.ID)
+	}
+	if providerSpec(env.c.specs, head.Name) {
+		enc, cerr := replayProviderApproval(&st, b, slot)
+		if cerr != nil {
+			return st, nil, runtime.Continue, cerr
+		}
+		st.Backend = enc
+		return st, nil, runtime.Continue, nil
 	}
 	if !b.Driver.Batch.Ready {
 		// The client never decided, or decided without reaching quorum:

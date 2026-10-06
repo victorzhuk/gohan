@@ -27,14 +27,16 @@ func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 	return turnConfig{
 		// Supervision wraps only the provider, so the chain steps and
 		// the middleware above it keep running on the caller's goroutine.
-		model:       recordRunCost(runModelChain(cfg.modelChain, deprecatedRoute(s.telemetry, cfg.profile, NewModelStream(cfg.model).Generate, s.successorModelFunc(cfg.profile)))),
-		assemble:    nativeAssemble(s.prompts, cfg.assemble, cfg.redactor, cfg.redactionPolicy, s.stores.RedactionMaps),
-		maxTurns:    cfg.limits.MaxTurns,
-		limits:      cfg.limits,
-		profile:     cfg.profile,
-		specs:       cfg.specs,
-		instruction: cloneBlocks(cfg.instruction),
-		clients:     cfg.clients,
+		model:        recordRunCost(runModelChain(cfg.modelChain, deprecatedRoute(s.telemetry, cfg.profile, NewModelStream(cfg.model).Generate, s.successorModelFunc(cfg.profile)))),
+		assemble:     nativeAssemble(s.prompts, cfg.assemble, cfg.redactor, cfg.redactionPolicy, s.stores.RedactionMaps),
+		providerGate: providerDeclarationGate(cfg),
+		maxTurns:     cfg.limits.MaxTurns,
+		limits:       cfg.limits,
+		profile:      cfg.profile,
+		specs:        cfg.specs,
+		taintPolicy:  cfg.taintPolicy,
+		instruction:  cloneBlocks(cfg.instruction),
+		clients:      cfg.clients,
 		scheduler: runtime.SchedulerConfig{
 			EffectOf:    nativeEffectOf(cfg.tools),
 			Parallel:    cfg.plan.ParallelTools,

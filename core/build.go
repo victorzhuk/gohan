@@ -1,6 +1,7 @@
 package gohan
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -253,6 +254,9 @@ func (s *Stack) ResolveStrategies(req FlowRequest, profiles map[string]types.Mod
 			continue
 		}
 		if _, ok := p.Caps.ProviderTools[spec.Name]; !ok {
+			if s.telemetry != nil {
+				s.telemetry.Count(context.Background(), "gohan.tool.provider_unsupported", 1, types.String("tool", spec.Name))
+			}
 			return plan, fmt.Errorf("flow %q: profile %q: provider tool %q: %w",
 				req.Name, p.Name, spec.Name, ErrProviderToolUnsupported)
 		}

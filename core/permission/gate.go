@@ -111,6 +111,10 @@ func WithRunInfo(lookup func(ctx context.Context) types.RunInfo) Option {
 
 // Gate builds the permission middleware for the tool chain.
 func Gate(d types.Decider[*ToolInvocation, Verdict], opts ...Option) types.ToolMiddleware {
+	return newGate(d, opts).middleware
+}
+
+func newGate(d types.Decider[*ToolInvocation, Verdict], opts []Option) *gate {
 	g := &gate{
 		decider:       d,
 		minConfidence: 1,
@@ -120,7 +124,7 @@ func Gate(d types.Decider[*ToolInvocation, Verdict], opts ...Option) types.ToolM
 	for _, opt := range opts {
 		opt(g)
 	}
-	return g.middleware
+	return g
 }
 
 // DecideCall resolves the verdict for one invocation without running it:
@@ -128,16 +132,7 @@ func Gate(d types.Decider[*ToolInvocation, Verdict], opts ...Option) types.ToolM
 // decider (or the closed defaults) settle the rest. The batch protocol
 // calls it for every call before the first one executes.
 func DecideCall(ctx context.Context, d types.Decider[*ToolInvocation, Verdict], inv *ToolInvocation, opts ...Option) Decision {
-	g := &gate{
-		decider:       d,
-		minConfidence: 1,
-		specLookup:    func(string) (types.ToolSpec, bool) { return types.ToolSpec{}, false },
-		runLookup:     func(context.Context) types.RunInfo { return types.RunInfo{} },
-	}
-	for _, opt := range opts {
-		opt(g)
-	}
-	return g.decideCall(ctx, inv)
+	return newGate(d, opts).decideCall(ctx, inv)
 }
 
 func (g *gate) middleware(next types.ToolFunc) types.ToolFunc {

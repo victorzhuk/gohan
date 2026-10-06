@@ -118,6 +118,12 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			privateRead = privateRead || toolSpec.Capabilities.PrivateRead
 			// Until provider assembly can declare trust, untrusted tools are the untrusted path.
 			untrusted = untrusted || toolSpec.Trust == types.Untrusted
+			// A provider tool with Exfil is both the exfiltration and the
+			// untrusted-content leg: the provider sees the network and the
+			// model-supplied input in one hop.
+			if toolSpec.Executor == types.ByProvider && toolSpec.Capabilities.Exfil {
+				untrusted = true
+			}
 		}
 		if s.telemetry != nil {
 			state := int64(0)
