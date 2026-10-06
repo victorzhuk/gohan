@@ -36,6 +36,7 @@ type config struct {
 	limits           map[string]types.RunLimits
 	recovery         map[string]runtime.Runtime
 	stores           stores.Stores
+	redactor         types.Redactor
 	native           []NativeSpec
 }
 
