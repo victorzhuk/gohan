@@ -36,6 +36,8 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 		c.stall = l.ConsumerStall
 	}
 	c.toolSpecs = specLookup(cfg.specs)
+	c.verifier = stack.verifier
+	c.journal = stack.stores.Journal
 	c.outputs = stack.stores.OutputStore
 	c.redactionMaps = stack.stores.RedactionMaps
 	c.redactor = cfg.redactor
