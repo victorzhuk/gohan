@@ -173,9 +173,9 @@ The eight IDs the `m1` proposal names for the two adapters map onto the rows abo
 
 | ID | Owner | Depends on | Status | Evidence |
 |---|---|---|---|---|
-| `stores.same-transaction-journal` | `m1-postgres-stores` | schema-read, erasure contracts | missing | no `adapter/postgres` module exists; `CompleteTx` is unimplemented |
+| `stores.same-transaction-journal` | `m1-postgres-stores` | schema-read, erasure contracts | done | `adapter/postgres/journal_tx_test.go` (`stores.same-transaction-journal`); `CompleteTx` in `adapter/postgres/journal.go` |
 | `limits.provider-calls-count` | `m1-provider-tool-governance` | provider contract | done | `core/provider_result_test.go` (`limits.provider-calls-count`: three provider searches consume `MaxToolCalls`, the next reservation is refused) |
-| `messages.blob-provider-id-reused` | `m1-s1-s2-acceptance` | decomposition (below) | missing | `messages` spec declares the provider-id rule; no adapter exercises it |
+| `messages.blob-provider-id-reused` | `m1-messages-blobs` | decomposition (below) | done | `core/blob_provider_id_test.go` (`messages.blob-provider-id-reused`); conformance fixture in `testkit/conformance` |
 
 ### 2.12 streams (2), suspension (1), identity (4), telemetry (1), flow (4)
 
@@ -185,14 +185,14 @@ The eight IDs the `m1` proposal names for the two adapters map onto the rows abo
 | `streams.webhook-standard-signed` | `m1-run-notifications` | `m1-egress-policy` | done | `std/notify/scenarios_test.go` (`streams.webhook-standard-signed`) |
 | `suspension.approval-notice-delivered` | `m1-run-notifications` | as above | done | `std/notify/scenarios_test.go` (`suspension.approval-notice-delivered`) |
 | `identity.notice-endpoint-per-tenant` | `m1-run-notifications` | as above | done | `std/notify/scenarios_test.go` (`identity.notice-endpoint-per-tenant`) |
-| `flow.title-generated-after-first-done` | `m1-session-metadata-handoff` | — | missing | no title generation exists |
-| `flow.title-locked-by-rename` | `m1-session-metadata-handoff` | — | missing | as above |
-| `flow.request-human-ends-run` | `m1-session-metadata-handoff` | — | missing | as above |
-| `flow.handback-fences-operator-turns` | `m1-session-metadata-handoff` | — | missing | as above |
-| `telemetry.feedback-metric-labels` | `m1-session-metadata-handoff` | — | integration gap | `stores.FeedbackStore` and the `streams.feedback-recorded-event` path ship; the metric labels do not |
-| `identity.idempotency-key-transport-only` | `m1-s1-s2-acceptance` | decomposition (below) | integration gap | `WithIdempotencyKey` ships in `core/identity.go`; nothing enforces transport-only |
-| `identity.values-survive-shield` | `m1-s1-s2-acceptance` | decomposition (below) | integration gap | `std/shield.go` ships; the identity-value contract is unverified |
-| `identity.detached-reissues-credential` | `m1-s1-s2-acceptance` | decomposition (below) | integration gap | detach ships (`core/attach.go`, `core/stream_stall.go`); credential re-issue is unverified |
+| `flow.title-generated-after-first-done` | `m1-session-metadata-handoff` | — | done | `core/session_metadata_handoff_test.go` (`flow.title-generated-after-first-done`) |
+| `flow.title-locked-by-rename` | `m1-session-metadata-handoff` | — | done | `core/session_metadata_handoff_test.go` (`flow.title-locked-by-rename`) |
+| `flow.request-human-ends-run` | `m1-session-metadata-handoff` | — | done | `core/session_metadata_handoff_test.go` (`flow.request-human-ends-run`) |
+| `flow.handback-fences-operator-turns` | `m1-session-metadata-handoff` | — | done | `core/session_metadata_handoff_test.go` (`flow.handback-fences-operator-turns`); projection in `core/native_effects.go` |
+| `telemetry.feedback-metric-labels` | `m1-session-metadata-handoff` | — | done | `std/telemetry/feedback_metric_test.go` (`telemetry.feedback-metric-labels`) |
+| `identity.idempotency-key-transport-only` | `m1-identity-detach` | decomposition (below) | done | `core/identity_detach_scenarios_test.go` (`identity.idempotency-key-transport-only`) |
+| `identity.values-survive-shield` | `m1-identity-detach` | decomposition (below) | done | `std/shield_scenarios_test.go` (`identity.values-survive-shield`) |
+| `identity.detached-reissues-credential` | `m1-identity-detach` | decomposition (below) | done | `core/identity_detach_scenarios_test.go` (`identity.detached-reissues-credential`) |
 
 ### 2.13 Obligations without a scenario ID
 
@@ -221,7 +221,7 @@ These come from the `m1` proposal scope and the M1 row of `docs/overview.md` and
 
 ### 2.14 Decomposition bucket
 
-`m1-s1-s2-acceptance` owns four scenario IDs (`messages.blob-provider-id-reused`, `identity.idempotency-key-transport-only`, `identity.values-survive-shield`, `identity.detached-reissues-credential`) that belong to capabilities no other M1 change covers. Its first task is to decompose them into their own bounded change (`m1-messages-blobs`, `m1-identity-detach`) before either can enter implementation. Until that decomposition exists, those IDs have an owner but no implementation plan.
+`m1-s1-s2-acceptance` owned four scenario IDs (`messages.blob-provider-id-reused`, `identity.idempotency-key-transport-only`, `identity.values-survive-shield`, `identity.detached-reissues-credential`) that belong to capabilities no other M1 change covers. They were decomposed into `m1-messages-blobs` and `m1-identity-detach`, both implemented, verified and archived; the two changes now own those IDs in this matrix.
 
 ### 2.15 Lane status
 
