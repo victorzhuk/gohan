@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -37,6 +38,33 @@ func detachedContext(ctx context.Context, wall time.Duration) (context.Context, 
 	return context.WithTimeout(base, wall)
 }
 
+// detachedDriveCtx copies the caller's principal, run identity and
+// idempotency key onto a fresh base context. The detached run re-issues its
+// credential instead of reusing the caller's token — one that may expire
+// before the run ends — and carries none when the build wires no source. The
+// caller's approval never crosses a detach boundary.
+func (c *conversation) detachedDriveCtx(ctx context.Context) context.Context {
+	det := context.Background()
+	if p, ok := PrincipalFrom(ctx); ok {
+		det = WithPrincipal(det, p)
+		if c.creds != nil {
+			cred, err := c.creds.Credentials(det, p)
+			if err != nil {
+				slog.WarnContext(ctx, "detached credential re-issue failed; run continues credential-free", "err", err)
+			} else {
+				det = WithCredential(det, cred)
+			}
+		}
+	}
+	if info, ok := RunInfoFrom(ctx); ok {
+		det = types.WithRunInfo(det, info)
+	}
+	if key, ok := IdempotencyKey(ctx); ok {
+		det = WithIdempotencyKey(det, key)
+	}
+	return det
+}
+
 // lifecycleOptions lists the options every run lifecycle carries: the runs
 // store and lease, the session, the flow, the approval policy, the tool
 // specs, the session appender, the originator when one is known, and the
@@ -64,14 +92,40 @@ func (c *conversation) lifecycleOptions(sessionID string, lease stores.Lease, or
 		opts = append(opts, WithLifecycleAppender(AppendFunc(func(ctx context.Context, expected int64, msgs ...types.Message) (int64, error) {
 			return c.log.Append(ctx, sessionID, expected, msgs...)
 		})))
+		if hw, ok := c.log.(SessionControlWriter); ok {
+			opts = append(opts, WithLifecycleHandoffSink(func(ctx context.Context, hc types.HandoffContext) error {
+				return c.requestHandoff(ctx, sessionID, hc, hw, originator, hasOriginator)
+			}))
+		}
 	}
 	if c.consolidator != nil {
 		opts = append(opts, WithLifecycleConsolidation(c.consolidator, c.consolidationAudit))
+	}
+	if idx, ok := c.log.(stores.SessionIndex); ok {
+		opts = append(opts, WithLifecycleSessions(idx))
 	}
 	if hasOriginator {
 		opts = append(opts, WithLifecycleOriginator(originator))
 	}
 	return c.verifyOptions(opts)
+}
+
+// requestHandoff performs the session-side transition of a model handoff:
+// control moves to ControlHandoffRequested, the HandoffContext persists on
+// the session index and the transition lands in the audit trail.
+func (c *conversation) requestHandoff(ctx context.Context, sessionID string, hc types.HandoffContext, hw SessionControlWriter, originator types.Principal, hasOriginator bool) error {
+	if err := hw.SetControl(ctx, sessionID, stores.ControlHandoffRequested); err != nil {
+		return fmt.Errorf("set control: %w", err)
+	}
+	if idx, ok := c.log.(stores.SessionIndex); ok {
+		if err := idx.UpdateSession(ctx, sessionID, stores.SessionPatch{Handoff: &hc}); err != nil {
+			return fmt.Errorf("persist handoff: %w", err)
+		}
+	}
+	if !hasOriginator {
+		originator = types.Principal{}
+	}
+	return c.auditControl(ctx, sessionID, "", originator, auditHandoffRequest, decisionControlHandoffRequested)
 }
 
 // failRun records one terminal error payload for a failed run and emits the

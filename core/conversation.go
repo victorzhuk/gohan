@@ -284,7 +284,7 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 			return
 		}
 		if c.detached {
-			runCtx, cancel := detachedContext(ctx, c.wall)
+			runCtx, cancel := detachedContext(c.detachedDriveCtx(ctx), c.wall)
 			go func() {
 				defer cancel()
 				defer c.untrack(sessionID)

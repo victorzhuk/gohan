@@ -49,7 +49,7 @@ type flowTool[In, Out any] struct {
 }
 
 func (t flowTool[In, Out]) Invoke(ctx context.Context, in In) (Out, error) {
-	return t.f.Invoke(types.WithRunInfo(ctx, ChildRunInfo(ctx, t.runID)), in)
+	return t.f.Invoke(types.WithRunInfo(types.WithoutRunIdentity(ctx), ChildRunInfo(ctx, t.runID)), in)
 }
 
 // RunMeta pairs an event of the run info carries with its meta, so the

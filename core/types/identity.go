@@ -162,6 +162,23 @@ func ApprovalFrom(ctx context.Context) (Approval, bool) {
 	return a, ok
 }
 
+// WithoutRunIdentity hides the idempotency key and approval entries while
+// keeping the principal, credential and run info, so a sub-flow invoked as
+// its parent's tool never inherits transport-scoped values. Only harness
+// code calls it.
+func WithoutRunIdentity(ctx context.Context) context.Context {
+	return noRunIdentity{Context: ctx}
+}
+
+type noRunIdentity struct{ context.Context }
+
+func (c noRunIdentity) Value(key any) any {
+	if k, ok := key.(ctxKey); ok && (k == ctxIdempotencyKey || k == ctxApproval) {
+		return nil
+	}
+	return c.Context.Value(key)
+}
+
 // IdempotencyKey reports the idempotency key in ctx, or ok == false when the
 // caller supplied none.
 func IdempotencyKey(ctx context.Context) (string, bool) {

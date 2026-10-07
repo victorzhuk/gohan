@@ -27,6 +27,7 @@ import (
 // delivered message onto one send and reads the recorded result back from
 // the stores the governed path wrote.
 type consumer struct {
+	current  RefundEvent
 	conv     gohan.Conversation
 	runs     *stores.MemoryRuns
 	journal  *stores.MemoryJournal
@@ -58,6 +59,7 @@ func newConsumer(do refundTool, kill func() bool) (*consumer, error) {
 		sessions: stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom)),
 		audit:    stores.NewMemoryAuditLog(),
 	}
+	dec := liveKillDecider{audit: c.audit, kill: kill, ev: func() RefundEvent { return c.current }}
 	stack, err := gohan.Build(
 		gohan.WithStores(stores.Stores{SessionLog: c.sessions, Journal: c.journal}),
 		gohan.WithModels(&refundScript{}),
@@ -73,10 +75,10 @@ func newConsumer(do refundTool, kill func() bool) (*consumer, error) {
 				Kind: chains.KindJournal,
 				Use: std.Journal(c.journal,
 					std.WithJournalSpecs(refundSpecLookup),
-					std.WithJournalSessionID(deliverySession),
+					std.WithJournalSessionID(deliverySession(dec.ev)),
 				),
 			}},
-			Decider: liveKillDecider{audit: c.audit, kill: kill},
+			Decider: dec,
 		}),
 	)
 	if err != nil {
@@ -114,7 +116,7 @@ func (c *consumer) handle(ctx context.Context, ev RefundEvent) (string, error) {
 		Subject: "refunds-worker",
 	})
 	ctx = types.WithIdempotencyKey(ctx, ev.Key)
-	ctx = withDelivery(ctx, ev)
+	c.current = ev
 	for _, err := range c.conv.Send(ctx, ev.SessionID(), types.Message{
 		Role:   types.RoleUser,
 		Blocks: []types.Block{types.Text{Text: ev.request()}},

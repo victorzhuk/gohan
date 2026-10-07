@@ -156,24 +156,19 @@ func refundArgs(ev RefundEvent) json.RawMessage {
 	return args
 }
 
-// deliveryKey carries one delivered message through the send's context, so
-// the flow's decider can key its audit records to the delivery.
-type deliveryKey struct{}
-
-func withDelivery(ctx context.Context, ev RefundEvent) context.Context {
-	return context.WithValue(ctx, deliveryKey{}, ev)
-}
-
 // liveKillDecider is the flow's tool policy: the operator's approval is
 // recorded, then the live refunds.kill flag is consulted. A raised flag
-// beats the approval: the call is denied and never executes.
+// beats the approval: the call is denied and never executed. The delivery
+// arrives as an explicit field, so the audit records key to it without
+// riding the send's context.
 type liveKillDecider struct {
 	audit *stores.MemoryAuditLog
 	kill  func() bool
+	ev    func() RefundEvent
 }
 
 func (d liveKillDecider) Decide(ctx context.Context, inv *permission.ToolInvocation) (types.Decision[permission.Verdict], error) {
-	ev, _ := ctx.Value(deliveryKey{}).(RefundEvent)
+	ev := d.ev()
 	_ = d.audit.Append(ctx, stores.AuditRecord{
 		Kind:      stores.AuditApproval,
 		SessionID: ev.SessionID(),
@@ -271,7 +266,6 @@ func refundSpecLookup(name string) (types.ToolSpec, bool) {
 	return types.ToolSpec{}, false
 }
 
-func deliverySession(ctx context.Context) string {
-	ev, _ := ctx.Value(deliveryKey{}).(RefundEvent)
-	return ev.SessionID()
+func deliverySession(ev func() RefundEvent) func(context.Context) string {
+	return func(context.Context) string { return ev().SessionID() }
 }
