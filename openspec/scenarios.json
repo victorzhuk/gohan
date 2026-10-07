@@ -1755,6 +1755,18 @@
     "title": "usage estimated when absent",
     "deferred_to": "M1"
   },
+  "model.cost-tags-forwarded-as-metadata": {
+    "capability": "model",
+    "origin": "ADR-0159",
+    "title": "cost tags forwarded as request metadata",
+    "deferred_to": "M1"
+  },
+  "model.provider-no-metadata-channel": {
+    "capability": "model",
+    "origin": "ADR-0159",
+    "title": "provider without a metadata channel",
+    "deferred_to": "M1"
+  },
   "model.extra-collision": {
     "capability": "model",
     "origin": "ADR-0105",

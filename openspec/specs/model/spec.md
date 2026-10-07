@@ -24,6 +24,11 @@ type ModelRequest struct {
 	Tools    []ToolSpec
 	Messages []Message
 	Options  ModelOptions
+	Metadata RequestMetadata
+}
+
+type RequestMetadata struct {
+	CostTags CostTags
 }
 
 type ModelOptions struct {
@@ -338,6 +343,16 @@ ID: `model.provider-tool-usage`
 - WHEN a response contains two provider search calls
 - THEN `Usage.ProviderToolCalls["web_search"]` is 2 and the run's cost includes `2 × Pricing.ProviderCall["web_search"]`
 
+#### Scenario: cost tags forwarded as request metadata
+ID: `model.cost-tags-forwarded-as-metadata`
+- WHEN a run with `CostTags{Feature: "assist", Environment: "prod"}` is assembled into a `ModelRequest` and sent through an adapter whose provider documents a request-metadata channel
+- THEN `ModelRequest.Metadata.CostTags` carries the run's three tags, the adapter sends them on that channel, and no log record or span content captures them
+
+#### Scenario: provider without a metadata channel
+ID: `model.provider-no-metadata-channel`
+- WHEN the same request is sent through an adapter whose provider has no request-metadata channel
+- THEN the call succeeds with the tags unsent, no error is raised, and no field is invented
+
 ### Requirement: Shared provider conformance contract
 
 The implementation MUST provide deterministic shared conformance inputs, and each adapter MUST run the shared suite through its public model call path against recorded responses. Build MUST reject an unsupported output fidelity combination and a static governed-field collision, and a dynamic collision MUST return a permanent model error before the request is sent. Adapters MUST NOT ignore `ResponseSchema` without `Caps.Constrained`.
@@ -462,3 +477,27 @@ ID: `model.early-break-releases`
 ID: `model.cancel-returns-promptly`
 - WHEN ctx is cancelled while the provider is silent
 - THEN the iterator returns `context.Canceled` within the read deadline
+
+### Requirement: Anthropic adapter wire mapping
+
+The Anthropic adapter SHALL map the provider-neutral `ModelRequest` and `ModelChunk` constructs onto the Anthropic Messages API and back: `CacheBreak` blocks become ordered `cache_control` markers capped by `Caps.CacheBreakpoints`, an Anthropic `stop_reason` becomes a `FinishReason`, a `ResponseSchema` is honoured through a forced tool call only when the profile declares `Caps.Constrained`, and an opaque `Reasoning` signature round-trips to the same endpoint.
+
+#### Scenario: cache control markers mapped in order
+
+- WHEN a request carries three `CacheBreak` blocks and the selected profile has `CacheExplicit` with `CacheBreakpoints` 2
+- THEN the adapter sends two `cache_control` markers in block order and drops the third
+
+#### Scenario: stop reason mapped to finish reason
+
+- WHEN the provider stream ends with `end_turn`, `tool_use` or `max_tokens`
+- THEN the final chunk carries `FinishStop`, `FinishToolUse` or `FinishMaxTokens` respectively
+
+#### Scenario: response schema honoured through forced tool
+
+- WHEN a `ResponseSchema` reaches a profile that declares `Caps.Constrained`
+- THEN the adapter sends one forced tool carrying the schema and returns the tool arguments as the response
+
+#### Scenario: reasoning signature round-trips
+
+- WHEN the provider returns an opaque `Reasoning` block that carries a signature
+- THEN the block is retained with its signature and re-sent unchanged to the same endpoint
