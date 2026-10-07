@@ -27,7 +27,7 @@ Boundaries the first M2 changes must not cross: no second runtime loop beside th
 | `runtime.cancellation` | `m2-eino-runtime` | core Drive cancellation | missing | |
 | `runtime.foreign-tool-under-native` | `m2-eino-bridges` | governed tool chain | missing | |
 | `runtime.governed-components-in-eino-graph` | `m2-eino-graph-native-resume` | `m2-eino-runtime`, `m2-eino-bridges` | missing | |
-| `runtime.message-round-trip` | `m2-eino-bridges` | message fidelity contract | missing | |
+| `runtime.message-round-trip` | `m2-eino-bridges` | message fidelity contract | missing | the adk-go leg is M3's — §3 conflict 3 governs where this row's first owner differed |
 | `runtime.suspend-order` | `m2-eino-runtime` | core Drive and checkpoint stores | missing | |
 | `runtime.append-before-tool` | `m2-eino-runtime` | core Drive and journal | missing | |
 | `runtime.done-after-finish` | `m2-eino-runtime` | core Drive and Runs | missing | |
