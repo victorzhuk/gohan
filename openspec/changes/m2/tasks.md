@@ -24,14 +24,16 @@ Each change is implemented only after its package is admitted (task 3). Shared d
 - [x] 1. First vertical seam of the three first-wave changes.
   - observed: `feat(context)` declares `stores.Projection`/`ContextPolicy`/`Compactor` and `ClearToolResults`; `feat(sandbox)` declares the sandbox port, `types.SecretResolver`, `WorkspaceLister` and the `Build` host-exec warning; `feat(runtime)` registers `ForeignSpec` and constructs governed runs on the send, resume and recovery paths. Floor green: `task lint` 0 issues, `task test`, `task spec` (`missing_in_scope=0`, `covered=391`).
 
-- [ ] 2. `m2-context-projections` — wire the stage into the native assembler (`WithContextPolicy`, ordered before the caller assembler, redaction, blob resolution and the operator fence untouched), then the public-path and invariant tests.
+- [x] 2. `m2-context-projections` — wire the stage into the native assembler (`WithContextPolicy`, ordered before the caller assembler, redaction, blob resolution and the operator fence untouched), then the public-path and invariant tests.
   - verify: `go test -short -timeout 2m ./core/... ./std/...` with the five `context.*` subtests passing.
+  - observed: delivered and archived as `2026-10-07-m2-context-projections`; all five `context.*` ids covered with the invariant guard file inherited by the later compaction change.
 
 - [ ] 3. `m2-sandbox-governance` — the `std/sandbox` governed tool set: effect derivation, `PerCall` lifecycle with `Close` exactly once, `SetEnv` injection at `Open`, output spill to `OutputStore`, sandbox-seconds charging, secret-leak scanning and redaction.
   - verify: `go test -short -timeout 2m ./core/... ./std/...` with the seven `sandbox.*` and `identity.credential-not-in-sandbox` subtests passing.
 
-- [ ] 4. `m2-eino-runtime` — the `adapter/eino` module: the turn-granularity runtime behind `runtime.Runtime`, the model/tool/message bridges, and the acceptance suite whose ids land in `adapter/eino` output.
+- [x] 4. `m2-eino-runtime` — the `adapter/eino` module: the turn-granularity runtime behind `runtime.Runtime`, the model/tool/message bridges, and the acceptance suite whose ids land in `adapter/eino` output.
   - verify: `go -C adapter/eino test -short -timeout 2m ./...` with the eino acceptance rows and `flow.backend-swap`, `limits.limits-under-foreign-backend` passing; `runtime.message-round-trip` proven for the eino leg only.
+  - observed: delivered and archived; the conformance, lifecycle, preemption, health, parity, limits, mixing and bridge rows all green in `adapter/eino`, the six native scheduling rows stay green in `core`, and `runtime.message-round-trip` stays open for the adk-go leg.
 
 - [ ] 5. Second-wave lanes per `design.md` §2 — `m2-eino-bridges`, `m2-eino-graph-native-resume`, `m2-context-persisted-compaction`, `m2-provider-compaction`, `m2-context-calibration-overflow`, `m2-sandbox-adapter-conformance`, `m2-sandbox-lifecycle-resume`.
   - verify: each package authored, reviewed and admitted before its implementation starts.
