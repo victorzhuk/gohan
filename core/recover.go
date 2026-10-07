@@ -248,7 +248,33 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 		ctx = withPendingReplay(ctx)
 	}
 	var driveErr error
-	if cfg, ok := s.resolvedNative(run.Flow); ok {
+	if newRT, ok := s.resolvedForeign(run.Flow); ok {
+		// A registered foreign flow re-drives through the same governed
+		// wiring a live run got: the ledger seeded from what the run
+		// record reports as spent, and the governed components over the
+		// reloaded history.
+		ledger := chains.NewLimitsStateSeeded(run.Cost, chains.WithCostTelemetry(s.telemetry))
+		var hist stores.History
+		if s.stores.SessionLog != nil {
+			if h, err := s.stores.SessionLog.Load(ctx, run.SessionID); err == nil {
+				hist = h
+			}
+		}
+		fctx, _, fag, _, ferr := s.foreignAgentRun(run.Flow, hist, run.Cost, nil)
+		if ferr != nil {
+			return s.abandonWith(ctx, lease, run, fmt.Errorf("recover run %s: %w", run.RunID, ferr))
+		}
+		ctx = chains.WithLimitsState(fctx, ledger)
+		fag.Save = s.stores.Checkpoints.Put
+		ag, rt = fag, newRT()
+		opts = append(opts, WithLifecycleLedger(ledger))
+		lc = NewLifecycle(opts...)
+	} else if cfg, ok := s.resolvedNative(run.Flow); ok {
+		// A registered native flow re-drives through the governed path built
+		// from its resolved configuration: a fresh runtime, the batch gate
+		// and reservation seam, and a ledger seeded from what the run record
+		// reports as spent. The re-drive can suspend again through the same
+		// effects a live run uses.
 		ledger := chains.NewLimitsStateSeeded(run.Cost, chains.WithCostTelemetry(s.telemetry))
 		ctx = chains.WithLimitsState(ctx, ledger)
 		var hist stores.History

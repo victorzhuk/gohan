@@ -93,6 +93,7 @@ type Stack struct {
 	stores           stores.Stores
 	tenant           types.Tenant
 	native           map[string]*resolvedNativeConfig
+	foreign          map[string]func() runtime.Runtime
 	recovery         map[string]runtime.Runtime
 	manifest         ReleaseManifest
 	consolidator     func(ConsolidationWiring) MemoryConsolidator
@@ -202,6 +203,10 @@ func Build(opts ...Option) (*Stack, error) {
 		return nil, err
 	}
 	if err := s.resolveNative(cfg.native, profiles, cfg.redactor, cfg.redactionPolicy); err != nil {
+		return nil, err
+	}
+	s.foreign = make(map[string]func() runtime.Runtime, len(cfg.foreign))
+	if err := s.resolveForeign(cfg.foreign, profiles, cfg.redactor, cfg.redactionPolicy); err != nil {
 		return nil, err
 	}
 	s.manifest = computeReleaseManifest(profiles, cfg.prompts, cfg.pinned)

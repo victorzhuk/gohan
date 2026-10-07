@@ -5,6 +5,7 @@ import (
 
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/permission"
+	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -48,6 +49,31 @@ type NativeSpec struct {
 func WithNativeAgent(spec NativeSpec) Option {
 	return func(c *config) error {
 		c.native = append(c.native, spec)
+		return nil
+	}
+}
+
+// ForeignSpec is the driver-supplied definition of one foreign-runtime
+// flow: the backend runtime that drives its turns, and everything Build
+// resolves for it exactly as it would for a native definition. The flow
+// name is Request.Name. NewRuntime runs once per run, so concurrent
+// sessions share no backend state.
+type ForeignSpec struct {
+	Request      FlowRequest
+	Profile      string
+	NewRuntime   func() runtime.Runtime
+	Instruction  []types.Block
+	Tools        []types.Tool
+	ModelOptions types.ModelOptions
+	Assemble     func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error)
+}
+
+// WithForeignAgent registers a foreign-runtime flow definition before Build
+// runs, so Build resolves it with everything else. Registering two
+// definitions with the same flow name, native or foreign, fails the build.
+func WithForeignAgent(spec ForeignSpec) Option {
+	return func(c *config) error {
+		c.foreign = append(c.foreign, spec)
 		return nil
 	}
 }

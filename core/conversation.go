@@ -60,7 +60,13 @@ type conversation struct {
 	// fresh runtime over the resolved configuration, the restored
 	// history and a ledger seeded from what the run record reports as
 	// spent. nil keeps the fixed foreign runtime.
-	newResumeRun       func(ctx context.Context, sessionID string, hist stores.History, seed float64) (context.Context, runtime.Runtime, runtime.AgentRun, *chains.LimitsState, error)
+	newResumeRun func(ctx context.Context, sessionID string, hist stores.History, seed float64) (context.Context, runtime.Runtime, runtime.AgentRun, *chains.LimitsState, error)
+	// foreignRun builds one run's governed wiring for a registered
+	// foreign-runtime flow: the run-scoped ledger, the governed model,
+	// tools and assembler, and a fresh backend runtime. A zero
+	// hist.Version makes the builder load the session history itself;
+	// input rides only a send.
+	foreignRun         func(ctx context.Context, sessionID string, hist stores.History, seed float64, input []Message) (context.Context, runtime.Runtime, runtime.AgentRun, *chains.LimitsState, error)
 	log                stores.SessionLog
 	runs               stores.Runs
 	events             stores.EventLog

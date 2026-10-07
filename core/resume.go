@@ -363,7 +363,28 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 		}
 		runCtx = types.WithApproval(runCtx, types.Approval{Approver: approver, At: time.Now().UTC()})
 		var ledger *chains.LimitsState
-		if c.newResumeRun != nil {
+		switch {
+		case c.foreignRun != nil:
+			// The drive's working history is reloaded after the decision,
+			// exactly as the native path reloads it.
+			hDrive, derr := authorizeResume(ctx, c.log, cp.SessionID, approver)
+			if derr != nil {
+				prepFail(derr)
+				return
+			}
+			var seed float64
+			if rf, ok := c.runs.(runFinder); ok {
+				if run, ferr := rf.ByID(ctx, consumed.RunID); ferr == nil {
+					seed = run.Cost
+				}
+			}
+			rctx, nrt, nag, nled, berr := c.foreignRun(credCtx, cp.SessionID, hDrive, seed, nil)
+			if berr != nil {
+				prepFail(berr)
+				return
+			}
+			runCtx, rt, ag, ledger = rctx, nrt, nag, nled
+		case c.newResumeRun != nil:
 			// The drive's working history is reloaded after the decision:
 			// it must carry the results the decision appended, or the
 			// resumed model turn re-issues settled calls.

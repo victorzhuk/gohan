@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -153,7 +154,25 @@ func (c *conversation) run(ctx context.Context, lease stores.Lease, sessionID st
 		runCtx := ctx
 		originator, hasOriginator := PrincipalFrom(ctx)
 		lc := NewLifecycle(c.lifecycleOptions(sessionID, lease, originator, hasOriginator)...)
-		if c.newRun != nil {
+		if c.foreignRun != nil {
+			rctx, frt, fag, _, err := c.foreignRun(ctx, sessionID, stores.History{}, 0, input)
+			if err != nil {
+				// The run is already acquired: close it as Failed so the
+				// lease never dangles behind the error tuple.
+				if ferr := lc.finishRun(ctx, runtime.State{}, stores.Failed, nil, types.StopFailed); ferr != nil {
+					yield(nil, ferr)
+					return
+				}
+				c.failRun(ctx, lease, 0, yield, err)
+				return
+			}
+			runCtx, rt, ag = rctx, frt, fag
+			if ag.History.Version > 0 {
+				opts := append(slices.Clone(c.lifecycleOptions(sessionID, lease, originator, hasOriginator)),
+					WithLifecycleHistoryVersion(ag.History.Version))
+				lc = NewLifecycle(opts...)
+			}
+		} else if c.newRun != nil {
 			rt = runtime.NewNative()
 			rctx, run, err := c.newRun(ctx, sessionID, lease, input)
 			if err != nil {

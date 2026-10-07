@@ -47,6 +47,7 @@ func WithSunsetWarnOnly() Option {
 type config struct {
 	flags            types.Flags
 	frozen           map[string]any
+	foreign          []ForeignSpec
 	models           []types.Model
 	middleware       []types.ModelMiddleware
 	estimator        types.TokenEstimator
