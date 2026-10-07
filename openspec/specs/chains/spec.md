@@ -201,6 +201,32 @@ ID: `chains.per-endpoint-limits`
 
 ### Requirement: No hidden behavior
 
+`std/hedge.New(HedgePolicy{After, Targets, Budget, MaxExtra})` MUST be a
+`KindHedge` step placed inside `Router` and outside `Fallback`. `Targets` MUST be
+`func() []types.Model`, the router's ordered candidate supplier, read live at
+admission time. The never-same-endpoint rule MUST filter by `ModelProfile.Name`,
+so a candidate naming the in-flight endpoint is skipped and never preferred; a
+router with a single target MUST leave the step inert and `Explain` MUST report
+it so.
+
+The step MUST decide admission — never-same-endpoint, breaker eligibility (a closed breaker only), budget, provider-tool ineligibility, `Caps.Streaming` false and `LatencyClass == Batch` — before it calls anything that consumes a half-open breaker probe, and `std/route` MUST expose a read-only eligibility view for this decision so that only the target the step commits to takes the probe.
+
+`Budget` MUST be a token bucket of hedges per base call, capped at one token, and
+its effective rate MUST be resolvable per run from the run's `CostTags`; a run
+whose tags resolve to zero MUST never hedge. When the bucket is empty no hedge
+MUST fire and `gohan.hedge.budget_exhausted` MUST increment.
+
+A hedge MUST be refused, and MUST record `types.ClassPermanent` on the refusal,
+when the assembled request declares any tool whose `Executor` is
+`types.ByProvider`; the primary MUST proceed unchanged and only the hedge is
+refused.
+
+The losing attempt's `Usage` MUST be charged once through the run's ledger as
+`gohan.usage.hedge_loser` against `RunLimits.MaxCost`, and the hedged pair MUST
+journal as one model step carrying `Attempts` and the winner's endpoint on the
+journal record. Replay MUST reproduce the winner's response and MUST NOT re-issue
+the pair; the loser MUST have no journal entry of its own.
+
 #### Scenario: empty chains
 ID: `chains.empty-chains`
 - WHEN a flow is built with core only, no `std`, and empty chains

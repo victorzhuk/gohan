@@ -55,6 +55,7 @@ type RunInfo struct {
 	ReleaseID    string
 	Variant      string
 	Mode         RunMode
+	Flags        map[string]any
 	Depth int
 }
 
@@ -111,6 +112,8 @@ Rules:
 ## Requirements
 
 ### Requirement: Identity
+
+`RunInfo` MUST carry the run's frozen flag values in a `Flags` field of type `runtime.FlagSnapshot` so an in-run reader sees them from `ctx` (the `flags` *Frozen and live flags* requirement); `RunInfoFrom` MUST return them unchanged. The per-tenant notice destination (`streams` *Run notices*) MUST key on the notice's own tenant: `Endpoint` MUST be resolved with `notice.Tenant`, and a delivery MUST NOT consult, fall back to, or default to another tenant's URL or secret.
 
 #### Scenario: no principal
 ID: `identity.no-principal`

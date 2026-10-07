@@ -130,22 +130,22 @@ The eight IDs the `m1` proposal names for the two adapters map onto the rows abo
 
 | ID | Owner | Depends on | Status | Evidence |
 |---|---|---|---|---|
-| `flags.frozen-snapshot` | `m1-flags-control` | — | missing | no `std/flags` package exists |
-| `flags.never-widen` | `m1-flags-control` | `m1-taint-enforcement` (hard-block ordering) | missing | as above |
-| `flags.stale-then-deny` | `m1-flags-control` | as above | missing | as above |
-| `flags.from-default-suspends` | `m1-flags-control` | as above | missing | as above |
-| `flags.replay-asserts-snapshot` | `m1-flags-control` | — | missing | as above |
+| `flags.frozen-snapshot` | `m1-flags-control` | — | done | `std/flags/flags_test.go` (`TestFlagSnapshot`), `core/flags_test.go` (`TestFlagSnapshotPersisted`) |
+| `flags.never-widen` | `m1-flags-control` | `m1-taint-enforcement` (hard-block ordering) | done | `core/flags_test.go` (`TestLiveFlags`), `core/permission/live_deny_test.go` |
+| `flags.stale-then-deny` | `m1-flags-control` | as above | done | `core/flags_test.go` (`TestControlWait`) |
+| `flags.from-default-suspends` | `m1-flags-control` | as above | done | `core/flags_test.go` (`TestControlWait`), `std/flags/flags_test.go` (`TestFreshnessWatcher`, `TestModelCallControl`) |
+| `flags.replay-asserts-snapshot` | `m1-flags-control` | — | done | `core/flags_test.go` (`TestReplayFlagDrift/resume_fails_the_replay_before_any_model_effect`) |
 
 ### 2.8 chains (6)
 
 | ID | Owner | Depends on | Status | Evidence |
 |---|---|---|---|---|
-| `chains.hedge-fires-on-ttft` | `m1-hedged-model-calls` | provider contract | missing | no hedging exists; `std/route` ships routing and breakers |
-| `chains.hedge-never-same-endpoint` | `m1-hedged-model-calls` | provider contract | missing | as above |
-| `chains.hedge-loser-cancelled-and-charged` | `m1-hedged-model-calls` | provider contract | missing | as above |
-| `chains.hedge-budget-cap` | `m1-hedged-model-calls` | `m1-model-retirement-cost` (cost tags) | missing | as above |
-| `chains.hedge-single-journal-step` | `m1-hedged-model-calls` | journal contract | missing | as above |
-| `chains.hedge-refused-with-provider-tools` | `m1-hedged-model-calls` | `m1-provider-tool-governance` | missing | as above |
+| `chains.hedge-fires-on-ttft` | `m1-hedged-model-calls` | provider contract | done | `std/hedge/hedge_test.go` (`chains.hedge-fires-on-ttft`) |
+| `chains.hedge-never-same-endpoint` | `m1-hedged-model-calls` | provider contract | done | `std/hedge/hedge_test.go` (`chains.hedge-never-same-endpoint`) |
+| `chains.hedge-loser-cancelled-and-charged` | `m1-hedged-model-calls` | provider contract | done | `std/hedge/hedge_test.go` (`chains.hedge-loser-cancelled-and-charged`) |
+| `chains.hedge-budget-cap` | `m1-hedged-model-calls` | `m1-model-retirement-cost` (cost tags) | done | `std/hedge/hedge_test.go` (`chains.hedge-budget-cap`) |
+| `chains.hedge-single-journal-step` | `m1-hedged-model-calls` | journal contract | done | `core/drive_model_journal_test.go` (`chains.hedge-single-journal-step`) |
+| `chains.hedge-refused-with-provider-tools` | `m1-hedged-model-calls` | `m1-provider-tool-governance` | done | `std/hedge/hedge_test.go` (`chains.hedge-refused-with-provider-tools`) |
 
 `std/route/route.go:97-105` calls `Breaker.Allow()` from `Candidates()`; a hedge must not consume a half-open probe for a request it discards. `m1-hedged-model-calls` decides admission before a probe is consumed and records the choice.
 
@@ -181,10 +181,10 @@ The eight IDs the `m1` proposal names for the two adapters map onto the rows abo
 
 | ID | Owner | Depends on | Status | Evidence |
 |---|---|---|---|---|
-| `streams.notice-retry-and-dead-letter` | `m1-run-notifications` | `m1-egress-policy` | integration gap | the `Runs` notice outbox ships (`core/stores/runs_notices.go`); no dispatcher retries or dead-letters |
-| `streams.webhook-standard-signed` | `m1-run-notifications` | `m1-egress-policy` | missing | no webhook transport exists |
-| `suspension.approval-notice-delivered` | `m1-run-notifications` | as above | integration gap | the outbox ships; notices have no delivery path |
-| `identity.notice-endpoint-per-tenant` | `m1-run-notifications` | as above | missing | as above |
+| `streams.notice-retry-and-dead-letter` | `m1-run-notifications` | `m1-egress-policy` | done | `std/notify/scenarios_test.go` (`streams.notice-retry-and-dead-letter`) |
+| `streams.webhook-standard-signed` | `m1-run-notifications` | `m1-egress-policy` | done | `std/notify/scenarios_test.go` (`streams.webhook-standard-signed`) |
+| `suspension.approval-notice-delivered` | `m1-run-notifications` | as above | done | `std/notify/scenarios_test.go` (`suspension.approval-notice-delivered`) |
+| `identity.notice-endpoint-per-tenant` | `m1-run-notifications` | as above | done | `std/notify/scenarios_test.go` (`identity.notice-endpoint-per-tenant`) |
 | `flow.title-generated-after-first-done` | `m1-session-metadata-handoff` | — | missing | no title generation exists |
 | `flow.title-locked-by-rename` | `m1-session-metadata-handoff` | — | missing | as above |
 | `flow.request-human-ends-run` | `m1-session-metadata-handoff` | — | missing | as above |
@@ -204,10 +204,10 @@ These come from the `m1` proposal scope and the M1 row of `docs/overview.md` and
 | `Verify` end-to-end (Failed reconciliation, audit, lifecycle execution) | `m1-verify-public-paths` | integration gap | `std/verify.go` has no `Failed` reconciliation and discards journal errors |
 | `std/redact` rules + HMAC `Redactor` + `EraseSubject` | `m1-redaction-pipeline`, `m1-subject-erasure-residency` | shipped | `std/redact` exists (`redact.go`, `key.go`) |
 | `std/cache` key builder + exact-match cache | `m1-exact-match-cache` | shipped | `std/cache` exists (`cache.go`, `store.go`) |
-| `std/hedge` | `m1-hedged-model-calls` | missing | no `std/` hedging package |
-| `std/notify` + `std/notify/webhook` | `m1-run-notifications` | missing | no `std/notify` |
+| `std/hedge` | `m1-hedged-model-calls` | shipped | `std/hedge` exists (`hedge.go`) |
+| `std/notify` + `std/notify/webhook` | `m1-run-notifications` | shipped | `std/notify` and `std/notify/webhook` exist |
 | `std/egress` + `std/tool/http.Fetch` | `m1-egress-policy` | shipped | `std/egress` and `std/tool/http` exist (`std/tool` also holds `exec` and `provider`) |
-| `std/flags`; adapter/openfeature later | `m1-flags-control` | missing | no `std/flags`; openfeature stays out of M1 |
+| `std/flags`; adapter/openfeature later | `m1-flags-control` | shipped | `std/flags` exists; openfeature stays out of M1 |
 | sunset/successor validation, schema versions, upcaster registry, cost tags | `m1-model-retirement-cost`, `m1-schema-read-paths` | integration gap | registry and suite types ship; readers do not |
 | adapter/openai (+vLLM), adapter/anthropic with error normalization and version reporting | `m1-provider-conformance-contract`, `m1-openai-provider`, `m1-anthropic-provider` | shipped | `adapter/openai` and `adapter/anthropic` exist beside `adapter/otel` |
 | adapter/postgres, all ports incl. `AuditLog`, plus `CompleteTx` | `m1-postgres-stores` | missing | no `adapter/postgres` |

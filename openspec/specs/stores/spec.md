@@ -118,6 +118,8 @@ type Entry struct {
 	Key         string
 	Result      ToolResult
 	At          time.Time
+	Attempts    int
+	Endpoint    string
 }
 
 type Journal interface {
@@ -344,7 +346,7 @@ Contracts:
 
 ### Requirement: Store contracts
 
-`storetest.SessionLog`, `storetest.Checkpoints`, `storetest.Journal`, `storetest.Runs`, `storetest.AuditLog` SHALL pass for the core memory implementations and `adapter/postgres` (testcontainers).
+`storetest.SessionLog`, `storetest.Checkpoints`, `storetest.Journal`, `storetest.Runs`, `storetest.AuditLog` SHALL pass for the core memory implementations and `adapter/postgres` (testcontainers). The journal `Entry` carries `Attempts int` and `Endpoint string` in addition to its tool fields: a model step records the attempts that started and the winner's endpoint, and both fields are zero-valued for a tool entry.
 
 #### Scenario: append conflict
 ID: `stores.append-conflict`
