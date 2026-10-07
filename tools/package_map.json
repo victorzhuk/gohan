@@ -6,6 +6,7 @@
   "chains": "chains",
   "context": "types",
   "decider": "types",
+  "eino": "runtime",
   "engines": "types",
   "flags": "types",
   "flow": "gohan",
