@@ -2815,5 +2815,35 @@
     "capability": "runtime",
     "origin": "R60",
     "title": "readiness false during shutdown"
+  },
+  "routing.static-order": {
+    "capability": "routing",
+    "origin": "m1-route-latency-class",
+    "title": "static routing preserves declaration order",
+    "deferred_to": "M1"
+  },
+  "routing.latency-class-order": {
+    "capability": "routing",
+    "origin": "m1-route-latency-class",
+    "title": "selected latency class precedes other endpoints",
+    "deferred_to": "M1"
+  },
+  "routing.latency-class-no-match": {
+    "capability": "routing",
+    "origin": "m1-route-latency-class",
+    "title": "unmatched latency class preserves declaration order",
+    "deferred_to": "M1"
+  },
+  "routing.latency-class-breaker-order": {
+    "capability": "routing",
+    "origin": "m1-route-latency-class",
+    "title": "latency-class routing preserves breaker eligibility",
+    "deferred_to": "M1"
+  },
+  "routing.latency-class-fallback": {
+    "capability": "routing",
+    "origin": "m1-route-latency-class",
+    "title": "latency-class fallback retains other classes",
+    "deferred_to": "M1"
   }
 }
