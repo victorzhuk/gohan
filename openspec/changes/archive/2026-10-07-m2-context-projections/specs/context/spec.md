@@ -10,7 +10,7 @@ The harness MUST apply the declared projections in order before it calls the cal
 
 `ClearToolResults` MUST replace eligible result content with a deterministic placeholder. It MUST preserve the result identity, outcome, error, and origin. It MUST decide `ClearAtLeast` through `ContextBudget` with a deterministic estimator. Cleared tokens MUST mean the positive difference between the original estimate and the candidate estimate, including placeholder cost. A firing MUST clear at least `ClearAtLeast` tokens or leave the history unchanged.
 
-This change does not emit `gohan.context.tokens_cleared`. The metric is owned by the later budget stage.
+A projection firing does not emit `gohan.context.tokens_cleared`. The budget stage owns that counter.
 
 #### Scenario: session log untouched
 ID: `context.projection-does-not-write`

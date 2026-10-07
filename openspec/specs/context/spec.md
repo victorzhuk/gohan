@@ -8,7 +8,6 @@ Capability: `context` · Spec v1.2 (ADR-0118) · Source of truth for this capabi
 
 Keeps a long-running session inside the model's context window without losing the properties the rest of the harness depends on: `SessionLog` stays the single source of truth, `Replay` stays deterministic, the audit trail stays complete, and provider differences in compaction stay behind one capability flag. Out of scope: cross-session memory (`working-state`), retrieval (`ContextProvider` in `assembly`), the prefix layout (`assembly`).
 
-
 ## Contract
 
 ### Two stages with different persistence
@@ -62,10 +61,17 @@ Rules:
 
 Metrics (`telemetry`): `gohan.context.compactions` counter by kind, `gohan.context.tokens_cleared` counter, `gohan.context.tokens_before`/`tokens_after` histograms, `gohan.context.cache_invalidated` counter.
 
-
 ## Requirements
 
 ### Requirement: Projections are views
+
+The harness MUST apply the declared projections in order before it calls the caller assembler. Each projection MUST receive the selected model profile and the current history version. The harness MUST use the projected messages only for assembly. A projection MUST NOT mutate the source history or write to a store. The harness MUST retain the existing blob resolution, redaction, and operator-turn fence after the caller assembler.
+
+`ClearToolResults` MUST identify each result's tool through its matching `ToolUse.ID`. It MUST count the last `Keep` tool uses in history order. It MUST preserve all `ToolUse` blocks and the position of each `ToolResult`. It MUST preserve results within the retained window. It MUST preserve results for tools in `Exclude`, including `notes_read` and `notes_write` regardless of caller configuration.
+
+`ClearToolResults` MUST replace eligible result content with a deterministic placeholder. It MUST preserve the result identity, outcome, error, and origin. It MUST decide `ClearAtLeast` through `ContextBudget` with a deterministic estimator. Cleared tokens MUST mean the positive difference between the original estimate and the candidate estimate, including placeholder cost. A firing MUST clear at least `ClearAtLeast` tokens or leave the history unchanged.
+
+A projection firing does not emit `gohan.context.tokens_cleared`. The budget stage owns that counter.
 
 #### Scenario: session log untouched
 ID: `context.projection-does-not-write`
@@ -94,6 +100,8 @@ ID: `context.clear-at-least`
 
 ### Requirement: Counting and calibration
 
+The harness MUST calibrate each profile's token estimator from reported usage and MUST persist the calibration ratio with the checkpoint, so a replayed run reaches the same compaction decision. On `ClassContextOverflow` for a request the budget accepted, the harness MUST compact once with the raised ratio and MUST retry the request once; a second overflow MUST fail the turn `Permanent`.
+
 #### Scenario: calibration from usage
 ID: `context.calibration-from-usage`
 - WHEN a response reports 12 000 input tokens for a request estimated at 10 000
@@ -110,6 +118,8 @@ ID: `context.overflow-compacts-and-retries-once`
 - THEN one compaction runs with the raised ratio, the request is retried once, and a second overflow fails `Permanent` with `gohan.context.overflow_retry` at 1
 
 ### Requirement: Compaction is persisted
+
+The harness MUST persist a compaction as a `Compaction` block that records `CoversUpTo`, and assembly MUST hide the covered versions. `CoversUpTo` MUST stay below any pending `ToolUse`. A replayed run MUST assemble the same request bytes as the original run did after compaction. A summary the guard rejects MUST NOT be persisted, and the turn MUST use `Truncate` instead. A `CompactionOpaque` block MUST bind to the model it was created for. Every persisted compaction MUST write the `Compacted` audit record and event.
 
 #### Scenario: compaction appended
 ID: `context.compaction-persisted`
