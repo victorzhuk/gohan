@@ -481,6 +481,19 @@ func (s *MemorySessionLog) Purge(ctx context.Context, olderThan time.Time) (int,
 	return len(purged), nil
 }
 
+// forkTitleSuffix marks a fork's inherited title as edited, so the two stay
+// distinguishable in a listing and the fork is never titled again.
+const forkTitleSuffix = " (edited)"
+
+// forkTitle returns the title a fork inherits: the parent's title marked
+// edited, or empty when the parent had none.
+func forkTitle(title string) string {
+	if title == "" {
+		return ""
+	}
+	return title + forkTitleSuffix
+}
+
 // Fork copies the parent's prefix through upTo into a new session of kind
 // SessionFork: same owner, message IDs and origins preserved, no dependents
 // inherited beyond what CopySessionDependents carries.
@@ -512,7 +525,8 @@ func (s *MemorySessionLog) Fork(ctx context.Context, from, upTo string) (string,
 		meta: SessionMeta{
 			ID:           childID,
 			Owner:        rec.meta.Owner,
-			Title:        rec.meta.Title,
+			Title:        forkTitle(rec.meta.Title),
+			TitleLocked:  rec.meta.TitleLocked,
 			Flow:         rec.meta.Flow,
 			Kind:         SessionFork,
 			ForkedFrom:   point,

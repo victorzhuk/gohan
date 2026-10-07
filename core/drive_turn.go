@@ -228,7 +228,7 @@ func appendFailedPartial(ctx context.Context, st runtime.State, env *turnEnv, re
 	}
 	asst := types.Message{ID: assistantID(env.turn), Role: types.RoleAssistant, Meta: map[string]any{metaFinish: types.FinishError}}
 	if reply != "" {
-		asst.Blocks = append(asst.Blocks, types.Text{Text: reply})
+		asst.Blocks = append(asst.Blocks, modelText(reply))
 	}
 	for _, call := range calls {
 		asst.Blocks = append(asst.Blocks, call)
@@ -418,7 +418,7 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 			return st, nil, runtime.Continue, err
 		}
 		if ok {
-			asst := types.Message{ID: assistantID(env.turn), Role: types.RoleAssistant, Blocks: []types.Block{types.Text{Text: reply}}}
+			asst := types.Message{ID: assistantID(env.turn), Role: types.RoleAssistant, Blocks: []types.Block{modelText(reply)}}
 			retainReasoning(&asst, reasoning.String())
 			env.msgs = append(env.msgs,
 				asst,
@@ -427,7 +427,7 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 			return st, nil, runtime.Continue, nil
 		}
 	}
-	asst := types.Message{ID: assistantID(env.turn), Role: types.RoleAssistant, Blocks: []types.Block{types.Text{Text: reply}}}
+	asst := types.Message{ID: assistantID(env.turn), Role: types.RoleAssistant, Blocks: []types.Block{modelText(reply)}}
 	retainReasoning(&asst, reasoning.String())
 	env.msgs = append(env.msgs, asst)
 	if h, ok := historyAppenderFrom(ctx); ok {
@@ -1189,3 +1189,13 @@ func truncatedTurn(tu types.ToolUse, res types.ToolResult, turn int) types.Messa
 
 func assistantID(turn int) string { return "assistant-" + strconv.Itoa(turn) }
 func resultID(turn int) string    { return "tool-results-" + strconv.Itoa(turn) }
+
+// modelText renders a model reply as a text block carrying the model
+// origin, so an assembled reply is attributed to the model the way the
+// legacy path stamps its own.
+func modelText(text string) types.Text {
+	return types.Text{
+		BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginModel}},
+		Text:      text,
+	}
+}

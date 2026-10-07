@@ -107,9 +107,10 @@ func (c *conversation) TakeOver(ctx context.Context, sessionID string, token typ
 	return nil
 }
 
-// HandBack returns control to the agent. Restoring the fenced operator
-// turns into the model request is M1-deferred; this chunk only moves the
-// control state back and audits it.
+// HandBack returns control to the agent: it moves the stored control state
+// back to ControlAgent and audits the transition. The operator turns already
+// sit in history under OriginOperator and are never rewritten here; request
+// shaping is what fences them for the model.
 func (c *conversation) HandBack(ctx context.Context, sessionID string, operator types.Principal) error {
 	if operator.Subject == "" {
 		return types.ErrNoPrincipal

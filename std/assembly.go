@@ -12,6 +12,7 @@ import (
 	"sync"
 	"unsafe"
 
+	gohan "github.com/victorzhuk/gohan/core"
 	"github.com/victorzhuk/gohan/core/types"
 	"github.com/victorzhuk/gohan/std/cache"
 	"github.com/victorzhuk/gohan/std/tokens"
@@ -177,7 +178,7 @@ func storePrefix(in AssembleInput, req types.ModelRequest) {
 // Usage.CacheWriteTokens. The cache computes no cost.
 func (p StablePrefix) Assemble(ctx context.Context, in AssembleInput) (types.ModelRequest, error) {
 	if p.operatorTurn != "" {
-		in.History = fenceOperatorTurns(in.History, p.operatorTurn)
+		in.History = gohan.ProjectOperatorTurns(in.History, p.operatorTurn)
 	}
 	if in.Filter != nil {
 		return build(ctx, in)
@@ -385,35 +386,4 @@ func provideSlot(ctx context.Context, in AssembleInput, slot types.ContextSlot, 
 		blocks = append(blocks, got...)
 	}
 	return blocks, nil
-}
-
-// fenceOperatorTurns projects operator-origin history turns with a
-// preceding system marker. The projection is per-request: the input
-// history is never rewritten, and a turn without an operator block passes
-// through untouched.
-func fenceOperatorTurns(history []types.Message, marker string) []types.Message {
-	out := make([]types.Message, 0, len(history)+4)
-	for _, msg := range history {
-		if !hasOrigin(msg.Blocks, types.OriginOperator) {
-			out = append(out, msg)
-			continue
-		}
-		out = append(out, types.Message{
-			Role: types.RoleUser,
-			Blocks: []types.Block{types.Text{
-				BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginSystem}},
-				Text:      marker,
-			}},
-		}, msg)
-	}
-	return out
-}
-
-func hasOrigin(blocks []types.Block, kind types.OriginKind) bool {
-	for _, b := range blocks {
-		if b.BlockOrigin().Kind == kind {
-			return true
-		}
-	}
-	return false
 }

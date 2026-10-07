@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	gohan "github.com/victorzhuk/gohan/core"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -277,6 +278,20 @@ func TestOperatorFence(t *testing.T) {
 					t.Fatal("fence rewrote the input history")
 				}
 			}
+		}
+	})
+
+	t.Run("assembly-fence-core-projection-idempotent", func(t *testing.T) {
+		history := newHistory()
+		p := NewStablePrefix(WithOperatorTurnPrompt(marker))
+		req, err := p.Assemble(context.Background(), AssembleInput{History: history})
+		if err != nil {
+			t.Fatalf("assemble: %v", err)
+		}
+		req.Messages = gohan.ProjectOperatorTurns(req.Messages, marker)
+		markers, operatorTurns := countBlocks(req)
+		if markers != 2 || operatorTurns != 2 {
+			t.Fatalf("markers=%d operatorTurns=%d, want 2/2 after a second projection", markers, operatorTurns)
 		}
 	})
 

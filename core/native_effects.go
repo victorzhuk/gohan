@@ -234,10 +234,64 @@ func nativeAssemble(
 				return types.ModelRequest{}, err
 			}
 		}
+		req.Messages = ProjectOperatorTurns(req.Messages, ps.OperatorTurn)
 		if block, ok := promptBlock(ps); ok {
 			req.System = append([]types.Block{block}, req.System...)
 		}
 		return req, nil
+	}
+}
+
+// ProjectOperatorTurns projects every operator-origin turn with a
+// preceding system marker carrying the operator-turn prompt. The
+// projection is idempotent: a turn already preceded by its marker passes
+// through untouched, so a request that crosses two projections keeps
+// exactly one marker per operator turn. An empty marker disables the
+// projection.
+func ProjectOperatorTurns(messages []types.Message, marker string) []types.Message {
+	if marker == "" {
+		return messages
+	}
+	out := make([]types.Message, 0, len(messages)+4)
+	for i, msg := range messages {
+		if !hasOperatorBlock(msg.Blocks) {
+			out = append(out, msg)
+			continue
+		}
+		if i > 0 && isOperatorFence(messages[i-1], marker) {
+			out = append(out, msg)
+			continue
+		}
+		out = append(out, operatorFence(marker), msg)
+	}
+	return out
+}
+
+func hasOperatorBlock(blocks []types.Block) bool {
+	for _, b := range blocks {
+		if b.BlockOrigin().Kind == types.OriginOperator {
+			return true
+		}
+	}
+	return false
+}
+
+func isOperatorFence(msg types.Message, marker string) bool {
+	for _, b := range msg.Blocks {
+		if txt, ok := b.(types.Text); ok && txt.BlockOrigin().Kind == types.OriginSystem && txt.Text == marker {
+			return true
+		}
+	}
+	return false
+}
+
+func operatorFence(marker string) types.Message {
+	return types.Message{
+		Role: types.RoleUser,
+		Blocks: []types.Block{types.Text{
+			BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginSystem}},
+			Text:      marker,
+		}},
 	}
 }
 

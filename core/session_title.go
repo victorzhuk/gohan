@@ -12,6 +12,10 @@ import (
 // titleCostFeature is the cost tag the title child run carries.
 const titleCostFeature = "title"
 
+// titleSessionSuffix names the child session the title run records. Session
+// ids may not carry a slash, so the suffix stands in for one.
+const titleSessionSuffix = "#title"
+
 // titleInstruction is the one model-facing sentence the trigger adds
 // ahead of the conversation blocks.
 const titleInstruction = "Write a title for this conversation in at most six words. Answer with a JSON string."
@@ -24,23 +28,12 @@ func (c *conversation) maybeTitle(ctx context.Context, sessionID string) {
 	if c.titleProfile == "" || c.recipeModel == nil {
 		return
 	}
-	principal, hasPrincipal := types.PrincipalFrom(ctx)
 	pending, err := c.titlePending(ctx, sessionID)
 	if err != nil || !pending {
 		return
 	}
-	tctx := types.WithRunInfo(context.WithoutCancel(ctx), types.RunInfo{
-		Flow:        c.spec,
-		SessionID:   sessionID,
-		ParentRunID: sessionID,
-		Principal:   principal,
-		CostTags:    types.CostTags{Feature: titleCostFeature},
-	})
-	if hasPrincipal {
-		tctx = types.WithPrincipal(tctx, principal)
-	}
 	c.markTitled(sessionID)
-	go c.generateTitle(tctx, sessionID)
+	go c.generateTitle(context.WithoutCancel(ctx), sessionID)
 }
 
 func (c *conversation) markTitled(sessionID string) {
@@ -88,25 +81,70 @@ func (c *conversation) titlePending(ctx context.Context, sessionID string) (bool
 	return false, nil
 }
 
-// generateTitle runs one child run of the primary run and writes the title
-// with UpdateSession. The write locks the title, so a rename always wins
-// and a session is titled at most once.
+// generateTitle runs one governed child run of the primary run it titles
+// and writes the result with UpdateSession. The write locks the title, so
+// a rename always wins and a session is titled at most once.
 func (c *conversation) generateTitle(ctx context.Context, sessionID string) {
+	runID, err := newRunID()
+	if err != nil {
+		return
+	}
+	info := ChildRunInfo(ctx, runID)
+	info.SessionID = sessionID + titleSessionSuffix
+	info.CostTags = types.CostTags{Feature: titleCostFeature}
+	ctx = types.WithRunInfo(ctx, info)
+	var lease stores.Lease
+	if c.runs != nil {
+		if lease, err = c.runs.Start(ctx, RunRow(info), stores.LeaseTTL); err != nil {
+			return
+		}
+	}
+	c.linkTitleSession(ctx, sessionID)
 	h, err := c.load(ctx, sessionID)
 	if err != nil {
+		c.finishTitleRun(ctx, lease, stores.Failed)
 		return
 	}
 	blocks := titleInput(h.Messages)
 	if len(blocks) == 0 {
+		c.finishTitleRun(ctx, lease, stores.Finished)
 		return
 	}
 	title, err := c.titleCall(ctx, blocks)
 	if err != nil || title == "" {
+		c.finishTitleRun(ctx, lease, stores.Failed)
 		return
 	}
 	if idx, ok := c.log.(stores.SessionIndex); ok {
 		_ = idx.UpdateSession(ctx, sessionID, stores.SessionPatch{Title: &title})
 	}
+	c.finishTitleRun(ctx, lease, stores.Finished)
+}
+
+// linkTitleSession records the title run's child session and links it to
+// the session it titles, so the child hides from the default listing and
+// follows the parent's delete cascade.
+func (c *conversation) linkTitleSession(ctx context.Context, parentID string) {
+	childID := parentID + titleSessionSuffix
+	if _, err := c.log.Append(ctx, childID, 0); err != nil {
+		return
+	}
+	linker, ok := c.log.(interface {
+		Link(ctx context.Context, parentID, childID string, kind stores.SessionKind) error
+	})
+	if !ok {
+		return
+	}
+	_ = linker.Link(ctx, parentID, childID, stores.SessionChild)
+}
+
+// finishTitleRun closes the title run's row when the conversation drives a
+// runs store; a test conversation without one has nothing to close.
+func (c *conversation) finishTitleRun(ctx context.Context, lease stores.Lease, state stores.RunState) {
+	if c.runs == nil {
+		return
+	}
+	_ = c.runs.Finish(ctx, lease, state, nil, "")
 }
 
 // titleCall makes one governed model call over the profile the stack
