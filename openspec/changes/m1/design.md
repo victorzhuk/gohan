@@ -200,15 +200,15 @@ These come from the `m1` proposal scope and the M1 row of `docs/overview.md` and
 
 | Obligation | Owner | Status | Evidence |
 |---|---|---|---|
-| `ToolSpec.Trust` and the manifest hash's `trust` input, declared by the `tools` spec and missing from the shipped struct and `std/manifest.go` | `m1-taint-enforcement` | integration gap | discovered while wiring the trifecta's untrusted leg; the `tools` ToolSpec block and the *Tool spec pinning* requirement both name the field, and `ToolManifestHash` does not hash it |
-| `Verify` end-to-end (Failed reconciliation, audit, lifecycle execution) | `m1-verify-public-paths` | integration gap | `std/verify.go` has no `Failed` reconciliation and discards journal errors |
+| `ToolSpec.Trust` and the manifest hash's `trust` input, declared by the `tools` spec and missing from the shipped struct and `std/manifest.go` | `m1-taint-enforcement` | shipped | `ToolSpec.Trust` in `core/types/tool.go:91`, hashed by `ToolManifestHash` (`std/manifest.go:31`) and enforced at resolve (`core/native_resolve.go:120`); covered by `core/taint_trifecta_scenarios_test.go` |
+| `Verify` end-to-end (Failed reconciliation, audit, lifecycle execution) | `m1-verify-public-paths` | shipped | `std/verify.go` wraps every journal and audit failure and leaves the entry `Unknown`; `Reconcile` runs at the turn (`core/drive_turn.go:782`), lifecycle (`core/drive_lifecycle.go:927`) and recovery (`core/recover.go:168`) seams |
 | `std/redact` rules + HMAC `Redactor` + `EraseSubject` | `m1-redaction-pipeline`, `m1-subject-erasure-residency` | shipped | `std/redact` exists (`redact.go`, `key.go`) |
 | `std/cache` key builder + exact-match cache | `m1-exact-match-cache` | shipped | `std/cache` exists (`cache.go`, `store.go`) |
 | `std/hedge` | `m1-hedged-model-calls` | shipped | `std/hedge` exists (`hedge.go`) |
 | `std/notify` + `std/notify/webhook` | `m1-run-notifications` | shipped | `std/notify` and `std/notify/webhook` exist |
 | `std/egress` + `std/tool/http.Fetch` | `m1-egress-policy` | shipped | `std/egress` and `std/tool/http` exist (`std/tool` also holds `exec` and `provider`) |
 | `std/flags`; adapter/openfeature later | `m1-flags-control` | shipped | `std/flags` exists; openfeature stays out of M1 |
-| sunset/successor validation, schema versions, upcaster registry, cost tags | `m1-model-retirement-cost`, `m1-schema-read-paths` | integration gap | registry and suite types ship; readers do not |
+| sunset/successor validation, schema versions, upcaster registry, cost tags | `m1-model-retirement-cost`, `m1-schema-read-paths` | shipped | `checkSuccessorOptions` (`core/native_resolve.go:60`), the envelope and upcast registry (`core/stores/schema.go`), `storetest.Schemas` (`testkit/storetest/schemas.go:68`), `types.CostTags` |
 | adapter/openai (+vLLM), adapter/anthropic with error normalization and version reporting | `m1-provider-conformance-contract`, `m1-openai-provider`, `m1-anthropic-provider` | shipped | `adapter/openai` and `adapter/anthropic` exist beside `adapter/otel` |
 | adapter/postgres, all ports incl. `AuditLog`, plus `CompleteTx` | `m1-postgres-stores` | shipped | `adapter/postgres` implements the ports on one pool with embedded migrations; `CompleteTx` shares the guarded statement path (`adapter/postgres/journal.go`) |
 | limit.Local + breaker, class-based retry/fallback, router Static/ByLatencyClass | `m1-s1-s2-acceptance` | shipped, integration gap for `ByLatencyClass` | `std/limit/{model,run}.go`, `std/retry/retry.go`, `std/route/{route,breaker,fallback}.go` ship; `ByLatencyClass` has no implementation |

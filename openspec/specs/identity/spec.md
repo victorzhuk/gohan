@@ -172,6 +172,8 @@ ID: `identity.token-never-exported`
 
 ### Requirement: Session ownership and resume boundaries
 
+A session is owned by the tenant that opened it. A call from another tenant MUST be refused before any store is read. A principal of the owner's tenant holding `session:read` MAY inspect without being the subject. A tool running inside a run MUST NOT consume that run's pending resume token. The recorded approver MUST come from the transport principal, with no API to pass another. A `Credential` MUST NOT appear in a checkpoint, an audit record or a span.
+
 #### Scenario: cross-tenant send forbidden
 ID: `identity.session-forbidden-cross-tenant`
 - WHEN a principal of tenant B calls `Send` on a session owned by tenant A
@@ -227,6 +229,8 @@ ID: `identity.idempotency-key-transport-only`
 - THEN `task lint` fails on the depguard rule and, at runtime, the sub-flow's `IdempotencyKey` returns `ok == false`
 
 ### Requirement: Run trees
+
+A sub-flow tree shares its root's run budget: cumulative cost across the hub and its sub-flows MUST be charged against the hub's limit, and the hub MUST abort when the limit is exceeded. `Recover` MUST reclaim a stale tree at its root and replay it, with the tree's spans nesting under the root `invoke_agent` span.
 
 #### Scenario: tree budget
 ID: `identity.tree-budget`
