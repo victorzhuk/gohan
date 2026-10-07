@@ -78,6 +78,7 @@ type Stack struct {
 	estimator        types.TokenEstimator
 	keys             types.ProviderKeySource
 	credentials      types.CredentialSource
+	notifier         types.Notifier
 	approvalPolicy   permission.ApprovalPolicySource
 	verifier         types.Verifier
 	egressClient     func(p types.EgressPolicy) *http.Client
@@ -94,6 +95,8 @@ type Stack struct {
 	recovery         map[string]runtime.Runtime
 	manifest         ReleaseManifest
 	consolidator     func(ConsolidationWiring) MemoryConsolidator
+	flags            types.Flags
+	frozen           map[string]any
 }
 
 // Limits returns the resolved run limits installed for a flow.
@@ -101,6 +104,9 @@ func (s *Stack) Limits(flow string) (types.RunLimits, bool) {
 	l, ok := s.limits[flow]
 	return l, ok
 }
+
+// Notifier returns the sink WithNotifier bound for run notice delivery.
+func (s *Stack) Notifier() types.Notifier { return s.notifier }
 
 // Prompts returns the PromptSet Build resolved. Recipes read the caller's
 // model-facing strings here instead of carrying a literal of their own.
@@ -144,6 +150,7 @@ func Build(opts ...Option) (*Stack, error) {
 		estimator:        cfg.estimator,
 		keys:             cfg.keys,
 		credentials:      cfg.credentials,
+		notifier:         cfg.notifier,
 		approvalPolicy:   cfg.approvalPolicy,
 		verifier:         cfg.verifier,
 		egressClient:     cfg.egressClient,
@@ -158,6 +165,8 @@ func Build(opts ...Option) (*Stack, error) {
 		stores:           cfg.stores,
 		tenant:           cfg.tenant,
 		consolidator:     cfg.consolidator,
+		flags:            cfg.flags,
+		frozen:           cfg.frozen,
 	}
 	if err := checkResidency(cfg.tenant, cfg.stores, profiles); err != nil {
 		return nil, err

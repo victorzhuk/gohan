@@ -156,6 +156,42 @@ func (s *MemoryJournal) Complete(ctx context.Context, k types.CallKey, res types
 	return nil
 }
 
+// ModelCompletion carries the extended fields a model step records on its
+// journal entry: the attempts that started and the winner's endpoint.
+type ModelCompletion struct {
+	Attempts int
+	Endpoint string
+}
+
+// ModelCompleter is implemented by journals that carry the model step's
+// extended entry fields. The base Journal interface stays unchanged, so a
+// store without the extension keeps compiling; the driver degrades to a
+// plain Complete when the assertion fails.
+type ModelCompleter interface {
+	CompleteModel(ctx context.Context, k types.CallKey, res types.ToolResult, mc ModelCompletion) error
+}
+
+// CompleteModel records the result and the model step's extended fields.
+func (s *MemoryJournal) CompleteModel(ctx context.Context, k types.CallKey, res types.ToolResult, mc ModelCompletion) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.byKey[k]
+	if !ok || !s.now().Before(rec.expireAt) {
+		return ErrJournalCompleteMissed
+	}
+	rec.entry.State = Completed
+	rec.entry.Result = copyToolResult(res)
+	rec.entry.Attempts = mc.Attempts
+	rec.entry.Endpoint = mc.Endpoint
+	rec.entry.At = s.now()
+	raw, err := encodeEnvelope("Entry", rec.entry)
+	if err != nil {
+		return err
+	}
+	rec.raw = raw
+	return nil
+}
+
 // ByFingerprint lists the session's non-expired entries for a fingerprint.
 func (s *MemoryJournal) ByFingerprint(ctx context.Context, sessionID string, fp Fingerprint) ([]Entry, error) {
 	s.mu.Lock()

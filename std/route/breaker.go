@@ -66,6 +66,32 @@ func NewBreaker(opts ...BreakerOption) *Breaker {
 	return b
 }
 
+// BreakerState is the read-only view of a breaker: Closed admits freely,
+// Open refuses, HalfOpen has a probe pending or in flight. Reading it
+// consumes no probe.
+type BreakerState int
+
+const (
+	Closed BreakerState = iota
+	Open
+	HalfOpen
+)
+
+// State reports the breaker's read-only state: Closed under the failure
+// threshold, HalfOpen once the window has elapsed, Open otherwise. Reading
+// it never consumes the half-open probe.
+func (b *Breaker) State() BreakerState {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.failures < b.openThreshold {
+		return Closed
+	}
+	if b.probing || time.Since(b.openedAt) >= b.window+b.halfOpenDelay {
+		return HalfOpen
+	}
+	return Open
+}
+
 // Allow reports whether a call may start on this endpoint: the breaker is
 // closed, or the half-open delay has passed and the probe is free.
 func (b *Breaker) Allow() bool {

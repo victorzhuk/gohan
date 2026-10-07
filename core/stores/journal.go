@@ -34,6 +34,12 @@ type Entry struct {
 	Args        json.RawMessage
 	Result      types.ToolResult
 	At          time.Time
+	// Attempts counts the model attempts that started under this entry:
+	// 1 for a plain call, 2 for a hedged pair. Zero for a tool entry.
+	Attempts int
+	// Endpoint names the winning endpoint of a model step. Empty for a
+	// tool entry.
+	Endpoint string
 }
 
 // ErrJournalFingerprintMismatch reports that a call key was presented with

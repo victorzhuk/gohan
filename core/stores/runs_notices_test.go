@@ -118,3 +118,66 @@ func TestRunsNotices(t *testing.T) {
 		}
 	})
 }
+
+func TestNoticeReason(t *testing.T) {
+	newStore := func(t *testing.T) *MemoryRuns {
+		t.Helper()
+		return NewMemoryRuns(
+			WithMemoryRunClock(time.Now),
+			WithMemoryRunInfo(func(context.Context) (types.RunInfo, bool) {
+				return types.RunInfo{Principal: types.Principal{Tenant: "acme"}}, true
+			}),
+		)
+	}
+	start := func(t *testing.T, s *MemoryRuns) Lease {
+		t.Helper()
+		lease, err := s.Start(context.Background(), Run{SessionID: "s-1", RunID: "r-1"}, time.Minute)
+		if err != nil {
+			t.Fatalf("Start() error = %v", err)
+		}
+		return lease
+	}
+	claim := func(t *testing.T, s *MemoryRuns) types.RunNotice {
+		t.Helper()
+		claimed, err := s.Notices(context.Background(), 10)
+		if err != nil || len(claimed) != 1 {
+			t.Fatalf("Notices() = %v, %d notices, want 1", err, len(claimed))
+		}
+		return claimed[0]
+	}
+
+	t.Run("suspension carries the suspend reason name", func(t *testing.T) {
+		s := newStore(t)
+		lease := start(t, s)
+		if err := s.SuspendWithReason(context.Background(), lease, "cp_1", types.HumanApproval); err != nil {
+			t.Fatalf("SuspendWithReason() error = %v", err)
+		}
+		n := claim(t, s)
+		if n.Kind != types.NoticeSuspended || n.Reason != "HumanApproval" {
+			t.Fatalf("notice = %+v, want suspended/HumanApproval", n)
+		}
+	})
+
+	t.Run("suspension without a reason stays suspended", func(t *testing.T) {
+		s := newStore(t)
+		lease := start(t, s)
+		if err := s.Suspend(context.Background(), lease, "cp_1"); err != nil {
+			t.Fatalf("Suspend() error = %v", err)
+		}
+		if n := claim(t, s); n.Reason != string(types.StopSuspended) {
+			t.Fatalf("reason = %q, want %q", n.Reason, types.StopSuspended)
+		}
+	})
+
+	t.Run("cancel finishes as a cancelled notice", func(t *testing.T) {
+		s := newStore(t)
+		lease := start(t, s)
+		if err := s.FinishWithReason(context.Background(), lease, Finished, nil, "", types.StopCancelled); err != nil {
+			t.Fatalf("FinishWithReason() error = %v", err)
+		}
+		n := claim(t, s)
+		if n.Kind != types.NoticeCancelled || n.Reason != string(types.StopCancelled) {
+			t.Fatalf("notice = %+v, want cancelled/%s", n, types.StopCancelled)
+		}
+	})
+}

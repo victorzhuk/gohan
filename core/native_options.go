@@ -29,8 +29,10 @@ type NativeSpec struct {
 	// verification triggers. A nil verifier falls back to the stack-level
 	// one; a nil stack-level one leaves unknown keys to the uncertainty set.
 	Verifier types.Verifier
-	// LiveDeny declares this flow's live deny source. A nil source adds no live denies.
-	LiveDeny func(ctx context.Context, inv *permission.ToolInvocation) (string, bool)
+	// LiveControl declares this flow's live-control check: it can deny,
+	// force Ask or allow, and suspends on a stale or default evaluation.
+	// A nil check adds no live control.
+	LiveControl func(ctx context.Context, inv *permission.ToolInvocation) (types.TaintAction, string)
 	// MemoryPolicy declares this flow's subject-memory policy. A zero
 	// value declares no subject memory: the flow never consolidates.
 	MemoryPolicy stores.MemoryPolicy

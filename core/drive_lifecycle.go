@@ -359,7 +359,7 @@ func DriveLifecycle(ctx context.Context, lc *Lifecycle, rt runtime.Runtime, r ru
 		if err != nil {
 			// The conversation already holds the lease; the lifecycle
 			// owns the failed terminal transition for it.
-			_ = lc.finishRun(ctx, runtime.State{}, stores.Failed, nil)
+			_ = lc.finishRun(ctx, runtime.State{}, stores.Failed, nil, types.StopFailed)
 			yield(nil, err)
 			return
 		}
@@ -477,7 +477,7 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 				yield(ev, nil)
 				return
 			}
-			if ferr := lc.finishRun(sctx, st, stores.Failed, nil); ferr != nil {
+			if ferr := lc.finishRun(sctx, st, stores.Failed, nil, types.StopFailed); ferr != nil {
 				yield(nil, ferr)
 				return
 			}
@@ -675,7 +675,11 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 		return nil, err
 	}
 	if lc.runs != nil {
-		if err := lc.runs.Suspend(ctx, lc.lease, token); err != nil {
+		if sr, ok := lc.runs.(stores.SuspendReasonRecorder); ok {
+			if err := sr.SuspendWithReason(ctx, lc.lease, token, reason); err != nil {
+				return nil, err
+			}
+		} else if err := lc.runs.Suspend(ctx, lc.lease, token); err != nil {
 			return nil, err
 		}
 	}
@@ -903,7 +907,7 @@ func (lc *Lifecycle) finishTurn(ctx context.Context, st runtime.State, terminal 
 			return st, nil, false, err
 		}
 	}
-	err := lc.finishRun(ctx, st, stores.Finished, unknown)
+	err := lc.finishRun(ctx, st, stores.Finished, unknown, types.StopCompleted)
 	if errors.Is(err, types.ErrSignalsPending) {
 		// A steer arrived between the safe point and Finish: drain it and
 		// run one more turn.
@@ -954,7 +958,7 @@ func (lc *Lifecycle) applySignals(ctx context.Context, st runtime.State, sigs []
 	steered := false
 	for _, sig := range sigs {
 		if sig.Kind == stores.SignalCancel {
-			if err := lc.finishRun(ctx, st, stores.Finished, nil); err != nil {
+			if err := lc.finishRun(ctx, st, stores.Finished, nil, types.StopCancelled); err != nil {
 				return st, true, false, nil, err
 			}
 			return st, true, false, []types.Event{lc.done(st, nil, types.StopCancelled)}, nil
@@ -995,7 +999,7 @@ func (lc *Lifecycle) applySignals(ctx context.Context, st runtime.State, sigs []
 		return st, false, false, nil, nil
 	}
 	if lc.maxTurns > 0 && st.Turn >= lc.maxTurns {
-		if err := lc.finishRun(ctx, st, stores.Finished, lc.callKeys(st)); err != nil {
+		if err := lc.finishRun(ctx, st, stores.Finished, lc.callKeys(st), types.StopLimit); err != nil {
 			return st, true, false, nil, err
 		}
 		return st, true, false, append(evs, lc.done(st, nil, types.StopLimit)), nil
@@ -1005,9 +1009,12 @@ func (lc *Lifecycle) applySignals(ctx context.Context, st runtime.State, sigs []
 
 // finishRun closes the run with the given terminal state. A Finish refused
 // with ErrSignalsPending keeps the run alive, so the heartbeat survives it.
-func (lc *Lifecycle) finishRun(ctx context.Context, st runtime.State, state stores.RunState, uncertain []types.CallKey) error {
+func (lc *Lifecycle) finishRun(ctx context.Context, st runtime.State, state stores.RunState, uncertain []types.CallKey, stop types.StopReason) error {
 	if lc.runs == nil {
 		return nil
+	}
+	if fr, ok := lc.runs.(stores.FinishReasonRecorder); ok {
+		return fr.FinishWithReason(ctx, lc.lease, state, uncertain, lc.resultRef, stop)
 	}
 	return lc.runs.Finish(ctx, lc.lease, state, uncertain, lc.resultRef)
 }

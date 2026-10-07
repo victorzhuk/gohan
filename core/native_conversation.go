@@ -117,6 +117,9 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 	if c.detached && c.events == nil {
 		return nil, errDetachedNoLog
 	}
+	if c.detached && stack.Notifier() == nil {
+		stack.logger.Warn("detached flow has no notifier; notices stay in the runs outbox until a dispatcher delivers them", "flow", name)
+	}
 	if c.events == nil {
 		return nil, errConversationEvents
 	}
@@ -142,8 +145,8 @@ func nativeBatchGate(cfg *resolvedNativeConfig, hist stores.History) runtime.Bat
 		if cfg.taintPolicy != nil {
 			opts = append(opts, permission.WithTaintHook(cfg.taintPolicy))
 		}
-		if cfg.liveDeny != nil {
-			opts = append(opts, permission.WithLiveDeny(cfg.liveDeny))
+		if cfg.liveControl != nil {
+			opts = append(opts, permission.WithLiveControl(cfg.liveControl))
 		}
 		dec := permission.DecideCall(ctx, cfg.decider, inv, opts...)
 		switch dec.Verdict {
@@ -153,6 +156,8 @@ func nativeBatchGate(cfg *resolvedNativeConfig, hist stores.History) runtime.Bat
 			return runtime.BatchDecision{Outcome: runtime.BatchDeny, Reason: dec.Reason}
 		case permission.TaintDenied:
 			return runtime.BatchDecision{Outcome: runtime.BatchTaintDenied, Reason: dec.Reason}
+		case permission.ControlWait:
+			return runtime.BatchDecision{Outcome: runtime.BatchAsk, Reason: permission.ControlWaitReason}
 		default:
 			return runtime.BatchDecision{Outcome: runtime.BatchAsk, Taints: dec.Taints}
 		}

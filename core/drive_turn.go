@@ -39,6 +39,11 @@ type turnConfig struct {
 	verifier  types.Verifier
 	journal   stores.Journal
 
+	// modelJournal records whether the registered tools can take the
+	// before-batch write path; a read-only-only toolset never journals a
+	// model step, per chains.read-only-tools-pay-nothing.
+	modelJournal bool
+
 	// providerGate runs the pre-call permission gate on registered
 	// provider-executed specs before the request is sent and drops the
 	// declarations the verdict refuses; nil leaves the request untouched.
@@ -280,11 +285,30 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	}
 	st.Turn = env.turn
 
+	// One model call journals one entry. A re-drive that finds the entry
+	// completed replays the recorded response instead of re-issuing the
+	// call, so a hedged pair is never sent twice.
+	k, journalling := modelStepKey(ctx, env.turn)
+	if c.journal == nil || !c.modelJournal {
+		journalling = false
+	}
+	if journalling {
+		entry, created, rerr := c.journal.Reserve(ctx, k, "model", modelFingerprint(env.turn), nil)
+		if rerr != nil {
+			return st, nil, runtime.Continue, fmt.Errorf("reserve model step %s: %w", k.CallID, rerr)
+		}
+		if !created && entry.State == stores.Completed {
+			return replayModelStep(ctx, st, env, entry)
+		}
+	}
+
 	var sb strings.Builder
 	var reasoning strings.Builder
 	var calls []types.ToolUse
 	finish := types.FinishStop
+	hsink := &types.HedgeSink{}
 	mctx, endChat := startSpan(ctx, telemetryFrom(ctx), SpanChat)
+	mctx = types.WithHedgeSink(mctx, hsink)
 	for chunk, err := range c.model(mctx, req) {
 		if err != nil {
 			endChat(types.String(types.KeySuspendReason, "error"))
@@ -333,6 +357,12 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	}
 	endChat()
 	recordFinish(ctx, finish)
+	if journalling {
+		if err := completeModelStep(ctx, c.journal, k, hsink, sb.String(), reasoning.String(), calls); err != nil {
+			env.flushDeltas(ctx)
+			return st, nil, runtime.Continue, err
+		}
+	}
 
 	// A truncated finish earns a retry turn before anything executes:
 	// the pending calls are never run, the truncation result goes back

@@ -82,6 +82,10 @@ type RunInfo struct {
 	ReleaseID    string
 	Variant      string
 	Mode         RunMode
+	// Flags is the frozen snapshot evaluated once at run start; it has
+	// the shape of runtime.FlagSnapshot, which the checkpoint state
+	// reuses, so steer and cancel never re-evaluate.
+	Flags map[string]any
 }
 
 // Approval records who approved a resume. It travels in ctx on the resumed
@@ -142,6 +146,13 @@ func PrincipalFrom(ctx context.Context) (Principal, bool) {
 func RunInfoFrom(ctx context.Context) (RunInfo, bool) {
 	r, ok := ctx.Value(ctxRunInfo).(RunInfo)
 	return r, ok
+}
+
+// FlagsFrom reports the frozen snapshot in ctx, or ok == false outside a
+// run or when the run carries no snapshot.
+func FlagsFrom(ctx context.Context) (map[string]any, bool) {
+	r, ok := RunInfoFrom(ctx)
+	return r.Flags, ok && r.Flags != nil
 }
 
 // ApprovalFrom reports the approval a resume delivered, or ok == false on a

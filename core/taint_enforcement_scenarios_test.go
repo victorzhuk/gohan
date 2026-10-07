@@ -84,8 +84,8 @@ func TestTaintEnforcementScenarios(t *testing.T) {
 				},
 			}
 			if scenario.liveDeny {
-				native.LiveDeny = func(context.Context, *permission.ToolInvocation) (string, bool) {
-					return "emergency deny", true
+				native.LiveControl = func(context.Context, *permission.ToolInvocation) (types.TaintAction, string) {
+					return types.TaintDeny, "emergency deny"
 				}
 			}
 			stack, err := gohan.Build(

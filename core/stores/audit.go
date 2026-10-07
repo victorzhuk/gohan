@@ -32,6 +32,7 @@ const (
 	AuditApproval     AuditKind = "approval"
 	AuditGrantedScope AuditKind = "granted_by_scope"
 	AuditEgressDenied AuditKind = "egress_denied"
+	AuditNoticeDead   AuditKind = "notice_dead"
 )
 
 // AuditRecord is one entry of the decision trail. It carries checksums and

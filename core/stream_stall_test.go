@@ -93,6 +93,13 @@ func (f *stallRuns) Suspend(ctx context.Context, l stores.Lease, t types.ResumeT
 	return f.MemoryRuns.Suspend(ctx, l, t)
 }
 
+func (f *stallRuns) SuspendWithReason(ctx context.Context, l stores.Lease, t types.ResumeToken, reason types.SuspendReason) error {
+	f.mu.Lock()
+	f.suspended = append(f.suspended, t)
+	f.mu.Unlock()
+	return f.MemoryRuns.SuspendWithReason(ctx, l, t, reason)
+}
+
 func stallWait(t *testing.T, name string, fn func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

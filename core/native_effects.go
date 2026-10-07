@@ -24,7 +24,7 @@ import (
 // conversation wiring supplies both per run.
 func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 	toolset := nativeToolset(cfg.tools)
-	return turnConfig{
+	tc := turnConfig{
 		// Supervision wraps only the provider, so the chain steps and
 		// the middleware above it keep running on the caller's goroutine.
 		model:        recordRunCost(runModelChain(cfg.modelChain, deprecatedRoute(s.telemetry, cfg.profile, NewModelStream(cfg.model).Generate, s.successorModelFunc(cfg.profile)))),
@@ -46,6 +46,14 @@ func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 		verifier: cfg.verifier,
 		journal:  s.stores.Journal,
 	}
+	tc.modelJournal = len(cfg.tools) == 0
+	for _, t := range cfg.tools {
+		if e := t.Spec().Effect; e == types.Idempotent || e == types.SideEffect {
+			tc.modelJournal = true
+			break
+		}
+	}
+	return tc
 }
 
 // nativeRun creates one run's effect pair over the bound configuration. The

@@ -105,7 +105,7 @@ func (c *conversation) run(ctx context.Context, lease stores.Lease, sessionID st
 			if err != nil {
 				// The run is already acquired: close it as Failed so the
 				// lease never dangles behind the error tuple.
-				if ferr := lc.finishRun(ctx, runtime.State{}, stores.Failed, nil); ferr != nil {
+				if ferr := lc.finishRun(ctx, runtime.State{}, stores.Failed, nil, types.StopFailed); ferr != nil {
 					yield(nil, ferr)
 					return
 				}

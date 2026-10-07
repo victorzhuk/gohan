@@ -91,6 +91,19 @@ func (r *Router) Candidates() []types.Model {
 	return out
 }
 
+// Eligible returns the endpoints, in strategy order, whose breaker is
+// Closed. It is a read-only admission view for a hedge: it never calls
+// Allow, so a half-open probe stays unconsumed.
+func (r *Router) Eligible() []types.Model {
+	var out []types.Model
+	for _, m := range r.models {
+		if r.breakers[m.Profile().Name].State() == Closed {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 // Breaker returns the endpoint's breaker, so a caller can tune its window or
 // observe its state.
 func (r *Router) Breaker(name string) *Breaker {

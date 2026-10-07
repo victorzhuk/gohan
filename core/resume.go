@@ -329,6 +329,20 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 		rt := c.rt
 		ag := runtime.AgentRun{}
 		runCtx := credCtx
+		// Replay honours the snapshot the first execution observed: a
+		// key the current provider no longer reports at its recorded
+		// value fails the replay before any model call.
+		if c.flags != nil && len(st.Flags) > 0 {
+			if aerr := AssertFlags(map[string]any(st.Flags), c.flags, types.FlagContext{
+				Tenant:  cp.Originator.Tenant,
+				Subject: cp.Originator.Subject,
+				Session: cp.SessionID,
+				Flow:    c.spec,
+			}); aerr != nil {
+				prepFail(aerr)
+				return
+			}
+		}
 		// The decision mutates st first: WithLifecycleResumeState copies
 		// the state, so options built before applyResume would replay the
 		// undelivered pending calls and never advance. The results append

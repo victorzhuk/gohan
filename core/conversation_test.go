@@ -189,6 +189,11 @@ func (f *finishCountRuns) Finish(ctx context.Context, l stores.Lease, st stores.
 	return f.MemoryRuns.Finish(ctx, l, st, uncertain, ref)
 }
 
+func (f *finishCountRuns) FinishWithReason(ctx context.Context, l stores.Lease, st stores.RunState, uncertain []types.CallKey, ref string, reason types.StopReason) error {
+	f.finishes++
+	return f.MemoryRuns.FinishWithReason(ctx, l, st, uncertain, ref, reason)
+}
+
 func convWithLog(t *testing.T, rt *convRT, runs stores.Runs, log stores.EventLog) Conversation {
 	t.Helper()
 	stack, err := Build()

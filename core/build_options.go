@@ -45,11 +45,14 @@ func WithSunsetWarnOnly() Option {
 }
 
 type config struct {
+	flags            types.Flags
+	frozen           map[string]any
 	models           []types.Model
 	middleware       []types.ModelMiddleware
 	estimator        types.TokenEstimator
 	keys             types.ProviderKeySource
 	credentials      types.CredentialSource
+	notifier         types.Notifier
 	approvalPolicy   permission.ApprovalPolicySource
 	verifier         types.Verifier
 	egressClient     func(p types.EgressPolicy) *http.Client
@@ -88,6 +91,16 @@ func WithTenant(t types.Tenant) Option {
 func WithStores(s stores.Stores) Option {
 	return func(c *config) error {
 		c.stores = s
+		return nil
+	}
+}
+
+// WithNotifier binds the sink std/notify delivers run notices to. The host
+// runs the dispatcher; a Detached flow without one only ever reports
+// through Attach, and the conversation logs a warning for it.
+func WithNotifier(n types.Notifier) Option {
+	return func(c *config) error {
+		c.notifier = n
 		return nil
 	}
 }

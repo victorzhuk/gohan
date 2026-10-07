@@ -373,52 +373,6 @@ func (s *MemoryRuns) ByID(ctx context.Context, runID string) (Run, error) {
 	return s.decodeRun(ctx, rec)
 }
 
-// Finish closes the run with the given terminal state. An expired or
-// foreign lease fails with types.ErrRunNotActive; the run is left open.
-func (s *MemoryRuns) Finish(ctx context.Context, l Lease, state RunState, uncertain []types.CallKey, resultRef string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rec, err := s.heldLocked(l)
-	if err != nil {
-		return err
-	}
-	for _, sig := range rec.signals {
-		if sig.Kind == SignalSteer {
-			return fmt.Errorf("%w: run %s", types.ErrSignalsPending, rec.run.RunID)
-		}
-	}
-	rec.run.State = state
-	rec.run.Uncertain = append([]types.CallKey(nil), uncertain...)
-	rec.run.ResultRef = resultRef
-	rec.lease = Lease{}
-	rec.live = false
-	if err := s.encodeRunLocked(rec); err != nil {
-		return err
-	}
-	s.appendNoticeLocked(ctx, rec, state)
-	return nil
-}
-
-// Suspend releases the lease and records the resume token; a suspended run
-// is not recoverable until Resuming takes a fresh lease.
-func (s *MemoryRuns) Suspend(ctx context.Context, l Lease, t types.ResumeToken) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rec, err := s.heldLocked(l)
-	if err != nil {
-		return err
-	}
-	rec.run.State = Suspended
-	rec.token = t
-	rec.lease = Lease{}
-	rec.live = false
-	if err := s.encodeRunLocked(rec); err != nil {
-		return err
-	}
-	s.appendNoticeLocked(ctx, rec, Suspended)
-	return nil
-}
-
 // Resuming takes a fresh lease on a suspended run and marks it Resuming, so
 // a crash after this point leaves a stale Resuming run Stale lists.
 func (s *MemoryRuns) Resuming(ctx context.Context, runID string, ttl time.Duration) (Lease, error) {

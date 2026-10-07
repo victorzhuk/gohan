@@ -51,7 +51,16 @@ func (n *Native) Start(ctx context.Context, r AgentRun) (State, error) {
 	if err != nil {
 		return State{}, fmt.Errorf("gohan: encode native phase: %w", err)
 	}
-	return State{Backend: enc}, nil
+	// The checkpoint state carries the frozen snapshot so steer, cancel
+	// and replay never re-evaluate it.
+	var flags FlagSnapshot
+	if info, ok := types.RunInfoFrom(ctx); ok && len(info.Flags) > 0 {
+		flags = make(FlagSnapshot, len(info.Flags))
+		for k, v := range info.Flags {
+			flags[k] = v
+		}
+	}
+	return State{Backend: enc, Flags: flags}, nil
 }
 
 // Step runs exactly one effect: the current phase's callback, then advances

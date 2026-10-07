@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -86,6 +88,8 @@ type conversation struct {
 
 	allowAnonymous bool
 	tenant         types.Tenant
+	flags          types.Flags
+	frozen         map[string]any
 
 	mu      sync.Mutex
 	live    map[string]string
@@ -176,6 +180,8 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 		c.consolidationAudit = stack.stores.Audit
 		c.allowAnonymous = stack.allowAnonymous
 		c.telemetry = stack.telemetry
+		c.flags = stack.flags
+		c.frozen = stack.frozen
 		if l, ok := stack.Limits(spec); ok {
 			c.wall = l.MaxWallClock
 			c.stall = l.ConsumerStall
@@ -189,6 +195,9 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 	}
 	if c.detached && c.events == nil {
 		return nil, errDetachedNoLog
+	}
+	if c.detached && (stack == nil || stack.Notifier() == nil) {
+		stack.logger.Warn("detached flow has no notifier; notices stay in the runs outbox until a dispatcher delivers them", "flow", spec)
 	}
 	if c.stallAction == StallDetach && c.events == nil {
 		return nil, errDetachedNoLog
@@ -308,6 +317,38 @@ func (c *conversation) runIdentityCtx(ctx context.Context, runID, sessionID stri
 	if a, ok := types.RunInfoFrom(ctx); ok {
 		info.CostTags = a.CostTags
 	}
+	if c.flags != nil && len(c.frozen) > 0 {
+		snap, err := SnapshotFlags(ctx, c.flags, types.FlagContext{
+			Tenant:  info.Principal.Tenant,
+			Subject: info.Principal.Subject,
+			Session: sessionID,
+			Flow:    c.spec,
+		}, c.frozen)
+		if err != nil {
+			slog.WarnContext(ctx, "flag snapshot failed", "session", sessionID, "run", runID, "err", err)
+		} else {
+			info.Flags = snap
+		}
+		if c.consolidationAudit != nil {
+			rec := stores.AuditRecord{
+				Kind:      stores.AuditRunStarted,
+				SessionID: sessionID,
+				RunID:     runID,
+				RootRunID: runID,
+				Flow:      c.spec,
+				Tenant:    info.Principal.Tenant,
+				Subject:   info.Principal.Subject,
+			}
+			if len(info.Flags) > 0 {
+				if b, jerr := json.Marshal(info.Flags); jerr == nil {
+					rec.Reason = string(b)
+				}
+			}
+			if aerr := c.consolidationAudit.Append(ctx, rec); aerr != nil {
+				slog.WarnContext(ctx, "run-start audit failed", "session", sessionID, "run", runID, "err", aerr)
+			}
+		}
+	}
 	return types.WithRunInfo(ctx, info)
 }
 
@@ -326,7 +367,7 @@ func (c *conversation) appendInput(ctx context.Context, lease stores.Lease, sess
 	}
 	if err != nil {
 		lc := NewLifecycle(c.verifyOptions([]LifecycleOption{WithLifecycleRuns(c.runs, lease), WithLifecycleApprovalPolicy(c.policySrc), WithLifecycleToolSpecs(c.toolSpecs)})...)
-		if ferr := lc.finishRun(ctx, runtime.State{}, stores.Failed, nil); ferr != nil {
+		if ferr := lc.finishRun(ctx, runtime.State{}, stores.Failed, nil, types.StopFailed); ferr != nil {
 			yield(nil, ferr)
 			return false
 		}

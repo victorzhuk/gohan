@@ -29,7 +29,7 @@ type resolvedNativeConfig struct {
 	limits          types.RunLimits
 	decider         types.Decider[*permission.ToolInvocation, permission.Verdict]
 	taintPolicy     types.TaintHook
-	liveDeny        func(context.Context, *permission.ToolInvocation) (string, bool)
+	liveControl     func(context.Context, *permission.ToolInvocation) (types.TaintAction, string)
 	verifier        types.Verifier
 	redactor        types.Redactor
 	redactionPolicy types.RedactionPolicy
@@ -160,7 +160,7 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			limits:          limits,
 			decider:         spec.Decider,
 			taintPolicy:     spec.TaintPolicy,
-			liveDeny:        spec.LiveDeny,
+			liveControl:     spec.LiveControl,
 			verifier:        verifier,
 			redactor:        redactor,
 			redactionPolicy: redactionPolicy,

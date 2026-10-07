@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -22,6 +23,9 @@ const (
 	DenyVerdict
 	Ask
 	TaintDenied
+	// ControlWait marks a live flag evaluation that is stale or from
+	// default: the pending effect suspends with AwaitingControl.
+	ControlWait
 )
 
 // Decision is the whole-call verdict the batch protocol reads before any
@@ -66,7 +70,8 @@ type gate struct {
 	decider       types.Decider[*ToolInvocation, Verdict]
 	minConfidence float64
 	taintHook     types.TaintHook
-	liveDeny      func(ctx context.Context, inv *ToolInvocation) (reason string, denied bool)
+	liveControl   func(ctx context.Context, inv *ToolInvocation) (types.TaintAction, string)
+	controlWait   time.Duration
 	specLookup    func(name string) (types.ToolSpec, bool)
 	runLookup     func(ctx context.Context) types.RunInfo
 }
@@ -84,9 +89,28 @@ func WithTaintHook(h types.TaintHook) Option {
 	return func(g *gate) { g.taintHook = h }
 }
 
-// WithLiveDeny installs a check that denies before taint can request approval.
-func WithLiveDeny(check func(ctx context.Context, inv *ToolInvocation) (reason string, denied bool)) Option {
-	return func(g *gate) { g.liveDeny = check }
+// WithLiveControl installs the live-control slot. The check runs after the
+// hard scope deny and before the taint hook, so a live flag can deny, force
+// Ask or allow, but never widen a hard block, a taint deny or a registered
+// capability. A check that returns TaintAsk with ControlWaitReason marks a
+// stale or default evaluation: the gate suspends the pending call with
+// AwaitingControl and arms the wake at the configured control wait.
+func WithLiveControl(check func(ctx context.Context, inv *ToolInvocation) (types.TaintAction, string)) Option {
+	return func(g *gate) { g.liveControl = check }
+}
+
+// ControlWaitReason is the reason a live control check pairs with TaintAsk
+// to suspend the pending call with AwaitingControl instead of asking.
+const ControlWaitReason = "awaiting-control"
+
+// DefaultControlWait bounds the AwaitingControl suspension when no option
+// narrows it.
+const DefaultControlWait = 5 * time.Minute
+
+// WithControlWait sets how long the gate holds an AwaitingControl
+// suspension before the pending call is denied and the run continues.
+func WithControlWait(d time.Duration) Option {
+	return func(g *gate) { g.controlWait = d }
 }
 
 // WithGrantCheck installs the session-grant slot. The check runs after the
@@ -118,6 +142,7 @@ func newGate(d types.Decider[*ToolInvocation, Verdict], opts []Option) *gate {
 	g := &gate{
 		decider:       d,
 		minConfidence: 1,
+		controlWait:   DefaultControlWait,
 		specLookup:    func(string) (types.ToolSpec, bool) { return types.ToolSpec{}, false },
 		runLookup:     func(context.Context) types.RunInfo { return types.RunInfo{} },
 	}
@@ -150,6 +175,11 @@ func (g *gate) middleware(next types.ToolFunc) types.ToolFunc {
 			return denied(call.Name, d.Reason), nil
 		case TaintDenied:
 			return taintDenied(call.Name, d.Taints), nil
+		case ControlWait:
+			return types.ToolResult{}, &types.SuspendError{
+				Reason: types.AwaitingControl,
+				WakeAt: time.Now().UTC().Add(g.controlWait),
+			}
 		default:
 			return types.ToolResult{}, &AskError{Invocation: inv}
 		}
@@ -163,9 +193,16 @@ func (g *gate) decideCall(ctx context.Context, inv *ToolInvocation) Decision {
 		return Decision{Verdict: DenyVerdict, Reason: "missing scope " + strings.Join(missing, ", ")}
 	}
 
-	if g.liveDeny != nil {
-		if reason, denied := g.liveDeny(ctx, inv); denied {
+	if g.liveControl != nil {
+		action, reason := g.liveControl(ctx, inv)
+		switch action {
+		case types.TaintDeny:
 			return Decision{Verdict: DenyVerdict, Reason: reason}
+		case types.TaintAsk:
+			if reason == ControlWaitReason {
+				return Decision{Verdict: ControlWait, Reason: reason}
+			}
+			return Decision{Verdict: Ask}
 		}
 	}
 
@@ -233,6 +270,8 @@ func verdictName(v Verdict) string {
 		return "deny"
 	case TaintDenied:
 		return "taint_denied"
+	case ControlWait:
+		return "control_wait"
 	default:
 		return "ask"
 	}
