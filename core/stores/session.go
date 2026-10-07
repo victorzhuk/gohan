@@ -123,3 +123,13 @@ type SessionStateMeta interface {
 	SharedStateMeta(ctx context.Context, sessionID string) (json.RawMessage, int64, error)
 	SetSharedStateMeta(ctx context.Context, sessionID string, expectedVersion int64, value json.RawMessage) (int64, error)
 }
+
+// SessionBlobs is the optional blob-ledger metadata surface on a SessionLog.
+// It maps a blob ref to the provider that issued an id for it, outside the
+// message history, so a resume on another pod reads the ledger from the
+// session row alone. A log without the surface cannot persist ids and
+// assembly re-uploads each turn.
+type SessionBlobs interface {
+	BlobProviderID(ctx context.Context, sessionID, ref string) (provider, id string, ok bool)
+	SetBlobProviderID(ctx context.Context, sessionID, ref, provider, id string) error
+}

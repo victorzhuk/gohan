@@ -1,6 +1,7 @@
 package types
 
 import (
+	"context"
 	"strings"
 	"time"
 )
@@ -71,6 +72,14 @@ type BlobCaps struct {
 	MaxPerRequest int
 	MaxPixels     int
 	Formats       []string
+}
+
+// BlobUploader is the optional adapter port that stores a blob with the
+// provider and returns the id the provider issued for it. Assembly records
+// the id under the blob's ref in session metadata and sends it back to this
+// provider on later turns instead of the bytes.
+type BlobUploader interface {
+	Upload(ctx context.Context, b Blob, mime string) (string, error)
 }
 
 // Pricing is per token; SandboxSecond per sandbox second. SocializeCacheWrites

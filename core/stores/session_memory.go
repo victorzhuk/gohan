@@ -68,6 +68,7 @@ type MemorySessionLog struct {
 	audit       AuditLog
 	archivedFor time.Duration
 	sessions    map[string]*sessionRecord
+	blobIDs     map[string]map[string]blobIDRow
 	msgSeq      int64
 	idSeq       int64
 	schemas     *SchemaRegistry
@@ -205,11 +206,19 @@ func (s *MemorySessionLog) messageSlot(identity string) (*sessionRecord, int, er
 	return rec, i, nil
 }
 
+// blobIDRow is one ledger entry: the provider that issued the id for a ref
+// and the id itself.
+type blobIDRow struct {
+	provider string
+	id       string
+}
+
 func NewMemorySessionLog(opts ...MemorySessionOption) *MemorySessionLog {
 	s := &MemorySessionLog{
 		now:         time.Now,
 		archivedFor: defaultArchivedHold,
 		sessions:    make(map[string]*sessionRecord),
+		blobIDs:     make(map[string]map[string]blobIDRow),
 		schemas:     NewSchemaRegistry(),
 		raw:         NewMemoryRawRecords(),
 	}
@@ -379,6 +388,7 @@ func (s *MemorySessionLog) removeLocked(ctx context.Context, sessionID string) {
 		return
 	}
 	delete(s.sessions, sessionID)
+	delete(s.blobIDs, sessionID)
 	for _, kind := range []SessionKind{SessionChild, SessionShadow} {
 		for _, kid := range rec.kidsOf[kind] {
 			s.removeLocked(ctx, kid)
@@ -498,6 +508,13 @@ func (s *MemorySessionLog) Fork(ctx context.Context, from, upTo string) (string,
 			delete(s.sessions, childID)
 			return "", fmt.Errorf("fork session %s: copy dependents: %w", from, err)
 		}
+	}
+	if rows := s.blobIDs[from]; rows != nil {
+		copied := make(map[string]blobIDRow, len(rows))
+		for ref, row := range rows {
+			copied[ref] = row
+		}
+		s.blobIDs[childID] = copied
 	}
 	return childID, nil
 }
@@ -694,6 +711,34 @@ func (s *MemorySessionLog) SharedStateMeta(ctx context.Context, sessionID string
 		return nil, 0, err
 	}
 	return value, rec.state.version, nil
+}
+
+// BlobProviderID reads the ledger row a ref carries in this session.
+func (s *MemorySessionLog) BlobProviderID(ctx context.Context, sessionID, ref string) (string, string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.get(ctx, sessionID, scopeSessionRead); err != nil {
+		return "", "", false
+	}
+	row, ok := s.blobIDs[sessionID][ref]
+	return row.provider, row.id, ok
+}
+
+// SetBlobProviderID writes the ledger row for a ref, naming the provider
+// that issued the id.
+func (s *MemorySessionLog) SetBlobProviderID(ctx context.Context, sessionID, ref, provider, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.get(ctx, sessionID, scopeSessionWrite); err != nil {
+		return err
+	}
+	rows := s.blobIDs[sessionID]
+	if rows == nil {
+		rows = make(map[string]blobIDRow)
+		s.blobIDs[sessionID] = rows
+	}
+	rows[ref] = blobIDRow{provider, id}
+	return nil
 }
 
 // SetSharedStateMeta writes the shared state under an expected-version

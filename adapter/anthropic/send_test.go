@@ -182,6 +182,27 @@ func TestAnthropicSend(t *testing.T) {
 		}
 	})
 
+	t.Run("audio-refused-before-request", func(t *testing.T) {
+		tr := &captureTransport{}
+		okStream(tr)
+		m := newTestModel(t, tr, nil)
+		req := probeReq()
+		req.Messages = append(req.Messages, types.Message{Role: types.RoleUser, Blocks: []types.Block{
+			types.Audio{MIME: "audio/wav", Data: []byte{1, 2, 3}},
+		}})
+		_, err := collectChunks(context.Background(), m, req)
+		var me *types.ModelError
+		if !errors.As(err, &me) {
+			t.Fatalf("err = %v, want ModelError", err)
+		}
+		if me.Class != types.ClassPermanent {
+			t.Fatalf("class %d, want permanent", me.Class)
+		}
+		if tr.requests != 0 {
+			t.Fatalf("requests = %d, want the refusal before any request", tr.requests)
+		}
+	})
+
 	t.Run("retry-after", func(t *testing.T) {
 		tr := &captureTransport{status: 429, header: http.Header{"Retry-After": {"7"}}}
 		tr.body = Fixtures()["rate limited with retry after"].Body
@@ -454,4 +475,60 @@ func (s *spyTelemetry) Record(ctx context.Context, name string, v float64, attrs
 func (s *spyTelemetry) dump() string {
 	out, _ := json.Marshal(s.attrs)
 	return string(out)
+}
+
+func TestBlobProviderID(t *testing.T) {
+	lastBlocks := func(t *testing.T, tr *captureTransport) string {
+		t.Helper()
+		if len(tr.bodies) == 0 {
+			t.Fatal("no request captured")
+		}
+		var last map[string]any
+		for _, msg := range tr.bodies[0]["messages"].([]any) {
+			last = msg.(map[string]any)
+		}
+		raw, err := json.Marshal(last["content"])
+		if err != nil {
+			t.Fatalf("marshal content: %v", err)
+		}
+		return string(raw)
+	}
+
+	t.Run("provider-id-replaces-bytes", func(t *testing.T) {
+		tr := &captureTransport{}
+		okStream(tr)
+		m := newTestModel(t, tr, nil)
+		req := probeReq()
+		req.Messages = append(req.Messages, types.Message{Role: types.RoleUser, Blocks: []types.Block{
+			types.Image{MIME: "image/png", Blob: types.Blob{Ref: "r1", Provider: "anthropic", ProviderID: "file-9"}},
+			types.File{MIME: "application/pdf", Name: "r.pdf", Blob: types.Blob{Ref: "r2", Provider: "anthropic", ProviderID: "file-pdf"}},
+		}})
+		if _, err := collectChunks(context.Background(), m, req); err != nil {
+			t.Fatalf("collect: %v", err)
+		}
+		blocks := lastBlocks(t, tr)
+		if !strings.Contains(blocks, "file-9") || !strings.Contains(blocks, "file-pdf") {
+			t.Errorf("outgoing body carries no provider id: %s", blocks)
+		}
+		if strings.Contains(blocks, "base64") {
+			t.Errorf("outgoing body inlined bytes despite the provider id: %s", blocks)
+		}
+	})
+
+	t.Run("bytes-fallback-without-id", func(t *testing.T) {
+		tr := &captureTransport{}
+		okStream(tr)
+		m := newTestModel(t, tr, nil)
+		req := probeReq()
+		req.Messages = append(req.Messages, types.Message{Role: types.RoleUser, Blocks: []types.Block{
+			types.Image{MIME: "image/png", Data: []byte{1, 2, 3}},
+		}})
+		if _, err := collectChunks(context.Background(), m, req); err != nil {
+			t.Fatalf("collect: %v", err)
+		}
+		blocks := lastBlocks(t, tr)
+		if !strings.Contains(blocks, `"media_type":"image/png"`) || !strings.Contains(blocks, `"data":"AQID"`) {
+			t.Errorf("outgoing body carries no inline bytes: %s", blocks)
+		}
+	})
 }

@@ -3,6 +3,7 @@ package gohan
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -362,6 +363,9 @@ func (c *conversation) appendInput(ctx context.Context, lease stores.Lease, sess
 		var stored []types.Message
 		stored, err = c.redactMessages(ctx, sessionID, []types.Message{msg})
 		if err == nil {
+			err = c.spillInput(ctx, stored)
+		}
+		if err == nil {
 			_, err = c.log.Append(ctx, sessionID, hist.Version, stored...)
 		}
 	}
@@ -507,6 +511,61 @@ func (c *conversation) untrack(sessionID string) {
 	c.mu.Lock()
 	delete(c.live, sessionID)
 	c.mu.Unlock()
+}
+
+// spillInput writes oversized blob bytes into the content store before the
+// input is persisted: the stored block keeps only the ref, so history never
+// carries the payload and assembly resolves the upload per profile.
+func (c *conversation) spillInput(ctx context.Context, msgs []types.Message) error {
+	if c.outputs == nil {
+		return nil
+	}
+	info, _ := types.RunInfoFrom(ctx)
+	spill := func(b types.Block, data []byte) (types.Blob, error) {
+		ref, err := c.outputs.Put(ctx, info, []types.Block{b})
+		if err != nil {
+			return types.Blob{}, fmt.Errorf("store input blob: %w", err)
+		}
+		sum := sha256.Sum256(data)
+		return types.Blob{Ref: ref, SHA256: hex.EncodeToString(sum[:]), Bytes: int64(len(data))}, nil
+	}
+	for i := range msgs {
+		for j, b := range msgs[i].Blocks {
+			switch v := b.(type) {
+			case types.Image:
+				if len(v.Data) <= stores.InlineBlobBytes {
+					continue
+				}
+				blob, err := spill(b, v.Data)
+				if err != nil {
+					return err
+				}
+				v.Blob, v.Data = blob, nil
+				msgs[i].Blocks[j] = v
+			case types.Audio:
+				if len(v.Data) <= stores.InlineBlobBytes {
+					continue
+				}
+				blob, err := spill(b, v.Data)
+				if err != nil {
+					return err
+				}
+				v.Blob, v.Data = blob, nil
+				msgs[i].Blocks[j] = v
+			case types.File:
+				if len(v.Data) <= stores.InlineBlobBytes {
+					continue
+				}
+				blob, err := spill(b, v.Data)
+				if err != nil {
+					return err
+				}
+				v.Blob, v.Data = blob, nil
+				msgs[i].Blocks[j] = v
+			}
+		}
+	}
+	return nil
 }
 
 // newRunID mints a run id collision-resistant across processes: a

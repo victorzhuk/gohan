@@ -424,3 +424,51 @@ func TestRetryAfterPropagationAndRawFidelity(t *testing.T) {
 		t.Errorf("outgoing body carries no unchanged raw block: %v", tp.requests[0].Messages)
 	})
 }
+
+func TestBlobProviderID(t *testing.T) {
+	imageWithID := types.Image{
+		MIME: "image/png",
+		Blob: types.Blob{Ref: "r1", Provider: fixtureProfile, ProviderID: "file-9"},
+	}
+	contentOf := func(t *testing.T, tp *captureTransport) string {
+		t.Helper()
+		if len(tp.requests) == 0 {
+			t.Fatal("transport was not called")
+		}
+		last := tp.requests[0].Messages[len(tp.requests[0].Messages)-1]
+		raw, err := json.Marshal(last["content"])
+		if err != nil {
+			t.Fatalf("marshal content: %v", err)
+		}
+		return string(raw)
+	}
+
+	t.Run("provider-id-replaces-bytes", func(t *testing.T) {
+		tp := &captureTransport{}
+		p := proofModel(t, proofCaps(nil), simpleKeys(fixtureKeyID, fixtureToken), tp)
+		req := proofRequest("usage reported")
+		req.Messages = append(req.Messages, types.Message{Role: types.RoleUser, Blocks: []types.Block{imageWithID}})
+		collect(t, p, req)
+		content := contentOf(t, tp)
+		if !strings.Contains(content, "file-9") {
+			t.Errorf("outgoing body carries no provider id: %s", content)
+		}
+		if strings.Contains(content, "base64") {
+			t.Errorf("outgoing body inlined bytes despite the provider id: %s", content)
+		}
+	})
+
+	t.Run("bytes-fallback-without-id", func(t *testing.T) {
+		tp := &captureTransport{}
+		p := proofModel(t, proofCaps(nil), simpleKeys(fixtureKeyID, fixtureToken), tp)
+		req := proofRequest("usage reported")
+		req.Messages = append(req.Messages, types.Message{Role: types.RoleUser, Blocks: []types.Block{
+			types.Image{MIME: "image/png", Data: []byte{1, 2, 3}},
+		}})
+		collect(t, p, req)
+		content := contentOf(t, tp)
+		if !strings.Contains(content, "data:image/png;base64,AQID") {
+			t.Errorf("outgoing body carries no inline bytes: %s", content)
+		}
+	})
+}

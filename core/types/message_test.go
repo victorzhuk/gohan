@@ -2,6 +2,7 @@ package types
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"encoding/json/jsontext"
@@ -98,4 +99,45 @@ func TestMessageRoundTrip(t *testing.T) {
 var _ = []Block{
 	Text{}, Reasoning{}, Image{}, Audio{}, File{}, Document{},
 	ToolUse{}, ToolResult{}, CacheBreak{}, Raw{}, Compaction{},
+}
+
+func TestBlobProviderFields(t *testing.T) {
+	b := Blob{Ref: "r1", SHA256: "abc", Bytes: 9, Provider: "acme", ProviderID: "prov-1"}
+	raw, err := json.Marshal(b)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{`"Ref":"r1"`, `"SHA256":"abc"`, `"Bytes":9`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("persisted form lost %s: %s", want, raw)
+		}
+	}
+	for _, gone := range []string{"Provider", "prov-1"} {
+		if strings.Contains(string(raw), gone) {
+			t.Errorf("persisted form carries %s: %s", gone, raw)
+		}
+	}
+	var back Blob
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back != (Blob{Ref: "r1", SHA256: "abc", Bytes: 9}) {
+		t.Errorf("round trip = %#v", back)
+	}
+	img := Image{MIME: "image/png", Data: []byte{1}, Blob: b}
+	ws, err := encodeBlocks([]Block{img})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	bs, err := decodeBlocks(ws)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := bs[0].(Image).Blob
+	if got.Provider != "" || got.ProviderID != "" {
+		t.Errorf("decoded blob carries provider identity: %#v", got)
+	}
+	if got.Ref != "r1" || got.SHA256 != "abc" || got.Bytes != 9 {
+		t.Errorf("decoded blob = %#v", got)
+	}
 }

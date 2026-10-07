@@ -1,6 +1,7 @@
 package types
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -112,4 +113,29 @@ func TestModelProfile(t *testing.T) {
 			}
 		}
 	})
+}
+
+type uploadFunc func(context.Context, Blob, string) (string, error)
+
+func (f uploadFunc) Upload(ctx context.Context, b Blob, mime string) (string, error) {
+	return f(ctx, b, mime)
+}
+
+func TestBlobUploaderShape(t *testing.T) {
+	var u BlobUploader = uploadFunc(func(_ context.Context, b Blob, mime string) (string, error) {
+		if b.Ref != "r1" {
+			t.Errorf("ref %q, want r1", b.Ref)
+		}
+		if mime != "image/png" {
+			t.Errorf("mime %q, want image/png", mime)
+		}
+		return "prov-1", nil
+	})
+	id, err := u.Upload(context.Background(), Blob{Ref: "r1"}, "image/png")
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	if id != "prov-1" {
+		t.Errorf("id %q, want prov-1", id)
+	}
 }

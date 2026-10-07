@@ -27,6 +27,7 @@ const (
 	FixtureKeyRedaction
 	FixtureExtraCollision
 	FixtureFidelity
+	FixtureBlobProviderID
 )
 
 // Fixture is one recorded provider response in model-level terms. Status,
@@ -163,6 +164,11 @@ func DefaultFixtures() Fixtures {
 		{
 			Name: "undeclared fidelity",
 			Kind: FixtureFidelity,
+		},
+		{
+			Name:           "messages.blob-provider-id-reused",
+			Kind:           FixtureBlobProviderID,
+			TargetProvider: "acme",
 		},
 	}
 }

@@ -98,6 +98,19 @@ func systemText(blocks []types.Block) string {
 	return out
 }
 
+// anthropicBlobSource renders the source object for a blob block: the file
+// id the provider issued when assembly stamped one, otherwise the bytes as
+// base64. A block with neither encodes nothing.
+func anthropicBlobSource(b types.Blob, mime string, data []byte) map[string]any {
+	if b.ProviderID != "" {
+		return map[string]any{"type": "file", "file_id": b.ProviderID}
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	return map[string]any{"type": "base64", "media_type": mime, "data": base64.StdEncoding.EncodeToString(data)}
+}
+
 func (m *Model) content(ctx context.Context, messages []types.Message, state *assembled) ([]any, error) {
 	breaks := 0
 	for _, msg := range messages {
@@ -157,6 +170,24 @@ func (m *Model) content(ctx context.Context, messages []types.Message, state *as
 						"cache_control": map[string]any{"type": "ephemeral"},
 					})
 				}
+			case types.Image:
+				src := anthropicBlobSource(block.Blob, block.MIME, block.Data)
+				if src == nil {
+					continue
+				}
+				blocks = append(blocks, map[string]any{"type": "image", "source": src})
+			case types.Audio:
+				return nil, &types.ModelError{
+					Class:    types.ClassPermanent,
+					Provider: providerName,
+					Err:      errors.New("audio block: the profile's provider has no audio wire shape"),
+				}
+			case types.File:
+				src := anthropicBlobSource(block.Blob, block.MIME, block.Data)
+				if src == nil {
+					continue
+				}
+				blocks = append(blocks, map[string]any{"type": "document", "source": src})
 			case types.Raw:
 				if block.Provider == providerName {
 					blocks = append(blocks, block.Value)

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 	"github.com/victorzhuk/gohan/testkit/gohantest"
 )
@@ -61,6 +62,7 @@ func ModelScenarios(t *testing.T, newModel func(Fixture) types.Model, fixtures F
 		{"model.raw-round-trip", []FixtureKind{FixtureRawRoundTrip}},
 		{"model.isolation-per-key", []FixtureKind{FixtureKeyIsolation}},
 		{"model.key-never-in-telemetry", []FixtureKind{FixtureKeyRedaction}},
+		{"messages.blob-provider-id-reused", []FixtureKind{FixtureBlobProviderID}},
 	}
 	for _, scenario := range scenarios {
 		scenario := scenario
@@ -152,6 +154,8 @@ func runFixture(tb conformanceTB, m types.Model, fx Fixture) {
 		assertCacheFixture(tb, m, fx)
 	case FixtureSchemaUnsupported:
 		assertSchemaFixture(tb, m, fx)
+	case FixtureBlobProviderID:
+		assertBlobProviderIDFixture(tb, m, fx)
 	default:
 		return
 	}
@@ -352,6 +356,35 @@ func assertRawFixture(tb conformanceTB, m types.Model, fx Fixture) {
 	}
 	if len(chunks) == 0 {
 		tb.Errorf("call with a Raw block streamed no chunks")
+	}
+}
+
+// assertBlobProviderIDFixture sends an image above InlineBlobBytes with its
+// bytes, then the same ref as a provider-id carrier on turns two and three:
+// assembly uploads once and later turns send the id the provider issued, so
+// the model must accept both block shapes and complete each stream. The
+// exact outgoing id payload is inside the adapter harness.
+func assertBlobProviderIDFixture(tb conformanceTB, m types.Model, fx Fixture) {
+	tb.Helper()
+	big := make([]byte, stores.InlineBlobBytes+1)
+	inline := types.Image{MIME: "image/png", Data: big, Blob: types.Blob{Ref: "blob-fixture"}}
+	req := probeRequest()
+	req.Messages = append(req.Messages, types.Message{Role: types.RoleUser, Blocks: []types.Block{inline}})
+	if _, err := collect(m, req); err != nil {
+		tb.Errorf("inline blob turn failed: %v", err)
+		return
+	}
+	carrier := types.Image{MIME: "image/png", Blob: types.Blob{
+		Ref:        "blob-fixture",
+		Provider:   fx.TargetProvider,
+		ProviderID: fx.TargetProvider + "-blob-1",
+	}}
+	for turn := 2; turn <= 3; turn++ {
+		req := probeRequest()
+		req.Messages = append(req.Messages, types.Message{Role: types.RoleUser, Blocks: []types.Block{carrier}})
+		if _, err := collect(m, req); err != nil {
+			tb.Errorf("turn %d with the provider id failed: %v", turn, err)
+		}
 	}
 }
 

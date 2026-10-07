@@ -69,9 +69,11 @@ type Reasoning struct {
 	Provider  string
 }
 type Blob struct {
-	Ref    string
-	SHA256 string
-	Bytes  int64
+	Ref        string
+	SHA256     string
+	Bytes      int64
+	Provider   string
+	ProviderID string
 }
 type Image struct {
 	BlockBase

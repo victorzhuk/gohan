@@ -86,6 +86,10 @@ func TestDefaultFixtures(t *testing.T) {
 			if fx.ExtraField == "" {
 				t.Errorf("collision fixture %q names no field", fx.Name)
 			}
+		case FixtureBlobProviderID:
+			if fx.TargetProvider == "" {
+				t.Errorf("blob fixture %q names no target provider", fx.Name)
+			}
 		}
 	}
 	for _, class := range []types.ErrorClass{

@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -36,11 +37,31 @@ func (p *Provider) assembleBody(req types.ModelRequest) (map[string]any, error) 
 	}
 	for _, msg := range req.Messages {
 		var content []string
+		var rich []any
 		var toolCalls []map[string]any
+		addText := func(s string) {
+			if rich != nil {
+				rich = append(rich, map[string]any{"type": "text", "text": s})
+				return
+			}
+			content = append(content, s)
+		}
 		for _, block := range msg.Blocks {
 			switch bl := block.(type) {
 			case types.Text:
-				content = append(content, bl.Text)
+				addText(bl.Text)
+			case types.Image, types.Audio, types.File:
+				part := openaiBlobPart(block)
+				if part == nil {
+					continue
+				}
+				if rich == nil {
+					for _, s := range content {
+						rich = append(rich, map[string]any{"type": "text", "text": s})
+					}
+					content = nil
+				}
+				rich = append(rich, part)
 			case types.Reasoning:
 			case types.ToolUse:
 				toolCalls = append(toolCalls, map[string]any{
@@ -83,12 +104,14 @@ func (p *Provider) assembleBody(req types.ModelRequest) (map[string]any, error) 
 				}
 			}
 		}
-		if len(content) == 0 && len(toolCalls) == 0 {
+		if len(content) == 0 && rich == nil && len(toolCalls) == 0 {
 			continue
 		}
 		flush()
 		pending = map[string]any{"role": string(msg.Role)}
 		switch {
+		case rich != nil:
+			pending["content"] = rich
 		case len(toolCalls) > 0:
 			pending["content"] = strings.Join(content, "\n")
 			pending["tool_calls"] = toolCalls
@@ -191,6 +214,55 @@ func blocksText(blocks []types.Block) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// openaiBlobPart renders a blob block as one chat-completions content part:
+// the provider id when one was issued for the ref, otherwise the bytes as a
+// data URI. A block with neither encodes nothing.
+func openaiBlobPart(block types.Block) map[string]any {
+	switch bl := block.(type) {
+	case types.Image:
+		ref, ok := blobRef(bl.Blob, bl.MIME, bl.Data)
+		if !ok {
+			return nil
+		}
+		return map[string]any{"type": "image_url", "image_url": map[string]any{"url": ref}}
+	case types.Audio:
+		ref, ok := blobRef(bl.Blob, bl.MIME, bl.Data)
+		if !ok {
+			return nil
+		}
+		return map[string]any{"type": "input_audio", "input_audio": map[string]any{"data": ref, "format": mimeFormat(bl.MIME)}}
+	case types.File:
+		ref, ok := blobRef(bl.Blob, bl.MIME, bl.Data)
+		if !ok {
+			return nil
+		}
+		if bl.Blob.ProviderID != "" {
+			return map[string]any{"type": "file", "file": map[string]any{"file_id": ref, "filename": bl.Name}}
+		}
+		return map[string]any{"type": "file", "file": map[string]any{"file_data": ref, "filename": bl.Name}}
+	}
+	return nil
+}
+
+// blobRef prefers the issued provider id over the bytes: assembly only
+// stamps an id the target provider itself issued.
+func blobRef(b types.Blob, mime string, data []byte) (string, bool) {
+	if b.ProviderID != "" {
+		return b.ProviderID, true
+	}
+	if len(data) == 0 {
+		return "", false
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), true
+}
+
+func mimeFormat(mime string) string {
+	if _, rest, ok := strings.Cut(mime, "/"); ok {
+		return rest
+	}
+	return mime
 }
 
 func marshalBody(body map[string]any) (*bytes.Reader, error) {

@@ -75,7 +75,35 @@ type Blob struct {
 	Ref    string
 	SHA256 string
 	Bytes  int64
+	// Provider and ProviderID name the provider that issued the id and the
+	// id itself; both stay empty until assembly resolves an upload. They are
+	// request-carried only: the persisted form keeps Ref, SHA256 and Bytes.
+	Provider   string
+	ProviderID string
 }
+
+type wireBlob struct {
+	Ref    string
+	SHA256 string
+	Bytes  int64
+}
+
+// MarshalJSON keeps the persisted form to Ref, SHA256 and Bytes: the
+// provider identity travels on the request block, never into history.
+func (b Blob) MarshalJSON() ([]byte, error) {
+	return json.Marshal(wireBlob{b.Ref, b.SHA256, b.Bytes})
+}
+
+// UnmarshalJSON leaves Provider and ProviderID empty on a stored block.
+func (b *Blob) UnmarshalJSON(data []byte) error {
+	var wire wireBlob
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*b = Blob{Ref: wire.Ref, SHA256: wire.SHA256, Bytes: wire.Bytes}
+	return nil
+}
+
 type Image struct {
 	BlockBase
 	MIME string

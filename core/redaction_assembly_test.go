@@ -35,7 +35,7 @@ func TestNativeAssembleRedactsAndPersistsMap(t *testing.T) {
 	mapStore := stores.NewMemoryRedactionMaps()
 	assemble := nativeAssemble(chains.PromptSet{}, func(context.Context, types.AssembleInput) (types.ModelRequest, error) {
 		return types.ModelRequest{Messages: []types.Message{{Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: "Book for Ada Lovelace"}}}}}, nil
-	}, assemblyRedactor{}, types.RedactionPolicy{Detectors: []types.Detector{nil}}, mapStore)
+	}, assemblyRedactor{}, types.RedactionPolicy{Detectors: []types.Detector{nil}}, mapStore, blobAssembly{})
 	run := types.RunInfo{SessionID: "session", Principal: types.Principal{Tenant: "tenant"}}
 	req, err := assemble(context.Background(), types.AssembleInput{Run: run})
 	if err != nil {

@@ -47,7 +47,7 @@ func TestRedactionScenarios(t *testing.T) {
 		store := stores.NewMemoryRedactionMaps()
 		assemble := nativeAssemble(chains.PromptSet{}, func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
 			return types.ModelRequest{Messages: append([]types.Message(nil), in.Input...)}, nil
-		}, redactor, scenarioPolicy(), store)
+		}, redactor, scenarioPolicy(), store, blobAssembly{})
 		var token string
 		for _, turn := range []string{"Anna Petrova", "other", "other", "Anna Petrova"} {
 			req, err := assemble(ctx, types.AssembleInput{Run: types.RunInfo{SessionID: "s1", Principal: types.Principal{Tenant: "t1"}}, Input: []types.Message{{Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: turn}}}}})
