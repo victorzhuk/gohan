@@ -191,6 +191,8 @@ ID: `streams.tool-args-delta-coalesced-in-log`
 
 ### Requirement: Cancellation and streams
 
+A run that the model ends by requesting a human MUST terminate as a completed event stream, not a suspension: the run MUST close with `Done{Reason: StopHandedOff}` and MUST NOT emit a `Suspended` event or mint a `ResumeToken`, so the stream's last event is the `Done` and `Resume` cannot continue the run.
+
 #### Scenario: disconnect during side effect
 ID: `streams.disconnect-during-side-effect`
 - WHEN the client ctx is cancelled while `create_booking` is executing

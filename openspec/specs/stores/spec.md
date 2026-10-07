@@ -220,6 +220,7 @@ type SessionMeta struct {
 	Messages     int
 	CreatedAt    time.Time
 	LastActivity time.Time
+	Handoff      HandoffContext
 	Control      SessionControl
 	Hold         string
 }
@@ -245,6 +246,7 @@ type SessionPatch struct {
 	Archived *bool
 	Pinned   *bool
 	Hold     *string
+	Handoff  *HandoffContext
 }
 
 type SessionIndex interface {
@@ -402,6 +404,8 @@ ID: `stores.memstore-clock-jump`
 
 ### Requirement: Exactly-once tool effects
 
+`adapter/postgres` MUST expose `CompleteTx(ctx context.Context, tx pgx.Tx, k gohan.CallKey, res gohan.ToolResult) error` on its concrete `Journal` so a caller-owned `pgx.Tx` carries a tool's own write and the journal completion to one commit; a rollback MUST leave neither. `Complete` and `CompleteTx` MUST share one guarded statement path, so a key with no live reservation is refused with `ErrJournalCompleteMissed` on either, and `CompleteTx` MUST NOT commit — the caller owns the transaction.
+
 #### Scenario: replay returns recorded result
 ID: `stores.replay-returns-recorded-result`
 - WHEN a completed call is re-invoked during resume
@@ -485,6 +489,8 @@ ID: `stores.mailbox-full`
 - THEN the eleventh returns `ErrMailboxFull` and the first ten are delivered in order
 
 ### Requirement: Session index
+
+`SessionMeta.Handoff` MUST carry the `HandoffContext` recorded when a run requests a human, and `SessionPatch.Handoff` MUST set it through `UpdateSession`. Both fields default to the zero value, so a stored session row and a request row stay compatible and no data migration is required.
 
 #### Scenario: control in session index
 ID: `stores.control-in-session-index`
@@ -633,6 +639,8 @@ ID: `stores.daily-pool-budget`
 - THEN new model calls on that pool fail `Permanent` with `*LimitExceededError{Limit: "pool/day"}` until the window resets
 
 ### Requirement: Postgres contract
+
+`adapter/postgres` MUST implement every store port the core declares in its own module `github.com/victorzhuk/gohan/adapter/postgres`: `SessionLog` (with `SessionIndex`), `Checkpoints` (with `CheckpointResumer` and `ResumeReadyLister`), `Journal` (with `CompleteTx` and `ModelCompleter`), `Runs` (with `PreemptedLister`, `SuspendReasonRecorder` and `FinishReasonRecorder`), `AuditLog`, `OutputStore`, `EventLog`, `NotesStore` and `RedactionMaps`. No port gains a method in core; the adapter-specific seams are methods on the concrete adapter types (ADR-0117). Every stored shape MUST be persisted in the `stores` record envelope and decoded through the schema registry on read.
 
 #### Scenario: schema owned by the adapter
 ID: `stores.pg-schema-owned`

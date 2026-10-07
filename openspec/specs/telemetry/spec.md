@@ -159,6 +159,8 @@ ID: `telemetry.no-content-in-logs`
 
 ### Requirement: Telemetry conventions and prompts
 
+`Stack.Feedback` MUST record each signal through `stores.FeedbackStore`, append the `feedback` audit record and the `FeedbackRecorded` event, and emit `gohan.feedback`. The metric MUST be registered with the labels `name` and `flow` only; the metric layer stamps `release` and `variant`, so the observed series is exactly `gohan.feedback{name, flow, release, variant}`. A numeric `Value` MUST record a histogram and any other `Value` MUST count. No label MAY carry the subject, session, run, target, comment or correction: the allow-list admits none of them and forbids the identity names. The cardinality is bounded by the declared `name` set (the tool-name grammar `^[a-z][a-z0-9_]{0,63}$`), the registered flow names, the release and the variant — a fixed four-label product with no unbounded dimension.
+
 #### Scenario: rename is config
 ID: `telemetry.rename-is-config`
 - WHEN the `GenAI` convention maps `gohan.model.version` to a new attribute name

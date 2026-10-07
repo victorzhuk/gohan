@@ -124,6 +124,33 @@ restricted to untrusted content, offering no tool, and MUST return
 extracted from. The recording path MUST attach those origins to the recorded
 result blocks.
 
+The title generator MUST be `std/flow.Title`, an `Extract[string]` recipe of at
+most six words that offers no tool. The harness MUST start it after the first
+`Done` of a session's first primary run as its own governed run of
+`Kind: SessionChild` with cost tag `title`, on the profile from
+`agent.WithTitleProfile` (default: the cheapest configured profile), and MUST
+write the result with `UpdateSession`. The primary run's `Done` MUST NOT be
+delayed by the title run. Generation MUST be skipped when `TitleLocked` is set
+or the session already carries a title, and the generated write MUST set
+`TitleLocked`; a rename therefore always wins and a session is titled at most
+once. A fork inherits the parent's title with the suffix `(edited)` and is not
+titled again. Until a title exists the index holds an empty `Title`.
+
+A model request for a human MUST be a terminal outcome, not a suspension. The
+`request_human` built-in tool MUST return a `types.HandoffError` carrying the
+`HandoffContext`; the error MUST join the control-error class that never renders
+as a `ToolResult`, and the lifecycle MUST close the run with
+`Done{Reason: StopHandedOff}` — never `Suspended` — with no `ResumeToken`, so
+`Resume` cannot continue it. The same terminal transition MUST write
+`ControlHandoffRequested`, persist the `HandoffContext` on the session index,
+and audit the transition as `handoff_requested`.
+
+After `HandBack` restores `ControlAgent`, assembly MUST fence the operator
+turns: every history block whose origin is `OriginOperator` MUST be projected
+with a preceding `PromptSet.OperatorTurn` marker so the operator turns are
+wrapped as one marked segment, and the model's reply MUST carry `OriginModel`.
+History MUST NOT be rewritten by the projection.
+
 #### Scenario: plain invoke
 ID: `flow.plain-invoke`
 - WHEN a `FlowFunc` returns `x`

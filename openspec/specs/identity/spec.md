@@ -199,6 +199,8 @@ ID: `identity.credential-not-on-principal`
 
 ### Requirement: Context values
 
+The idempotency key is transport-only: it orders retries of one logical call and MUST NOT become run identity. It MUST NOT enter `RunInfo`, and a sub-flow invoked through `FlowAsTool` MUST NOT inherit the caller's key or approval — the child observes `IdempotencyKey` and `ApprovalFrom` as `ok == false`. The cancel shield MUST preserve the identity values: a `SideEffect` tool running under `context.WithoutCancel` MUST observe the run's `Principal`, `Credential` and `RunInfo` unchanged. A `Detached` run MUST re-issue its credential through `CredentialSource` for the copied principal, and MUST NOT reuse the caller's `Credential`; the fresh token stays in `ctx` and is never logged, emitted or persisted.
+
 #### Scenario: accessors outside a run
 ID: `identity.accessor-outside-run`
 - WHEN `PrincipalFrom`, `CredentialFrom`, `ApprovalFrom`, `RunInfoFrom`, `IdempotencyKey` and `SharedState` are called on `context.Background()`
