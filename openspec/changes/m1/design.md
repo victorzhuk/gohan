@@ -210,7 +210,7 @@ These come from the `m1` proposal scope and the M1 row of `docs/overview.md` and
 | `std/flags`; adapter/openfeature later | `m1-flags-control` | shipped | `std/flags` exists; openfeature stays out of M1 |
 | sunset/successor validation, schema versions, upcaster registry, cost tags | `m1-model-retirement-cost`, `m1-schema-read-paths` | integration gap | registry and suite types ship; readers do not |
 | adapter/openai (+vLLM), adapter/anthropic with error normalization and version reporting | `m1-provider-conformance-contract`, `m1-openai-provider`, `m1-anthropic-provider` | shipped | `adapter/openai` and `adapter/anthropic` exist beside `adapter/otel` |
-| adapter/postgres, all ports incl. `AuditLog`, plus `CompleteTx` | `m1-postgres-stores` | missing | no `adapter/postgres` |
+| adapter/postgres, all ports incl. `AuditLog`, plus `CompleteTx` | `m1-postgres-stores` | shipped | `adapter/postgres` implements the ports on one pool with embedded migrations; `CompleteTx` shares the guarded statement path (`adapter/postgres/journal.go`) |
 | limit.Local + breaker, class-based retry/fallback, router Static/ByLatencyClass | `m1-s1-s2-acceptance` | shipped, integration gap for `ByLatencyClass` | `std/limit/{model,run}.go`, `std/retry/retry.go`, `std/route/{route,breaker,fallback}.go` ship; `ByLatencyClass` has no implementation |
 | guards: all four stages + output modes + fallback | `m1-s1-s2-acceptance` | shipped | `std/guard` ships six files; the acceptance package verifies the composed path rather than rebuilding it |
 | tool/exec | `m1-s1-s2-acceptance` | integration gap | `core/tool.go` ships `WithEffect`/`WithScopes`; the exec runner and `AllowHostExec` warning are unverified against the spec |
