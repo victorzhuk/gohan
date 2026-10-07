@@ -13,8 +13,8 @@ Delivered in `feat(messages): reuse provider blob ids across turns`. A task is d
 
 - [ ] 2.1 Add the optional `stores.SessionBlobs` surface on `SessionLog` — `BlobProviderID(ctx, sessionID, ref) (provider, id string, ok bool)` and `SetBlobProviderID(ctx, sessionID, ref, provider, id string) error` — mirroring `SessionStateMeta` (`core/stores/session.go:118-125`); verify `go test -short -timeout 2m ./core/stores/... -run 'TestSessionBlobLedger'`.
   - evidence: `core/stores/session.go` (`SessionBlobs`); `core/stores/session_blobs_test.go` (`TestSessionBlobLedger`)
-- [ ] 2.2 Implement the surface on `MemorySessionLog` with a `ref → {provider, id}` map that survives `Load` and a resume on a rebuilt store, and assert a store without the surface is detected by type assertion; verify `go test -short -timeout 2m ./core/stores/... -run 'TestSessionBlobLedgerMemory'`.
-  - evidence: `core/stores/session_memory.go` (`BlobProviderID`, `SetBlobProviderID`); `core/stores/session_blobs_test.go` (`TestSessionBlobLedgerMemory`)
+- [ ] 2.2 Implement the surface on `MemorySessionLog` with a `ref → {provider, id}` map that survives `Load` and a resume on a rebuilt store (the ledger is persisted through `StoredRecord`/`SeedRecord` and read back), and assert a store without the surface is detected by type assertion; verify `go test -short -timeout 2m ./core/stores/... -run 'TestSessionBlobLedger'`.
+  - evidence: `core/stores/session_memory.go` (`BlobProviderID`, `SetBlobProviderID`); `core/stores/session_blobs_test.go` (`TestSessionBlobLedgerMemory`, `TestSessionBlobLedgerRebuild`)
 
 ## 3. Assembly resolution
 
@@ -31,8 +31,8 @@ Delivered in `feat(messages): reuse provider blob ids across turns`. A task is d
   - evidence: `adapter/openai/request.go` (id substitution); `adapter/openai/send_test.go` (`TestBlobProviderID`)
 - [ ] 4.2 Encode `Blob.ProviderID` in the Anthropic request body in place of base64 bytes when the id is set, and fall back to bytes when it is not; verify `go test -short -timeout 2m ./adapter/anthropic/... -run 'TestBlobProviderID'`.
   - evidence: `adapter/anthropic/request.go` (id substitution); `adapter/anthropic/send_test.go` (`TestBlobProviderID`)
-- [ ] 4.3 Add the shared blob fixture and `assertBlobProviderIDFixture` to `testkit/conformance`: three turns after an image above `InlineBlobBytes` is attached, exactly one `Upload` call, and turns two and three carry the provider id; verify `go test -short -timeout 2m ./testkit/conformance/... -run 'TestModelConformance'`.
-  - evidence: `testkit/conformance/model.go` (`assertBlobProviderIDFixture`); `testkit/conformance/fixtures.go`
+- [ ] 4.3 Add the shared blob fixture and `assertBlobProviderIDFixture` to `testkit/conformance`: three turns after an image above `InlineBlobBytes` is attached, the inline turn streams its chunks and turns two and three carry the provider id with no bytes. The model suite has no assembly seam and its doubles do not upload, so the "exactly one `Upload` call" half is proven on the shipped path; verify `go test -short -timeout 2m ./testkit/conformance/... -run 'TestModelConformance|TestBlobProviderIDReuseShippedPath'`.
+  - evidence: `testkit/conformance/model.go` (`assertBlobProviderIDFixture`); `testkit/conformance/fixtures.go`; `testkit/conformance/blob_provider_id_test.go` (`TestBlobProviderIDReuseShippedPath`, one upload across three turns)
 
 ## 5. Scenario behavior and package gates
 
