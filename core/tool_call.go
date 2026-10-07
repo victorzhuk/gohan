@@ -43,8 +43,9 @@ func Retryable(err error) error {
 
 // CallTool resolves name in set, validates the complete arguments, executes
 // the tool and renders every failure the model should see as a ToolResult.
-// SuspendError, AbortError and cancellation are not tool failures: they pass
-// through as the returned error. An unknown tool never executes.
+// SuspendError, AbortError, HandoffError and cancellation are not tool
+// failures: they pass through as the returned error. An unknown tool never
+// executes.
 func CallTool(ctx context.Context, set ToolSet, name string, args jsontext.Value) (types.ToolResult, error) {
 	tool, ok := set.Tool(name)
 	if !ok {
@@ -70,7 +71,8 @@ func CallTool(ctx context.Context, set ToolSet, name string, args jsontext.Value
 	if err != nil {
 		var suspended *SuspendError
 		var aborted *AbortError
-		if errors.As(err, &suspended) || errors.As(err, &aborted) || errors.Is(err, context.Canceled) {
+		var handedOff *types.HandoffError
+		if errors.As(err, &suspended) || errors.As(err, &aborted) || errors.As(err, &handedOff) || errors.Is(err, context.Canceled) {
 			return types.ToolResult{}, err
 		}
 		return classifyFailure(ctx, tool.Spec(), err), nil

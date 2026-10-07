@@ -231,3 +231,64 @@ func TestAssembleFilterPerCall(t *testing.T) {
 		}
 	}
 }
+
+func TestOperatorFence(t *testing.T) {
+	marker := "operator turn follows"
+	operator := types.Origin{Kind: types.OriginOperator, Name: "op-1"}
+	newHistory := func() []types.Message {
+		return []types.Message{
+			{ID: "m1", Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: "hi"}}},
+			{ID: "m2", Role: types.RoleAssistant, Blocks: []types.Block{types.Text{BlockBase: types.BlockBase{Origin: operator}, Text: "operator says A"}}},
+			{ID: "m3", Role: types.RoleAssistant, Blocks: []types.Block{types.Text{BlockBase: types.BlockBase{Origin: operator}, Text: "operator says B"}}},
+		}
+	}
+	countBlocks := func(req types.ModelRequest) (markers, operatorTurns int) {
+		for _, msg := range req.Messages {
+			for _, b := range msg.Blocks {
+				if txt, ok := b.(types.Text); ok {
+					switch txt.BlockOrigin().Kind {
+					case types.OriginSystem:
+						if txt.Text == marker {
+							markers++
+						}
+					case types.OriginOperator:
+						operatorTurns++
+					}
+				}
+			}
+		}
+		return markers, operatorTurns
+	}
+
+	t.Run("assembly-fences-operator-turns", func(t *testing.T) {
+		history := newHistory()
+		p := NewStablePrefix(WithOperatorTurnPrompt(marker))
+		req, err := p.Assemble(context.Background(), AssembleInput{History: history})
+		if err != nil {
+			t.Fatalf("assemble: %v", err)
+		}
+		markers, operatorTurns := countBlocks(req)
+		if markers != 2 || operatorTurns != 2 {
+			t.Fatalf("markers=%d operatorTurns=%d, want 2/2", markers, operatorTurns)
+		}
+		for _, msg := range history {
+			for _, b := range msg.Blocks {
+				if txt, ok := b.(types.Text); ok && txt.BlockOrigin().Kind == types.OriginSystem && txt.Text == marker {
+					t.Fatal("fence rewrote the input history")
+				}
+			}
+		}
+	})
+
+	t.Run("fence-disabled-without-prompt", func(t *testing.T) {
+		history := newHistory()
+		req, err := (StablePrefix{}).Assemble(context.Background(), AssembleInput{History: history})
+		if err != nil {
+			t.Fatalf("assemble: %v", err)
+		}
+		markers, _ := countBlocks(req)
+		if markers != 0 {
+			t.Fatalf("markers=%d, want none without the prompt wired", markers)
+		}
+	})
+}

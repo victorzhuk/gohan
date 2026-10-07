@@ -97,6 +97,26 @@ type Stack struct {
 	consolidator     func(ConsolidationWiring) MemoryConsolidator
 	flags            types.Flags
 	frozen           map[string]any
+	titleProfile     string
+}
+
+// TitleProfile returns the profile the title recipe runs on: the option's
+// choice, or the cheapest configured profile when unset.
+func (s *Stack) TitleProfile() string { return s.titleProfile }
+
+// cheapestProfile names the profile with the lowest uncached input and
+// output price. A tie keeps the first name in map order's tie-break: the
+// lexicographically smaller name.
+func cheapestProfile(profiles map[string]types.ModelProfile) string {
+	best := ""
+	var bestCost float64
+	for name, p := range profiles {
+		cost := p.Pricing.Input + p.Pricing.Output
+		if best == "" || cost < bestCost || (cost == bestCost && name < best) {
+			best, bestCost = name, cost
+		}
+	}
+	return best
 }
 
 // Limits returns the resolved run limits installed for a flow.
@@ -142,6 +162,10 @@ func Build(opts ...Option) (*Stack, error) {
 	if err := checkSunsets(cfg.logger, cfg.telemetry, cfg.sunsetWindow, cfg.sunsetWarnOnly, profiles); err != nil {
 		return nil, err
 	}
+	titleProfile := cfg.titleProfile
+	if titleProfile == "" {
+		titleProfile = cheapestProfile(profiles)
+	}
 	s := &Stack{
 		logger:           cfg.logger,
 		telemetry:        cfg.telemetry,
@@ -167,6 +191,7 @@ func Build(opts ...Option) (*Stack, error) {
 		consolidator:     cfg.consolidator,
 		flags:            cfg.flags,
 		frozen:           cfg.frozen,
+		titleProfile:     titleProfile,
 	}
 	if err := checkResidency(cfg.tenant, cfg.stores, profiles); err != nil {
 		return nil, err

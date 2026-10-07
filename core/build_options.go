@@ -74,6 +74,7 @@ type config struct {
 	consolidator     func(ConsolidationWiring) MemoryConsolidator
 	sunsetWindow     time.Duration
 	sunsetWarnOnly   bool
+	titleProfile     string
 }
 
 // WithTenant binds the build to a tenant identity. A tenant with a
@@ -255,6 +256,15 @@ func MaxParallelTools(n int) Option {
 			return fmt.Errorf("max parallel tools %d: %w", n, ErrNotPositive)
 		}
 		c.maxParallelTools = n
+		return nil
+	}
+}
+
+// WithTitleProfile names the profile the title recipe runs on. An unset
+// option resolves to the cheapest configured profile at Build.
+func WithTitleProfile(profile string) Option {
+	return func(c *config) error {
+		c.titleProfile = profile
 		return nil
 	}
 }

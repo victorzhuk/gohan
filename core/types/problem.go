@@ -44,6 +44,7 @@ const (
 	CodeContextOverflow     ErrorCode = "gohan.context_overflow"
 	CodeContentPolicy       ErrorCode = "gohan.content_policy"
 	CodeAborted             ErrorCode = "gohan.aborted"
+	CodeHandedOff           ErrorCode = "gohan.handed_off"
 	CodeStreamInterrupted   ErrorCode = "gohan.stream_interrupted"
 	CodeConfiguration       ErrorCode = "gohan.configuration"
 	CodeVersionConflict     ErrorCode = "gohan.version_conflict"
@@ -129,6 +130,7 @@ var catalog = []catalogRow{
 	{CodeSubflowPartial, Permanent, 422, 0, "Partial subflow results", fixedDetail("subflow finished with partial results")},
 	{CodeOutcomeUnknown, Retryable, 409, 0, "Outcome unknown", fixedDetail("side effect may or may not have happened; verify before retrying")},
 	{CodeInternal, Permanent, 500, 0, "Internal error", fixedDetail("internal error")},
+	{CodeHandedOff, Permanent, 409, 0, "Handed off", fielded("run handed off to a human", "run handed off to a human: %s", "reason")},
 }
 
 var catalogByCode = func() map[ErrorCode]catalogRow {
@@ -287,6 +289,10 @@ func ProblemOf(err error) Problem {
 	if errors.As(err, &abort) {
 		return buildProblem(catalog[28], map[string]string{"reason": abort.Reason})
 	}
+	var handoff *HandoffError
+	if errors.As(err, &handoff) {
+		return buildProblem(catalog[36], map[string]string{"reason": handoff.Context.Reason})
+	}
 	var guard *GuardBlockedError
 	if errors.As(err, &guard) {
 		return buildProblem(catalog[20], map[string]string{"stage": stageName(guard.Stage)})
@@ -339,7 +345,7 @@ var _ = func() bool {
 		CodeModelUnavailable, CodeModelVersionDrift, CodeContextOverflow, CodeContentPolicy,
 		CodeAborted, CodeStreamInterrupted, CodeConfiguration, CodeVersionConflict,
 		CodeStructuredOutput, CodeChainStep, CodeSubflowPartial, CodeOutcomeUnknown,
-		CodeInternal,
+		CodeInternal, CodeHandedOff,
 	}
 	if len(want) != len(catalog) {
 		panic("error catalog: row count mismatch")

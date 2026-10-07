@@ -89,6 +89,10 @@ type conversation struct {
 
 	allowAnonymous bool
 	tenant         types.Tenant
+	titleProfile   string
+	recipeModel    func(profile string) (RecipeCall, error)
+	titleMu        sync.Mutex
+	titled         map[string]bool
 	flags          types.Flags
 	frozen         map[string]any
 
@@ -181,6 +185,8 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 		c.consolidationAudit = stack.stores.Audit
 		c.allowAnonymous = stack.allowAnonymous
 		c.telemetry = stack.telemetry
+		c.titleProfile = stack.titleProfile
+		c.recipeModel = stack.RecipeModel
 		c.flags = stack.flags
 		c.frozen = stack.frozen
 		if l, ok := stack.Limits(spec); ok {
@@ -442,10 +448,17 @@ func (c *conversation) find(ctx context.Context, sessionID string) (stores.Run, 
 // stream drives the run under the lifecycle ordering, recording every
 // event in the run's log as it is delivered.
 func (c *conversation) stream(ctx context.Context, lease stores.Lease, sessionID string, input []Message, yield func(Event, error) bool) {
+	completed := false
 	for ev, err := range c.run(ctx, lease, sessionID, input) {
+		if d, ok := ev.(types.Done); ok && err == nil && d.Reason == types.StopCompleted {
+			completed = true
+		}
 		if !yield(ev, err) {
 			return
 		}
+	}
+	if completed {
+		go c.maybeTitle(ctx, sessionID)
 	}
 }
 

@@ -79,6 +79,7 @@ type SessionMeta struct {
 	LastActivity time.Time
 	Control      SessionControl
 	Hold         string
+	Handoff      types.HandoffContext
 }
 
 type SessionControl int
@@ -107,6 +108,7 @@ type SessionPatch struct {
 	Archived *bool
 	Pinned   *bool
 	Hold     *string
+	Handoff  *types.HandoffContext
 }
 
 // SessionIndex is the optional listing surface on a SessionLog.

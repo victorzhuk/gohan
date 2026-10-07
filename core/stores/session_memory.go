@@ -687,6 +687,9 @@ func (s *MemorySessionLog) UpdateSession(ctx context.Context, sessionID string, 
 	if p.Pinned != nil {
 		candidate.Pinned = *p.Pinned
 	}
+	if p.Handoff != nil {
+		candidate.Handoff = *p.Handoff
+	}
 	rec.meta = candidate
 	return nil
 }

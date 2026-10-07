@@ -63,9 +63,12 @@ var (
 const (
 	auditHandoffAccepted stores.AuditKind = "handoff_accepted"
 	auditHandback        stores.AuditKind = "handback"
+	auditHandoffRequest  stores.AuditKind = "handoff_requested"
 
 	decisionControlHuman = "control_human"
 	decisionControlAgent = "control_agent"
+
+	decisionControlHandoffRequested = "control_handoff_requested"
 )
 
 // TakeOver pauses the agent: the live run is cancelled at its next safe

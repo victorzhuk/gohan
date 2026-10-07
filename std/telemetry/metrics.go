@@ -27,7 +27,16 @@ const (
 	MetricModelDeprecatedRouted = "gohan.model.deprecated_routed"
 
 	MetricCostPerRun = "gohan.cost.per_run"
+
+	MetricFeedback = "gohan.feedback"
 )
+
+// DefaultMetrics are the metric registrations the std presets carry. A
+// consumer passes them to Build so the emission sites in this package and
+// in core are validated against one list.
+var DefaultMetrics = []Metric{
+	{Name: MetricFeedback, Labels: []string{"name", "flow"}},
+}
 
 // Metric is one metric registration: its name and the label names it
 // carries. Labels are the bare names of the allow-list below; the

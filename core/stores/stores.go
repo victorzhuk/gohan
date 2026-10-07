@@ -10,6 +10,7 @@ type Stores struct {
 	OutputStore   OutputStore
 	EventLog      EventLog
 	Notes         NotesStore
+	Feedback      FeedbackStore
 	Audit         AuditLog
 	Journal       Journal
 	RedactionMaps RedactionMaps

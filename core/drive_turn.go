@@ -1171,8 +1171,9 @@ func isControlError(err error) bool {
 	}
 	var suspend *types.SuspendError
 	var abort *types.AbortError
+	var handoff *types.HandoffError
 	var limit *types.LimitExceededError
-	return errors.As(err, &suspend) || errors.As(err, &abort) || errors.As(err, &limit)
+	return errors.As(err, &suspend) || errors.As(err, &abort) || errors.As(err, &handoff) || errors.As(err, &limit)
 }
 
 func truncatedTurn(tu types.ToolUse, res types.ToolResult, turn int) types.Message {

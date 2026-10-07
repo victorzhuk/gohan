@@ -174,9 +174,11 @@ type Lifecycle struct {
 	redactor           types.Redactor
 	redactionPolicy    types.RedactionPolicy
 	redactionMaps      stores.RedactionMaps
+	sessions           stores.SessionIndex
 	consolidator       MemoryConsolidator
 	consolidationAudit stores.AuditLog
 	cacheWrite         CacheWriteFunc
+	handoff            func(context.Context, types.HandoffContext) error
 }
 
 // CacheWriteFunc is the terminal cache-write seam DriveLifecycle consults
@@ -210,6 +212,14 @@ func WithLifecycleLease(l stores.Lease) LifecycleOption {
 	return func(lc *Lifecycle) { lc.lease = l }
 }
 
+// WithLifecycleHandoffSink binds the session-side transition a model
+// handoff performs at the terminal seam: control moves to
+// ControlHandoffRequested and the HandoffContext persists on the session
+// index before the run closes.
+func WithLifecycleHandoffSink(fn func(context.Context, types.HandoffContext) error) LifecycleOption {
+	return func(lc *Lifecycle) { lc.handoff = fn }
+}
+
 // WithLifecycleFlow sets the flow spec a suspended checkpoint records.
 func WithLifecycleFlow(flow string) LifecycleOption {
 	return func(lc *Lifecycle) { lc.flow = flow }
@@ -230,6 +240,12 @@ func WithLifecycleOriginator(p types.Principal) LifecycleOption {
 // WithLifecycleSession sets the session id a checkpoint records.
 func WithLifecycleSession(id string) LifecycleOption {
 	return func(lc *Lifecycle) { lc.sessionID = id }
+}
+
+// WithLifecycleSessions binds the session index the handoff terminal
+// transition persists its context and control through.
+func WithLifecycleSessions(idx stores.SessionIndex) LifecycleOption {
+	return func(lc *Lifecycle) { lc.sessions = idx }
 }
 func WithLifecycleRedaction(redactor types.Redactor, policy types.RedactionPolicy, maps stores.RedactionMaps, sessionID string) LifecycleOption {
 	return func(lc *Lifecycle) {
@@ -466,6 +482,40 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 			return
 		}
 		if err != nil {
+			if he, ok := errors.AsType[*types.HandoffError](err); ok {
+				hctx := he.Context
+				if lc.sessions != nil {
+					if err := lc.sessions.UpdateSession(sctx, lc.sessionID, stores.SessionPatch{Handoff: &hctx}); err != nil {
+						yield(nil, err)
+						return
+					}
+					if cw, ok := lc.sessions.(SessionControlWriter); ok {
+						if err := cw.SetControl(sctx, lc.sessionID, stores.ControlHandoffRequested); err != nil {
+							yield(nil, err)
+							return
+						}
+					}
+				}
+				if a, ok := decisionAuditFrom(sctx); ok {
+					if aerr := a.Append(sctx, stores.AuditRecord{
+						Kind:      auditHandoffRequest,
+						SessionID: lc.sessionID,
+						RunID:     lc.lease.RunID,
+						Flow:      lc.flow,
+						Decision:  RequestHumanName,
+					}); aerr != nil {
+						yield(nil, aerr)
+						return
+					}
+				}
+				if ferr := lc.finishRun(sctx, st, stores.Finished, nil, types.StopHandedOff); ferr != nil {
+					yield(nil, ferr)
+					return
+				}
+				lc.stopHeartbeat()
+				yield(lc.done(st, nil, types.StopHandedOff), nil)
+				return
+			}
 			if se, ok := errors.AsType[*types.SuspendError](err); ok {
 				st = next
 				ev, serr := lc.suspend(sctx, rt, r, st, se)
@@ -475,6 +525,23 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 					return
 				}
 				yield(ev, nil)
+				return
+			}
+			if he, ok := errors.AsType[*types.HandoffError](err); ok {
+				st = next
+				if lc.handoff != nil {
+					if herr := lc.handoff(sctx, he.Context); herr != nil {
+						lc.stopHeartbeat()
+						yield(nil, herr)
+						return
+					}
+				}
+				if ferr := lc.finishRun(sctx, st, stores.Finished, nil, types.StopHandedOff); ferr != nil {
+					yield(nil, ferr)
+					return
+				}
+				lc.stopHeartbeat()
+				yield(lc.done(st, nil, types.StopHandedOff), nil)
 				return
 			}
 			if ferr := lc.finishRun(sctx, st, stores.Failed, nil, types.StopFailed); ferr != nil {

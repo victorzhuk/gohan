@@ -93,6 +93,24 @@ func (e *SuspendError) Error() string {
 	return "gohan: run suspended: " + string(e.Reason)
 }
 
+// HandoffContext carries the reason a model handed the conversation to a
+// human. Fields are free-form key/value detail the model supplied.
+type HandoffContext struct {
+	Reason string
+	Skill  string
+	Fields map[string]string
+}
+
+// HandoffError is the terminal control error the request_human tool
+// returns: the run ends Done with StopHandedOff and no resume token.
+type HandoffError struct {
+	Context HandoffContext
+}
+
+func (e *HandoffError) Error() string {
+	return "gohan: run handed off: " + e.Context.Reason
+}
+
 type GuardStage int
 
 const (

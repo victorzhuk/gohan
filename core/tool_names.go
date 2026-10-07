@@ -23,6 +23,7 @@ var reservedToolNames = map[string]struct{}{
 	"memory_write":        {},
 	"load_skill":          {},
 	"read_skill_resource": {},
+	"request_human":       {},
 }
 
 // HarnessToolSource is the source name the build wiring uses when it

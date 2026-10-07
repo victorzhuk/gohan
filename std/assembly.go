@@ -34,12 +34,20 @@ type AssembleInput = types.AssembleInput
 // writes the built prefix. The zero value carries no store and only
 // memoizes.
 type StablePrefix struct {
-	store *cache.Store
-	scope cache.Scope
+	store        *cache.Store
+	scope        cache.Scope
+	operatorTurn string
 }
 
 // PrefixOption adjusts a StablePrefix at construction.
 type PrefixOption func(*StablePrefix)
+
+// WithOperatorTurnPrompt sets the PromptSet.OperatorTurn string the
+// assembler wraps operator-origin history turns with. An empty string
+// disables the projection.
+func WithOperatorTurnPrompt(s string) PrefixOption {
+	return func(p *StablePrefix) { p.operatorTurn = s }
+}
 
 // WithCacheStore wires the exact-match store a lookup consults on a memo
 // miss. The scope class is the one the cache step declares for its entries;
@@ -168,6 +176,9 @@ func storePrefix(in AssembleInput, req types.ModelRequest) {
 // repopulating miss writes the built prefix and marks
 // Usage.CacheWriteTokens. The cache computes no cost.
 func (p StablePrefix) Assemble(ctx context.Context, in AssembleInput) (types.ModelRequest, error) {
+	if p.operatorTurn != "" {
+		in.History = fenceOperatorTurns(in.History, p.operatorTurn)
+	}
 	if in.Filter != nil {
 		return build(ctx, in)
 	}
@@ -374,4 +385,35 @@ func provideSlot(ctx context.Context, in AssembleInput, slot types.ContextSlot, 
 		blocks = append(blocks, got...)
 	}
 	return blocks, nil
+}
+
+// fenceOperatorTurns projects operator-origin history turns with a
+// preceding system marker. The projection is per-request: the input
+// history is never rewritten, and a turn without an operator block passes
+// through untouched.
+func fenceOperatorTurns(history []types.Message, marker string) []types.Message {
+	out := make([]types.Message, 0, len(history)+4)
+	for _, msg := range history {
+		if !hasOrigin(msg.Blocks, types.OriginOperator) {
+			out = append(out, msg)
+			continue
+		}
+		out = append(out, types.Message{
+			Role: types.RoleUser,
+			Blocks: []types.Block{types.Text{
+				BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginSystem}},
+				Text:      marker,
+			}},
+		}, msg)
+	}
+	return out
+}
+
+func hasOrigin(blocks []types.Block, kind types.OriginKind) bool {
+	for _, b := range blocks {
+		if b.BlockOrigin().Kind == kind {
+			return true
+		}
+	}
+	return false
 }
