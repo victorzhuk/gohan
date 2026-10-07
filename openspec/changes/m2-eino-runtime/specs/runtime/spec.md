@@ -41,7 +41,11 @@ ID: `runtime.readyz-false-during-shutdown`
 
 ### Requirement: Graceful shutdown
 
-A foreign runtime MUST reach preemption through the same wrapped runtime a native run uses, so a `Turn`-granularity backend is interrupted between two turns and never inside a graph or a tool call. `Shutdown`, `Ready` and the health report stay owned by the stack: an adapter MUST NOT implement its own lifecycle, its own run loop or its own shutdown handling.
+A foreign runtime MUST reach preemption through the same wrapped runtime a native run uses, and MUST pass the run ctx unchanged into every model and tool call, so cancellation stops the turn's own work at once. A cancelled turn aborts an in-flight model call, drops the partial assistant deltas it had not appended, and runs no further component of that turn; a turn MUST NOT continue its graph after its ctx is cancelled.
+
+Checkpoint publication, `Runs.Suspend`, the `Suspended{Preempted}` event and the handoff to a resumed run wait for the next safe point, which a `Turn`-granularity backend reaches when the cancelled turn has returned. Only a shielded side effect outlives cancellation: it runs to completion, is journaled and appended, and preemption follows it.
+
+`Shutdown`, `Ready` and the health report stay owned by the stack: an adapter MUST NOT implement its own lifecycle, its own run loop or its own shutdown handling.
 
 #### Scenario: shutdown rejects new work
 ID: `runtime.shutdown-rejects-new`

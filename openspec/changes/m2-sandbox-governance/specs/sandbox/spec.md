@@ -2,13 +2,15 @@
 
 ## Context
 
-This delta MODIFIES all five requirements of the `sandbox` capability (openspec/specs/sandbox/spec.md:85-168). Every existing requirement block carries scenario blocks and no normative prose; each reproduced block below carries its scenarios byte-identical and adds the clauses the capability had only as Contract prose (rules 1-8), including the port method set, which lands under *Policy and effect*. The seven scenarios this change does not own stay in their blocks unchanged: the egress and exec-timeout rows belong to `m2-sandbox-adapter-conformance` and the `PerSession` and `Replay` rows to `m2-sandbox-lifecycle-resume`. This package is not the whole of sandbox conformance (openspec/changes/m2/design.md §2.3).
+This delta MODIFIES all five requirements of the `sandbox` capability (openspec/specs/sandbox/spec.md:85-168) and adds none. Every existing requirement block carries scenario blocks and no normative prose; each reproduced block below carries its scenarios byte-identical and adds the clauses the capability had only as Contract prose (rules 1-8), including the port method set and the two optional interfaces, which land under *Policy and effect*, and the named-secret resolution path, which lands under *Secrets*. The seven scenarios this change does not own stay in their blocks unchanged: the egress and exec-timeout rows belong to `m2-sandbox-adapter-conformance` and the `PerSession` and `Replay` rows to `m2-sandbox-lifecycle-resume`. This package is not the whole of sandbox conformance (openspec/changes/m2/design.md §2.3).
 
 ## MODIFIED Requirements
 
 ### Requirement: Policy and effect
 
-`core/types` MUST declare `Sandbox.Open(ctx, WorkspaceRef, SandboxPolicy) (Workspace, error)` and `Workspace.Exec`, `Workspace.Put`, `Workspace.Get`, `Workspace.Snapshot`, `Workspace.Close`, and `WorkspaceRef` MUST be one shared type aliased where it is consumed. `Lifecycle`, `SandboxPolicy`, `SecretRef`, `ExecRequest` and `ExecResult` MUST take the shapes the capability Contract block states.
+`core/types` MUST declare `Sandbox.Open(ctx, WorkspaceRef, SandboxPolicy) (Workspace, error)` and `Workspace.Exec`, `Put`, `Get`, `SetEnv`, `Snapshot` and `Close`; `WorkspaceRef` MUST be one shared type aliased where it is consumed. `SetEnv(ctx, map[string]string) error` MUST be the only injection path into a workspace.
+
+Listing MUST NOT be a `Workspace` method. `WorkspaceLister` is an optional interface declaring `List(ctx, path) ([]WorkspaceEntry, error)`, and the harness MUST reach it by type assertion on the opened workspace. A workspace that does not implement it MUST fail `list_files` with `ErrWorkspaceListingRequired`; the harness MUST NOT return a partial listing as the answer.
 
 The tool set MUST derive each tool's effect from the policy: `PerCall` with empty `Egress.Allow` is `ReadOnly`, `PerSession` with empty `Egress.Allow` is `Idempotent`, and any `Egress.Allow` entry is `SideEffect`. `WithEffect` MAY only tighten and a loosening option MUST be refused. `Egress` MUST be the `EgressPolicy` of `tools`, enforced by the adapter at the network layer with the same private-range and hop rules. Empty `Egress` MUST mean deny-all, including DNS.
 
@@ -29,7 +31,9 @@ ID: `sandbox.egress-allowlisted`
 
 ### Requirement: Secrets
 
-Each `SecretRef` MUST be resolved by the harness through `CredentialSource` for the run originator at `Open` and injected as `Env` inside the workspace. A build without a source MUST inject nothing. A secret value MUST NOT appear in tool arguments, results, history, journal, audit records, spans or logs. `read_file` and `run_code` output MUST be scanned for every injected value, a hit MUST be replaced by a redaction marker, and `gohan.sandbox.secret_leak` MUST increment.
+Each `SecretRef` MUST be resolved at `Open` for the run originator through the optional `SecretResolver` port, `Resolve(ctx, Principal, name) (string, error)`, which is distinct from `CredentialSource` and takes the `SecretRef` name, and the resolved environment MUST be injected through `Workspace.SetEnv`. The run `Credential` MUST NOT substitute for a resolver and MUST NOT enter the workspace; a build without a resolver MUST inject nothing and the secret-named call MUST fail.
+
+An injected value MUST NOT appear in tool arguments, results, history, journal, audit records, spans or logs. `read_file` and `run_code` output MUST be scanned for every injected value, a hit MUST be replaced by a redaction marker, and `gohan.sandbox.secret_leak` MUST increment.
 
 #### Scenario: secret injected not visible
 ID: `sandbox.secret-injected`

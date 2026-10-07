@@ -31,7 +31,9 @@ None.
 
 ### Scenarios bound by this change
 
-29 ids: the 27 `runtime.*` ids, plus `flow.backend-swap` and `limits.limits-under-foreign-backend`, all recorded byte-identically in `specs/runtime/spec.md`. `runtime.foreign-tool-under-native` stays a native regression obligation owned here; `runtime.governed-components-in-eino-graph` names the graph flow and is carried here as a runtime-level acceptance check while `m2-eino-graph-native-resume` owns the graph delivery. `runtime.message-round-trip` names the eino and the adk-go bridge; this change carries the eino leg only and does not claim the id closed.
+29 ids bound: the 27 `runtime.*` scenario blocks carried byte-identically in `specs/runtime/spec.md`, plus `flow.backend-swap` and `limits.limits-under-foreign-backend`, which stay defined in the `flow` and `limits` specs and are bound by subtest name only — this delta does not restate them. The 27 blocks fall into three evidence sets (`design.md` §7): six native scheduling rows (`runtime.batch-gate-first`, `runtime.batch-limit-before-execute`, `runtime.readonly-parallel`, `runtime.side-effects-sequential`, `runtime.parallel-tools-cap`, `runtime.sequential-tools-hint`) stay native regressions proved in `core`; the rest are eino acceptance rows proved in `adapter/eino`; `runtime.message-round-trip` is proved for the eino leg only and does not claim the id closed (`m2-eino-bridges` owns the adk-go leg).
+
+`runtime.governed-components-in-eino-graph` names the graph flow and needs `einoflow.ModelNode`/`ToolsNode`, both outside this change's scope. Its acceptance row belongs to `m2-eino-graph-native-resume`, as `m2/design.md` §2.1 assigns; this change carries no acceptance task for it and restates the Component mixing requirement only so the scenario block stays byte-identical. This change owes that row the run-construction seam and the `runtime.Runtime` its graph runs on (`design.md` §4).
 
 ## Impact
 
