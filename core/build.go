@@ -78,6 +78,7 @@ type Stack struct {
 	estimator        types.TokenEstimator
 	keys             types.ProviderKeySource
 	credentials      types.CredentialSource
+	secrets          types.SecretResolver
 	notifier         types.Notifier
 	approvalPolicy   permission.ApprovalPolicySource
 	verifier         types.Verifier
@@ -118,6 +119,9 @@ func cheapestProfile(profiles map[string]types.ModelProfile) string {
 	}
 	return best
 }
+
+// Secrets returns the resolver named sandbox secret values resolve from.
+func (s *Stack) Secrets() types.SecretResolver { return s.secrets }
 
 // Limits returns the resolved run limits installed for a flow.
 func (s *Stack) Limits(flow string) (types.RunLimits, bool) {
@@ -174,6 +178,7 @@ func Build(opts ...Option) (*Stack, error) {
 		estimator:        cfg.estimator,
 		keys:             cfg.keys,
 		credentials:      cfg.credentials,
+		secrets:          cfg.secrets,
 		notifier:         cfg.notifier,
 		approvalPolicy:   cfg.approvalPolicy,
 		verifier:         cfg.verifier,
@@ -204,10 +209,36 @@ func Build(opts ...Option) (*Stack, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	warnHostExec(logger, cfg.native)
 	// build.resolved-matrix: one structured record per build, never one
 	// per profile. Flows resolve further via ResolveStrategies.
 	logResolvedMatrix(logger, nativeMatrixEntries(s.native))
 	return s, nil
+}
+
+// hostExecAcknowledger is the optional registration fact a host runner
+// declares; core never names the runner package.
+type hostExecAcknowledger interface{ HostExecAcknowledged() bool }
+
+// warnHostExec records once per registered tool that runs on the host
+// without the acknowledgement the runner option grants.
+func warnHostExec(logger *slog.Logger, defs []NativeSpec) {
+	seen := map[string]bool{}
+	for _, def := range defs {
+		for _, t := range def.Tools {
+			ack, ok := t.(hostExecAcknowledger)
+			if !ok || ack.HostExecAcknowledged() {
+				continue
+			}
+			name := t.Spec().Name
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			logger.Warn("tool runs on the host without isolation; register with AllowHostExec to acknowledge",
+				"tool", name)
+		}
+	}
 }
 
 // Tenant returns the tenant identity Build was bound to.

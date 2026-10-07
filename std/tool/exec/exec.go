@@ -74,6 +74,10 @@ func New(spec types.ToolSpec, cmd Cmd, opts ...Option) types.Tool {
 	return r
 }
 
+// HostExecAcknowledged reports whether construction carried AllowHostExec.
+// Registration-time checks read the fact through this method.
+func (r *runner) HostExecAcknowledged() bool { return r.acknowledged }
+
 // Spec implements types.Tool.
 func (r *runner) Spec() types.ToolSpec { return r.spec }
 

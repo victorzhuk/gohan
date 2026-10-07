@@ -52,6 +52,7 @@ type config struct {
 	estimator        types.TokenEstimator
 	keys             types.ProviderKeySource
 	credentials      types.CredentialSource
+	secrets          types.SecretResolver
 	notifier         types.Notifier
 	approvalPolicy   permission.ApprovalPolicySource
 	verifier         types.Verifier
@@ -151,6 +152,16 @@ func WithProviderKeys(src types.ProviderKeySource) Option {
 func WithCredentialSource(src types.CredentialSource) Option {
 	return func(c *config) error {
 		c.credentials = src
+		return nil
+	}
+}
+
+// WithSecretResolver sets the source named SecretRef values resolve from
+// at workspace Open, for the run originator principal. A build without one
+// injects nothing; a secret-named call fails as an ordinary tool error.
+func WithSecretResolver(src types.SecretResolver) Option {
+	return func(c *config) error {
+		c.secrets = src
 		return nil
 	}
 }
