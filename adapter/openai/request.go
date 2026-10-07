@@ -147,6 +147,9 @@ func (p *Provider) assembleBody(req types.ModelRequest) (map[string]any, error) 
 	if req.Options.Priority != 0 {
 		body["extra_body"] = map[string]any{"priority": req.Options.Priority}
 	}
+	if meta := costTagMetadata(req.Metadata.CostTags); len(meta) > 0 {
+		body["metadata"] = meta
+	}
 	for key, value := range req.Options.Extra {
 		if slices.Contains(governedKeys[:], key) {
 			continue
@@ -154,6 +157,20 @@ func (p *Provider) assembleBody(req types.ModelRequest) (map[string]any, error) 
 		body[key] = value
 	}
 	return body, nil
+}
+
+func costTagMetadata(tags types.CostTags) map[string]any {
+	meta := make(map[string]any, 3)
+	if tags.Feature != "" {
+		meta["feature"] = tags.Feature
+	}
+	if tags.Environment != "" {
+		meta["environment"] = tags.Environment
+	}
+	if tags.CostCenter != "" {
+		meta["cost_center"] = tags.CostCenter
+	}
+	return meta
 }
 
 func systemText(blocks []types.Block) string {

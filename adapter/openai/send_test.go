@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -317,6 +318,70 @@ func TestCacheModes(t *testing.T) {
 			t.Errorf("no caching emitted %d cache markers, want none", len(at))
 		}
 	})
+}
+
+func TestMetadataCostTags(t *testing.T) {
+	t.Run("model.cost-tags-forwarded-as-metadata", func(t *testing.T) {
+		tp := &captureTransport{}
+		p := proofModel(t, proofCaps(nil), simpleKeys(fixtureKeyID, fixtureToken), tp)
+		req := proofRequest("usage reported")
+		req.Metadata.CostTags = types.CostTags{
+			Feature:     "search",
+			Environment: "prod",
+			CostCenter:  "cc-9",
+		}
+		collect(t, p, req)
+		if len(tp.requests) != 1 {
+			t.Fatalf("transport called %d times, want 1", len(tp.requests))
+		}
+		var body struct {
+			Metadata map[string]any `json:"metadata"`
+		}
+		if err := json.Unmarshal(tp.requests[0].Body, &body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		want := map[string]any{"feature": "search", "environment": "prod", "cost_center": "cc-9"}
+		if !reflect.DeepEqual(body.Metadata, want) {
+			t.Errorf("metadata %v, want %v", body.Metadata, want)
+		}
+	})
+
+	t.Run("zero cost tags send no metadata", func(t *testing.T) {
+		tp := &captureTransport{}
+		p := proofModel(t, proofCaps(nil), simpleKeys(fixtureKeyID, fixtureToken), tp)
+		collect(t, p, proofRequest("usage reported"))
+		if len(tp.requests) != 1 {
+			t.Fatalf("transport called %d times, want 1", len(tp.requests))
+		}
+		var body map[string]any
+		if err := json.Unmarshal(tp.requests[0].Body, &body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if _, ok := body["metadata"]; ok {
+			t.Errorf("zero cost tags produced a metadata entry: %v", body["metadata"])
+		}
+	})
+}
+
+func TestProviderToolCalls(t *testing.T) {
+	tp := &captureTransport{}
+	p := proofModel(t, proofCaps(nil), simpleKeys(fixtureKeyID, fixtureToken), tp)
+	req := proofRequest("provider tools")
+	req.Tools = []types.ToolSpec{{Name: "web_search", Executor: types.ByProvider}}
+	chunks := collect(t, p, req)
+	var toolUses int
+	for _, chunk := range chunks {
+		if chunk.ToolUse != nil {
+			toolUses++
+		}
+	}
+	if toolUses != 2 {
+		t.Errorf("%d tool-use chunks streamed, want 2", toolUses)
+	}
+	u := lastUsage(t, chunks)
+	if u.ProviderToolCalls["web_search"] != 2 {
+		t.Errorf("ProviderToolCalls %v, want web_search=2", u.ProviderToolCalls)
+	}
 }
 
 func TestRetryAfterPropagationAndRawFidelity(t *testing.T) {

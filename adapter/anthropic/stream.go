@@ -11,6 +11,7 @@ import (
 	"io"
 	"strings"
 
+	gohan "github.com/victorzhuk/gohan/core"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -26,10 +27,12 @@ type streamState struct {
 	chars        int
 	toolArgs     strings.Builder
 	toolOpen     bool
+	specs        []types.ToolSpec
+	providerTool []types.ToolUse
 }
 
 func (m *Model) decode(ctx context.Context, r io.Reader, state *assembled, yield func(types.ModelChunk, error) bool) {
-	st := &streamState{schemaForced: state.schemaForced}
+	st := &streamState{schemaForced: state.schemaForced, specs: state.specs}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	var event sseEvent
@@ -78,6 +81,7 @@ func (m *Model) dispatch(st *streamState, event sseEvent, yield func(types.Model
 }
 
 func (m *Model) finish(st *streamState, yield func(types.ModelChunk, error) bool) {
+	gohan.CountProviderCalls(st.specs, st.providerTool, &st.usage)
 	if st.usageSeen && st.usage.OutputTokens == 0 {
 		st.usage.OutputTokens = estimate(st.chars)
 	}
@@ -153,6 +157,9 @@ func contentBlockStart(st *streamState, data []byte, yield func(types.ModelChunk
 		}}, nil) {
 			return false
 		}
+	}
+	if payload.ContentBlock.Type == "server_tool_use" {
+		st.providerTool = append(st.providerTool, types.ToolUse{Name: payload.ContentBlock.Name})
 	}
 	return true
 }

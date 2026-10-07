@@ -1,0 +1,6 @@
+{
+  "name": "provider tools",
+  "status": 200,
+  "header": {"Content-Type": ["text/event-stream"]},
+  "body": "data: {\"model\":\"served-1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"web_search\",\"arguments\":\"{\\\"q\\\":\\\"go\\\"}\"}}]}}]}\n\ndata: {\"model\":\"served-1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call-2\",\"function\":{\"name\":\"web_search\",\"arguments\":\"{\\\"q\\\":\\\"gohan\\\"}\"}}]}}]}\n\ndata: {\"model\":\"served-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":10}}\n\ndata: [DONE]\n\n"
+}

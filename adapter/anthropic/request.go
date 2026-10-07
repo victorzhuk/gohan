@@ -19,6 +19,7 @@ type assembled struct {
 	body         []byte
 	schemaForced bool
 	dropped      int
+	specs        []types.ToolSpec
 }
 
 func (m *Model) assemble(ctx context.Context, req types.ModelRequest) ([]byte, *assembled, error) {
@@ -31,7 +32,7 @@ func (m *Model) assemble(ctx context.Context, req types.ModelRequest) ([]byte, *
 			}
 		}
 	}
-	state := &assembled{}
+	state := &assembled{specs: req.Tools}
 	body := map[string]any{
 		"model":  m.cfg.Profile.Version,
 		"stream": true,

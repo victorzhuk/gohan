@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
+	"github.com/victorzhuk/gohan/core"
 	"github.com/victorzhuk/gohan/core/types"
 	"github.com/victorzhuk/gohan/std/tokens"
 )
@@ -67,7 +69,7 @@ func (p *Provider) stream(ctx context.Context, resp *http.Response, req types.Mo
 		id, name, args string
 	}
 	var usageEmitted bool
-	var pending *toolAcc
+	pending := map[int]*toolAcc{}
 	var streamed strings.Builder
 	served := ""
 	defer func() {
@@ -124,16 +126,18 @@ func (p *Provider) stream(ctx context.Context, resp *http.Response, req types.Mo
 				}
 			}
 			for _, delta := range choice.Delta.ToolCalls {
-				if pending == nil {
-					pending = &toolAcc{}
+				acc := pending[delta.Index]
+				if acc == nil {
+					acc = &toolAcc{}
+					pending[delta.Index] = acc
 				}
 				if delta.ID != "" {
-					pending.id = delta.ID
+					acc.id = delta.ID
 				}
 				if delta.Function.Name != "" {
-					pending.name = delta.Function.Name
+					acc.name = delta.Function.Name
 				}
-				pending.args += delta.Function.Arguments
+				acc.args += delta.Function.Arguments
 			}
 		}
 		finish := ""
@@ -145,26 +149,35 @@ func (p *Provider) stream(ctx context.Context, resp *http.Response, req types.Mo
 		if finish == "" && chunk.Usage == nil {
 			continue
 		}
-		var out *types.ModelChunk
-		if pending != nil {
-			out = &types.ModelChunk{ToolUse: &types.ToolUse{
-				ID:   pending.id,
-				Name: pending.name,
-				Args: json.RawMessage(pending.args),
-			}}
-			pending = nil
+		var calls []types.ToolUse
+		for index := range pending {
+			acc := pending[index]
+			calls = append(calls, types.ToolUse{
+				ID:   acc.id,
+				Name: acc.name,
+				Args: json.RawMessage(acc.args),
+			})
+		}
+		pending = nil
+		slices.SortFunc(calls, func(a, b types.ToolUse) int {
+			return strings.Compare(a.ID, b.ID)
+		})
+		for i := range calls[:max(len(calls)-1, 0)] {
+			if !yield(types.ModelChunk{ToolUse: &calls[i]}, nil) {
+				return
+			}
+		}
+		out := &types.ModelChunk{}
+		if len(calls) > 0 {
+			out.ToolUse = &calls[len(calls)-1]
 		}
 		use := p.usageFrom(chunk.Usage, keyID, served, req, streamed.String())
-		if out == nil {
-			out = &types.ModelChunk{}
-		}
+		gohan.CountProviderCalls(req.Tools, calls, use)
 		if finish != "" {
 			out.Finish = finishReason(finish)
 		}
-		if use != nil {
-			out.Usage = use
-			usageEmitted = true
-		}
+		out.Usage = use
+		usageEmitted = true
 		if !yield(*out, nil) {
 			return
 		}

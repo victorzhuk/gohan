@@ -344,6 +344,80 @@ func TestAnthropicSend(t *testing.T) {
 		}
 	})
 
+	t.Run("model.provider-no-metadata-channel", func(t *testing.T) {
+		tr := &captureTransport{}
+		okStream(tr)
+		m := newTestModel(t, tr, nil)
+		req := probeReq()
+		req.Metadata.CostTags = types.CostTags{Feature: "search", Environment: "prod", CostCenter: "cc-1"}
+		req.Options.Extra = map[string]any{"metadata": map[string]any{"user_id": "tenant_u1"}}
+		if _, err := collectChunks(context.Background(), m, req); err != nil {
+			t.Fatalf("collect: %v", err)
+		}
+		metadata, ok := tr.bodies[0]["metadata"].(map[string]any)
+		if !ok {
+			t.Fatalf("metadata %v, want the caller's object", tr.bodies[0]["metadata"])
+		}
+		if metadata["user_id"] != "tenant_u1" {
+			t.Fatalf("user_id %v, want tenant_u1", metadata["user_id"])
+		}
+		for _, tag := range []string{"feature", "environment", "cost_center", "search", "prod", "cc-1"} {
+			if _, ok := metadata[tag]; ok {
+				t.Fatalf("cost tag %q reached the wire, want none", tag)
+			}
+		}
+		if len(metadata) != 1 {
+			t.Fatalf("metadata %v carried more than user_id", metadata)
+		}
+	})
+
+	t.Run("user-id-passthrough", func(t *testing.T) {
+		tr := &captureTransport{}
+		okStream(tr)
+		m := newTestModel(t, tr, nil)
+		req := probeReq()
+		req.Options.Extra = map[string]any{"metadata": map[string]any{"user_id": "tenant_u1"}}
+		if _, err := collectChunks(context.Background(), m, req); err != nil {
+			t.Fatalf("collect: %v", err)
+		}
+		metadata, ok := tr.bodies[0]["metadata"].(map[string]any)
+		if !ok {
+			t.Fatalf("metadata %v, want the caller's object", tr.bodies[0]["metadata"])
+		}
+		if metadata["user_id"] != "tenant_u1" {
+			t.Fatalf("user_id %v, want tenant_u1", metadata["user_id"])
+		}
+		if len(metadata) != 1 {
+			t.Fatalf("metadata %v carried more than user_id", metadata)
+		}
+	})
+
+	t.Run("provider-tool-accounting", func(t *testing.T) {
+		tr := &captureTransport{}
+		playback := Fixtures()["provider tool calls"]
+		tr.status, tr.body = playback.Status, playback.Body
+		m := newTestModel(t, tr, nil)
+		req := probeReq()
+		req.Tools = []types.ToolSpec{
+			{Name: "web_search", Executor: types.ByProvider},
+			{Name: "code_exec", Executor: types.ByHarness},
+		}
+		chunks, err := collectChunks(context.Background(), m, req)
+		if err != nil {
+			t.Fatalf("collect: %v", err)
+		}
+		usage := chunks[len(chunks)-1].Usage
+		if usage == nil {
+			t.Fatalf("no usage on the final chunk")
+		}
+		if usage.ProviderToolCalls["web_search"] != 2 {
+			t.Fatalf("ProviderToolCalls %v, want web_search=2", usage.ProviderToolCalls)
+		}
+		if _, ok := usage.ProviderToolCalls["code_exec"]; ok {
+			t.Fatalf("harness tool %v counted as a provider call", usage.ProviderToolCalls)
+		}
+	})
+
 	t.Run("isolation-per-key", func(t *testing.T) {
 		tr := &captureTransport{status: 429}
 		tr.body = Fixtures()["rate limited with retry after"].Body
