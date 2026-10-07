@@ -359,19 +359,32 @@ func assertRawFixture(tb conformanceTB, m types.Model, fx Fixture) {
 	}
 }
 
-// assertBlobProviderIDFixture sends an image above InlineBlobBytes with its
-// bytes, then the same ref as a provider-id carrier on turns two and three:
-// assembly uploads once and later turns send the id the provider issued, so
-// the model must accept both block shapes and complete each stream. The
-// exact outgoing id payload is inside the adapter harness.
+// assertBlobProviderIDFixture sends an image above InlineBlobBytes carrying
+// its bytes, then the same ref as an id-only carrier on turns two and three.
+// The Model suite drives types.Model.Generate directly: it has no assembly
+// seam, and an adapter model does not implement types.BlobUploader, so the
+// upload count and the ref → id resolution assembly performs are not
+// observable here. This fixture proves the port half the model owns: it
+// accepts both block shapes and completes each stream. The upload-once and
+// outgoing-id claims run against the shipped assembler in
+// TestBlobProviderIDReuseShippedPath.
 func assertBlobProviderIDFixture(tb conformanceTB, m types.Model, fx Fixture) {
 	tb.Helper()
+	if fx.TargetProvider == "" {
+		tb.Errorf("blob fixture names no target provider")
+		return
+	}
 	big := make([]byte, stores.InlineBlobBytes+1)
 	inline := types.Image{MIME: "image/png", Data: big, Blob: types.Blob{Ref: "blob-fixture"}}
 	req := probeRequest()
 	req.Messages = append(req.Messages, types.Message{Role: types.RoleUser, Blocks: []types.Block{inline}})
-	if _, err := collect(m, req); err != nil {
+	chunks, err := collect(m, req)
+	if err != nil {
 		tb.Errorf("inline blob turn failed: %v", err)
+		return
+	}
+	if len(chunks) == 0 {
+		tb.Errorf("inline blob turn streamed no chunks")
 		return
 	}
 	carrier := types.Image{MIME: "image/png", Blob: types.Blob{
@@ -379,11 +392,19 @@ func assertBlobProviderIDFixture(tb conformanceTB, m types.Model, fx Fixture) {
 		Provider:   fx.TargetProvider,
 		ProviderID: fx.TargetProvider + "-blob-1",
 	}}
+	if carrier.Data != nil {
+		tb.Errorf("id carrier carries bytes, want the id-only shape")
+	}
 	for turn := 2; turn <= 3; turn++ {
 		req := probeRequest()
 		req.Messages = append(req.Messages, types.Message{Role: types.RoleUser, Blocks: []types.Block{carrier}})
-		if _, err := collect(m, req); err != nil {
+		chunks, err := collect(m, req)
+		if err != nil {
 			tb.Errorf("turn %d with the provider id failed: %v", turn, err)
+			continue
+		}
+		if len(chunks) == 0 {
+			tb.Errorf("turn %d with the provider id streamed no chunks", turn)
 		}
 	}
 }

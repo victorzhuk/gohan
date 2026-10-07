@@ -47,6 +47,7 @@ type sessionRecord struct {
 	kidsOf      map[SessionKind][]string
 	linked      bool
 	state       sharedStateRow
+	blobsRaw    []byte
 }
 
 // sharedStateRow is the session's persisted shared state: the JSON value
@@ -139,6 +140,15 @@ func (s *MemorySessionLog) SeedRecord(_ context.Context, identity string, envelo
 		rec.state.raw = raw
 		return nil
 	}
+	if strings.HasSuffix(identity, "/blobs") {
+		rec, sid, err := s.blobSlot(identity)
+		if err != nil {
+			return err
+		}
+		rec.blobsRaw = raw
+		delete(s.blobIDs, sid)
+		return nil
+	}
 	rec, index, err := s.messageSlot(identity)
 	if err != nil {
 		return err
@@ -157,6 +167,13 @@ func (s *MemorySessionLog) StoredRecord(_ context.Context, identity string) ([]b
 			return nil, err
 		}
 		return append([]byte(nil), rec.state.raw...), nil
+	}
+	if strings.HasSuffix(identity, "/blobs") {
+		rec, _, err := s.blobSlot(identity)
+		if err != nil {
+			return nil, err
+		}
+		return append([]byte(nil), rec.blobsRaw...), nil
 	}
 	rec, index, err := s.messageSlot(identity)
 	if err != nil {
@@ -206,11 +223,29 @@ func (s *MemorySessionLog) messageSlot(identity string) (*sessionRecord, int, er
 	return rec, i, nil
 }
 
+// blobSlot resolves a "session/<id>/blobs" identity to the record holding
+// the session blob ledger's stored bytes. Session ids must not carry a slash.
+func (s *MemorySessionLog) blobSlot(identity string) (*sessionRecord, string, error) {
+	rest, ok := strings.CutPrefix(identity, "session/")
+	if !ok {
+		return nil, "", fmt.Errorf("record identity %s: not a session identity", identity)
+	}
+	sid, kind, _ := strings.Cut(rest, "/")
+	if kind != "blobs" {
+		return nil, "", fmt.Errorf("record identity %s: unknown kind %q", identity, kind)
+	}
+	rec, ok := s.sessions[sid]
+	if !ok {
+		return nil, "", fmt.Errorf("record identity %s: not found", identity)
+	}
+	return rec, sid, nil
+}
+
 // blobIDRow is one ledger entry: the provider that issued the id for a ref
 // and the id itself.
 type blobIDRow struct {
-	provider string
-	id       string
+	Provider string `json:"provider"`
+	ID       string `json:"id"`
 }
 
 func NewMemorySessionLog(opts ...MemorySessionOption) *MemorySessionLog {
@@ -502,6 +537,7 @@ func (s *MemorySessionLog) Fork(ctx context.Context, from, upTo string) (string,
 	if rec.state.version > 0 {
 		child.state = sharedStateRow{value: slices.Clone(rec.state.value), raw: slices.Clone(rec.state.raw), version: 1}
 	}
+	child.blobsRaw = slices.Clone(rec.blobsRaw)
 	s.sessions[childID] = child
 	for _, d := range s.dependents {
 		if err := d.CopySessionDependents(ctx, from, childID); err != nil {
@@ -720,28 +756,67 @@ func (s *MemorySessionLog) SharedStateMeta(ctx context.Context, sessionID string
 func (s *MemorySessionLog) BlobProviderID(ctx context.Context, sessionID, ref string) (string, string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := s.get(ctx, sessionID, scopeSessionRead); err != nil {
+	rec, err := s.get(ctx, sessionID, scopeSessionRead)
+	if err != nil {
 		return "", "", false
 	}
-	row, ok := s.blobIDs[sessionID][ref]
-	return row.provider, row.id, ok
+	rows, ok := s.blobIDs[sessionID]
+	if !ok {
+		if rec.blobsRaw == nil {
+			return "", "", false
+		}
+		rows, err = decodeBlobIDs(rec.blobsRaw)
+		if err != nil {
+			return "", "", false
+		}
+		s.blobIDs[sessionID] = rows
+	}
+	row, ok := rows[ref]
+	return row.Provider, row.ID, ok
 }
 
 // SetBlobProviderID writes the ledger row for a ref, naming the provider
-// that issued the id.
+// that issued the id. The whole ledger is serialized into the session's
+// blobs record so it survives a rebuild from stored bytes.
 func (s *MemorySessionLog) SetBlobProviderID(ctx context.Context, sessionID, ref, provider, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := s.get(ctx, sessionID, scopeSessionWrite); err != nil {
+	rec, err := s.get(ctx, sessionID, scopeSessionWrite)
+	if err != nil {
 		return err
 	}
 	rows := s.blobIDs[sessionID]
 	if rows == nil {
-		rows = make(map[string]blobIDRow)
+		if rec.blobsRaw != nil {
+			rows, err = decodeBlobIDs(rec.blobsRaw)
+			if err != nil {
+				return err
+			}
+		} else {
+			rows = make(map[string]blobIDRow)
+		}
 		s.blobIDs[sessionID] = rows
 	}
-	rows[ref] = blobIDRow{provider, id}
+	rows[ref] = blobIDRow{Provider: provider, ID: id}
+	raw, err := encodeEnvelope("BlobLedger", rows)
+	if err != nil {
+		return err
+	}
+	rec.blobsRaw = raw
 	return nil
+}
+
+// decodeBlobIDs reads the ref → row map back from the persisted envelope.
+func decodeBlobIDs(raw []byte) (map[string]blobIDRow, error) {
+	var env RecordEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, fmt.Errorf("decode BlobLedger envelope: %w", err)
+	}
+	var rows map[string]blobIDRow
+	if err := json.Unmarshal(env.Payload, &rows); err != nil {
+		return nil, fmt.Errorf("decode BlobLedger payload: %w", err)
+	}
+	return rows, nil
 }
 
 // SetSharedStateMeta writes the shared state under an expected-version
