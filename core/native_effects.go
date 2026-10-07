@@ -36,6 +36,7 @@ func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 		specs:        cfg.specs,
 		taintPolicy:  cfg.taintPolicy,
 		instruction:  cloneBlocks(cfg.instruction),
+		secrets:      s.secrets,
 		clients:      cfg.clients,
 		scheduler: runtime.SchedulerConfig{
 			EffectOf:    nativeEffectOf(cfg.tools),
@@ -82,7 +83,11 @@ func (env *turnEnv) effectCtx(ctx context.Context) context.Context {
 	if env.sink == nil {
 		env.sink, _ = types.SinkFrom(ctx)
 	}
-	return types.WithTaintWindow(withTurnEnv(ctx, env), rawTaintWindow(env.msgs))
+	base := withTurnEnv(ctx, env)
+	if env.c.secrets != nil {
+		base = types.WithSecrets(base, env.c.secrets)
+	}
+	return types.WithTaintWindow(base, rawTaintWindow(env.msgs))
 }
 
 func rawTaintWindow(msgs []types.Message) []types.Block {

@@ -82,6 +82,7 @@ type turnConfig struct {
 	specs       []types.ToolSpec
 	taintPolicy types.TaintHook
 	instruction []types.Block
+	secrets     types.SecretResolver
 }
 
 // turnEnv carries the per-run state the two effects share across their

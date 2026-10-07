@@ -103,6 +103,10 @@ type (
 	Decision[D any]   = types.Decision[D]
 	Decider[S, D any] = types.Decider[S, D]
 
+	Sandbox      = types.Sandbox
+	Workspace    = types.Workspace
+	WorkspaceRef = types.WorkspaceRef
+
 	SessionLog  = stores.SessionLog
 	Runs        = stores.Runs
 	Checkpoints = stores.Checkpoints

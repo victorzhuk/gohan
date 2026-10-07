@@ -2,7 +2,6 @@ package types
 
 import (
 	"context"
-	"errors"
 	"io"
 	"time"
 )
@@ -83,10 +82,6 @@ type Workspace interface {
 	Snapshot(ctx context.Context) (WorkspaceRef, error)
 	Close(ctx context.Context) error
 }
-
-// ErrWorkspaceListingRequired reports a listing call against a workspace
-// that does not implement WorkspaceLister. There is no partial listing.
-var ErrWorkspaceListingRequired = errors.New("gohan: workspace does not support listing")
 
 // WorkspaceLister is the optional listing capability a workspace declares
 // beside the port. Callers reach it by type assertion on the value Open

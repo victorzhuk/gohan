@@ -62,6 +62,11 @@ var (
 	// working-state
 	ErrMemoryStoreRequired = errors.New("gohan: subject memory needs a MemoryStore")
 	ErrMemoryWriteInvalid  = errors.New("gohan: memory value does not match the schema")
+
+	// sandbox: no partial listing answers a list_files call
+	ErrWorkspaceListingRequired = errors.New("gohan: workspace does not support listing")
+	// sandbox: the per-session call path lands with the resume change
+	ErrPerSessionUnsupported = errors.New("gohan: sandbox per-session lifecycle is not supported yet")
 )
 
 type ResumeToken string

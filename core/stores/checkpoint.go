@@ -28,10 +28,9 @@ type ResumeInput struct {
 	Reason   string
 }
 
-// WorkspaceRef identifies a persisted sandbox snapshot. It is sandbox-owned
-// vocabulary declared here because the Checkpoints port depends on it; the
-// alias step later replaces it with the shared type.
-type WorkspaceRef string
+// WorkspaceRef is the shared sandbox vocabulary aliased here because the
+// Checkpoints port carries it.
+type WorkspaceRef = types.WorkspaceRef
 
 // Checkpoint is everything a suspended run needs to resume on any pod.
 // Originator is a Principal by type, so it cannot carry the caller's
