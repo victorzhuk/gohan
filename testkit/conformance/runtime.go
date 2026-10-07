@@ -27,6 +27,12 @@ const (
 	ScenarioToolRoundTrip Scenario = "tool round trip"
 	// ScenarioToolError fails inside the gate step.
 	ScenarioToolError Scenario = "tool error"
+	// ScenarioParallelCalls carries two tool calls in one model message,
+	// then answers.
+	ScenarioParallelCalls Scenario = "parallel calls"
+	// ScenarioMaxTurns calls a tool every turn; the driver stops the run
+	// at its MaxTurns bound with Done(StopLimit).
+	ScenarioMaxTurns Scenario = "max turns"
 )
 
 // Canonical governed-step names a harness records in Observations.
@@ -51,6 +57,12 @@ func Runtime(t *testing.T, newHarness func(Scenario) Harness) {
 	})
 	t.Run("runtime.tool-round-trip", func(t *testing.T) {
 		runRuntimeToolRoundTrip(testingTB{t}, newHarness(ScenarioToolRoundTrip))
+	})
+	t.Run("runtime.parallel-calls-ordering", func(t *testing.T) {
+		runRuntimeParallelCallsOrdering(testingTB{t}, newHarness(ScenarioParallelCalls))
+	})
+	t.Run("runtime.max-turns", func(t *testing.T) {
+		runRuntimeMaxTurns(testingTB{t}, newHarness(ScenarioMaxTurns))
 	})
 	t.Run("runtime.cancellation", func(t *testing.T) {
 		runRuntimeCancellation(testingTB{t}, newHarness(ScenarioPlainAnswer))
@@ -85,6 +97,51 @@ func runRuntimeToolRoundTrip(tb conformanceTB, h Harness) {
 	}
 	if len(obs.ToolCalls) == 0 {
 		tb.Errorf("tool calls %v: no tool ran", obs.ToolCalls)
+	}
+}
+
+// runRuntimeParallelCallsOrdering proves the results of one multi-call
+// model message reach the next model call in call order.
+func runRuntimeParallelCallsOrdering(tb conformanceTB, h Harness) {
+	tb.Helper()
+	evs, err := h.Run(context.Background(), userTurn())
+	if err != nil {
+		tb.Fatalf("Run error = %v, want a completed run", err)
+	}
+	assertRunDone(tb, evs)
+	obs := h.Observed()
+	if len(obs.ToolCalls) != 2 {
+		tb.Fatalf("tool calls %v, want two in call order", obs.ToolCalls)
+	}
+	if obs.ToolCalls[0] == obs.ToolCalls[1] {
+		tb.Errorf("tool calls %v, want the declared call order", obs.ToolCalls)
+	}
+}
+
+// runRuntimeMaxTurns proves the driver ends the run with Done(StopLimit)
+// after exactly three model calls when the model calls a tool every turn.
+func runRuntimeMaxTurns(tb conformanceTB, h Harness) {
+	tb.Helper()
+	evs, err := h.Run(context.Background(), userTurn())
+	if err != nil {
+		tb.Fatalf("Run error = %v, want a limit-ended run", err)
+	}
+	if len(evs) == 0 {
+		tb.Fatalf("events = [], want a terminal Done")
+	}
+	done, ok := evs[len(evs)-1].(types.Done)
+	if !ok {
+		tb.Fatalf("last event %T, want types.Done", evs[len(evs)-1])
+	}
+	if done.Reason != types.StopLimit {
+		tb.Errorf("Done reason = %q, want %q", done.Reason, types.StopLimit)
+	}
+	calls, counted := h.(interface{ ModelCalls() int })
+	if !counted {
+		tb.Fatalf("harness %T does not report its model calls", h)
+	}
+	if got := calls.ModelCalls(); got != 3 {
+		tb.Errorf("model calls = %d, want 3", got)
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/victorzhuk/gohan/core/runtime"
+	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -185,6 +187,107 @@ func TestStackShutdownHealth(t *testing.T) {
 		}
 		if rep := s.Health(ctx); rep.Ready {
 			t.Fatal("Health.Ready = true after completed shutdown, want false")
+		}
+	})
+}
+
+func TestConversationShutdownAdmission(t *testing.T) {
+	ctx := principalCtx(context.Background())
+
+	newConv := func(t *testing.T, rt runtime.Runtime) (Conversation, *Stack) {
+		t.Helper()
+		s, err := Build()
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		s.stores = stores.Stores{SessionLog: stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))}
+		conv, err := NewConversation(s, "chat", rt,
+			WithConversationRuns(&runsFixture{MemoryRuns: stores.NewMemoryRuns(stores.WithMemoryRunClock(time.Now)), onSess: map[string]string{}}),
+			WithConversationEventLog(stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))),
+			WithConversationCheckpoints(stores.NewMemoryCheckpoints()),
+		)
+		if err != nil {
+			t.Fatalf("new conversation: %v", err)
+		}
+		return conv, s
+	}
+
+	t.Run("shutdownRejectsSend", func(t *testing.T) {
+		conv, s := newConv(t, &convRT{steps: 0})
+		if err := s.Shutdown(ctx); err != nil {
+			t.Fatalf("shutdown: %v", err)
+		}
+		tuples := 0
+		for ev, err := range conv.Send(ctx, "sess-1", userMsg("hi")) {
+			tuples++
+			if ev != nil {
+				t.Fatalf("delivered %+v with the refusal", ev)
+			}
+			if !errors.Is(err, types.ErrShuttingDown) {
+				t.Fatalf("send after shutdown: %v, want ErrShuttingDown", err)
+			}
+		}
+		if tuples != 1 {
+			t.Fatalf("tuples = %d, want exactly the one error tuple", tuples)
+		}
+		if s.Ready() {
+			t.Fatal("Ready = true after shutdown, want false")
+		}
+	})
+
+	t.Run("shutdownRejectsContinue", func(t *testing.T) {
+		conv, s := newConv(t, &convRT{steps: 0})
+		if err := s.Shutdown(ctx); err != nil {
+			t.Fatalf("shutdown: %v", err)
+		}
+		tuples := 0
+		for ev, err := range conv.Continue(ctx, "sess-1") {
+			tuples++
+			if ev != nil {
+				t.Fatalf("delivered %+v with the refusal", ev)
+			}
+			if !errors.Is(err, types.ErrShuttingDown) {
+				t.Fatalf("continue after shutdown: %v, want ErrShuttingDown", err)
+			}
+		}
+		if tuples != 1 {
+			t.Fatalf("tuples = %d, want exactly the one error tuple", tuples)
+		}
+	})
+
+	t.Run("shutdownGraceExhaustedSend", func(t *testing.T) {
+		rt := &convRT{steps: 1, gate: make(chan struct{}), entered: make(chan struct{})}
+		conv, s := newConv(t, rt)
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			for _, err := range conv.Send(ctx, "sess-1", userMsg("hi")) {
+				_ = err
+			}
+		}()
+		select {
+		case <-rt.entered:
+		case <-time.After(2 * time.Second):
+			close(rt.gate)
+			t.Fatal("run never entered its step")
+		}
+		gctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+		err := s.Shutdown(gctx)
+		if !errors.Is(err, types.ErrShutdownIncomplete) {
+			t.Fatalf("shutdown: %v, want ErrShutdownIncomplete", err)
+		}
+		inc, ok := errors.AsType[*ShutdownIncomplete](err)
+		if !ok {
+			t.Fatalf("shutdown error %T does not carry ShutdownIncomplete", err)
+		}
+		if len(inc.RunIDs) != 1 || inc.RunIDs[0] == "" {
+			t.Fatalf("RunIDs = %v, want the in-flight run", inc.RunIDs)
+		}
+		close(rt.gate)
+		<-drained
+		if err := s.Shutdown(ctx); err != nil {
+			t.Fatalf("shutdown after drain: %v", err)
 		}
 	})
 }

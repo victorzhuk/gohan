@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -53,6 +54,34 @@ func explainStack(t *testing.T, prompts chains.PromptSet, calls *atomic.Int64) *
 		t.Fatalf("Build: %v", err)
 	}
 	return s
+}
+
+func TestExplainForeignGranularity(t *testing.T) {
+	spec := ForeignSpec{
+		Request: FlowRequest{Name: "agent"},
+		Profile: "primary",
+		Assemble: func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+			return types.ModelRequest{Messages: append(append([]types.Message{}, in.History...), in.Input...)}, nil
+		},
+		NewRuntime: func() runtime.Runtime {
+			return &constructionRT{}
+		},
+	}
+	s, err := Build(
+		WithModels(&explainModel{profile: profile("primary", true)}),
+		WithLimits("agent", types.InteractiveLimits),
+		WithForeignAgent(spec),
+	)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	ex := s.Explain("agent")
+	if ex.Flow != "agent" {
+		t.Fatalf("flow = %q, want agent", ex.Flow)
+	}
+	if ex.Granularity != "turn" {
+		t.Errorf("granularity = %q, want turn", ex.Granularity)
+	}
 }
 
 func TestExplain(t *testing.T) {

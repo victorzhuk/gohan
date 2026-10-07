@@ -293,8 +293,14 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			return
 		}
 
+		pre := NewPreemptor()
+		if err := c.admitRun(cp.RunID, pre); err != nil {
+			yield(nil, err)
+			return
+		}
 		consumed, err := resumer.ConsumeIf(ctx, t, cp, r)
 		if err != nil {
+			c.dropRun(cp.RunID)
 			yield(nil, err)
 			return
 		}
@@ -305,12 +311,14 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 				}
 			}
 			if rerr := markAskReady(&st); rerr != nil {
+				c.dropRun(cp.RunID)
 				yield(nil, rerr)
 				return
 			}
 		}
 		lease, err := c.runs.Resuming(credCtx, consumed.RunID, resumeLeaseTTL)
 		if err != nil {
+			c.dropRun(cp.RunID)
 			yield(nil, err)
 			return
 		}
@@ -318,6 +326,7 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 		// nothing else will release the lease: the run finishes Failed
 		// instead of sitting Resuming behind a live lease.
 		prepFail := func(err error) {
+			c.dropRun(cp.RunID)
 			if ferr := c.runs.Finish(credCtx, lease, stores.Failed, nil, ""); ferr != nil {
 				err = fmt.Errorf("release resumed lease: %w", errors.Join(err, ferr))
 			}
@@ -476,7 +485,7 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			runCtx = withPendingReplay(runCtx)
 		}
 		lc := NewLifecycle(opts...)
-		for ev, err := range c.runPrepared(runCtx, lease, lc, rt, ag, NewPreemptor()) {
+		for ev, err := range c.runPrepared(runCtx, lease, lc, rt, ag, pre) {
 			if !yield(ev, err) {
 				return
 			}

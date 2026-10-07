@@ -28,7 +28,7 @@ func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 		// Supervision wraps only the provider, so the chain steps and
 		// the middleware above it keep running on the caller's goroutine.
 		model:        recordRunCost(runModelChain(cfg.modelChain, deprecatedRoute(s.telemetry, cfg.profile, NewModelStream(cfg.model).Generate, s.successorModelFunc(cfg.profile)))),
-		assemble:     withProjections(cfg.contextPolicy, cfg.profile, nativeAssemble(s.prompts, cfg.assemble, cfg.redactor, cfg.redactionPolicy, s.stores.RedactionMaps, newBlobAssembly(cfg.profile.Name, cfg.model, s.stores))),
+		assemble:     withProjections(cfg.contextPolicy, cfg.profile, nativeAssemble(cfg.flow, s.prompts, cfg.assemble, cfg.redactor, cfg.redactionPolicy, s.stores.RedactionMaps, newBlobAssembly(cfg.profile.Name, cfg.model, s.stores))),
 		providerGate: providerDeclarationGate(cfg),
 		maxTurns:     cfg.limits.MaxTurns,
 		limits:       cfg.limits,
@@ -214,10 +214,16 @@ func (env *turnEnv) assemblyInput(ctx context.Context, history []types.Message) 
 	}
 }
 
+// errNoAssembler marks a flow whose definition declared no assembler; the
+// assembly cannot build a model request without one.
+var errNoAssembler = errors.New("gohan: flow has no assembler")
+
 // nativeAssemble applies the resolved assembler and prepends the PromptSet
 // block. This is the single prompt insertion point of the native path; a
-// set without one model-facing string inserts nothing.
+// set without one model-facing string inserts nothing. A flow without an
+// assembler fails the assembly instead of calling a nil function.
 func nativeAssemble(
+	flow string,
 	ps chains.PromptSet,
 	assemble func(context.Context, types.AssembleInput) (types.ModelRequest, error),
 	redactor types.Redactor,
@@ -226,6 +232,9 @@ func nativeAssemble(
 	blobs blobAssembly,
 ) func(context.Context, types.AssembleInput) (types.ModelRequest, error) {
 	return func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+		if assemble == nil {
+			return types.ModelRequest{}, fmt.Errorf("%w: %q", errNoAssembler, flow)
+		}
 		req, err := assemble(ctx, in)
 		if err != nil {
 			return types.ModelRequest{}, err

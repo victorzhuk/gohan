@@ -45,7 +45,7 @@ func TestRedactionScenarios(t *testing.T) {
 		redactor := scenarioRedactor()
 		ctx := types.WithRunInfo(context.Background(), types.RunInfo{SessionID: "s1", Principal: types.Principal{Tenant: "t1"}})
 		store := stores.NewMemoryRedactionMaps()
-		assemble := nativeAssemble(chains.PromptSet{}, func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+		assemble := nativeAssemble("chat", chains.PromptSet{}, func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
 			return types.ModelRequest{Messages: append([]types.Message(nil), in.Input...)}, nil
 		}, redactor, scenarioPolicy(), store, blobAssembly{})
 		var token string

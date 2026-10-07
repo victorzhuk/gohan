@@ -89,7 +89,7 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			return err
 		}
 		assemble := spec.Assemble
-		if staticOptionsSet(spec.ModelOptions) {
+		if assemble != nil && staticOptionsSet(spec.ModelOptions) {
 			opts := spec.ModelOptions
 			assemble = func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error) {
 				req, err := spec.Assemble(ctx, in)

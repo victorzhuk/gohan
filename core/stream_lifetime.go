@@ -146,9 +146,8 @@ func (c *conversation) failRun(ctx context.Context, lease stores.Lease, recorded
 // iterator over the events the worker produced. The caller's iterator only
 // reads what the worker already recorded, so a consumer that stops taking
 // events never stops the run: the consumer stall guard preempts it instead.
-func (c *conversation) run(ctx context.Context, lease stores.Lease, sessionID string, input []Message) iter.Seq2[Event, error] {
+func (c *conversation) run(ctx context.Context, lease stores.Lease, sessionID string, input []Message, pre *Preemptor) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
-		pre := NewPreemptor()
 		rt := c.rt
 		ag := runtime.AgentRun{Input: input}
 		runCtx := ctx
@@ -234,6 +233,7 @@ func (c *conversation) runPrepared(ctx context.Context, lease stores.Lease, lc *
 		defer q.close()
 		defer cancelRun()
 		defer c.markRunEnded(lease.RunID)
+		defer c.dropRun(lease.RunID)
 		c.drivePrepared(runCtx, lease, lc, rt, ag, q.push)
 	}()
 	return guard.Watch(ctx, q.seq(onBreak))

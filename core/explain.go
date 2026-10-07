@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -31,6 +32,14 @@ func (s *Stack) Explain(f any) chains.Explanation {
 	if !ok {
 		return chains.Explanation{}
 	}
+	granularity := "effect"
+	if newRT, foreign := s.resolvedForeign(flow); foreign {
+		// A foreign flow reports its runtime's step granularity, not the
+		// native effect boundary.
+		if newRT().Granularity() == runtime.GranularityTurn {
+			granularity = "turn"
+		}
+	}
 	ex := chains.Explanation{
 		Flow:      cfg.flow,
 		Profile:   cfg.profile.Name,
@@ -44,7 +53,7 @@ func (s *Stack) Explain(f any) chains.Explanation {
 		Fallback: cfg.request.Fallback,
 		Limits:   cfg.limits,
 		// The native runtime steps at effect boundaries.
-		Granularity: "effect",
+		Granularity: granularity,
 		Prompts:     chains.PromptFields(s.prompts),
 		Skills:      map[string]string{},
 		Release:     s.manifest.ID(),

@@ -1066,6 +1066,9 @@ func (lc *Lifecycle) applySignals(ctx context.Context, st runtime.State, sigs []
 		return st, false, false, nil, nil
 	}
 	if lc.maxTurns > 0 && st.Turn >= lc.maxTurns {
+		if tel := telemetryFrom(ctx); tel != nil {
+			tel.Count(ctx, "gohan.max_turns.reached", 1)
+		}
 		if err := lc.finishRun(ctx, st, stores.Finished, lc.callKeys(st), types.StopLimit); err != nil {
 			return st, true, false, nil, err
 		}

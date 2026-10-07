@@ -89,10 +89,12 @@ func ValidateToolChain(ch ToolChain) error {
 	return nil
 }
 
-// RunToolChain composes the chain over fn so that step 0 is outermost and
-// fn is the innermost call, then executes it. A nil Use passes the call
-// through. A panic inside a step is recovered as a StepError naming it.
-func RunToolChain(ctx context.Context, ch ToolChain, fn ToolFunc) (types.ToolResult, error) {
+// ComposeToolChain composes the chain over fn so that step 0 is outermost
+// and fn is the innermost call. The returned ToolFunc carries the caller's
+// call through every step, so the tool and the steps see the real ToolUse
+// instead of a zero value. A nil Use passes the call through. A panic
+// inside a step is recovered as a StepError naming it.
+func ComposeToolChain(ch ToolChain, fn ToolFunc) ToolFunc {
 	next := fn
 	for i := len(ch) - 1; i >= 0; i-- {
 		step := ch[i]
@@ -116,5 +118,13 @@ func RunToolChain(ctx context.Context, ch ToolChain, fn ToolFunc) (types.ToolRes
 			return use(inner)(ctx, call)
 		}
 	}
-	return next(ctx, types.ToolUse{})
+	return next
+}
+
+// RunToolChain composes the chain over fn and runs it against a zero
+// ToolUse. Callers that hold a real call MUST use ComposeToolChain and
+// invoke the composed ToolFunc, so the tool receives the call it was
+// addressed with.
+func RunToolChain(ctx context.Context, ch ToolChain, fn ToolFunc) (types.ToolResult, error) {
+	return ComposeToolChain(ch, fn)(ctx, types.ToolUse{})
 }

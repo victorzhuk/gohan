@@ -44,6 +44,11 @@ func (c *conversation) Continue(ctx context.Context, sessionID string) iter.Seq2
 			yield(nil, rerr)
 			return
 		}
+		pre := NewPreemptor()
+		if err := c.admitRun(runID, pre); err != nil {
+			yield(nil, err)
+			return
+		}
 		lease, serr := c.runs.Start(ctx, stores.Run{
 			SessionID:   sessionID,
 			RunID:       runID,
@@ -51,6 +56,7 @@ func (c *conversation) Continue(ctx context.Context, sessionID string) iter.Seq2
 			OperationID: key,
 		}, stores.LeaseTTL)
 		if serr != nil {
+			c.dropRun(runID)
 			var exists stores.OperationExistsError
 			if errors.As(serr, &exists) {
 				c.reattach(ctx, exists.RunID, yield)
@@ -68,14 +74,16 @@ func (c *conversation) Continue(ctx context.Context, sessionID string) iter.Seq2
 		if err != nil {
 			lc := NewLifecycle(c.verifyOptions([]LifecycleOption{WithLifecycleRuns(c.runs, lease), WithLifecycleApprovalPolicy(c.policySrc), WithLifecycleToolSpecs(c.toolSpecs)})...)
 			if ferr := lc.finishRun(ctx, runtime.State{}, stores.Failed, nil, types.StopFailed); ferr != nil {
+				c.dropRun(runID)
 				yield(nil, ferr)
 				return
 			}
 			c.untrack(sessionID)
+			c.dropRun(runID)
 			yield(nil, err)
 			return
 		}
 		defer c.untrack(sessionID)
-		c.stream(ctx, lease, sessionID, nil, yield)
+		c.stream(ctx, lease, sessionID, nil, pre, yield)
 	}
 }

@@ -83,11 +83,10 @@ func nativeTool(sc Scenario) types.Tool {
 }
 
 func newForeignHarness(echo *foreignEcho) Harness {
-	return &nativeRuntimeHarness{
-		scenario: ScenarioToolRoundTrip,
-		model:    gohantest.NewScriptedModel(confProfile, nativeTurns(ScenarioToolRoundTrip)...),
-		tool:     foreignToolAdapter{inner: echo},
-	}
+	h := newNativeRuntimeHarness(ScenarioToolRoundTrip)
+	nh := h.(*nativeRuntimeHarness)
+	nh.tools["echo"] = foreignToolAdapter{inner: echo}
+	return nh
 }
 
 func nativeTurns(sc Scenario) []gohantest.Turn {

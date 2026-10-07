@@ -87,6 +87,9 @@ func (s *Stack) recoverConsumedRun(ctx context.Context, cp stores.Checkpoint) er
 	if err != nil || !ok || run.State != stores.Suspended {
 		return err
 	}
+	if s.shuttingDown() {
+		return types.ErrShuttingDown
+	}
 	rt, ok := s.recovery[run.Flow]
 	if !ok {
 		lease, lerr := s.stores.Runs.Resuming(ctx, run.RunID, stores.LeaseTTL)
@@ -128,6 +131,9 @@ func orderTreeRootsFirst(runs []stores.Run) []stores.Run {
 }
 
 func (s *Stack) recoverRun(ctx context.Context, run stores.Run) error {
+	if s.shuttingDown() {
+		return types.ErrShuttingDown
+	}
 	lease, err := s.stores.Runs.Reclaim(ctx, run, stores.LeaseTTL)
 	if err != nil {
 		// Another reaper won the reclaim or the lease came back live:
@@ -191,6 +197,11 @@ func reconcileJournalUnknowns(ctx context.Context, sessionID string, j stores.Jo
 // terminal transition — the run is closed as failed instead of silently
 // left open.
 func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stores.Run, rt runtime.Runtime, st runtime.State, cp *stores.Checkpoint, in stores.ResumeInput, p types.Principal) error {
+	pre := NewPreemptor()
+	if err := s.beginRun(run.RunID, pre); err != nil {
+		return err
+	}
+	defer s.endRun(run.RunID)
 	if s.stores.Checkpoints == nil {
 		// The re-drive can reach another suspension; without the
 		// checkpoint store it cannot park the run again.
@@ -312,6 +323,7 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 		lc = NewLifecycle(opts...)
 	}
 	var uncertain []types.CallKey
+	rt = pre.Runtime(rt)
 	for ev, err := range DriveLifecycle(ctx, lc, rt, ag) {
 		if err != nil {
 			driveErr = fmt.Errorf("recover run %s: %w", run.RunID, err)

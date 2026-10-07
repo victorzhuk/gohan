@@ -165,6 +165,9 @@ func driveTurns(ctx context.Context, c turnConfig, yield func(types.Event, error
 	for {
 		if env.turn >= c.maxTurns {
 			env.flushDeltas(ctx)
+			if tel := telemetryFrom(ctx); tel != nil {
+				tel.Count(ctx, "gohan.max_turns.reached", 1)
+			}
 			yield(types.Done{Reason: types.StopLimit}, nil)
 			return
 		}
@@ -255,6 +258,9 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	}
 	if c.maxTurns > 0 && env.turn >= c.maxTurns {
 		env.flushDeltas(ctx)
+		if tel := telemetryFrom(ctx); tel != nil {
+			tel.Count(ctx, "gohan.max_turns.reached", 1)
+		}
 		return st, []types.Event{types.Done{Reason: types.StopLimit}}, runtime.DoneStatus, nil
 	}
 	if notes := steerNotesFrom(ctx); notes != nil {

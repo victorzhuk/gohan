@@ -51,8 +51,9 @@ var (
 )
 
 type conversation struct {
-	spec string
-	rt   runtime.Runtime
+	spec  string
+	rt    runtime.Runtime
+	stack *Stack
 	// newRun builds one run's native runtime and effect pair after the
 	// run's lease is acquired; nil keeps the fixed foreign runtime.
 	newRun func(ctx context.Context, sessionID string, lease stores.Lease, input []Message) (context.Context, runtime.AgentRun, error)
@@ -121,6 +122,24 @@ func (c *conversation) markRunEnded(runID string) {
 	c.notify(runID)
 }
 
+// admitRun registers a starting run with the stack's shutdown admission;
+// without a stack nothing refuses the run.
+func (c *conversation) admitRun(runID string, pre *Preemptor) error {
+	if c.stack == nil {
+		return nil
+	}
+	return c.stack.beginRun(runID, pre)
+}
+
+// dropRun clears a run that was refused or failed before its drive could
+// land at a safe point.
+func (c *conversation) dropRun(runID string) {
+	if c.stack == nil {
+		return
+	}
+	c.stack.endRun(runID)
+}
+
 // runEnded reports whether the run has finished producing events.
 func (c *conversation) runEnded(runID string) bool {
 	c.mu.Lock()
@@ -177,6 +196,7 @@ func (c *conversation) verifyOptions(opts []LifecycleOption) []LifecycleOption {
 func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...ConversationOption) (Conversation, error) {
 	c := &conversation{spec: spec, rt: rt, live: map[string]string{}}
 	if stack != nil {
+		c.stack = stack
 		c.tenant = stack.Tenant()
 		c.log = stack.stores.SessionLog
 		c.creds = stack.credentials
@@ -275,6 +295,11 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 			yield(nil, rerr)
 			return
 		}
+		pre := NewPreemptor()
+		if err := c.admitRun(runID, pre); err != nil {
+			yield(nil, err)
+			return
+		}
 		lease, serr := c.runs.Start(ctx, stores.Run{
 			SessionID:   sessionID,
 			RunID:       runID,
@@ -282,6 +307,7 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 			OperationID: key,
 		}, stores.LeaseTTL)
 		if serr != nil {
+			c.dropRun(runID)
 			var exists stores.OperationExistsError
 			if errors.As(serr, &exists) {
 				c.reattach(ctx, exists.RunID, yield)
@@ -293,6 +319,7 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 		c.track(sessionID, runID)
 		ctx = c.runIdentityCtx(ctx, runID, sessionID)
 		if !c.appendInput(ctx, lease, sessionID, msg, yield) {
+			c.dropRun(runID)
 			return
 		}
 		if c.detached {
@@ -300,12 +327,12 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 			go func() {
 				defer cancel()
 				defer c.untrack(sessionID)
-				c.stream(runCtx, lease, sessionID, []Message{msg}, func(Event, error) bool { return true })
+				c.stream(runCtx, lease, sessionID, []Message{msg}, pre, func(Event, error) bool { return true })
 			}()
 			return
 		}
 		defer c.untrack(sessionID)
-		c.stream(ctx, lease, sessionID, []Message{msg}, yield)
+		c.stream(ctx, lease, sessionID, []Message{msg}, pre, yield)
 	}
 }
 
@@ -453,9 +480,9 @@ func (c *conversation) find(ctx context.Context, sessionID string) (stores.Run, 
 
 // stream drives the run under the lifecycle ordering, recording every
 // event in the run's log as it is delivered.
-func (c *conversation) stream(ctx context.Context, lease stores.Lease, sessionID string, input []Message, yield func(Event, error) bool) {
+func (c *conversation) stream(ctx context.Context, lease stores.Lease, sessionID string, input []Message, pre *Preemptor, yield func(Event, error) bool) {
 	completed := false
-	for ev, err := range c.run(ctx, lease, sessionID, input) {
+	for ev, err := range c.run(ctx, lease, sessionID, input, pre) {
 		if d, ok := ev.(types.Done); ok && err == nil && d.Reason == types.StopCompleted {
 			completed = true
 		}
