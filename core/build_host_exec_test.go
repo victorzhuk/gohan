@@ -2,58 +2,71 @@ package gohan
 
 import (
 	"bytes"
-	"context"
-	"encoding/json"
 	"log/slog"
 	"strings"
 	"testing"
 
+	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/types"
 	"github.com/victorzhuk/gohan/std/tool/exec"
 )
 
-type ackTool struct {
-	spec types.ToolSpec
-	ack  bool
-}
-
-func (t *ackTool) Spec() types.ToolSpec { return t.spec }
-
-func (t *ackTool) Call(ctx context.Context, args json.RawMessage) (types.ToolResult, error) {
-	return types.ToolResult{}, nil
-}
-
-func (t *ackTool) HostExecAcknowledged() bool { return t.ack }
-
-func buildLog(t *testing.T, tools []types.Tool) string {
+func buildLog(t *testing.T, tools []types.Tool, foreign []ForeignSpec) string {
 	t.Helper()
 	var buf bytes.Buffer
 	spec := nativeSpec("agent", "primary")
 	spec.Tools = tools
-	_, err := Build(
+	opts := []Option{
 		WithLogger(slog.New(slog.NewTextHandler(&buf, nil))),
 		WithModels(fakeModel{profile: profile("primary", true)}),
 		WithNativeAgent(spec),
-	)
-	if err != nil {
+	}
+	for _, def := range foreign {
+		opts = append(opts, WithForeignAgent(def))
+	}
+	if _, err := Build(opts...); err != nil {
 		t.Fatalf("build: %v", err)
 	}
 	return buf.String()
 }
 
+func foreignSpec(name string, tools ...types.Tool) ForeignSpec {
+	return ForeignSpec{
+		Request: FlowRequest{Name: name},
+		Profile: "primary",
+		Tools:   tools,
+		NewRuntime: func() runtime.Runtime {
+			return nil
+		},
+	}
+}
+
 func TestBuildHostExecWarning(t *testing.T) {
 	t.Run("sandbox.host-exec-warning", func(t *testing.T) {
-		unacknowledged := &ackTool{spec: types.ToolSpec{Name: "run_cmd", Effect: types.SideEffect}}
-		if log := buildLog(t, []types.Tool{unacknowledged}); !strings.Contains(log, "run_cmd") {
+		unacknowledged := exec.New(types.ToolSpec{Name: "run_cmd", Effect: types.SideEffect}, exec.Cmd{})
+		if log := buildLog(t, []types.Tool{unacknowledged}, nil); !strings.Contains(log, "run_cmd") {
 			t.Errorf("build log = %q, want a warning naming run_cmd", log)
 		}
-		acknowledged := &ackTool{spec: types.ToolSpec{Name: "run_cmd", Effect: types.SideEffect}, ack: true}
-		if log := buildLog(t, []types.Tool{acknowledged}); strings.Contains(log, "without isolation") {
+		acknowledged := exec.New(types.ToolSpec{Name: "run_cmd", Effect: types.SideEffect}, exec.Cmd{}, exec.AllowHostExec())
+		if log := buildLog(t, []types.Tool{acknowledged}, nil); strings.Contains(log, "without isolation") {
 			t.Errorf("build log = %q, want no host-exec warning", log)
 		}
 		plain := &fakeNativeTool{spec: types.ToolSpec{Name: "search"}}
-		if log := buildLog(t, []types.Tool{plain}); strings.Contains(log, "without isolation") {
+		if log := buildLog(t, []types.Tool{plain}, nil); strings.Contains(log, "without isolation") {
 			t.Errorf("build log = %q, want no host-exec warning for a non-runner tool", log)
+		}
+	})
+
+	t.Run("hostExecWarningForeign", func(t *testing.T) {
+		unacknowledged := exec.New(types.ToolSpec{Name: "foreign_cmd", Effect: types.SideEffect}, exec.Cmd{})
+		log := buildLog(t, nil, []ForeignSpec{foreignSpec("foreign-agent", unacknowledged)})
+		if !strings.Contains(log, "foreign_cmd") {
+			t.Errorf("build log = %q, want a warning naming foreign_cmd", log)
+		}
+		acknowledged := exec.New(types.ToolSpec{Name: "foreign_cmd", Effect: types.SideEffect}, exec.Cmd{}, exec.AllowHostExec())
+		log = buildLog(t, nil, []ForeignSpec{foreignSpec("foreign-agent", acknowledged)})
+		if strings.Contains(log, "without isolation") {
+			t.Errorf("build log = %q, want no host-exec warning", log)
 		}
 	})
 

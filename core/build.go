@@ -214,7 +214,7 @@ func Build(opts ...Option) (*Stack, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	warnHostExec(logger, cfg.native)
+	warnHostExec(logger, cfg.native, cfg.foreign)
 	// build.resolved-matrix: one structured record per build, never one
 	// per profile. Flows resolve further via ResolveStrategies.
 	logResolvedMatrix(logger, nativeMatrixEntries(s.native))
@@ -226,23 +226,30 @@ func Build(opts ...Option) (*Stack, error) {
 type hostExecAcknowledger interface{ HostExecAcknowledged() bool }
 
 // warnHostExec records once per registered tool that runs on the host
-// without the acknowledgement the runner option grants.
-func warnHostExec(logger *slog.Logger, defs []NativeSpec) {
+// without the acknowledgement the runner option grants, native or foreign.
+func warnHostExec(logger *slog.Logger, natives []NativeSpec, foreign []ForeignSpec) {
 	seen := map[string]bool{}
-	for _, def := range defs {
-		for _, t := range def.Tools {
-			ack, ok := t.(hostExecAcknowledger)
-			if !ok || ack.HostExecAcknowledged() {
-				continue
-			}
-			name := t.Spec().Name
-			if seen[name] {
-				continue
-			}
-			seen[name] = true
-			logger.Warn("tool runs on the host without isolation; register with AllowHostExec to acknowledge",
-				"tool", name)
+	for _, def := range natives {
+		warnHostExecTools(logger, def.Tools, seen)
+	}
+	for _, def := range foreign {
+		warnHostExecTools(logger, def.Tools, seen)
+	}
+}
+
+func warnHostExecTools(logger *slog.Logger, tools []types.Tool, seen map[string]bool) {
+	for _, t := range tools {
+		ack, ok := t.(hostExecAcknowledger)
+		if !ok || ack.HostExecAcknowledged() {
+			continue
 		}
+		name := t.Spec().Name
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		logger.Warn("tool runs on the host without isolation; register with AllowHostExec to acknowledge",
+			"tool", name)
 	}
 }
 

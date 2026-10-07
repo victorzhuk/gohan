@@ -10,10 +10,10 @@ import (
 	"time"
 )
 
-// outputCap bounds stdout and stderr independently, per the tools spec
-// default. Truncation is reported by the truncated flag so the caller can
-// append a marker.
-const outputCap = 64 << 10
+// bufferCeiling bounds how much of each stream is buffered before the
+// output cap applies, so a chatty command cannot exhaust memory even though
+// an oversized output is stored whole below the capper.
+const bufferCeiling = 8 << 20
 
 // killGrace bounds how long Wait waits after the group kill for pipes held
 // by grandchildren before giving up on them.
@@ -61,8 +61,8 @@ func runProcess(ctx context.Context, cfg runConfig) processResult {
 	}
 	cmd.WaitDelay = killGrace
 
-	stdout := &limitedBuffer{cap: outputCap}
-	stderr := &limitedBuffer{cap: outputCap}
+	stdout := &limitedBuffer{cap: bufferCeiling}
+	stderr := &limitedBuffer{cap: bufferCeiling}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 

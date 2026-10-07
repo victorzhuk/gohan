@@ -75,25 +75,36 @@ func TestExecOutput(t *testing.T) {
 	})
 
 	t.Run("tools.large-output-stored", func(t *testing.T) {
+		needSh(t)
 		tel := newCountTel()
 		store := stores.NewMemoryOutputs()
-		c := smallCapper(tel, store)
-		data := strings.Repeat("x", 200*1024)
-		blocks, ref, err := c.Cap(ctx, "stdout", []byte(data))
+		tool := New(types.ToolSpec{Name: "emit"}, Cmd{
+			Argv: staticArgv("/bin/sh", "-c", "head -c 204800 /dev/zero | tr '\\0' x"),
+		}, WithOutputStore(store, tel), AllowHostExec())
+		res, err := call(t, tool)
 		if err != nil {
-			t.Fatalf("Cap: %v", err)
+			t.Fatalf("Call: %v", err)
 		}
-		if ref == "" {
+		if res.Outcome != types.Succeeded {
+			t.Fatalf("Outcome = %v, want Succeeded", res.Outcome)
+		}
+		if res.Ref == "" {
 			t.Fatal("expected a stored ref for output over the cap")
 		}
-		text := blocks[0].(types.Text)
-		if !strings.Contains(text.Text, data[:64]) {
+		text, ok := res.Content[0].(types.Text)
+		if !ok {
+			t.Fatalf("expected a Text block, got %T", res.Content[0])
+		}
+		if !strings.Contains(text.Text, strings.Repeat("x", 64)) {
 			t.Fatal("head excerpt missing")
 		}
-		if !strings.Contains(text.Text, ref) {
+		if !strings.Contains(text.Text, "truncated at 65536 bytes") {
+			t.Fatalf("marker missing the cap: %q", text.Text[len(text.Text)-120:])
+		}
+		if !strings.Contains(text.Text, res.Ref) {
 			t.Fatal("marker does not name the stored ref")
 		}
-		full, err := store.Get(ctx, ref)
+		full, err := store.Get(ctx, res.Ref)
 		if err != nil {
 			t.Fatalf("store.Get: %v", err)
 		}
@@ -102,8 +113,8 @@ func TestExecOutput(t *testing.T) {
 			t.Fatalf("decode stored blocks: %v", err)
 		}
 		stored := msg.Blocks[0].(types.Text).Text
-		if stored != data {
-			t.Fatalf("stored content differs: %d bytes, want %d", len(stored), len(data))
+		if len(stored) != 200*1024 || strings.Count(stored, "x") != 200*1024 {
+			t.Fatalf("stored content differs: %d bytes, %d x's; want 204800 of each", len(stored), strings.Count(stored, "x"))
 		}
 		if got := tel.total(OutputStoredMetric); got != 1 {
 			t.Fatalf("%s = %d, want 1", OutputStoredMetric, got)

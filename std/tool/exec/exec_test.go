@@ -3,6 +3,7 @@ package exec
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -150,7 +151,7 @@ func TestExecHostRunner(t *testing.T) {
 			Argv: func(json.RawMessage) ([]string, error) {
 				return shArgv("sleep 60"), nil
 			},
-		}, WithTimeout(300*time.Millisecond))
+		}, WithTimeout(300*time.Millisecond), WithEffect(types.ReadOnly))
 		res, err := call(t, tool)
 		if err != nil {
 			t.Fatalf("Call: %v", err)
@@ -160,6 +161,79 @@ func TestExecHostRunner(t *testing.T) {
 		}
 		if res.Error == nil || res.Error.Kind != types.Retryable {
 			t.Errorf("Error = %+v, want Kind Retryable", res.Error)
+		}
+	})
+
+	t.Run("unset effect is side effect", func(t *testing.T) {
+		needSh(t)
+		tool := New(types.ToolSpec{Name: "mutate"}, Cmd{
+			Argv: func(json.RawMessage) ([]string, error) {
+				return shArgv("sleep 60"), nil
+			},
+		}, WithTimeout(300*time.Millisecond), AllowHostExec())
+		res, err := call(t, tool)
+		if err != nil {
+			t.Fatalf("Call: %v", err)
+		}
+		if res.Outcome != types.Unknown {
+			t.Fatalf("Outcome = %v, want Unknown for the SideEffect default", res.Outcome)
+		}
+		if res.Error == nil || res.Error.Kind != types.OutcomeUnknown {
+			t.Errorf("Error = %+v, want Kind OutcomeUnknown", res.Error)
+		}
+	})
+
+	t.Run("spec passthrough", func(t *testing.T) {
+		spec := types.ToolSpec{Name: "declared", Timeout: 2 * time.Second, Effect: types.Idempotent}
+		tool := New(spec, Cmd{Argv: staticArgv("true")}, AllowHostExec())
+		if got := tool.Spec(); got.Name != spec.Name || got.Timeout != spec.Timeout || got.Effect != spec.Effect {
+			t.Errorf("Spec() = %+v, want %+v", got, spec)
+		}
+	})
+
+	t.Run("default timeout", func(t *testing.T) {
+		r := New(types.ToolSpec{Name: "timed"}, Cmd{Argv: staticArgv("true")}).(*runner)
+		if r.timeout != defaultTimeout {
+			t.Errorf("timeout = %s, want default %s", r.timeout, defaultTimeout)
+		}
+		r = New(types.ToolSpec{Name: "timed", Timeout: 2 * time.Second}, Cmd{Argv: staticArgv("true")}).(*runner)
+		if r.timeout != 2*time.Second {
+			t.Errorf("timeout = %s, want the spec's 2s", r.timeout)
+		}
+		r = New(types.ToolSpec{Name: "timed"}, Cmd{Argv: staticArgv("true")}, WithTimeout(0)).(*runner)
+		if r.timeout != defaultTimeout {
+			t.Errorf("timeout = %s, want the default for a non-positive override", r.timeout)
+		}
+	})
+
+	t.Run("argv builder error surfaces", func(t *testing.T) {
+		tool := New(types.ToolSpec{Name: "broken"}, Cmd{
+			Argv: func(json.RawMessage) ([]string, error) { return nil, errors.New("bad input") },
+		}, AllowHostExec())
+		_, err := call(t, tool)
+		if err == nil || !strings.Contains(err.Error(), "broken: build argv: bad input") {
+			t.Errorf("err = %v, want the tool name and the argv builder error", err)
+		}
+	})
+
+	t.Run("empty argv rejected", func(t *testing.T) {
+		tool := New(types.ToolSpec{Name: "vacant"}, Cmd{Argv: staticArgv()}, AllowHostExec())
+		_, err := call(t, tool)
+		if err == nil || !strings.Contains(err.Error(), "vacant: empty argv") {
+			t.Errorf("err = %v, want an empty argv error", err)
+		}
+	})
+
+	t.Run("argv without shell string", func(t *testing.T) {
+		tool := New(types.ToolSpec{Name: "direct", Effect: types.ReadOnly}, Cmd{
+			Argv: staticArgv("echo", "hello"),
+		}, AllowHostExec())
+		res, err := call(t, tool)
+		if err != nil {
+			t.Fatalf("Call: %v", err)
+		}
+		if got := strings.TrimSpace(res.Content[0].(types.Text).Text); got != "hello" {
+			t.Errorf("output = %q, want hello from the plain argv", got)
 		}
 	})
 
