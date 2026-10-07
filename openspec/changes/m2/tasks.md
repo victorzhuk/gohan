@@ -28,8 +28,9 @@ Each change is implemented only after its package is admitted (task 3). Shared d
   - verify: `go test -short -timeout 2m ./core/... ./std/...` with the five `context.*` subtests passing.
   - observed: delivered and archived as `2026-10-07-m2-context-projections`; all five `context.*` ids covered with the invariant guard file inherited by the later compaction change.
 
-- [ ] 3. `m2-sandbox-governance` — the `std/sandbox` governed tool set: effect derivation, `PerCall` lifecycle with `Close` exactly once, `SetEnv` injection at `Open`, output spill to `OutputStore`, sandbox-seconds charging, secret-leak scanning and redaction.
+- [x] 3. `m2-sandbox-governance` — the `std/sandbox` governed tool set: effect derivation, `PerCall` lifecycle with `Close` exactly once, `SetEnv` injection at `Open`, output spill to `OutputStore`, sandbox-seconds charging, secret-leak scanning and redaction.
   - verify: `go test -short -timeout 2m ./core/... ./std/...` with the seven `sandbox.*` and `identity.credential-not-in-sandbox` subtests passing.
+  - observed: delivered; all eight owned scenario IDs green on the public path. The sandbox-seconds charge landed as the change's Stage B after the eino limit work, and the change archives with 23/23 tasks evidenced.
 
 - [x] 4. `m2-eino-runtime` — the `adapter/eino` module: the turn-granularity runtime behind `runtime.Runtime`, the model/tool/message bridges, and the acceptance suite whose ids land in `adapter/eino` output.
   - verify: `go -C adapter/eino test -short -timeout 2m ./...` with the eino acceptance rows and `flow.backend-swap`, `limits.limits-under-foreign-backend` passing; `runtime.message-round-trip` proven for the eino leg only.

@@ -8,7 +8,6 @@ Capability: `runtime` · Spec v1.5 (ADR-0134) · Source of truth for this capabi
 
 See `docs/overview.md` for how `runtime` fits the architecture. Out of scope for this capability is anything owned by another capability spec; cross-references are by capability name.
 
-
 ## Contract
 
 ### 6.14 Runtimes and backends
@@ -189,10 +188,13 @@ Metrics: `gohan.shutdown.preempted`, `gohan.shutdown.incomplete`, `gohan.shutdow
 
 Governed components in foreign graphs: `einoflow` provides node builders from governed components (`einoflow.ModelNode(m gohan.Model)`, `einoflow.ToolsNode(tools...)`). Components not built this way are ungoverned; `einoflow.Check` reports them where graph introspection allows (*verify*).
 
-
 ## Requirements
 
 ### Requirement: Run lifecycle ordering
+
+`Drive` MUST be the only loop for `native`, `eino` and `adkgo` alike: it applies `RunLimits`, emits events, persists per ADR-0048, runs `Replay` as re-execution of `Step` over recorded results, and re-drives `Resuming` runs from the stored `ResumeInput`. A runtime MUST NOT emit `Done`; the harness emits it after `Runs.Finish` returned.
+
+One `Step` is one effect boundary: for `native`, one model call or one tool batch (`StepGranularity: Effect`); for `eino` and `adkgo`, one turn (`StepGranularity: Turn`), declared through `Runtime.Granularity` and printed by `Explain`.
 
 #### Scenario: suspend order
 ID: `runtime.suspend-order`
@@ -211,7 +213,9 @@ ID: `runtime.done-after-finish`
 
 ### Requirement: Health
 
-`Health` runs the readiness checks with a bounded ctx (default 2 s) and reports each by name: every configured store answers a ping and the Postgres schema is within the skew rule; every platform provider key validated at `Build` is still accepted (re-checked at most once per minute, cached); `shutdown` is false once `Shutdown` began. `Ready` is the conjunction of the required checks; breaker state per endpoint is reported (`breaker:<endpoint>`) but never affects `Ready`, since a degraded provider is routed around. `Ready()` is `Health(ctx).Ready` with the cached result.
+`Health` runs the readiness checks with a bounded ctx (default 2 s) and reports each by name: every configured store answers a ping and the Postgres schema is within the skew rule; every platform provider key validated at `Build` is still accepted (re-checked at most once per minute, cached); `shutdown` is false once `Shutdown` began. `Ready` is the conjunction of the required checks; breaker state per endpoint is reported (`breaker:<endpoint>`) but never affects `Ready`.
+
+The checks are backend-independent: a foreign runtime MUST NOT report readiness through a channel of its own, no backend may keep `Ready` true after `Shutdown` began, and `Ready()` stays `Health(ctx).Ready` with the cached result.
 
 #### Scenario: readiness false on schema skew
 ID: `runtime.readyz-false-on-schema-skew`
@@ -224,6 +228,12 @@ ID: `runtime.readyz-false-during-shutdown`
 - THEN `/readyz` answers 503 and `/healthz` still answers 200 until the process exits
 
 ### Requirement: Graceful shutdown
+
+A foreign runtime MUST reach preemption through the same wrapped runtime a native run uses, and MUST pass the run ctx unchanged into every model and tool call, so cancellation stops the turn's own work at once. A cancelled turn aborts an in-flight model call, drops the partial assistant deltas it had not appended, and runs no further component of that turn; a turn MUST NOT continue its graph after its ctx is cancelled.
+
+Checkpoint publication, `Runs.Suspend`, the `Suspended{Preempted}` event and the handoff to a resumed run wait for the next safe point, which a `Turn`-granularity backend reaches when the cancelled turn has returned. Only a shielded side effect outlives cancellation: it runs to completion, is journaled and appended, and preemption follows it.
+
+`Shutdown`, `Ready` and the health report stay owned by the stack: an adapter MUST NOT implement its own lifecycle, its own run loop or its own shutdown handling.
 
 #### Scenario: shutdown rejects new work
 ID: `runtime.shutdown-rejects-new`
@@ -256,6 +266,8 @@ ID: `runtime.shutdown-grace-exhausted`
 - THEN `Shutdown` returns `ErrShutdownIncomplete` naming the run and the run is later reclaimed as stale by `Recover`
 
 ### Requirement: Tool batch protocol
+
+The batch protocol is the native runtime's governed turn path. A foreign runtime schedules its own calls, and this change MUST NOT require native scheduling inside `eino`; every governed component a foreign runtime invokes MUST still pass the gate per call, and `Drive` MUST still apply `RunLimits` after every effect.
 
 #### Scenario: gate all before execution
 ID: `runtime.batch-gate-first`
@@ -299,7 +311,9 @@ ID: `runtime.sequential-tools-hint`
 
 ### Requirement: Runtime conformance
 
-`conformance.Runtime(t, newRuntime)` SHALL pass for `native`, `eino`, `adkgo`.
+`conformance.Runtime(t, newRuntime)` SHALL pass for `native`, `eino`, `adkgo`. A backend propagates `ctx` unchanged into every component call, translates a component's suspend signal into its own mechanism and back into `Suspended`, and honours cancellation.
+
+Component-level events (`TextDelta`, `ToolStarted`, `ToolFinished`) and the turn counter MUST come from the governed decorators through the run-scoped sink in `ctx`; a runtime MUST NOT emit them, and MUST NOT count turns itself: `Drive` owns the limit.
 
 #### Scenario: plain answer
 ID: `runtime.plain-answer`
@@ -327,6 +341,8 @@ ID: `runtime.cancellation`
 - THEN the iterator yields `context.Canceled` and no further components run
 
 ### Requirement: Component mixing
+
+A backend MUST reach every governed model, tool and message conversion through the exported seams, so mixing a foreign component under the native runtime and mixing governed components inside a foreign graph run the same chains. A message bridge MUST declare the fidelity it keeps, and MUST NOT drop a block the source carried.
 
 #### Scenario: foreign tool under native
 ID: `runtime.foreign-tool-under-native`
