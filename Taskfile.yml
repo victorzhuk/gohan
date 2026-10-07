@@ -68,6 +68,7 @@ tasks:
     desc: Run golangci-lint (extra flags after --)
     cmds:
       - golangci-lint run {{.CLI_ARGS}}
+      - golangci-lint run -c examples/.golangci.yml ./examples/...
 
   test:
     desc: Run short unit tests
