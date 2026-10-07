@@ -19,6 +19,7 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 - The `chains.Explanation`, `runtime.AgentRun` and `runtime.Batch` structs gained fields (`Explanation`: `Fallback`, `Granularity`, `Limits`, `Sample`, `Strategies`, `ToolSteps`; `AgentRun`: `ModelEffect`, `BatchEffect`; `Batch`: `Scheduler`). Unkeyed composite literals over these types break; keyed literals are unaffected.
 - The example-local shapes `examples/excursions.Trip` and `examples/temporal-travel`'s `(*LiveFlags).Snapshot` changed with the governed path; code copying those examples updates with them.
 - `Build` fails when a model profile's `Sunset` falls inside the notice window — 30 days by default, set with `gohan.WithSunsetNoticeWindow`. A flow pinned to a retiring model no longer builds and fails later at the provider instead: migrate the flow to the profile's declared `Successor` before the sunset, or pass `gohan.WithSunsetWarnOnly` to downgrade the failure to a warning while the migration is staged. `Build` also refuses a flow's static model options the declared successor's `Caps` cannot express, and a deprecated model call is never silent: it routes to the successor or returns `*types.ModelError{Class: types.ClassDeprecated}` with no fallback assistant message.
+- `stores.SessionMeta` and `stores.SessionPatch` carry a `Handoff` field (`types.HandoffContext`) for the human-handoff lane. Unkeyed composite literals over those types break; keyed literals are unaffected.
 
 ### Fixed
 
@@ -71,6 +72,8 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 - Untrusted ingress refuses the reserved `gohan.approval` metadata before any session append, control-human append, mailbox signal or operator mutation, and a shaped receipt without approvers grants nothing.
 - `Send` and `Continue` install the minted run identity — run id, session, flow, mode, principal — into the run record and the execution context before the run starts, so scope checks and journal keys never see an absent identity, and an ambient `RunInfo` cannot override the acquired run.
 - Resolution copies the resolved definition slices (`Tools`, `ToolChain`, `ModelChain`) instead of handing out caller-owned backing arrays, so a caller mutating a definition after registration cannot change execution.
+- A sub-flow invoked as its parent's tool no longer inherits the caller's idempotency key or approval, and a detached drive re-issues its credential for the copied principal instead of reusing the caller's token.
+- Native replies carry the model origin, matching the function-flow path.
 
 ### Added
 
@@ -80,6 +83,11 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 - `AllowAnonymous()`, a build option for unowned function-flow invocation; it invents no tenant and grants no access to an owned session.
 - Every shipped example builds its governed native path: all five example packages register a flow with `WithNativeAgent`, construct the handle with `NewNativeConversation` and drive it offline against the memory stores, with the excursions flow carrying its own decider so a denied booking executes nothing and its ordered `not_executed` result reaches the persisted history.
 - `task spec:gate` runs the scenario coverage gate over every module in the workspace, and `task spec` regenerates the type index before it.
+- Session titles: after a session's first completed run, a governed child run titles the exchange and writes the result through the session index. A rename always wins, a session is titled at most once, and a fork inherits the parent's title marked as edited.
+- The human-handoff lane: the `request_human` tool ends a run as a terminal `Done{StopHandedOff}` carrying a `HandoffContext` — never a suspension — and `TakeOver`, `OperatorSend` and `HandBack` move control between the operator and the agent. Operator turns are fenced in the model request and history is never rewritten.
+- Feedback: `Stack.Feedback` records a signal per name, idempotently and owner-checked, appends a `feedback` audit record and a `FeedbackRecorded` event, and emits `gohan.feedback` with the labels `name` and `flow`.
+- Blob provider id reuse: a blob uploads once per profile and later turns send the provider's id instead of the bytes. The ledger survives a resume on another store, an id from a different provider is never reused, and oversized input spills to the content store before it is persisted.
+- The `adapter/postgres` module joins the workspace: the session log, runs, checkpoints, journal, audit, outputs, events, notes and redaction map ports on Postgres, with embedded migrations and an atomic journal seam that commits a tool write and its journal entry in one transaction.
 
 ### Known limitations
 
