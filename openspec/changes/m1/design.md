@@ -213,11 +213,11 @@ These come from the `m1` proposal scope and the M1 row of `docs/overview.md` and
 | adapter/postgres, all ports incl. `AuditLog`, plus `CompleteTx` | `m1-postgres-stores` | shipped | `adapter/postgres` implements the ports on one pool with embedded migrations; `CompleteTx` shares the guarded statement path (`adapter/postgres/journal.go`) |
 | limit.Local + breaker, class-based retry/fallback, router Static/ByLatencyClass | `m1-s1-s2-acceptance`, `m1-route-latency-class` | shipped | `std/limit/{model,run}.go`, `std/retry/retry.go`, `std/route/{route,breaker,fallback}.go` ship; the endpoint-ordering policies are specified and accepted in `m1-route-latency-class` (`routing.*`) |
 | guards: all four stages + output modes + fallback | `m1-s1-s2-acceptance` | shipped | `std/guard` ships six files; the acceptance package verifies the composed path rather than rebuilding it |
-| tool/exec | `m1-s1-s2-acceptance` | integration gap | `core/tool.go` ships `WithEffect`/`WithScopes`; the exec runner and `AllowHostExec` warning are unverified against the spec |
+| tool/exec | `m1-s1-s2-acceptance` | shipped | the runner defaults an unset `Effect` to `SideEffect`, caps output through `OutputCapper` with the overflow stored via `OutputStore` and `ToolResult.Ref` set, and `Build` warns for unacknowledged host runners registered natively or through a foreign agent |
 | Notes, OutputStore, Waker port, `Detached` + Attach | `m1-s1-s2-acceptance` | shipped | `std/notes`, `std/outputs/read_output.go`, `core/suspension_delivery.go`, `core/attach.go` |
 | structured-output hardening | `m1-s1-s2-acceptance` | shipped | `std/structured` ships six files |
-| `std.ExplainHandler` | `m1-s1-s2-acceptance` | missing | no HTTP handler exists; must not grow a transport module |
-| `quickstart` and `excursions` S1–S2 complete | `m1-s1-s2-acceptance` | integration gap | both examples run offline; S2's transaction and cross-pod approval require Postgres |
+| `std.ExplainHandler` | `m1-s1-s2-acceptance` | shipped | `std/explain_handler.go` serves the resolved configuration as JSON over `Stack.Explain` with zero provider calls and a typed problem body for an unknown flow; the wire view carries no function fields |
+| `quickstart` and `excursions` S1–S2 complete | `m1-s1-s2-acceptance` | shipped | S1 offline suites green (`task examples:test`); S2 container suites green in `examples/{quickstart,excursions}/s2_test.go` — the transaction through `Journal.CompleteTx`, the replayed call, the cross-pod approval and the pod-kill recovery |
 
 ### 2.14 Decomposition bucket
 
