@@ -27,6 +27,9 @@ type LimitsState struct {
 	tree     *treeSpend
 	tel      types.Telemetry
 
+	sandboxSeconds float64
+	sandboxTree    *treeSpend
+
 	recorded    float64
 	hasRecorded bool
 }
@@ -72,8 +75,13 @@ func (s *LimitsState) Branch() *LimitsState {
 		t = &treeSpend{cost: s.cost}
 		s.tree = t
 	}
+	sb := s.sandboxTree
+	if sb == nil {
+		sb = &treeSpend{cost: s.sandboxSeconds}
+		s.sandboxTree = sb
+	}
 	s.mu.Unlock()
-	return &LimitsState{tree: t}
+	return &LimitsState{tree: t, sandboxTree: sb}
 }
 
 // TreeCost reports the spend the whole run tree charged so far.
@@ -236,6 +244,9 @@ func (s *LimitsState) preCall(l types.RunLimits, now time.Time) (time.Duration, 
 			return 0, &types.LimitExceededError{Limit: "MaxCost", Value: cost}
 		}
 	}
+	if spend, over := s.sandboxSpend(l); over {
+		return 0, &types.LimitExceededError{Limit: "MaxSandboxSeconds", Value: spend}
+	}
 	if l.MaxTurns > 0 {
 		s.turns++
 		if s.turns > l.MaxTurns {
@@ -316,6 +327,44 @@ func Limits(l types.RunLimits, p types.Pricing, st *LimitsState) types.ModelMidd
 	}
 }
 
+// ChargeSandboxSeconds adds one ExecResult's wall seconds to the run
+// tree's sandbox ledger, the spend MaxSandboxSeconds bounds.
+func (s *LimitsState) ChargeSandboxSeconds(seconds float64) {
+	s.mu.Lock()
+	s.sandboxSeconds += seconds
+	sandbox := s.sandboxTree
+	s.mu.Unlock()
+	if sandbox != nil {
+		sandbox.add(seconds)
+	}
+}
+
+// TreeSandboxSeconds reports the seconds the whole run tree spent in
+// sandboxes so far.
+func (s *LimitsState) TreeSandboxSeconds() float64 {
+	s.mu.Lock()
+	t := s.sandboxTree
+	own := s.sandboxSeconds
+	s.mu.Unlock()
+	if t != nil {
+		return t.get()
+	}
+	return own
+}
+
+// sandboxSpend reports the tree's sandbox seconds when MaxSandboxSeconds
+// is set and the cumulative spend passed it. A zero limit stays unbounded.
+func (s *LimitsState) sandboxSpend(l types.RunLimits) (float64, bool) {
+	if l.MaxSandboxSeconds <= 0 {
+		return 0, false
+	}
+	if t := s.sandboxTree; t != nil {
+		spend := t.get()
+		return spend, spend > l.MaxSandboxSeconds
+	}
+	return s.sandboxSeconds, s.sandboxSeconds > l.MaxSandboxSeconds
+}
+
 // preToolCall charges one tool call against MaxToolCalls and returns the
 // wall clock the call has left.
 func (s *LimitsState) preToolCall(l types.RunLimits, now time.Time) (time.Duration, error) {
@@ -329,6 +378,9 @@ func (s *LimitsState) preToolCall(l types.RunLimits, now time.Time) (time.Durati
 		if s.toolUses > l.MaxToolCalls {
 			return 0, &types.LimitExceededError{Limit: "MaxToolCalls", Value: float64(s.toolUses)}
 		}
+	}
+	if spend, over := s.sandboxSpend(l); over {
+		return 0, &types.LimitExceededError{Limit: "MaxSandboxSeconds", Value: spend}
 	}
 	remaining := l.MaxWallClock - now.Sub(s.start)
 	if remaining <= 0 {
@@ -409,6 +461,9 @@ func (s *LimitsState) ChargeModelCall(l types.RunLimits, now time.Time) (time.Du
 			return 0, &types.LimitExceededError{Limit: "MaxCost", Value: cost}
 		}
 	}
+	if spend, over := s.sandboxSpend(l); over {
+		return 0, &types.LimitExceededError{Limit: "MaxSandboxSeconds", Value: spend}
+	}
 	if l.MaxTurns > 0 {
 		s.turns++
 	}
@@ -446,12 +501,16 @@ func (s *LimitsState) ChargeToolCall(l types.RunLimits, now time.Time) (time.Dur
 }
 
 // WallClockLeft reports the wall clock the run has left without charging
-// anything; a call that arrives already past its wall clock is refused.
+// anything; a call that arrives already past its wall clock or past the
+// tree's sandbox-seconds budget is refused.
 func (s *LimitsState) WallClockLeft(l types.RunLimits, now time.Time) (time.Duration, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.start.IsZero() {
 		s.start = now
+	}
+	if spend, over := s.sandboxSpend(l); over {
+		return 0, &types.LimitExceededError{Limit: "MaxSandboxSeconds", Value: spend}
 	}
 	remaining := l.MaxWallClock - now.Sub(s.start)
 	if remaining <= 0 {

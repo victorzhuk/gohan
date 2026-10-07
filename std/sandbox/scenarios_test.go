@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"iter"
 	"net/http"
@@ -13,8 +14,10 @@ import (
 	"time"
 
 	gohan "github.com/victorzhuk/gohan/core"
+	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std/limit"
 )
 
 const scenarioSecret = "s3cret-pg-pass-9f2c"
@@ -152,7 +155,7 @@ func scenarioAssertAbsent(t *testing.T, secret, where string, texts ...string) {
 	}
 }
 
-func scenarioBuild(t *testing.T, model *scenarioModel, log stores.SessionLog, tools []types.Tool, opts ...gohan.Option) gohan.Conversation {
+func scenarioBuild(t *testing.T, model *scenarioModel, log stores.SessionLog, tools []types.Tool, chain chains.ToolChain, opts ...gohan.Option) gohan.Conversation {
 	t.Helper()
 	runs := stores.NewMemoryRuns(
 		stores.WithMemoryRunClock(time.Now),
@@ -169,9 +172,10 @@ func scenarioBuild(t *testing.T, model *scenarioModel, log stores.SessionLog, to
 		}),
 		gohan.WithModels(model),
 		gohan.WithNativeAgent(gohan.NativeSpec{
-			Request: gohan.FlowRequest{Name: "chat"},
-			Profile: "native",
-			Tools:   tools,
+			Request:   gohan.FlowRequest{Name: "chat"},
+			Profile:   "native",
+			Tools:     tools,
+			ToolChain: chain,
 			Assemble: func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
 				return types.ModelRequest{Messages: append(append([]types.Message{}, in.History...), in.Input...)}, nil
 			},
@@ -230,7 +234,7 @@ func TestSandboxEffectDerived(t *testing.T) {
 			t.Fatalf("New: %v", err)
 		}
 		log := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
-		scenarioSend(t, scenarioBuild(t, &scenarioModel{}, log, idempotent.Tools()), nil, "turn")
+		scenarioSend(t, scenarioBuild(t, &scenarioModel{}, log, idempotent.Tools(), nil), nil, "turn")
 		if got := idempotent.Tools()[0].Spec().Effect; got != types.Idempotent {
 			t.Fatalf("run_code effect = %v, want Idempotent", got)
 		}
@@ -243,7 +247,7 @@ func TestSandboxEffectDerived(t *testing.T) {
 			t.Fatalf("New: %v", err)
 		}
 		log2 := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
-		scenarioSend(t, scenarioBuild(t, &scenarioModel{}, log2, side.Tools()), nil, "turn")
+		scenarioSend(t, scenarioBuild(t, &scenarioModel{}, log2, side.Tools(), nil), nil, "turn")
 		if got := side.Tools()[0].Spec().Effect; got != types.SideEffect {
 			t.Fatalf("run_code effect = %v, want SideEffect", got)
 		}
@@ -262,7 +266,7 @@ func TestSandboxSecrets(t *testing.T) {
 		conv := scenarioBuild(t, model, log, mustTools(t, sb, types.SandboxPolicy{
 			Lifecycle: types.PerCall,
 			Secrets:   []types.SecretRef{{Name: "warehouse", Env: "PGPASSWORD"}},
-		}), gohan.WithSecretResolver(resolver))
+		}), nil, gohan.WithSecretResolver(resolver))
 		scenarioSend(t, conv, tel, "turn")
 
 		if resolver.calls != 1 {
@@ -294,7 +298,7 @@ func TestSandboxSecrets(t *testing.T) {
 		conv := scenarioBuild(t, model, log, mustTools(t, sb, types.SandboxPolicy{
 			Lifecycle: types.PerCall,
 			Secrets:   []types.SecretRef{{Name: "warehouse", Env: "PGPASSWORD"}},
-		}), gohan.WithSecretResolver(resolver))
+		}), nil, gohan.WithSecretResolver(resolver))
 		scenarioSend(t, conv, tel, "turn")
 
 		marker := secretToken(scenarioSecret)
@@ -318,7 +322,7 @@ func TestSandboxPerCallCloses(t *testing.T) {
 		model := &scenarioModel{steps: []types.ToolUse{scenarioRunCode("call-ok", "echo ok")}}
 		w.results = []types.ExecResult{{Stdout: []byte("ok\n")}}
 		log := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
-		scenarioSend(t, scenarioBuild(t, model, log, mustTools(t, sb, policy)), nil, "turn")
+		scenarioSend(t, scenarioBuild(t, model, log, mustTools(t, sb, policy), nil), nil, "turn")
 		if w.closes != 1 {
 			t.Fatalf("closes after normal call = %d, want 1", w.closes)
 		}
@@ -326,7 +330,7 @@ func TestSandboxPerCallCloses(t *testing.T) {
 		w.panicOnExec = true
 		model2 := &scenarioModel{steps: []types.ToolUse{scenarioRunCode("call-panic", "false")}}
 		log2 := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
-		scenarioSend(t, scenarioBuild(t, model2, log2, mustTools(t, sb, policy)), nil, "turn")
+		scenarioSend(t, scenarioBuild(t, model2, log2, mustTools(t, sb, policy), nil), nil, "turn")
 		if w.closes != 2 {
 			t.Fatalf("closes after panicking call = %d, want exactly one more (2)", w.closes)
 		}
@@ -351,7 +355,7 @@ func TestSandboxOutputToStore(t *testing.T) {
 		}}
 		log := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
 		store := stores.NewMemoryOutputs()
-		conv := scenarioBuild(t, model, log, mustTools(t, sb, types.SandboxPolicy{Lifecycle: types.PerCall}, WithOutputStore(store), WithMaxOutput(16)))
+		conv := scenarioBuild(t, model, log, mustTools(t, sb, types.SandboxPolicy{Lifecycle: types.PerCall}, WithOutputStore(store), WithMaxOutput(16)), nil)
 		scenarioSend(t, conv, nil, "turn")
 
 		blocks := scenarioResultBlocks(scenarioHistory(t, log))
@@ -391,4 +395,73 @@ func mustTools(t *testing.T, sb *fakeSandbox, p types.SandboxPolicy, opts ...Opt
 		t.Fatalf("New: %v", err)
 	}
 	return ts.Tools()
+}
+
+func TestSandboxSecondsBudget(t *testing.T) {
+	limits := types.InteractiveLimits
+	limits.MaxSandboxSeconds = 10
+
+	t.Run("sandbox.seconds-budget", func(t *testing.T) {
+		w := &scenarioWorkspace{fakeWorkspace: &fakeWorkspace{}}
+		sb := &fakeSandbox{ws: w}
+		w.results = []types.ExecResult{
+			{Stdout: []byte("one\n"), Seconds: 6},
+			{Stdout: []byte("two\n"), Seconds: 6},
+		}
+		model := &scenarioModel{steps: []types.ToolUse{
+			scenarioRunCode("call-one", "one"),
+			scenarioRunCode("call-two", "two"),
+		}}
+		log := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
+		conv := scenarioBuild(t, model, log,
+			mustTools(t, sb, types.SandboxPolicy{Lifecycle: types.PerCall}),
+			chains.ToolChain{{Name: "limits", Kind: chains.KindLimit, Use: limit.ToolLimits(limits)}},
+			gohan.WithLimits("chat", limits),
+			gohan.WithModelMiddleware(limit.Limits(limits, types.Pricing{})))
+
+		ctx := types.WithPrincipal(context.Background(), types.Principal{Tenant: "t1", Subject: "u1"})
+		var limitErr *types.LimitExceededError
+		for _, err := range conv.Send(ctx, "s1", types.Message{Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: "run"}}}) {
+			if err != nil {
+				if !errors.As(err, &limitErr) || limitErr.Limit != "MaxSandboxSeconds" {
+					t.Fatalf("send error = %v, want *types.LimitExceededError MaxSandboxSeconds", err)
+				}
+				if limitErr.Value <= limits.MaxSandboxSeconds {
+					t.Fatalf("limit value = %v, want the cumulative spend past %v", limitErr.Value, limits.MaxSandboxSeconds)
+				}
+			}
+		}
+		if limitErr == nil {
+			t.Fatal("the second run_code past the budget did not fail the send")
+		}
+		if len(w.execReqs) != 2 {
+			t.Fatalf("exec calls = %d, want 2", len(w.execReqs))
+		}
+
+		within := &scenarioWorkspace{fakeWorkspace: &fakeWorkspace{}}
+		sb2 := &fakeSandbox{ws: within}
+		within.results = []types.ExecResult{{Stdout: []byte("ok\n"), Seconds: 3}}
+		model2 := &scenarioModel{steps: []types.ToolUse{scenarioRunCode("call-ok", "ok")}}
+		log2 := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
+		conv2 := scenarioBuild(t, model2, log2,
+			mustTools(t, sb2, types.SandboxPolicy{Lifecycle: types.PerCall}),
+			chains.ToolChain{{Name: "limits", Kind: chains.KindLimit, Use: limit.ToolLimits(limits)}},
+			gohan.WithLimits("chat", limits),
+			gohan.WithModelMiddleware(limit.Limits(limits, types.Pricing{})))
+		var done *types.Done
+		for ev, err := range conv2.Send(ctx, "s1", types.Message{Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: "run"}}}) {
+			if err != nil {
+				t.Fatalf("within-budget send: %v", err)
+			}
+			if d, ok := ev.(types.Done); ok {
+				done = &d
+			}
+		}
+		if done == nil {
+			t.Fatal("within-budget run produced no Done")
+		}
+		if done.Usage.SandboxSeconds != 3 {
+			t.Fatalf("Done.Usage.SandboxSeconds = %v, want 3", done.Usage.SandboxSeconds)
+		}
+	})
 }

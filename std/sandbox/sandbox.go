@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	gohan "github.com/victorzhuk/gohan/core"
+	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -164,6 +165,9 @@ func runCode(ctx context.Context, w types.Workspace, sp spiller, a runCodeArgs) 
 	res, err := w.Exec(ctx, types.ExecRequest{Argv: []string{"sh", "-c", a.Code}})
 	if err != nil {
 		return nil, fmt.Errorf("exec: %w", err)
+	}
+	if st, ok := chains.LimitsStateFrom(ctx); ok {
+		st.ChargeSandboxSeconds(res.Seconds)
 	}
 	stdout, err := sp.stream(ctx, "stdout", res.Stdout, res.Truncated)
 	if err != nil {

@@ -1113,6 +1113,7 @@ func (lc *Lifecycle) done(st runtime.State, uncertain []types.CallKey, reason ty
 	d := types.Done{Reason: reason, Usage: st.Usage, Uncertain: uncertain}
 	if lc.ledger != nil {
 		d.Cost = lc.ledger.TreeCost()
+		d.Usage.SandboxSeconds = lc.ledger.TreeSandboxSeconds()
 	}
 	return d
 }

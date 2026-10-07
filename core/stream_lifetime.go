@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
@@ -185,11 +186,14 @@ func (c *conversation) run(ctx context.Context, lease stores.Lease, sessionID st
 				return
 			}
 			runCtx, ag = rctx, run
-			if ag.History.Version > 0 {
-				opts := append(c.lifecycleOptions(sessionID, lease, originator, hasOriginator),
-					WithLifecycleHistoryVersion(ag.History.Version))
-				lc = NewLifecycle(opts...)
+			opts := c.lifecycleOptions(sessionID, lease, originator, hasOriginator)
+			if ledger, ok := chains.LimitsStateFrom(runCtx); ok {
+				opts = append(opts, WithLifecycleLedger(ledger))
 			}
+			if ag.History.Version > 0 {
+				opts = append(opts, WithLifecycleHistoryVersion(ag.History.Version))
+			}
+			lc = NewLifecycle(opts...)
 		}
 		if c.cps != nil {
 			// Suspension persists through the conversation's checkpoints
