@@ -37,6 +37,10 @@ type NativeSpec struct {
 	// MemoryPolicy declares this flow's subject-memory policy. A zero
 	// value declares no subject memory: the flow never consolidates.
 	MemoryPolicy stores.MemoryPolicy
+	// ContextPolicy declares this flow's context projection policy. A zero
+	// value keeps the flow on the plain assembly path: no projection runs
+	// and no compactor is consulted.
+	ContextPolicy stores.ContextPolicy
 	// Decider states the flow's own tool policy. The batch gate consults
 	// it before any call executes; a nil Decider keeps the core defaults
 	// (read-only and idempotent calls pass, side effects ask).
@@ -51,6 +55,16 @@ func WithNativeAgent(spec NativeSpec) Option {
 		c.native = append(c.native, spec)
 		return nil
 	}
+}
+
+// ContextPolicy returns the context policy the flow resolved with, and
+// whether the flow is a registered native definition.
+func (s *Stack) ContextPolicy(flow string) (stores.ContextPolicy, bool) {
+	cfg, ok := s.resolvedNative(flow)
+	if !ok {
+		return stores.ContextPolicy{}, false
+	}
+	return cfg.contextPolicy, true
 }
 
 // ForeignSpec is the driver-supplied definition of one foreign-runtime

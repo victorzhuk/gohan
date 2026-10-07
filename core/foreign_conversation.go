@@ -70,10 +70,11 @@ func (s *Stack) foreignAgentRun(name string, hist stores.History, seed float64, 
 	}
 	ledger := chains.NewLimitsStateSeeded(seed, chains.WithCostTelemetry(s.telemetry))
 	ctx := chains.WithLimitsState(context.Background(), ledger)
+	ctx = withHistoryVersion(ctx, hist.Version)
 	ag := runtime.AgentRun{
 		Model:    foreignModel(cfg, s),
 		Tools:    foreignTools(cfg),
-		Assemble: nativeAssemble(s.prompts, cfg.assemble, cfg.redactor, cfg.redactionPolicy, s.stores.RedactionMaps, newBlobAssembly(cfg.profile.Name, cfg.model, s.stores)),
+		Assemble: withProjections(cfg.contextPolicy, cfg.profile, nativeAssemble(s.prompts, cfg.assemble, cfg.redactor, cfg.redactionPolicy, s.stores.RedactionMaps, newBlobAssembly(cfg.profile.Name, cfg.model, s.stores))),
 		History:  hist,
 		Input:    input,
 	}

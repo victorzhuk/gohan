@@ -34,6 +34,7 @@ type resolvedNativeConfig struct {
 	redactor        types.Redactor
 	redactionPolicy types.RedactionPolicy
 	memoryPolicy    stores.MemoryPolicy
+	contextPolicy   stores.ContextPolicy
 }
 
 // resolvedNative returns the resolved configuration Build computed for the
@@ -165,6 +166,7 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			redactor:        redactor,
 			redactionPolicy: redactionPolicy,
 			memoryPolicy:    spec.MemoryPolicy,
+			contextPolicy:   spec.ContextPolicy,
 		}
 	}
 

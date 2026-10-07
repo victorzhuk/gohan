@@ -202,6 +202,18 @@ func WithEstimator(est types.TokenEstimator) Option {
 	}
 }
 
+// WithContextPolicy binds the context policy every registered native flow
+// resolves with. A zero policy keeps a flow on the plain assembly path:
+// no projection stage runs and no compactor is consulted.
+func WithContextPolicy(p stores.ContextPolicy) Option {
+	return func(c *config) error {
+		for i := range c.native {
+			c.native[i].ContextPolicy = p
+		}
+		return nil
+	}
+}
+
 // WithLogger sets the structured logger for build-time records.
 func WithLogger(l *slog.Logger) Option {
 	return func(c *config) error {

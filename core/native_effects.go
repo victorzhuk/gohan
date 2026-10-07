@@ -28,7 +28,7 @@ func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 		// Supervision wraps only the provider, so the chain steps and
 		// the middleware above it keep running on the caller's goroutine.
 		model:        recordRunCost(runModelChain(cfg.modelChain, deprecatedRoute(s.telemetry, cfg.profile, NewModelStream(cfg.model).Generate, s.successorModelFunc(cfg.profile)))),
-		assemble:     nativeAssemble(s.prompts, cfg.assemble, cfg.redactor, cfg.redactionPolicy, s.stores.RedactionMaps, newBlobAssembly(cfg.profile.Name, cfg.model, s.stores)),
+		assemble:     withProjections(cfg.contextPolicy, cfg.profile, nativeAssemble(s.prompts, cfg.assemble, cfg.redactor, cfg.redactionPolicy, s.stores.RedactionMaps, newBlobAssembly(cfg.profile.Name, cfg.model, s.stores))),
 		providerGate: providerDeclarationGate(cfg),
 		maxTurns:     cfg.limits.MaxTurns,
 		limits:       cfg.limits,
@@ -239,6 +239,46 @@ func nativeAssemble(
 			req.System = append([]types.Block{block}, req.System...)
 		}
 		return req, nil
+	}
+}
+
+// historyVersionKey carries the assembled history's store version through
+// the assembly context, so the projection stage can hand Project an honest
+// History identity without a store handle.
+type historyVersionKey struct{}
+
+func withHistoryVersion(ctx context.Context, v int64) context.Context {
+	return context.WithValue(ctx, historyVersionKey{}, v)
+}
+
+func historyVersionFrom(ctx context.Context) int64 {
+	v, _ := ctx.Value(historyVersionKey{}).(int64)
+	return v
+}
+
+// withProjections applies the resolved policy's projections in declared
+// order over a copy of the loaded history before the caller assembler runs.
+// An empty projection list keeps the plain path with zero extra work; a
+// projection error fails the assembly before any model call.
+func withProjections(
+	policy stores.ContextPolicy,
+	profile types.ModelProfile,
+	next func(context.Context, types.AssembleInput) (types.ModelRequest, error),
+) func(context.Context, types.AssembleInput) (types.ModelRequest, error) {
+	if len(policy.Projections) == 0 {
+		return next
+	}
+	return func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+		h := stores.History{Messages: slices.Clone(in.History), Version: historyVersionFrom(ctx)}
+		for _, p := range policy.Projections {
+			ph, err := p.Project(ctx, h, profile)
+			if err != nil {
+				return types.ModelRequest{}, fmt.Errorf("project history: %w", err)
+			}
+			h = ph
+		}
+		in.History = h.Messages
+		return next(ctx, in)
 	}
 }
 

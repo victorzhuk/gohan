@@ -261,7 +261,7 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 		// working history here, so the next request carries them.
 		env.msgs = append(env.msgs, notes.take()...)
 	}
-	req, err := c.assemble(ctx, env.assemblyInput(ctx, env.msgs))
+	req, err := c.assemble(withHistoryVersion(ctx, st.HistoryVersion), env.assemblyInput(ctx, env.msgs))
 	if err != nil {
 		return st, nil, runtime.Continue, err
 	}
