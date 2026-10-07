@@ -8,7 +8,6 @@ Capability: `sandbox` · Spec v1.2 (ADR-0129) · Source of truth for this capabi
 
 Lets a model write and run code under the same governance as every other tool: journaled, guarded, budgeted, resumable. gohan owns the port, the policy and the model-facing tool set; isolation (microVM, gVisor, container) is an adapter. Out of scope: fixed-argv host commands (`tool/exec` in `tools`), the isolation technology itself.
 
-
 ## Contract
 
 ```go
@@ -79,10 +78,15 @@ Adapters: `adapter/docker` (dev, reference), `adapter/e2b`; a Kubernetes agent-s
 
 Metrics: `gohan.sandbox.seconds` by lifecycle, `gohan.sandbox.opens`, `gohan.sandbox.cold_start` histogram, `gohan.sandbox.secret_leak`, `gohan.sandbox.egress_denied`.
 
-
 ## Requirements
 
 ### Requirement: Policy and effect
+
+`core/types` MUST declare `Sandbox.Open(ctx, WorkspaceRef, SandboxPolicy) (Workspace, error)` and `Workspace.Exec`, `Put`, `Get`, `SetEnv`, `Snapshot` and `Close`; `WorkspaceRef` MUST be one shared type aliased where it is consumed. `SetEnv(ctx, map[string]string) error` MUST be the only injection path into a workspace.
+
+Listing MUST NOT be a `Workspace` method. `WorkspaceLister` is an optional interface declaring `List(ctx, path) ([]WorkspaceEntry, error)`, and the harness MUST reach it by type assertion on the opened workspace. A workspace that does not implement it MUST fail `list_files` with `ErrWorkspaceListingRequired`; the harness MUST NOT return a partial listing as the answer.
+
+The tool set MUST derive each tool's effect from the policy: `PerCall` with empty `Egress.Allow` is `ReadOnly`, `PerSession` with empty `Egress.Allow` is `Idempotent`, and any `Egress.Allow` entry is `SideEffect`. `WithEffect` MAY only tighten and a loosening option MUST be refused. `Egress` MUST be the `EgressPolicy` of `tools`, enforced by the adapter at the network layer with the same private-range and hop rules. Empty `Egress` MUST mean deny-all, including DNS.
 
 #### Scenario: effect derived
 ID: `sandbox.effect-derived`
@@ -101,6 +105,10 @@ ID: `sandbox.egress-allowlisted`
 
 ### Requirement: Secrets
 
+Each `SecretRef` MUST be resolved at `Open` for the run originator through the optional `SecretResolver` port, `Resolve(ctx, Principal, name) (string, error)`, which is distinct from `CredentialSource` and takes the `SecretRef` name, and the resolved environment MUST be injected through `Workspace.SetEnv`. The run `Credential` MUST NOT substitute for a resolver and MUST NOT enter the workspace; a build without a resolver MUST inject nothing and the secret-named call MUST fail.
+
+An injected value MUST NOT appear in tool arguments, results, history, journal, audit records, spans or logs. `read_file` and `run_code` output MUST be scanned for every injected value, a hit MUST be replaced by a redaction marker, and `gohan.sandbox.secret_leak` MUST increment.
+
 #### Scenario: secret injected not visible
 ID: `sandbox.secret-injected`
 - WHEN the policy names `SecretRef{Name: "warehouse", Env: "PGPASSWORD"}`
@@ -112,6 +120,8 @@ ID: `sandbox.secret-leak-redacted`
 - THEN the tool result carries a redaction marker and `gohan.sandbox.secret_leak` increments
 
 ### Requirement: Lifecycle and resume
+
+The `PerCall` lifecycle MUST run `Open`, `Exec` and `Close` inside one tool call, and `Close` MUST be called exactly once per call, including when the call panics.
 
 #### Scenario: per-session persistence
 ID: `sandbox.per-session-persists`
@@ -140,6 +150,8 @@ ID: `sandbox.per-call-closes`
 
 ### Requirement: Limits and outputs
 
+`Stdout` and `Stderr` MUST be capped by `ToolSpec.MaxOutput`; overflow and files the model asks to return MUST go to the `OutputStore` and come back as `File` blocks with a `Ref` beside a head excerpt. `RunLimits.MaxSandboxSeconds` MUST bound cumulative `ExecResult.Seconds` per run tree and `Usage.SandboxSeconds` MUST report the spend; exceeding the budget MUST return `*LimitExceededError{Limit: "MaxSandboxSeconds"}`.
+
 #### Scenario: sandbox seconds budget
 ID: `sandbox.seconds-budget`
 - WHEN cumulative `ExecResult.Seconds` exceeds `MaxSandboxSeconds`
@@ -156,6 +168,8 @@ ID: `sandbox.output-to-store`
 - THEN the result carries a head excerpt plus `Ref` and the content is in `OutputStore`
 
 ### Requirement: Host runner
+
+`tool/exec` MUST stay the no-isolation runner for fixed-argv commands, and sandbox execution MUST NOT replace it. `Build` MUST warn when `tool/exec` is registered without `AllowHostExec()`, and the warning MUST name the tool.
 
 #### Scenario: egress shares the policy type
 ID: `sandbox.egress-shares-policy-type`
