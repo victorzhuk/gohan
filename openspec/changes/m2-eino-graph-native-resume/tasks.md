@@ -1,0 +1,38 @@
+# Tasks
+
+Every task names the scenario id it binds. `verify` is the command that proves it. A `-run` pattern that matches no test exits 0, so each verify runs with `-v` and the task is done only when the named top-level test and subtest appear in the output.
+
+The bound set is three existing ids — one `runtime` row and two `stores` rows. No new id is proposed: the behavior is normative already (`design.md` D7). `runtime.governed-components-in-eino-graph` is proved in `adapter/eino`; its acceptance row is this change's by `openspec/changes/m2/design.md` §2.1. `stores.native-checkpoint-after-adapter-upgrade` and `stores.graph-checkpoint-incompatible` are proved on the eino agent and graph flows driven through `Resume`. The `core` decision-level subtests in `core/stores/checkpoint_compatibility_test.go` keep the same names and stay the store-level proof; this change adds the flow-level leg and claims no second registry row (`design.md` D4, D7).
+
+No task proves a graph contract by echoing the builders back through a mock: every acceptance task names an observable assertion on the real symbol.
+
+## 1. The einoflow graph package
+
+- [ ] 1.1 Create `adapter/eino/einoflow` with `ModelNode(m gohan.Model)` and `ToolsNode(tools ...types.Tool)` returning eino graph nodes over the governed components, and add the package to `go.work` and the coverage sweep in `Taskfile.yml`. Verify: `go -C adapter/eino build ./...` succeeds and `go -C adapter/eino doc ./einoflow` prints both builders and their governed argument types. Evidence: `adapter/eino/einoflow/doc.go` or the package comment; `openspec/specs/runtime/spec.md:189`.
+- [ ] 1.2 Ship `FromRunnable[In, Out](stack, r, opts...)` (`openspec/specs/flow/spec.md:93`): it runs an eino `compose.Runnable[In, Out]` as a gohan `Flow` over a `runtime.Runtime` declaring `GranularityTurn`, so `Drive` owns limits, events, the journal and checkpoint publication. Verify: `go -C adapter/eino test -short -timeout 2m -run 'TestGraphFlowGoverning' -v ./...` — the graph flow's run reports `Done` from the harness and `StepGranularity` prints `turn` through `Explain`. Evidence: `adapter/eino/einoflow/graph.go`, `core/runtime/runtime.go`.
+- [ ] 1.3 Bind `runtime.governed-components-in-eino-graph`: a graph built from `einoflow.ModelNode` and `einoflow.ToolsNode` routes its model and tool calls through the same governed chains the native runtime uses — the tool call composes `chains.ComposeToolChain` and passes the gate, and the guards see it (R3 canonical chain and R7 guards per `openspec/specs/runtime/spec.md:362`). Verify: `go -C adapter/eino test -short -timeout 2m -run 'TestGraphFlow/runtime.governed-components-in-eino-graph' -v ./...` — the subtest is named in the output and passes, and the recorded chain step order proves the call traversed the chain. Evidence: `adapter/eino/einoflow/graph_test.go`, `core/chains/chain.go:97`.
+- [ ] 1.4 Bind the same id's negative half: `einoflow.Check` reports a component a graph carries outside the builders, where graph introspection allows, and refuses nothing silently. Verify: `go -C adapter/eino test -short -timeout 2m -run 'TestGraphFlow/ungoverned_component_reported' -v ./...` — the subtest is named and passes. Evidence: `adapter/eino/einoflow/graph_test.go`.
+- [ ] 1.5 Document the package: both builder signatures, the governed argument types, the `FromRunnable` graph flow and its `turn` granularity, and what `Check` reports. Verify: `go -C adapter/eino doc ./einoflow` prints the contract and both builder signatures. Evidence: `adapter/eino/einoflow/doc.go`.
+
+## 2. The Native resume decision
+
+- [ ] 2.1 Wire `stores.PlanResume` into `core`'s resume path before `Checkpoints.Consume`, for both flow kinds, using the running adapter's `BackendVersion`. `PlanResume` reads nothing mutable and consumes no token, so the harness applies the plan only after it returns no error (`core/stores/checkpoint_compatibility.go:32-34`). Verify: `go test -short -timeout 2m ./core/... -run 'TestResumePlanWiring' -v` — the subtest is named and passes, and `go build ./...` succeeds. Evidence: `core/resume.go`, `core/stores/checkpoint_compatibility.go:35`.
+- [ ] 2.2 Bind `stores.native-checkpoint-after-adapter-upgrade` on the eino agent flow: an eino agent flow suspended under adapter version X, resumed under version Y, proceeds via `Replay` and `gohan.resume.fallback_replay` increments once. Verify: `go -C adapter/eino test -short -timeout 2m -run 'TestNativeResume/stores.native-checkpoint-after-adapter-upgrade' -v ./...` — the subtest is named in the output and passes, and the metric counts one. Evidence: `adapter/eino/einoflow/resume_test.go`, `openspec/specs/stores/spec.md:700`.
+- [ ] 2.3 Bind `stores.graph-checkpoint-incompatible` on the eino graph flow: the same upgrade on a graph flow makes `Resume` return `types.ErrCheckpointIncompatible` and leaves the token unconsumed, so a second `Resume` with the correct version still works. Verify: `go -C adapter/eino test -short -timeout 2m -run 'TestNativeResume/stores.graph-checkpoint-incompatible' -v ./...` — the subtest is named and passes, `errors.Is` holds for `ErrCheckpointIncompatible`, and the token is consumed only on the later correct-version call. Evidence: `adapter/eino/einoflow/resume_test.go`, `openspec/specs/stores/spec.md:705`.
+- [ ] 2.4 Regression: an eino graph flow resumed at the same `BackendVersion` still resumes natively — no fallback increment, no refusal — decoding `State.Backend`. Verify: `go -C adapter/eino test -short -timeout 2m -run 'TestNativeResume/same_version_resumes_natively' -v ./...` — the subtest is named and passes. Evidence: `adapter/eino/einoflow/resume_test.go`, `adapter/eino/runtime.go:82-107`.
+
+## 3. Integration
+
+- [ ] 3.1 Run the bound set and the M1 floor through the public path. Verify: `task lint` clean; `go -C adapter/eino test -short -timeout 2m ./...` green; `go test -short -timeout 2m ./core/...` green as the regression floor; `task spec:coverage` reports `runtime.governed-components-in-eino-graph`, `stores.native-checkpoint-after-adapter-upgrade` and `stores.graph-checkpoint-incompatible` covered, with no new `missing_in_scope`. Evidence: the four commands; `openspec/scenarios.json`.
+- [ ] 3.2 At apply time, register the delivered behavior with no registry change: `openspec/scenarios.json` gains no id (none is proposed), and `docs/design/types.md` is regenerated only if the package doc introduces a scanned identifier. Run `task spec:types` and confirm no unaccounted drift. Verify: `git diff --unified=0 -- openspec/scenarios.json` shows no addition for this change; `git diff --stat -- docs/design/types.md` is empty or lists only identifiers a concurrent change introduced. Evidence: `openspec/scenarios.json`, `docs/design/types.md`.
+
+## 4. Validation
+
+- [ ] 4.1 Validate the change package. Verify: `openspec validate m2-eino-graph-native-resume --strict --no-interactive` exits 0, and `.openspec.yaml` carries `skip_specs: true` because no requirement text changes. Evidence: `Change 'm2-eino-graph-native-resume' is valid`.
+
+## Workflow follow-up
+
+- Archive the change after the project's review requirements are satisfied. No delta syncs, because `skip_specs` is set and no requirement changes.
+- `runtime.governed-components-in-eino-graph` closes on this change's eino acceptance; `m2-s4-acceptance` re-runs the whole S4 graph suite on the same backend and may extend it.
+- The adk-go graph leg stays M3's; this change proves the eino leg only.
+- `m2-api-freeze` freezes the graph-flow surface (`einoflow` builders, `FromRunnable`) this change settles; no `runtime` port member is added.
