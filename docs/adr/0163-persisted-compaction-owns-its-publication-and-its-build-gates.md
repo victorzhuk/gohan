@@ -61,3 +61,33 @@ corrected number.
 
 This record adds no capability and no identifier that the deltas did not already
 introduce; it fixes where each declaration lives.
+
+## Related records
+
+**ADR-0090 — context management.** That record owns the split this one
+persists: `Projections` (`Truncate`, `ClearToolResults{Keep, ClearAtLeast,
+Exclude}`) are deterministic assembly-time views over `History` and are never
+written, while `Compaction` appends a persisted `Compaction` block to
+`SessionLog` with `CoversUpTo` and assembly hides everything it covers. Its
+summary invariants are carried unchanged here and are not re-decided by this
+record: pending or unknown-outcome tool calls are never covered,
+`ToolUse`/`ToolResult` pairs are never split, `notes_*` results are never
+cleared, a text summary carries `OriginModel` and passes `StageContext` guards,
+and an opaque compaction is model-bound and dropped on endpoint change. What
+ADR-0090 left open — the block's persistence being declared but never
+implemented and never hidden by assembly — is what this record closes.
+
+**ADR-0157 — capability ports, record envelopes and journal arguments.** That
+record owns where the ports live and how a stored record carries its version:
+every capability port is declared in `core` and implemented outside it, the
+compaction seams and the fallback port follow that rule unchanged, and a
+persisted record is wrapped in `stores.RecordEnvelope` with the `SchemaVersion`
+it was written at and decoded through the one generic `DecodeRecord[T]`. The
+additive `AuditRecord.Compaction` payload needs no upcaster and no registry
+entry: the envelope carries the record's version regardless, and a record that
+gains an optional field is not a shape change — the N→N+1 chain of ADR-0157
+applies to a versioned shape, not to this payload.
+
+The publication identity and the append ordering, the reconciliation boundary,
+the two-measurement rule and the three `Build` refusals are decided by this
+record alone; neither ADR-0090 nor ADR-0157 states them.

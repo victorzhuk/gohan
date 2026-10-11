@@ -13,7 +13,24 @@ See `docs/overview.md` for how `telemetry` fits the architecture. Out of scope f
 
 ### 6.16 Telemetry
 
-**A dependency-free port with std policy.** Core declares a small `Telemetry` port (span start/end with attributes, counters and recordings); `std/telemetry` owns the conventions, the metric label policy and a `Decorate(sink, convention)` wrapper that applies `Convention.ApplyAttrs` to initial span attributes, final span attributes, counters and recordings; `adapter/otel` owns the vendor translation. The root module stays dependency-free (ADR-0145 supersedes the tracing-seam clause of ADR-0066). gohan emits spans and metrics with `gohan.*` attributes as the source of truth and maps them through a `Convention`:
+**A dependency-free port with std policy.** Core declares a small `Telemetry` port (span start/end with attributes, counters and recordings); `std/telemetry` owns the conventions, the metric label policy and a `Decorate(sink, convention)` wrapper that applies `Convention.ApplyAttrs` to initial span attributes, final span attributes, counters and recordings; `adapter/otel` owns the vendor translation. The root module stays dependency-free (ADR-0145 supersedes the tracing-seam clause of ADR-0066).
+
+The core port and its attribute value type (shipped in `core/types`; `Attr` values come from the `String`, `Int`, `Float` and `Bool` constructors, so an adapter maps them without reflection):
+
+```go
+type Telemetry interface {
+	StartSpan(ctx context.Context, name string, attrs ...Attr) (context.Context, func(attrs ...Attr))
+	Count(ctx context.Context, name string, n int64, attrs ...Attr)
+	Record(ctx context.Context, name string, v float64, attrs ...Attr)
+}
+
+type Attr struct {
+	Key   string
+	Value any
+}
+```
+
+gohan emits spans and metrics with `gohan.*` attributes as the source of truth and maps them through a `Convention`:
 
 ```go
 type Convention struct {

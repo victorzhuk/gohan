@@ -236,6 +236,51 @@ func TestCompactionPublicPath(t *testing.T) {
 		}
 	})
 
+	t.Run("context.compaction-tokens-measured", func(t *testing.T) {
+		h, err := sessions.Load(ctx, "s1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub := publicationOf(t, h)
+		var comp *types.Compaction
+		for _, m := range h.Messages {
+			for _, b := range m.Blocks {
+				if c, ok := b.(types.Compaction); ok {
+					c := c
+					comp = &c
+				}
+			}
+		}
+		if comp == nil {
+			t.Fatal("durable history carries no compaction block")
+		}
+		stokens, err := model.Count(ctx, types.ModelRequest{Messages: []types.Message{{Blocks: comp.Summary}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if comp.Tokens != stokens {
+			t.Fatalf("durable compaction tokens %d: want the counted summary %d", comp.Tokens, stokens)
+		}
+		overflow := types.ModelRequest{Messages: append(publicPathTexts(40), types.Message{Role: types.RoleUser, Blocks: []types.Block{modelText(strings.Repeat("b", 10))}})}
+		before, err := model.Count(ctx, overflow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pub.TokensBefore != before {
+			t.Fatalf("tokens before %d: want the pre-append request size %d", pub.TokensBefore, before)
+		}
+		after, err := model.Count(ctx, model.reqs[len(model.reqs)-1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pub.TokensAfter != after {
+			t.Fatalf("tokens after %d: want the post-compaction request size %d", pub.TokensAfter, after)
+		}
+		if stokens == after {
+			t.Fatalf("summary count %d equals request count: measurements must differ", stokens)
+		}
+	})
+
 	t.Run("context.compaction-audited", func(t *testing.T) {
 		records := publicPathAudit(t, audit, "s1")
 		if len(records) != 1 || records[0].Kind != stores.AuditCompacted {

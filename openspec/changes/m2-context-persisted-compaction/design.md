@@ -208,6 +208,18 @@ The stage assembles a prospective post-append history using the predetermined me
 
 Each Contract edit is assigned to the capability that actually owns the declaration. The `stores` Contract owns the `AuditCompacted` kind, the additive `AuditRecord.Compaction` payload, the three optional compaction interfaces and the shared hash helper (`openspec/specs/stores/spec.md:269-311`); the `Compactor` declaration is not declared there, so the stores Contract edit does not carry it. The `context` Contract already declares `Compact(ctx context.Context, h History, p ModelProfile) (Compaction, error)` (`openspec/specs/context/spec.md:25-27`), so the source migration (task 1.4) makes the code match the Contract and no `context` Contract edit is needed for the signature; `openspec/specs/context/spec.md` gains only the new requirements' main-spec text. `openspec/scenarios.json` gains the proposed ids; `docs/design/types.md` is regenerated (`task spec:types`). Every one of these is a tracked task in `tasks.md`. The main specs, the registry, the ADR log and the generated index are driver-owned apply-time work; the implementation driver runs them after the source migration lands, never inside a coder task. No ADR number is reserved during authoring: the numbers are assigned when the apply-time documentation tasks run, and the ADR log entry records that ADR-0090 and ADR-0157 already decide the shapes and that an additive record change needs no upcaster (`openspec/specs/stores/spec.md:338`).
 
+### D15 — ADR closeout log: what each prior record already owns
+
+One table fixes the boundary between the prior records and the compaction ADR, so the apply-time documentation tasks cite instead of re-decide.
+
+| Surface | Decided by |
+|---|---|
+| Projection vs persisted compaction, `CoversUpTo` hiding, the summary invariants (no split pairs, no pending-call coverage, `OriginModel`, `StageContext` guard, model-bound opaque compaction) | ADR-0090 (`docs/adr/0090-context-management.md:5-19`) |
+| Core-owned ports, `stores.RecordEnvelope` with `SchemaVersion`, `DecodeRecord[T]`, canonical argument retention | ADR-0157 (`docs/adr/0157-capability-ports-record-envelopes-and-journal-arguments.md:41-120`) |
+| Publication identity and the `AppendCompaction` order, the provider-invocation reconciliation boundary, one trigger with two measurements, the three `Build` refusals, and the additive payload needing no upcaster | ADR-0163 as amended (`docs/adr/0163-persisted-compaction-owns-its-publication-and-its-build-gates.md:65-93`) |
+
+The ADR log entry records this mapping and nothing else: a later reader of ADR-0163 sees which paragraphs it owns and which two records it cites, and neither cited record is amended by this change.
+
 ## Risks / Trade-offs
 
 - [Risk] The collapse step drops a message a projection still needs, or the wrong ones under a rejected `CoversUpTo`. → Mitigation: hiding uses only `CoversUpTo` against the store's `Version == len(Messages)` invariant (`core/stores/session_memory.go:381`), the boundary check runs before the append, and the view step is asserted against `core/projection_invariants_test.go` (pending-call survival, adjacency) which must stay green.

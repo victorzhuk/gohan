@@ -135,9 +135,11 @@ At apply time: edit the `streams` handle Contract to add `ActiveRun`,
 register the 27 scenario ids in `openspec/scenarios.json`, synchronize the
 `streams`, `runtime`, `flow`, `stores` and `identity` main specs,
 regenerate the types index, update the testkit conformance runs fixture, and
-record the design decision in an ADR chosen at apply time. The ADR and the
-generated index are driver-owned. No ADR number is reserved during
-authoring. No data migration is required. `M1` remains the completed
+record the design decision in an ADR chosen at apply time. That decision is
+recorded in ADR-0165
+(`docs/adr/0165-conversation-handles-share-admission-handoff-and-active-run.md`).
+The ADR and the generated index are driver-owned. No ADR number is reserved
+during authoring. No data migration is required. `M1` remains the completed
 regression floor; global `M2` is a milestone gate, not a lane gate.
 
 ## Seal requirements

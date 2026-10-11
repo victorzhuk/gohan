@@ -81,6 +81,14 @@ The executable policy lives in `std/limit` and reads that ledger from the contex
 
 The two ceilings behave differently on purpose. Reaching `MaxTurns` or `MaxToolCalls` **stops** the run: those are budgeting counters, the step only records itself, and the run ends with `types.Done{Reason: types.StopLimit}` at its effect boundary. A cost overrun or an expired wall clock **aborts** the run: those are the hard checks, and they fire before or right after the call that crossed them. A batch whose reservation exceeds `MaxToolCalls` is refused whole with `types.ErrBatchOverrun` — nothing executes and the reservation is refunded.
 
+### 4.2c Conversation lifecycle
+
+Two properties a conversation handle owes its caller: how a run leaves, and how a client finds the run that is still going.
+
+**Handoff is one transition, performed once.** A model-requested human handoff (`request_human`) performs a single control transition — there are no competing handoff branches that each close the run. With a session index and a control writer present, the transition persists the `HandoffContext`, sets `Control` to `ControlHandoffRequested` and audits `handoff_requested` — once. An optional store being absent skips only its own step and never the close: the run still ends with `Done{Reason: StopHandedOff}`, and the optional handoff callback fires exactly once. The persisted `HandoffContext` and the state the run returns both match the error's `HandoffContext`, so a reattached client reads the same handover it was given. Terminal reasons are preserved on the way out: a run that ends on a limit, a cancel or a handoff reports that reason in its final `Done` and in the durable run record (`FinishReasonRecorder`) instead of substituting `StopCompleted` (`flow` handoff terminal transition, `runtime` terminal stop reason preservation).
+
+**ActiveRun is owner-authorized discovery.** A client calls `ActiveRun` before `Cancel`; the handle answers with the id of the session's active run. Active means exactly one thing: state `Running` or `Resuming` with a live lease. A `Suspended`, terminal, lease-expired or null-lease run is inactive and the call returns `types.ErrRunNotActive` with no id. Discovery is authorized like `Cancel` — a principal of another tenant, or one without session write scope, gets `ErrSessionForbidden` and no run id is disclosed. A run another pod started is still found, through the local run state where the handle holds it and through the optional `SessionRunFinder` on `Runs` otherwise; the `Runs` port does not grow a method for it. `ActiveRun` changes no `Send` semantics and requires no idempotency key. A detached run stays discoverable while it is `Running` or `Resuming` with a live lease.
+
 ### 4.3 Adapter roles
 
 | Module | Runtime | Flow backends | Model | Tool | Decider |

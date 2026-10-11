@@ -15,6 +15,11 @@ func TestProjectionSatisfiesTruncate(t *testing.T) {
 	var _ stores.Projection = stdcontext.NewTruncate()
 }
 
+func TestCompactionFallbackPort(t *testing.T) {
+	var _ stores.CompactionFallback = stdcontext.Truncate{}
+	var _ stores.CompactionFallback = stdcontext.NewTruncate()
+}
+
 func TestContextPolicyFields(t *testing.T) {
 	p := stores.ContextPolicy{
 		Projections: []stores.Projection{stubProjection{}},

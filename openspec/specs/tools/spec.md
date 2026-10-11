@@ -151,6 +151,40 @@ func exec.New(spec gohan.ToolSpec, cmd exec.Cmd, opts ...exec.Option) gohan.Tool
 - default `Effect` = `SideEffect`
 - runs on the host without isolation; model-authored code goes through the `sandbox` capability, and `Build` warns when `tool/exec` is registered without `AllowHostExec()`
 
+#### std/tool/http
+
+```go
+type FetchOption func(*fetchConfig)
+
+func WithOutputStore(store stores.OutputStore, tel types.Telemetry) FetchOption
+```
+
+`FetchOption` is the one option type `http.Fetch` accepts; `fetchConfig` is the private struct it mutates and carries the store and telemetry the rendered-response cap-and-store step uses. Both fields may stay zero: without a store an overflowing response is bounded to a head excerpt and a no-store marker. `WithOutputStore` wires both at once and both parameters may be `nil`. `http.Fetch(policy)` with no options stays the call shape the *Fetched response cap and store* requirement pins.
+
+#### std/outputs
+
+```go
+const DefaultMaxOutput = 64 * 1024
+
+type SanitizeFunc func(ctx context.Context, stream string, data []byte) (clean []byte, leaks int, err error)
+
+type OutputStoreParams struct {
+	Store      stores.OutputStore
+	Run        types.RunInfo
+	Tool       string
+	Max        int
+	Stream     string
+	Data       []byte
+	ForceStore bool
+	Sanitize   SanitizeFunc
+	Tel        types.Telemetry
+}
+
+func StoreOutput(ctx context.Context, s OutputStoreParams) ([]types.Block, string, error)
+```
+
+`DefaultMaxOutput` is the per-stream inline cap and the tools contract default for `ToolSpec.MaxOutput`. `SanitizeFunc` rewrites one stream's bytes before they are capped or stored and reports how many occurrences it replaced. `OutputStoreParams` carries one stream through the shared step in this order: `Sanitize`, resolve the effective `Max`, store, render excerpt and marker, count. `Max` at or below zero resolves to `DefaultMaxOutput`; `ForceStore` stores under the cap; `Store` and `Tel` may be `nil`. `StoreOutput` returns the blocks, the stored document's ref (`""` when nothing was stored) and an error: a sanitize or store error returns no blocks and no ref, and the leak count `Sanitize` reports is emitted once as `gohan.sandbox.secret_leak`.
+
 
 ## Requirements
 
