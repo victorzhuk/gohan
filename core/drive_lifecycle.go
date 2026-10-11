@@ -179,6 +179,8 @@ type Lifecycle struct {
 	consolidationAudit stores.AuditLog
 	cacheWrite         CacheWriteFunc
 	handoff            func(context.Context, types.HandoffContext) error
+	handles            types.SandboxHandles
+	use                *types.WorkspaceUse
 }
 
 // CacheWriteFunc is the terminal cache-write seam DriveLifecycle consults
@@ -345,6 +347,33 @@ func WithLifecycleCacheWrite(fn CacheWriteFunc) LifecycleOption {
 	return func(lc *Lifecycle) { lc.cacheWrite = fn }
 }
 
+// WithLifecycleSandboxHandles binds the sandbox coordinator the run's
+// suspension and terminal seams publish and release through. A lifecycle
+// without one publishes nowhere.
+func WithLifecycleSandboxHandles(h types.SandboxHandles) LifecycleOption {
+	return func(lc *Lifecycle) { lc.handles = h }
+}
+
+// WithLifecycleWorkspaceUse installs the run's acquisition tracker the
+// tool path marks on Acquire. The lifecycle reads it at the suspension
+// and terminal seams; a run that acquired nothing publishes nowhere.
+func WithLifecycleWorkspaceUse(u *types.WorkspaceUse) LifecycleOption {
+	return func(lc *Lifecycle) { lc.use = u }
+}
+
+// sandboxOwner reports the lease-fenced owner the run's sandbox calls
+// acquire, publish and release under.
+func (lc *Lifecycle) sandboxOwner() types.WorkspaceOwner {
+	return types.WorkspaceOwner{RunID: lc.lease.RunID, LeaseGeneration: lc.lease.Generation}
+}
+
+// workspaceLive reports whether the run acquired a sandbox handle the
+// lifecycle must publish and release.
+func (lc *Lifecycle) workspaceLive() bool {
+	return lc.handles != nil && lc.use != nil && lc.use.Acquired() &&
+		lc.lease.RunID != "" && lc.sessionID != ""
+}
+
 // NewLifecycle builds the driver-side lifecycle with its defaults.
 func NewLifecycle(opts ...LifecycleOption) *Lifecycle {
 	lc := &Lifecycle{reason: types.AwaitingTool}
@@ -377,6 +406,22 @@ func DriveLifecycle(ctx context.Context, lc *Lifecycle, rt runtime.Runtime, r ru
 		// binding-only: it runs no governed call and appends nothing.
 		if lc.appender != nil {
 			ctx = withHistoryAppender(ctx, lc.appender)
+		}
+		// The sandbox coordinator, the lease-fenced owner and the run's
+		// acquisition tracker ride the run context, so the per-session
+		// tool path resolves them while it executes and the lifecycle
+		// reads the tracker at the suspension and terminal seams. The
+		// heartbeat preserves the lease generation, so the owner minted
+		// once here stays the fence for the whole run.
+		if lc.handles != nil {
+			ctx = types.WithSandboxHandles(ctx, lc.handles)
+		}
+		if lc.use == nil {
+			lc.use = &types.WorkspaceUse{}
+		}
+		ctx = types.WithWorkspaceUse(ctx, lc.use)
+		if lc.lease.RunID != "" {
+			ctx = types.WithWorkspaceOwner(ctx, lc.sandboxOwner())
 		}
 		st, err := rt.Start(ctx, r)
 		if err != nil {
@@ -696,20 +741,33 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 		return nil, err
 	}
 	env.State = redactedState
+	// The durable snapshot precedes the save: a snapshot or compare-and-set
+	// failure produces no checkpoint and no suspension. A run that acquired
+	// no workspace publishes nowhere.
+	var snap types.WorkspaceSnapshot
+	if lc.workspaceLive() {
+		s, perr := lc.handles.Publish(ctx, lc.sessionID, lc.sandboxOwner())
+		if perr != nil {
+			return nil, fmt.Errorf("suspend workspace publish: %w", perr)
+		}
+		snap = s
+	}
 	data, err := encodeCheckpoint(env)
 	if err != nil {
 		return nil, err
 	}
 	token, err := r.Save(ctx, stores.Checkpoint{
-		RunID:         lc.lease.RunID,
-		SchemaVersion: stores.CurrentSchemaVersion,
-		SessionID:     lc.sessionID,
-		Flow:          lc.flow,
-		Backend:       rt.Name(),
-		Reason:        reason,
-		Originator:    lc.originator,
-		ExpiresAt:     lc.lease.Expires,
-		Data:          data,
+		RunID:               lc.lease.RunID,
+		SchemaVersion:       stores.CurrentSchemaVersion,
+		SessionID:           lc.sessionID,
+		Flow:                lc.flow,
+		Backend:             rt.Name(),
+		Reason:              reason,
+		Originator:          lc.originator,
+		ExpiresAt:           lc.lease.Expires,
+		Workspace:           snap.Ref,
+		WorkspaceGeneration: snap.Generation,
+		Data:                data,
 	})
 	if err != nil {
 		return nil, err
@@ -727,6 +785,12 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 		if err := lc.waker.Schedule(ctx, token, wakeAt); err != nil {
 			return nil, err
 		}
+	}
+	// The release runs only after the suspension transition and the wake
+	// schedule succeeded. A failed close keeps the durable snapshot and the
+	// coordinator's cleanup record, which the next sweep retries.
+	if lc.workspaceLive() {
+		_ = lc.handles.Release(ctx, lc.sessionID, lc.sandboxOwner())
 	}
 	return types.Suspended{Token: token, Reason: reason, Payload: payload, WakeAt: wakeAt}, nil
 }
@@ -1086,16 +1150,42 @@ func (lc *Lifecycle) applySignals(ctx context.Context, st runtime.State, sigs []
 	return st, false, true, evs, nil
 }
 
-// finishRun closes the run with the given terminal state. A Finish refused
-// with ErrSignalsPending keeps the run alive, so the heartbeat survives it.
+// finishRun closes the run with the given terminal state. The terminal
+// order is Publish → the terminal write → Release: the durable snapshot
+// precedes the write, and the handle releases only after the write
+// succeeded. A Finish refused with ErrSignalsPending keeps the run, the
+// live handle and its heartbeat alive, so no release runs. A terminal
+// publication failure records Failed without a successful result ref and
+// never repeats the failing publication.
 func (lc *Lifecycle) finishRun(ctx context.Context, st runtime.State, state stores.RunState, uncertain []types.CallKey, stop types.StopReason) error {
 	if lc.runs == nil {
 		return nil
 	}
-	if fr, ok := lc.runs.(stores.FinishReasonRecorder); ok {
-		return fr.FinishWithReason(ctx, lc.lease, state, uncertain, lc.resultRef, stop)
+	if lc.workspaceLive() {
+		if _, err := lc.handles.Publish(ctx, lc.sessionID, lc.sandboxOwner()); err != nil {
+			lc.resultRef = ""
+			if ferr := lc.finishStore(ctx, stores.Failed, uncertain, "", stop); ferr != nil {
+				return fmt.Errorf("terminal workspace publish: %w (failed write: %w)", err, ferr)
+			}
+			return fmt.Errorf("terminal workspace publish: %w", err)
+		}
 	}
-	return lc.runs.Finish(ctx, lc.lease, state, uncertain, lc.resultRef)
+	err := lc.finishStore(ctx, state, uncertain, lc.resultRef, stop)
+	if err != nil {
+		return err
+	}
+	if lc.workspaceLive() {
+		_ = lc.handles.Release(ctx, lc.sessionID, lc.sandboxOwner())
+	}
+	return nil
+}
+
+// finishStore performs the terminal store transition.
+func (lc *Lifecycle) finishStore(ctx context.Context, state stores.RunState, uncertain []types.CallKey, resultRef string, stop types.StopReason) error {
+	if fr, ok := lc.runs.(stores.FinishReasonRecorder); ok {
+		return fr.FinishWithReason(ctx, lc.lease, state, uncertain, resultRef, stop)
+	}
+	return lc.runs.Finish(ctx, lc.lease, state, uncertain, resultRef)
 }
 
 func (lc *Lifecycle) callKeys(st runtime.State) []types.CallKey {

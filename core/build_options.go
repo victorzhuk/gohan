@@ -45,6 +45,24 @@ func WithSunsetWarnOnly() Option {
 	}
 }
 
+// SandboxRegistration carries the constructed sandbox coordinator and the
+// policy it was built for into Build. The instance is shared by the tool
+// set and the lifecycle hooks, so both callers hold one coordinator.
+type SandboxRegistration struct {
+	Handles types.SandboxHandles
+	Policy  types.SandboxPolicy
+}
+
+// WithSandboxRegistration registers the sandbox coordinator on the build. A
+// PerSession policy with no registration, or with a registration whose
+// session log lacks the workspace metadata surface, fails Build.
+func WithSandboxRegistration(reg SandboxRegistration) Option {
+	return func(c *config) error {
+		c.sandboxReg = reg
+		return nil
+	}
+}
+
 type config struct {
 	flags              types.Flags
 	frozen             map[string]any
@@ -81,6 +99,7 @@ type config struct {
 	sunsetWindow       time.Duration
 	sunsetWarnOnly     bool
 	titleProfile       string
+	sandboxReg         SandboxRegistration
 }
 
 // WithTenant binds the build to a tenant identity. A tenant with a

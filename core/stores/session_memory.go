@@ -47,7 +47,16 @@ type sessionRecord struct {
 	kidsOf      map[SessionKind][]string
 	linked      bool
 	state       sharedStateRow
+	workspace   *workspaceMetaRow
 	blobsRaw    []byte
+}
+
+// workspaceMetaRow is the session's durable workspace pointer: the ref,
+// the compare-and-set generation and the owner that published it.
+type workspaceMetaRow struct {
+	ref        types.WorkspaceRef
+	generation int64
+	owner      types.WorkspaceOwner
 }
 
 // sharedStateRow is the session's persisted shared state: the JSON value
@@ -66,9 +75,12 @@ type MemorySessionLog struct {
 	principals   PrincipalSource
 	dependents   []SessionDependent
 	leases       SessionLeaseHolder
+	ownerGuard   SessionWorkspaceOwnerGuard
 	audit        AuditLog
 	archivedFor  time.Duration
 	sessions     map[string]*sessionRecord
+	cleanups     map[string][]WorkspaceCleanupRecord
+	cleanupLocks map[string]map[cleanupKey]bool
 	blobIDs      map[string]map[string]blobIDRow
 	publications map[string]map[string]compactionPublicationRow
 	msgSeq       int64
@@ -79,6 +91,15 @@ type MemorySessionLog struct {
 }
 
 type MemorySessionOption func(*MemorySessionLog)
+
+// SessionWorkspaceOwnerGuard validates a workspace write owner while its
+// own lock is held, so the proof and the write are one atomic step against
+// the run records. The callback runs inside that lock: it MUST NOT take
+// either store mutex, call another store, or reach a provider or caller
+// callback. Consumer-owned: the runs store adapter satisfies it.
+type SessionWorkspaceOwnerGuard interface {
+	WithWorkspaceOwner(ctx context.Context, sessionID string, owner types.WorkspaceOwner, write func() error) error
+}
 
 // WithMemorySessionClock replaces the store clock. The index derives
 // LastActivity from it, so tests drive time through it.
@@ -108,6 +129,13 @@ func WithSessionDependents(d ...SessionDependent) MemorySessionOption {
 // delete.
 func WithSessionLeases(l SessionLeaseHolder) MemorySessionOption {
 	return func(s *MemorySessionLog) { s.leases = l }
+}
+
+// WithSessionWorkspaceOwnerGuard wires the owner guard every workspace
+// metadata write validates through. Wire the same MemoryRuns instance the
+// stack uses, so the proof reads the live lease under one lock.
+func WithSessionWorkspaceOwnerGuard(guard SessionWorkspaceOwnerGuard) MemorySessionOption {
+	return func(s *MemorySessionLog) { s.ownerGuard = guard }
 }
 
 // WithArchivedRetention overrides the archived purge threshold.
@@ -249,11 +277,21 @@ type blobIDRow struct {
 	ID       string `json:"id"`
 }
 
+// cleanupKey is the logical identity of one cleanup record inside the
+// session store: the record's run, lease generation and live resource.
+type cleanupKey struct {
+	runID      string
+	generation uint64
+	ref        types.WorkspaceRef
+}
+
 func NewMemorySessionLog(opts ...MemorySessionOption) *MemorySessionLog {
 	s := &MemorySessionLog{
 		now:          time.Now,
 		archivedFor:  defaultArchivedHold,
 		sessions:     make(map[string]*sessionRecord),
+		cleanups:     make(map[string][]WorkspaceCleanupRecord),
+		cleanupLocks: make(map[string]map[cleanupKey]bool),
 		blobIDs:      make(map[string]map[string]blobIDRow),
 		publications: make(map[string]map[string]compactionPublicationRow),
 		schemas:      NewSchemaRegistry(),
@@ -1011,4 +1049,226 @@ func (s *MemorySessionLog) SetSharedStateMeta(ctx context.Context, sessionID str
 	rec.state.raw = raw
 	rec.state.version = expectedVersion + 1
 	return rec.state.version, nil
+}
+
+// WorkspaceMeta reads the session's durable workspace pointer and reports
+// whether one is stored.
+func (s *MemorySessionLog) WorkspaceMeta(ctx context.Context, sessionID string) (WorkspaceMeta, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.get(ctx, sessionID, scopeSessionRead)
+	if err != nil {
+		return WorkspaceMeta{}, false, err
+	}
+	if rec.workspace == nil {
+		return WorkspaceMeta{}, false, nil
+	}
+	return WorkspaceMeta{Ref: rec.workspace.ref, Generation: rec.workspace.generation, Owner: rec.workspace.owner}, true, nil
+}
+
+// SetWorkspaceMeta writes the durable workspace pointer under the
+// generation compare-and-set and the owner proof in one atomic step: the
+// session mutex is held across the authority check, the token comparison
+// and the owner guard, which takes the runs mutex inside it.
+func (s *MemorySessionLog) SetWorkspaceMeta(ctx context.Context, sessionID string, expectedGeneration int64, m WorkspaceMeta) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.get(ctx, sessionID, scopeSessionWrite)
+	if err != nil {
+		return 0, err
+	}
+	if rec.workspace == nil {
+		if expectedGeneration != 0 {
+			return 0, fmt.Errorf("workspace session %s at generation %d: %w", sessionID, expectedGeneration, types.ErrVersionConflict)
+		}
+	} else if rec.workspace.generation != expectedGeneration {
+		return 0, fmt.Errorf("workspace session %s at generation %d: %w", sessionID, expectedGeneration, types.ErrVersionConflict)
+	} else if m.Generation == rec.workspace.generation && m.Ref != rec.workspace.ref {
+		return 0, fmt.Errorf("workspace session %s ref %s at generation %d: %w", sessionID, m.Ref, expectedGeneration, types.ErrVersionConflict)
+	}
+	if s.ownerGuard == nil {
+		return 0, fmt.Errorf("workspace session %s: no owner guard wired: %w", sessionID, types.ErrRunNotActive)
+	}
+	var advanced int64
+	err = s.ownerGuard.WithWorkspaceOwner(ctx, sessionID, m.Owner, func() error {
+		rec.workspace = &workspaceMetaRow{ref: m.Ref, generation: expectedGeneration + 1, owner: m.Owner}
+		advanced = expectedGeneration + 1
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return advanced, nil
+}
+
+// ImportWorkspaceMeta installs a legacy generation-zero workspace ref as
+// generation one under a validated owner lease. It refuses an unauthorized
+// caller, a stale owner, a nonzero input generation, an empty ref and
+// existing metadata; every refusal leaves the store unchanged.
+func (s *MemorySessionLog) ImportWorkspaceMeta(ctx context.Context, sessionID string, owner types.WorkspaceOwner, legacy types.WorkspaceSnapshot) (types.WorkspaceSnapshot, error) {
+	if legacy.Generation != 0 {
+		return types.WorkspaceSnapshot{}, fmt.Errorf("import session %s: generation %d: %w", sessionID, legacy.Generation, types.ErrInputInvalid)
+	}
+	if legacy.Ref == "" {
+		return types.WorkspaceSnapshot{}, fmt.Errorf("import session %s: empty ref: %w", sessionID, types.ErrInputInvalid)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.get(ctx, sessionID, scopeSessionWrite)
+	if err != nil {
+		return types.WorkspaceSnapshot{}, err
+	}
+	if rec.workspace != nil {
+		return types.WorkspaceSnapshot{}, fmt.Errorf("import session %s: metadata already stored: %w", sessionID, types.ErrVersionConflict)
+	}
+	if s.ownerGuard == nil {
+		return types.WorkspaceSnapshot{}, fmt.Errorf("import session %s: no owner guard wired: %w", sessionID, types.ErrRunNotActive)
+	}
+	err = s.ownerGuard.WithWorkspaceOwner(ctx, sessionID, owner, func() error {
+		rec.workspace = &workspaceMetaRow{ref: legacy.Ref, generation: 1, owner: owner}
+		return nil
+	})
+	if err != nil {
+		return types.WorkspaceSnapshot{}, err
+	}
+	return types.WorkspaceSnapshot{Ref: legacy.Ref, Generation: 1}, nil
+}
+
+// RecordWorkspaceCleanup persists the ownership record for one acquired
+// live resource under a validated owner proof. The write runs under the
+// session mutex and the guard's runs mutex, so a concurrent claim or
+// acquisition serializes against it.
+func (s *MemorySessionLog) RecordWorkspaceCleanup(ctx context.Context, sessionID string, owner types.WorkspaceOwner, ref types.WorkspaceRef) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.get(ctx, sessionID, scopeSessionWrite); err != nil {
+		return err
+	}
+	if s.ownerGuard == nil {
+		return fmt.Errorf("cleanup session %s: no owner guard wired: %w", sessionID, types.ErrRunNotActive)
+	}
+	return s.ownerGuard.WithWorkspaceOwner(ctx, sessionID, owner, func() error {
+		s.cleanups[sessionID] = append(s.cleanups[sessionID], WorkspaceCleanupRecord{SessionID: sessionID, Owner: owner, ResourceRef: ref})
+		return nil
+	})
+}
+
+// ValidateWorkspaceAcquire atomically validates the owner proof and refuses
+// while a cleanup claim blocks the session's acquisition. A claim accepted
+// before the open refuses the acquisition even under a fresh lease.
+func (s *MemorySessionLog) ValidateWorkspaceAcquire(ctx context.Context, sessionID string, owner types.WorkspaceOwner) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.cleanupLocks[sessionID]) > 0 {
+		return fmt.Errorf("acquire session %s: a cleanup claim excludes acquisition: %w", sessionID, types.ErrRunNotActive)
+	}
+	if s.ownerGuard == nil {
+		return fmt.Errorf("acquire session %s: no owner guard wired: %w", sessionID, types.ErrRunNotActive)
+	}
+	return s.ownerGuard.WithWorkspaceOwner(ctx, sessionID, owner, func() error { return nil })
+}
+
+// CleanupCandidates reads at most limit durable cleanup records, oldest
+// session first for a stable sweep order.
+func (s *MemorySessionLog) CleanupCandidates(ctx context.Context, limit int) ([]WorkspaceCleanupRecord, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("cleanup candidates: limit %d: %w", limit, types.ErrInputInvalid)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]string, 0, len(s.cleanups))
+	for id, recs := range s.cleanups {
+		if len(recs) == 0 {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var out []WorkspaceCleanupRecord
+	for _, id := range ids {
+		for _, rec := range s.cleanups[id] {
+			if len(out) == limit {
+				return out, nil
+			}
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
+// ClaimWorkspaceCleanup atomically claims the exact record: a live session
+// lease or an existing claim on the same record reports claimed == false
+// and changes nothing. The session mutex is held across the lease check and
+// the claim assignment.
+func (s *MemorySessionLog) ClaimWorkspaceCleanup(ctx context.Context, rec WorkspaceCleanupRecord) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.hasCleanupLocked(rec) {
+		return false, nil
+	}
+	if s.leaseActive(ctx, rec.SessionID) {
+		return false, nil
+	}
+	locks := s.cleanupLocks[rec.SessionID]
+	if locks == nil {
+		locks = make(map[cleanupKey]bool)
+		s.cleanupLocks[rec.SessionID] = locks
+	}
+	key := cleanupKey{runID: rec.Owner.RunID, generation: rec.Owner.LeaseGeneration, ref: rec.ResourceRef}
+	if locks[key] {
+		return false, nil
+	}
+	locks[key] = true
+	return true, nil
+}
+
+// CompleteWorkspaceCleanup removes the exact record and its claim after a
+// successful close. The durable snapshot metadata is retained.
+func (s *MemorySessionLog) CompleteWorkspaceCleanup(ctx context.Context, rec WorkspaceCleanupRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.hasCleanupLocked(rec) {
+		return nil
+	}
+	recs := s.cleanups[rec.SessionID]
+	for i, got := range recs {
+		if got != rec {
+			continue
+		}
+		s.cleanups[rec.SessionID] = slices.Delete(recs, i, i+1)
+		break
+	}
+	if len(s.cleanups[rec.SessionID]) == 0 {
+		delete(s.cleanups, rec.SessionID)
+	}
+	key := cleanupKey{runID: rec.Owner.RunID, generation: rec.Owner.LeaseGeneration, ref: rec.ResourceRef}
+	delete(s.cleanupLocks[rec.SessionID], key)
+	if len(s.cleanupLocks[rec.SessionID]) == 0 {
+		delete(s.cleanupLocks, rec.SessionID)
+	}
+	return nil
+}
+
+// AbortWorkspaceCleanup releases the claim after a failed close and keeps
+// the exact record for the next sweep.
+func (s *MemorySessionLog) AbortWorkspaceCleanup(ctx context.Context, rec WorkspaceCleanupRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := cleanupKey{runID: rec.Owner.RunID, generation: rec.Owner.LeaseGeneration, ref: rec.ResourceRef}
+	delete(s.cleanupLocks[rec.SessionID], key)
+	if len(s.cleanupLocks[rec.SessionID]) == 0 {
+		delete(s.cleanupLocks, rec.SessionID)
+	}
+	return nil
+}
+
+// hasCleanupLocked reports whether the exact record is stored. The session
+// mutex must be held.
+func (s *MemorySessionLog) hasCleanupLocked(rec WorkspaceCleanupRecord) bool {
+	for _, got := range s.cleanups[rec.SessionID] {
+		if got == rec {
+			return true
+		}
+	}
+	return false
 }

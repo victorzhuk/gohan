@@ -53,6 +53,14 @@ func (s *Stack) Recover(ctx context.Context, limit int) error {
 			return err
 		}
 	}
+	// The sweep runs even when Stale returned no rows: cleanup records
+	// outlive a run's stale listing, and zero reclaims still leave
+	// resources to close.
+	if s.sandboxHandles != nil {
+		if err := s.sandboxHandles.Sweep(ctx, limit); err != nil {
+			return fmt.Errorf("sandbox sweep: %w", err)
+		}
+	}
 	return s.recoverConsumed(ctx, limit)
 }
 
@@ -230,6 +238,13 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 		WithLifecycleSession(run.SessionID),
 		WithLifecycleFlow(run.Flow),
 		WithLifecycleTelemetry(s.telemetry),
+		WithLifecycleSandboxHandles(s.sandboxHandles),
+	}
+	// The restore runs before any tool executes, so it cannot race a tool
+	// call. A refused restore abandons the run instead of re-driving it
+	// against a workspace state the checkpoint does not match.
+	if err := s.restoreWorkspace(ctx, run.SessionID, cp); err != nil {
+		return s.abandonWith(ctx, lease, run, err)
 	}
 	if p.Subject != "" {
 		opts = append(opts, WithLifecycleOriginator(p))

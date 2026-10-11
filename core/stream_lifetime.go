@@ -109,6 +109,9 @@ func (c *conversation) lifecycleOptions(sessionID string, lease stores.Lease, or
 	if hasOriginator {
 		opts = append(opts, WithLifecycleOriginator(originator))
 	}
+	if h := c.stack.sandboxHandles; h != nil {
+		opts = append(opts, WithLifecycleSandboxHandles(h))
+	}
 	return c.verifyOptions(opts)
 }
 

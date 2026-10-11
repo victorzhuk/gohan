@@ -75,6 +75,13 @@ func CallTool(ctx context.Context, set ToolSet, name string, args jsontext.Value
 		if errors.As(err, &suspended) || errors.As(err, &aborted) || errors.As(err, &handedOff) || errors.Is(err, context.Canceled) {
 			return types.ToolResult{}, err
 		}
+		var unknown types.UnknownOutcomeError
+		if errors.As(err, &unknown) {
+			return types.ToolResult{
+				Outcome: types.Unknown,
+				Error:   &types.ToolError{Kind: types.OutcomeUnknown, Message: unknown.Message},
+			}, nil
+		}
 		return classifyFailure(ctx, tool.Spec(), err), nil
 	}
 	if result.Outcome == types.Unknown && result.Error == nil {

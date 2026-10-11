@@ -97,3 +97,38 @@ type SandboxResources interface {
 	Enumerate(ctx context.Context) ([]WorkspaceRef, error)
 	CloseByRef(ctx context.Context, ref WorkspaceRef) error
 }
+
+// WorkspaceResource is the optional resource-identity capability a
+// workspace declares beside the port. It exposes the identity of the exact
+// live resource Open returned, not a snapshot tag. Callers reach it by
+// type assertion on the value Open returned; Workspace never grows a
+// ResourceRef method.
+type WorkspaceResource interface {
+	ResourceRef() WorkspaceRef
+}
+
+// WorkspaceOwner fences a live handle to one run and one lease generation.
+// The lease generation is store-minted, so a stale owner cannot pass as the
+// current one.
+type WorkspaceOwner struct {
+	RunID           string
+	LeaseGeneration uint64
+}
+
+// WorkspaceSnapshot is the durable outcome of one publication. Generation
+// is the persisted compare-and-set token the store advanced.
+type WorkspaceSnapshot struct {
+	Ref        WorkspaceRef
+	Generation int64
+}
+
+// SandboxHandles is the optional lifecycle coordinator beside the Sandbox
+// port. It owns one live Workspace per (session, owner), publishes durable
+// snapshots and sweeps leftover resources. It is registered on the build
+// and resolved from the run context; Sandbox and Workspace never grow.
+type SandboxHandles interface {
+	Acquire(ctx context.Context, sessionID string, owner WorkspaceOwner) (Workspace, error)
+	Publish(ctx context.Context, sessionID string, owner WorkspaceOwner) (WorkspaceSnapshot, error)
+	Release(ctx context.Context, sessionID string, owner WorkspaceOwner) error
+	Sweep(ctx context.Context, limit int) error
+}

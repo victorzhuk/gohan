@@ -52,7 +52,11 @@ type Checkpoint struct {
 	Data           []byte
 	Child          types.ResumeToken
 	Workspace      WorkspaceRef
-	ExpiresAt      time.Time
+	// WorkspaceGeneration is the snapshot generation the workspace ref was
+	// published under. A checkpoint written before the field existed reads
+	// zero, which is older than every stored generation.
+	WorkspaceGeneration int64
+	ExpiresAt           time.Time
 }
 
 type CheckpointResumer interface {

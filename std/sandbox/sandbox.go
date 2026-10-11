@@ -42,6 +42,17 @@ type config struct {
 	effect    types.Effect
 	store     stores.OutputStore
 	maxOutput int
+	handles   types.SandboxHandles
+}
+
+// WithCoordinator shares one already-constructed lifecycle coordinator
+// between this tool set and the build registration, so both callers hold
+// the same instance.
+func WithCoordinator(h types.SandboxHandles) Option {
+	return func(c *config) error {
+		c.handles = h
+		return nil
+	}
 }
 
 // WithOutputStore spills output beyond the spec's MaxOutput cap whole, so
@@ -80,8 +91,13 @@ func WithEffect(e types.Effect) Option {
 }
 
 type set struct {
-	tools []types.Tool
+	tools   []types.Tool
+	handles types.SandboxHandles
 }
+
+// Coordinator returns the shared lifecycle coordinator, or nil when the
+// tool set was built without one.
+func (s set) Coordinator() types.SandboxHandles { return s.handles }
 
 // Tools returns the four sandbox tools in registration order.
 func (s set) Tools() []types.Tool { return s.tools }
@@ -113,7 +129,7 @@ func New(sb types.Sandbox, p types.SandboxPolicy, opts ...Option) (ToolSet, erro
 	}
 	runCode, err := gohan.NewTool("run_code", "Run shell code inside the sandbox and return its output.",
 		func(ctx context.Context, a runCodeArgs) ([]types.Block, error) {
-			return withWorkspace(ctx, sb, p, func(ctx context.Context, w types.Workspace, sanitize outputs.SanitizeFunc) ([]types.Block, error) {
+			return withWorkspace(ctx, sb, p, true, func(ctx context.Context, w types.Workspace, sanitize outputs.SanitizeFunc) ([]types.Block, error) {
 				return runCode(ctx, w, cfg.spiller(ctx, sanitize), a)
 			})
 		},
@@ -125,7 +141,7 @@ func New(sb types.Sandbox, p types.SandboxPolicy, opts ...Option) (ToolSet, erro
 	}
 	writeFile, err := gohan.NewTool("write_file", "Write a file into the sandbox workspace.",
 		func(ctx context.Context, a writeFileArgs) ([]types.Block, error) {
-			return withWorkspace(ctx, sb, p, func(ctx context.Context, w types.Workspace, _ outputs.SanitizeFunc) ([]types.Block, error) {
+			return withWorkspace(ctx, sb, p, true, func(ctx context.Context, w types.Workspace, _ outputs.SanitizeFunc) ([]types.Block, error) {
 				return writeFile(ctx, w, a)
 			})
 		},
@@ -137,7 +153,7 @@ func New(sb types.Sandbox, p types.SandboxPolicy, opts ...Option) (ToolSet, erro
 	}
 	readFile, err := gohan.NewTool("read_file", "Read a file from the sandbox workspace.",
 		func(ctx context.Context, a readFileArgs) ([]types.Block, error) {
-			return withWorkspace(ctx, sb, p, func(ctx context.Context, w types.Workspace, sanitize outputs.SanitizeFunc) ([]types.Block, error) {
+			return withWorkspace(ctx, sb, p, false, func(ctx context.Context, w types.Workspace, sanitize outputs.SanitizeFunc) ([]types.Block, error) {
 				return readFile(ctx, w, cfg.spiller(ctx, sanitize), a)
 			})
 		},
@@ -149,7 +165,7 @@ func New(sb types.Sandbox, p types.SandboxPolicy, opts ...Option) (ToolSet, erro
 	}
 	listFiles, err := gohan.NewTool("list_files", "List the files in a sandbox workspace directory.",
 		func(ctx context.Context, a listFilesArgs) ([]types.Block, error) {
-			return withWorkspace(ctx, sb, p, func(ctx context.Context, w types.Workspace, _ outputs.SanitizeFunc) ([]types.Block, error) {
+			return withWorkspace(ctx, sb, p, false, func(ctx context.Context, w types.Workspace, _ outputs.SanitizeFunc) ([]types.Block, error) {
 				return listFiles(ctx, w, a)
 			})
 		},
@@ -159,7 +175,7 @@ func New(sb types.Sandbox, p types.SandboxPolicy, opts ...Option) (ToolSet, erro
 	if err != nil {
 		return nil, err
 	}
-	return set{tools: []types.Tool{runCode, writeFile, readFile, listFiles}}, nil
+	return set{tools: []types.Tool{runCode, writeFile, readFile, listFiles}, handles: cfg.handles}, nil
 }
 
 type runCodeArgs struct {

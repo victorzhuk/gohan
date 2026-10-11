@@ -36,6 +36,12 @@ type workspace struct {
 	env map[string]string
 }
 
+// ResourceRef is the types.WorkspaceResource identity the cleanup record
+// persists and CloseByRef removes: the container id, never a snapshot tag.
+func (w *workspace) ResourceRef() types.WorkspaceRef {
+	return types.WorkspaceRef(w.containerID)
+}
+
 // execTokenEnv tags each exec's environment so the process group can be
 // found and killed on expiry inside the container.
 const execTokenEnv = "GOHAN_EXEC_TOKEN"

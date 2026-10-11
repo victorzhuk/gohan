@@ -70,6 +70,17 @@ var (
 	ErrPerSessionUnsupported = errors.New("gohan: sandbox per-session lifecycle is not supported yet")
 )
 
+// UnknownOutcomeError reports a sandbox mutation whose durable publication
+// failed after the body may already have mutated the workspace: the call
+// settles as an explicit unknown result, not as a failure.
+type UnknownOutcomeError struct {
+	Message string
+}
+
+func (e UnknownOutcomeError) Error() string {
+	return "gohan: outcome unknown: " + e.Message
+}
+
 type ResumeToken string
 
 type SuspendReason string

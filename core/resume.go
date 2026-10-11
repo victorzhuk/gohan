@@ -556,6 +556,14 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			WithLifecycleResidency(c.tenant.Residency),
 			WithLifecycleOriginator(cp.Originator),
 			WithLifecycleResumeState(st),
+			WithLifecycleSandboxHandles(c.stack.sandboxHandles),
+		}
+		// The restore runs before the re-drive: the resumed run's tools
+		// must see the workspace state the checkpoint matches, and a
+		// refused restore never re-drives.
+		if rerr := c.stack.restoreWorkspace(runCtx, cp.SessionID, &cp); rerr != nil {
+			prepFail(rerr)
+			return
 		}
 		if ledger != nil {
 			opts = append(opts, WithLifecycleLedger(ledger))

@@ -397,6 +397,51 @@ func mustTools(t *testing.T, sb *fakeSandbox, p types.SandboxPolicy, opts ...Opt
 	return ts.Tools()
 }
 
+func TestSandboxPerSessionPersists(t *testing.T) {
+	t.Run("sandbox.per-session-persists", func(t *testing.T) {
+		psb := newPersistSandbox()
+		meta := newMetaFake(ownerA(1))
+
+		ts, h := newPerSessionSet(t, psb, meta)
+		ctx1, _ := driveCtx(h, ownerA(1))
+		runTool(t, ts, "write_file", ctx1, writeFileArgs{Path: "data.csv", Content: "a,b\n1,2\n"})
+		snap, err := h.Publish(context.Background(), "sess-1", ownerA(1))
+		if err != nil {
+			t.Fatalf("terminal publish: %v", err)
+		}
+		if err := h.Release(context.Background(), "sess-1", ownerA(1)); err != nil {
+			t.Fatalf("release after publish: %v", err)
+		}
+		psb.mu.Lock()
+		opens := psb.opens
+		psb.mu.Unlock()
+		if opens != 1 {
+			t.Fatalf("opens after turn 1 = %d, want 1", opens)
+		}
+
+		ts2, h2 := newPerSessionSet(t, psb, meta)
+		ctx2, _ := driveCtx(h2, ownerA(1))
+		res := runTool(t, ts2, "read_file", ctx2, readFileArgs{Path: "data.csv"})
+		var body string
+		for _, b := range res.Content {
+			if txt, ok := b.(types.Text); ok {
+				body += txt.Text
+			}
+		}
+		if !strings.Contains(body, "a,b") {
+			t.Fatalf("restored read %q lacks the turn-1 file body", body)
+		}
+		psb.mu.Lock()
+		defer psb.mu.Unlock()
+		if psb.opens != 2 {
+			t.Fatalf("opens after turn 2 = %d, want 2", psb.opens)
+		}
+		if psb.refs[1] != snap.Ref {
+			t.Fatalf("turn-2 open ref %q, want the published snapshot %q", psb.refs[1], snap.Ref)
+		}
+	})
+}
+
 func TestSandboxSecondsBudget(t *testing.T) {
 	limits := types.InteractiveLimits
 	limits.MaxSandboxSeconds = 10

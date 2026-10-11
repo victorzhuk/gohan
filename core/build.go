@@ -74,6 +74,8 @@ type StrategyPlan struct {
 type Stack struct {
 	logger             *slog.Logger
 	telemetry          types.Telemetry
+	sandboxHandles     types.SandboxHandles
+	sandboxPolicy      types.SandboxPolicy
 	models             []types.Model
 	middleware         []types.ModelMiddleware
 	estimator          types.TokenEstimator
@@ -205,6 +207,11 @@ func Build(opts ...Option) (*Stack, error) {
 		flags:              cfg.flags,
 		frozen:             cfg.frozen,
 		titleProfile:       titleProfile,
+		sandboxHandles:     cfg.sandboxReg.Handles,
+		sandboxPolicy:      cfg.sandboxReg.Policy,
+	}
+	if err := checkSandboxRegistration(cfg.sandboxReg, cfg.stores); err != nil {
+		return nil, err
 	}
 	if err := checkResidency(cfg.tenant, cfg.stores, profiles); err != nil {
 		return nil, err
@@ -262,6 +269,33 @@ func warnHostExecTools(logger *slog.Logger, tools []types.Tool, seen map[string]
 
 // Tenant returns the tenant identity Build was bound to.
 func (s *Stack) Tenant() types.Tenant { return s.tenant }
+
+// SandboxHandles returns the registered sandbox coordinator, or nil when
+// the build registered none.
+func (s *Stack) SandboxHandles() types.SandboxHandles { return s.sandboxHandles }
+
+// SandboxPolicy returns the policy the registered coordinator was built
+// for.
+func (s *Stack) SandboxPolicy() types.SandboxPolicy { return s.sandboxPolicy }
+
+// checkSandboxRegistration fails a PerSession registration the build
+// cannot run: no coordinator, or a session log without the durable
+// workspace metadata surface. No tool set is returned either way.
+func checkSandboxRegistration(reg SandboxRegistration, st stores.Stores) error {
+	if reg.Policy.Lifecycle != types.PerSession {
+		return nil
+	}
+	if reg.Handles == nil {
+		return fmt.Errorf("sandbox registration: per-session policy declares no coordinator: %w", types.ErrPerSessionUnsupported)
+	}
+	if st.SessionLog == nil {
+		return fmt.Errorf("sandbox registration: per-session policy declares no workspace metadata store: %w", types.ErrPerSessionUnsupported)
+	}
+	if _, ok := st.SessionLog.(stores.SessionWorkspaceMeta); !ok {
+		return fmt.Errorf("sandbox registration: per-session policy declares no workspace metadata store: %w", types.ErrPerSessionUnsupported)
+	}
+	return nil
+}
 
 // checkResidency fails a residency-bound build against any store port or
 // reachable model profile outside the tenant region. A store port without

@@ -48,6 +48,21 @@ func secretPairs(secrets map[string]string) []string {
 	return pairs
 }
 
+// sanitizeText applies the boundary secret pass to one text fragment, so
+// an error message recorded in a result carries no resolved value.
+func sanitizeText(secrets map[string]string, s string) string {
+	if len(secrets) == 0 {
+		return s
+	}
+	pairs := secretPairs(secrets)
+	if len(pairs) == 0 {
+		return s
+	}
+	repl := strings.NewReplacer(pairs...)
+	clean, _ := redactText(repl, secrets, s)
+	return clean
+}
+
 // boundarySanitizer builds the spiller's sanitize step from the resolved
 // values: it replaces every occurrence outside generated markers with the
 // value's digest token and returns the occurrence count once. It emits no
