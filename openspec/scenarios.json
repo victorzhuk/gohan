@@ -2426,6 +2426,210 @@
     "origin": "R50",
     "title": "session listing owner-checked"
   },
+  "build.foreign-native-name-clash": {
+    "capability": "build",
+    "origin": "ADR-0162",
+    "title": "foreign native name clash"
+  },
+  "build.foreign-preserves-native": {
+    "capability": "build",
+    "origin": "ADR-0162",
+    "title": "foreign preserves native"
+  },
+  "permission.foreign-ask": {
+    "capability": "permission",
+    "origin": "ADR-0162",
+    "title": "foreign ask"
+  },
+  "permission.foreign-deny": {
+    "capability": "permission",
+    "origin": "ADR-0162",
+    "title": "foreign deny"
+  },
+  "runtime.foreign-call-id-distinct": {
+    "capability": "runtime",
+    "origin": "ADR-0162",
+    "title": "foreign call id distinct"
+  },
+  "runtime.foreign-call-id-round-trip": {
+    "capability": "runtime",
+    "origin": "ADR-0162",
+    "title": "foreign call id round trip"
+  },
+  "runtime.foreign-call-identity-required": {
+    "capability": "runtime",
+    "origin": "ADR-0162",
+    "title": "foreign call identity required"
+  },
+  "runtime.foreign-cancellation": {
+    "capability": "runtime",
+    "origin": "ADR-0162",
+    "title": "foreign cancellation"
+  },
+  "runtime.foreign-completed-call-replayed": {
+    "capability": "runtime",
+    "origin": "ADR-0162",
+    "title": "foreign completed call replayed"
+  },
+  "runtime.foreign-ctx-preserved": {
+    "capability": "runtime",
+    "origin": "ADR-0162",
+    "title": "foreign ctx preserved"
+  },
+  "runtime.foreign-mixed-stack-invoke": {
+    "capability": "runtime",
+    "origin": "ADR-0162",
+    "title": "foreign mixed stack invoke"
+  },
+  "identity.detached-no-credential-reuse": {
+    "capability": "identity",
+    "origin": "repair-conversation-lifecycle",
+    "title": "detached no credential reuse"
+  },
+  "identity.detached-reissue-before-first-effect": {
+    "capability": "identity",
+    "origin": "repair-conversation-lifecycle",
+    "title": "detached reissue before first effect"
+  },
+  "identity.detached-run-id-captured-before-gate": {
+    "capability": "identity",
+    "origin": "repair-conversation-lifecycle",
+    "title": "detached run id captured before gate"
+  },
+  "context.compaction-audit-hash": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction audit hash"
+  },
+  "context.compaction-measurement-fails-closed": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction measurement fails closed"
+  },
+  "context.compaction-pair-whole": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction pair whole"
+  },
+  "context.compaction-tokens-measured": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction tokens measured"
+  },
+  "stores.pg-cascade-in-one-transaction": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "cascade in one transaction",
+    "deferred_to": "M2"
+  },
+  "stores.pg-journal-concurrent-reserve": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "journal concurrent reserve",
+    "deferred_to": "M2"
+  },
+  "stores.pg-notice-claim-exclusive": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "notice claim exclusive",
+    "deferred_to": "M2"
+  },
+  "stores.pg-operation-id-cross-session-race": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "operation id cross session race",
+    "deferred_to": "M2"
+  },
+  "stores.pg-output-last-claim-deletes-ref": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "output last claim deletes ref",
+    "deferred_to": "M2"
+  },
+  "stores.pg-output-legacy-claims-preserved": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "output legacy claims preserved",
+    "deferred_to": "M2"
+  },
+  "stores.pg-output-put-erase-race": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "output put erase race",
+    "deferred_to": "M2"
+  },
+  "stores.pg-output-shared-ref-survives-erase": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "output shared ref survives erase",
+    "deferred_to": "M2"
+  },
+  "stores.pg-run-for-session-active": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "run for session active",
+    "deferred_to": "M2"
+  },
+  "stores.pg-run-for-session-ineligible": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "run for session ineligible",
+    "deferred_to": "M2"
+  },
+  "stores.pg-run-for-session-none": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "run for session none",
+    "deferred_to": "M2"
+  },
+  "stores.pg-sessions-cursor-expiration": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "sessions cursor expiration",
+    "deferred_to": "M2"
+  },
+  "stores.pg-sessions-cursor-invalid": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "sessions cursor invalid",
+    "deferred_to": "M2"
+  },
+  "stores.pg-sessions-cursor-membership": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "sessions cursor membership",
+    "deferred_to": "M2"
+  },
+  "stores.pg-sessions-cursor-owner-scope": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "sessions cursor owner scope",
+    "deferred_to": "M2"
+  },
+  "stores.pg-sessions-cursor-pruned": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "sessions cursor pruned",
+    "deferred_to": "M2"
+  },
+  "stores.pg-sessions-cursor-stable": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "sessions cursor stable",
+    "deferred_to": "M2"
+  },
+  "stores.pg-sessions-order-and-filters": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "sessions order and filters",
+    "deferred_to": "M2"
+  },
+  "stores.pg-sessions-snapshot-complete": {
+    "capability": "stores",
+    "origin": "repair-postgres-store-contracts",
+    "title": "sessions snapshot complete",
+    "deferred_to": "M2"
+  },
   "stores.pg-schema-owned": {
     "capability": "stores",
     "origin": "R51",
@@ -2845,5 +3049,385 @@
     "origin": "m1-route-latency-class",
     "title": "latency-class fallback retains other classes",
     "deferred_to": "M1"
+  },
+  "permission.foreign-grant-reused": {
+    "capability": "permission",
+    "origin": "ADR-0162",
+    "title": "foreign grant reused"
+  },
+  "permission.foreign-grant-store-required": {
+    "capability": "permission",
+    "origin": "ADR-0162",
+    "title": "foreign grant store required"
+  },
+  "runtime.foreign-call-allowed": {
+    "capability": "runtime",
+    "origin": "ADR-0162",
+    "title": "foreign call allowed"
+  },
+  "runtime.foreign-call-denied": {
+    "capability": "runtime",
+    "origin": "ADR-0162",
+    "title": "foreign call denied"
+  },
+  "runtime.foreign-tool-spec-declared": {
+    "capability": "runtime",
+    "origin": "m2-eino-bridges",
+    "title": "foreign tool spec declared"
+  },
+  "runtime.foreign-tool-trust-untrusted": {
+    "capability": "runtime",
+    "origin": "m2-eino-bridges",
+    "title": "foreign tool trust untrusted"
+  },
+  "runtime.foreign-tool-result-mapped": {
+    "capability": "runtime",
+    "origin": "m2-eino-bridges",
+    "title": "foreign tool result mapped"
+  },
+  "runtime.foreign-tool-envelope-parsed": {
+    "capability": "runtime",
+    "origin": "m2-eino-bridges",
+    "title": "foreign tool envelope parsed"
+  },
+  "runtime.foreign-tool-error-identity": {
+    "capability": "runtime",
+    "origin": "m2-eino-bridges",
+    "title": "foreign tool error identity"
+  },
+  "runtime.message-block-base-carried": {
+    "capability": "runtime",
+    "origin": "m2-eino-bridges",
+    "title": "message block base carried"
+  },
+  "runtime.message-blob-carried": {
+    "capability": "runtime",
+    "origin": "m2-eino-bridges",
+    "title": "message blob carried"
+  },
+  "sandbox.output-stored-redacted": {
+    "capability": "sandbox",
+    "origin": "protect-tool-output-storage",
+    "title": "output stored redacted"
+  },
+  "sandbox.output-ref-sanitized": {
+    "capability": "sandbox",
+    "origin": "protect-tool-output-storage",
+    "title": "output ref sanitized"
+  },
+  "sandbox.output-redaction-deterministic": {
+    "capability": "sandbox",
+    "origin": "protect-tool-output-storage",
+    "title": "output redaction deterministic"
+  },
+  "sandbox.leak-count-route-independent": {
+    "capability": "sandbox",
+    "origin": "protect-tool-output-storage",
+    "title": "leak count route independent"
+  },
+  "sandbox.excerpt-cap-boundary": {
+    "capability": "sandbox",
+    "origin": "protect-tool-output-storage",
+    "title": "excerpt cap boundary"
+  },
+  "sandbox.no-store-overflow": {
+    "capability": "sandbox",
+    "origin": "protect-tool-output-storage",
+    "title": "no store overflow"
+  },
+  "tools.fetch-output-stored": {
+    "capability": "tools",
+    "origin": "protect-tool-output-storage",
+    "title": "fetch output stored"
+  },
+  "tools.fetch-output-no-store": {
+    "capability": "tools",
+    "origin": "protect-tool-output-storage",
+    "title": "fetch output no store"
+  },
+  "tools.fetch-options-compatible": {
+    "capability": "tools",
+    "origin": "protect-tool-output-storage",
+    "title": "fetch options compatible"
+  },
+  "tools.egress-body-read-bounded": {
+    "capability": "tools",
+    "origin": "repair-egress-response-lifetime",
+    "title": "egress body read bounded"
+  },
+  "tools.egress-early-error-cleanup": {
+    "capability": "tools",
+    "origin": "repair-egress-response-lifetime",
+    "title": "egress early error cleanup"
+  },
+  "tools.egress-oversize-cleanup": {
+    "capability": "tools",
+    "origin": "repair-egress-response-lifetime",
+    "title": "egress oversize cleanup"
+  },
+  "tools.egress-close-idempotent": {
+    "capability": "tools",
+    "origin": "repair-egress-response-lifetime",
+    "title": "egress close idempotent"
+  },
+  "tools.egress-cleanup-preserves-checks": {
+    "capability": "tools",
+    "origin": "repair-egress-response-lifetime",
+    "title": "egress cleanup preserves checks"
+  },
+  "tools.egress-per-request-transport-released": {
+    "capability": "tools",
+    "origin": "repair-egress-response-lifetime",
+    "title": "egress per request transport released"
+  },
+  "streams.handle-constructor-bindings": {
+    "capability": "streams",
+    "origin": "repair-conversation-lifecycle",
+    "title": "handle constructor bindings"
+  },
+  "streams.handle-native-foreign-share-stack": {
+    "capability": "streams",
+    "origin": "repair-conversation-lifecycle",
+    "title": "handle native foreign share stack"
+  },
+  "streams.active-run-found": {
+    "capability": "streams",
+    "origin": "repair-conversation-lifecycle",
+    "title": "active run found"
+  },
+  "streams.active-run-absent": {
+    "capability": "streams",
+    "origin": "repair-conversation-lifecycle",
+    "title": "active run absent"
+  },
+  "streams.active-run-terminal-or-expired": {
+    "capability": "streams",
+    "origin": "repair-conversation-lifecycle",
+    "title": "active run terminal or expired"
+  },
+  "streams.active-run-owner-authorized": {
+    "capability": "streams",
+    "origin": "repair-conversation-lifecycle",
+    "title": "active run owner authorized"
+  },
+  "streams.active-run-cross-instance": {
+    "capability": "streams",
+    "origin": "repair-conversation-lifecycle",
+    "title": "active run cross instance"
+  },
+  "streams.detached-run-discoverable": {
+    "capability": "streams",
+    "origin": "repair-conversation-lifecycle",
+    "title": "detached run discoverable"
+  },
+  "runtime.shutdown-admission-atomic": {
+    "capability": "runtime",
+    "origin": "repair-conversation-lifecycle",
+    "title": "shutdown admission atomic"
+  },
+  "runtime.shutdown-admission-every-constructor": {
+    "capability": "runtime",
+    "origin": "repair-conversation-lifecycle",
+    "title": "shutdown admission every constructor"
+  },
+  "runtime.shutdown-admission-resume": {
+    "capability": "runtime",
+    "origin": "repair-conversation-lifecycle",
+    "title": "shutdown admission resume"
+  },
+  "runtime.done-carries-limit-reason": {
+    "capability": "runtime",
+    "origin": "repair-conversation-lifecycle",
+    "title": "done carries limit reason"
+  },
+  "runtime.finish-carries-terminal-reason": {
+    "capability": "runtime",
+    "origin": "repair-conversation-lifecycle",
+    "title": "finish carries terminal reason"
+  },
+  "runtime.cancelled-run-keeps-reason": {
+    "capability": "runtime",
+    "origin": "repair-conversation-lifecycle",
+    "title": "cancelled run keeps reason"
+  },
+  "runtime.handed-off-run-keeps-reason": {
+    "capability": "runtime",
+    "origin": "repair-conversation-lifecycle",
+    "title": "handed off run keeps reason"
+  },
+  "flow.handoff-control-transition-once": {
+    "capability": "flow",
+    "origin": "repair-conversation-lifecycle",
+    "title": "handoff control transition once"
+  },
+  "flow.handoff-no-resume-token": {
+    "capability": "flow",
+    "origin": "repair-conversation-lifecycle",
+    "title": "handoff no resume token"
+  },
+  "flow.handoff-optional-store": {
+    "capability": "flow",
+    "origin": "repair-conversation-lifecycle",
+    "title": "handoff optional store"
+  },
+  "flow.handoff-state-preserved": {
+    "capability": "flow",
+    "origin": "repair-conversation-lifecycle",
+    "title": "handoff state preserved"
+  },
+  "stores.run-for-session-cross-instance": {
+    "capability": "stores",
+    "origin": "repair-conversation-lifecycle",
+    "title": "run for session cross instance"
+  },
+  "stores.run-for-session-absent": {
+    "capability": "stores",
+    "origin": "repair-conversation-lifecycle",
+    "title": "run for session absent"
+  },
+  "stores.run-for-session-terminal": {
+    "capability": "stores",
+    "origin": "repair-conversation-lifecycle",
+    "title": "run for session terminal"
+  },
+  "stores.run-for-session-expired": {
+    "capability": "stores",
+    "origin": "repair-conversation-lifecycle",
+    "title": "run for session expired"
+  },
+  "stores.finish-notice-recorded-reason": {
+    "capability": "stores",
+    "origin": "repair-conversation-lifecycle",
+    "title": "finish notice recorded reason"
+  },
+  "stores.finish-notice-cancelled": {
+    "capability": "stores",
+    "origin": "repair-conversation-lifecycle",
+    "title": "finish notice cancelled"
+  },
+  "smoke.send-through-each-constructor": {
+    "capability": "smoke",
+    "origin": "repair-conversation-lifecycle",
+    "title": "send through each constructor"
+  },
+  "context.compaction-append-conflict-refused": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction append conflict refused"
+  },
+  "context.compaction-append-duplicate-noop": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction append duplicate noop"
+  },
+  "context.compaction-append-stale-refused": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction append stale refused"
+  },
+  "context.compaction-collapse-without-projections": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction collapse without projections"
+  },
+  "context.compaction-counting-required": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction counting required"
+  },
+  "context.compaction-fallback-fails-closed": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "fallback still over budget refuses the call"
+  },
+  "context.compaction-fallback-oversized": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction fallback oversized"
+  },
+  "context.compaction-fallback-required": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction fallback required"
+  },
+  "context.compaction-fallback-required-nil-estimator": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction fallback required nil estimator"
+  },
+  "context.compaction-fallback-required-no-budget": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction fallback required no budget"
+  },
+  "context.compaction-guard-required": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction guard required"
+  },
+  "context.compaction-measure-mismatch-failclosed": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction measure mismatch failclosed"
+  },
+  "context.compaction-pair-by-id": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction pair by id"
+  },
+  "context.compaction-publication-identity": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction publication identity"
+  },
+  "context.compaction-publication-once": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction publication once"
+  },
+  "context.compaction-publication-persisted": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction publication persisted"
+  },
+  "context.compaction-publication-reconciled": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction publication reconciled"
+  },
+  "context.compaction-publication-reconciled-foreign": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction publication reconciled foreign"
+  },
+  "context.compaction-publication-survives-crash": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction publication survives crash"
+  },
+  "context.compaction-safe-prefix": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction safe prefix"
+  },
+  "context.compaction-same-turn-measurement": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction same turn measurement"
+  },
+  "context.compaction-single-summary": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction single summary"
+  },
+  "context.compaction-stage-publishes": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction stage publishes"
+  },
+  "context.compaction-summary-not-refolded": {
+    "capability": "context",
+    "origin": "ADR-0163",
+    "title": "compaction summary not refolded"
   }
 }

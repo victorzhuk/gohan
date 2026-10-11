@@ -1,12 +1,16 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -88,6 +92,135 @@ func (s *EventLog) Append(ctx context.Context, runID string, e stores.Event) err
 	return nil
 }
 
+// compactionEventSemantic rebuilds the producer-owned projection of a
+// compaction event: the payload plus the meta minus the sink-owned Seq and
+// Time, with Meta.RunID forced to the run partition.
+func compactionEventSemantic(e stores.Event, runID string) stores.Event {
+	return stores.Event{
+		Payload: e.Payload,
+		Meta: types.EventMeta{
+			SessionID:   e.Meta.SessionID,
+			RunID:       runID,
+			RootRunID:   e.Meta.RootRunID,
+			ParentRunID: e.Meta.ParentRunID,
+			Depth:       e.Meta.Depth,
+			Flow:        e.Meta.Flow,
+		},
+	}
+}
+
+// compactionEventFingerprint hashes the producer-owned fields of a
+// compaction event into the fixed 32-byte digest a tombstone stores. The
+// digest covers the payload and the meta minus the sink-owned Seq and Time,
+// with Meta.RunID forced to the run partition.
+func compactionEventFingerprint(e stores.Event) ([]byte, error) {
+	encoded, err := json.Marshal(e)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(encoded)
+	return sum[:], nil
+}
+
+// AppendCompactionEvent records a compaction event once per (runID,
+// publicationID) and reports whether a new event was committed. The
+// publication identity lives in its own tombstone row outside the retained
+// window, so window eviction and Expire cannot lift it: a duplicate after
+// eviction or expiry stays a no-op, never restores the expired event, and
+// never consumes another sequence. A different producer payload under the
+// same identity returns errCompactionConflict and changes nothing. The
+// payload must be types.Compacted whose PublicationID matches the argument;
+// Meta.RunID is forced to the run partition. The sequence is allocated only
+// on insert. Tombstone, sequence, event and eviction commit in one
+// transaction.
+func (s *EventLog) AppendCompactionEvent(ctx context.Context, publicationID string, runID string, event stores.Event) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("event compaction append: %w", err)
+	}
+	if publicationID == "" || runID == "" {
+		return false, errCompactionPayload
+	}
+	compacted, ok := event.Payload.(types.Compacted)
+	if !ok || compacted.PublicationID != publicationID {
+		return false, errCompactionPayload
+	}
+	semantic := compactionEventSemantic(event, runID)
+	fingerprint, err := compactionEventFingerprint(semantic)
+	if err != nil {
+		return false, errCompactionPayload
+	}
+
+	tx, err := s.db.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("event compaction append: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// The unique insert is the deduplication barrier: at READ COMMITTED a
+	// competing writer blocks until the winner commits, the insert then
+	// takes the ON CONFLICT branch, and the separate SELECT that follows
+	// reads the committed fingerprint on a fresh statement snapshot. Only
+	// the freshly inserted tombstone allocates a sequence.
+	var existing []byte
+	err = tx.QueryRow(ctx,
+		`INSERT INTO event_compaction_publication (run_id, publication_id, session_id, fingerprint)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (run_id, publication_id) DO NOTHING
+		 RETURNING fingerprint`,
+		runID, publicationID, semantic.Meta.SessionID, fingerprint).Scan(&existing)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if err := tx.QueryRow(ctx,
+			`SELECT fingerprint FROM event_compaction_publication WHERE run_id = $1 AND publication_id = $2`,
+			runID, publicationID).Scan(&existing); err != nil {
+			return false, fmt.Errorf("event compaction append: %w", err)
+		}
+		if !bytes.Equal(existing, fingerprint) {
+			return false, fmt.Errorf("event publication %s: %w", publicationID, errCompactionConflict)
+		}
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("event compaction append: %w", err)
+	}
+
+	var seq int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO event_seq (run_id, next) VALUES ($1, 1)
+		 ON CONFLICT (run_id) DO UPDATE SET next = event_seq.next + 1
+		 RETURNING next`, runID).Scan(&seq); err != nil {
+		return false, fmt.Errorf("event compaction append: %w", err)
+	}
+	stamped := semantic
+	stamped.Meta.Seq = seq
+	if stamped.Meta.Time.IsZero() {
+		stamped.Meta.Time = s.db.clock()
+	}
+	raw, err := encodeEventRecord(stamped)
+	if err != nil {
+		return false, err
+	}
+	kind, err := eventKind(stamped.Payload)
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO event_record (run_id, seq, kind, at, payload) VALUES ($1, $2, $3, $4, $5)`,
+		runID, seq, kind, stamped.Meta.Time, raw); err != nil {
+		return false, fmt.Errorf("event compaction append: %w", err)
+	}
+	if s.capacity > 0 {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM event_record WHERE run_id = $1 AND seq <= $2`,
+			runID, seq-int64(s.capacity)); err != nil {
+			return false, fmt.Errorf("event compaction append: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("event compaction append: %w", err)
+	}
+	return true, nil
+}
+
 // Read yields the run's retained events with Seq greater than afterSeq, in
 // Seq order. A cursor older than the retained window is refused with an
 // error wrapping stores.ErrStaleCursor. Breaking early stops the scan.
@@ -157,6 +290,9 @@ func (s *EventLog) firstSeq(ctx context.Context, runID string) (int64, error) {
 // every run. A run's sequence counter survives so later appends for the
 // same run keep increasing.
 func (s *EventLog) Expire(ctx context.Context, olderThan time.Time) error {
+	// Every expired payload goes, compaction payloads included. The
+	// publication tombstone lives in its own table and survives expiry, so
+	// a delayed retry still deduplicates without restoring the payload.
 	if _, err := s.db.pool.Exec(ctx,
 		`DELETE FROM event_record WHERE at < $1`, olderThan); err != nil {
 		return fmt.Errorf("event expire: %w", err)

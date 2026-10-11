@@ -72,6 +72,12 @@ type MemoryEventLog struct {
 	capacity int
 	now      func() time.Time
 	schemas  *SchemaRegistry
+	// compactionPubs retains one fingerprint per accepted compaction event
+	// identity (runID, publicationID). It lives outside the ring on purpose:
+	// overwrite and Expire must not lift a publication, so entries never
+	// expire and the map grows with the number of accepted publications.
+	// This retention is intentional; no bounded lifetime is authored.
+	compactionPubs map[string]map[string]string
 }
 
 // eventRing holds one run's retained window in a fixed slice: head is the
@@ -147,6 +153,107 @@ func (s *MemoryEventLog) Append(ctx context.Context, runID string, e Event) erro
 	ring.head = (ring.head + 1) % s.capacity
 	ring.first = ring.slots[ring.head].event.Meta.Seq
 	return nil
+}
+
+// AppendCompactionEvent records a compaction event once per (runID,
+// publicationID) and reports whether a new event was committed. The
+// publication identity lives outside the retained ring, so ring overwrite and
+// Expire cannot lift it: a duplicate after eviction stays a no-op, never
+// restores the expired event, and never consumes another sequence. A
+// different producer payload under the same identity returns
+// errCompactionConflict and changes nothing. The payload must be
+// types.Compacted whose PublicationID matches the argument; Meta.RunID is
+// forced to the run partition.
+func (s *MemoryEventLog) AppendCompactionEvent(ctx context.Context, publicationID string, runID string, event Event) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("event compaction append: %w", err)
+	}
+	if publicationID == "" || runID == "" {
+		return false, errCompactionPayload
+	}
+	compacted, ok := event.Payload.(types.Compacted)
+	if !ok || compacted.PublicationID != publicationID {
+		return false, errCompactionPayload
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// The fingerprint covers the producer-owned fields only: Seq and the
+	// store-stamped Time are sink-owned and stay out of the comparison.
+	semantic := Event{
+		Payload: event.Payload,
+		Meta: types.EventMeta{
+			SessionID:   event.Meta.SessionID,
+			RunID:       runID,
+			RootRunID:   event.Meta.RootRunID,
+			ParentRunID: event.Meta.ParentRunID,
+			Depth:       event.Meta.Depth,
+			Flow:        event.Meta.Flow,
+		},
+	}
+	fingerprint, err := eventCompactionFingerprint(semantic)
+	if err != nil {
+		return false, errCompactionPayload
+	}
+	if prev, ok := s.compactionPubs[runID][publicationID]; ok {
+		if prev != fingerprint {
+			return false, errCompactionConflict
+		}
+		return false, nil
+	}
+
+	// Encode before any state change: a failed encoding consumes no sequence
+	// and reserves no publication identity.
+	seq := s.next[runID] + 1
+	stamped := semantic
+	stamped.Meta.Seq = seq
+	if stamped.Meta.Time.IsZero() {
+		stamped.Meta.Time = s.now()
+	}
+	raw, err := encodeEventRecord(stamped)
+	if err != nil {
+		return false, err
+	}
+	if s.capacity > 0 {
+		ring := s.rings[runID]
+		if ring == nil {
+			ring = &eventRing{slots: make([]eventSlot, s.capacity)}
+			s.rings[runID] = ring
+		}
+		slot := eventSlot{event: stamped, raw: raw}
+		if ring.count == 0 {
+			ring.first = seq
+		}
+		if ring.count < s.capacity {
+			ring.slots[(ring.head+ring.count)%s.capacity] = slot
+			ring.count++
+		} else {
+			ring.slots[ring.head] = slot
+			ring.head = (ring.head + 1) % s.capacity
+			ring.first = ring.slots[ring.head].event.Meta.Seq
+		}
+	}
+	s.next[runID] = seq
+	if s.compactionPubs == nil {
+		s.compactionPubs = make(map[string]map[string]string)
+	}
+	if s.compactionPubs[runID] == nil {
+		s.compactionPubs[runID] = make(map[string]string)
+	}
+	s.compactionPubs[runID][publicationID] = fingerprint
+	return true, nil
+}
+
+// eventCompactionFingerprint encodes the producer-owned fields of a
+// compaction event: the payload plus the meta minus the sink-owned Seq and
+// Time.
+func eventCompactionFingerprint(e Event) (string, error) {
+	encoded, err := json.Marshal(e)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }
 
 // Read yields the run's retained events with Seq greater than afterSeq, in

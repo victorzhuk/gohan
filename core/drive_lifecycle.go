@@ -371,6 +371,13 @@ func DriveLifecycle(ctx context.Context, lc *Lifecycle, rt runtime.Runtime, r ru
 			// the effects charge the same ledger a resume restored.
 			ctx = chains.WithLimitsState(ctx, lc.ledger)
 		}
+		// The appender binds before Start, so a runtime that records
+		// durable per-call state during a Step writes through the same
+		// history port the lifecycle owns. Start itself stays
+		// binding-only: it runs no governed call and appends nothing.
+		if lc.appender != nil {
+			ctx = withHistoryAppender(ctx, lc.appender)
+		}
 		st, err := rt.Start(ctx, r)
 		if err != nil {
 			// The conversation already holds the lease; the lifecycle
@@ -381,9 +388,6 @@ func DriveLifecycle(ctx context.Context, lc *Lifecycle, rt runtime.Runtime, r ru
 		}
 		if lc.resumeState != nil {
 			st = copyResumeState(*lc.resumeState)
-		}
-		if lc.appender != nil {
-			ctx = withHistoryAppender(ctx, lc.appender)
 		}
 		if lc.histVersion > st.HistoryVersion {
 			st.HistoryVersion = lc.histVersion
@@ -408,6 +412,11 @@ func copyResumeState(st runtime.State) runtime.State {
 		calib[k] = v
 	}
 	st.Calibration = calib
+	if st.Foreign != nil {
+		fp := *st.Foreign
+		fp.ReplayCallIDs = append([]string(nil), st.Foreign.ReplayCallIDs...)
+		st.Foreign = &fp
+	}
 	return st
 }
 
@@ -441,12 +450,16 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 	// Every exit stops the heartbeat; the terminal branches below stop it
 	// before their last event so no refresh follows a terminal write.
 	defer lc.stopHeartbeat()
-	relay := &sinkRelay{}
+	// The loop's own yields and the relay's deliveries share one emitter:
+	// an effect can emit while the loop is yielding step events, and the
+	// consumer callback must never run twice at once.
+	em := &emitter{yield: yield}
+	yield = func(ev types.Event, err error) bool { return em.send(ev, err) }
+	relay := &sinkRelay{em: em}
 	if prev, ok := types.SinkFrom(ctx); ok {
 		relay.next = prev
 	}
 	relay.cancel = cancel
-	relay.deliver = func(e types.Event) bool { return yield(e, nil) }
 	sctx := types.WithSink(hbCtx, relay)
 	notes := &steerNotes{}
 	sctx = withSteerNotes(sctx, notes)
@@ -458,7 +471,7 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 			return
 		}
 		next, evs, status, err := rt.Step(sctx, st)
-		if relay.stopped {
+		if relay.hasStopped() {
 			// The consumer stopped taking events: the relay already
 			// cancelled cancellable work; deliver nothing further.
 			return
@@ -483,33 +496,10 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 		}
 		if err != nil {
 			if he, ok := errors.AsType[*types.HandoffError](err); ok {
-				hctx := he.Context
-				if lc.sessions != nil {
-					if err := lc.sessions.UpdateSession(sctx, lc.sessionID, stores.SessionPatch{Handoff: &hctx}); err != nil {
-						yield(nil, err)
-						return
-					}
-					if cw, ok := lc.sessions.(SessionControlWriter); ok {
-						if err := cw.SetControl(sctx, lc.sessionID, stores.ControlHandoffRequested); err != nil {
-							yield(nil, err)
-							return
-						}
-					}
-				}
-				if a, ok := decisionAuditFrom(sctx); ok {
-					if aerr := a.Append(sctx, stores.AuditRecord{
-						Kind:      auditHandoffRequest,
-						SessionID: lc.sessionID,
-						RunID:     lc.lease.RunID,
-						Flow:      lc.flow,
-						Decision:  RequestHumanName,
-					}); aerr != nil {
-						yield(nil, aerr)
-						return
-					}
-				}
-				if ferr := lc.finishRun(sctx, st, stores.Finished, nil, types.StopHandedOff); ferr != nil {
-					yield(nil, ferr)
+				st = next
+				if herr := lc.handoffTerminal(sctx, st, he.Context); herr != nil {
+					lc.stopHeartbeat()
+					yield(nil, herr)
 					return
 				}
 				lc.stopHeartbeat()
@@ -525,23 +515,6 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 					return
 				}
 				yield(ev, nil)
-				return
-			}
-			if he, ok := errors.AsType[*types.HandoffError](err); ok {
-				st = next
-				if lc.handoff != nil {
-					if herr := lc.handoff(sctx, he.Context); herr != nil {
-						lc.stopHeartbeat()
-						yield(nil, herr)
-						return
-					}
-				}
-				if ferr := lc.finishRun(sctx, st, stores.Finished, nil, types.StopHandedOff); ferr != nil {
-					yield(nil, ferr)
-					return
-				}
-				lc.stopHeartbeat()
-				yield(lc.done(st, nil, types.StopHandedOff), nil)
 				return
 			}
 			if ferr := lc.finishRun(sctx, st, stores.Failed, nil, types.StopFailed); ferr != nil {
@@ -948,6 +921,42 @@ func (lc *Lifecycle) reconcileUnknown(ctx context.Context, st runtime.State) (ru
 	return st, rest, nil
 }
 
+// handoffTerminal performs the single handoff transition: the
+// HandoffContext persists, control moves to ControlHandoffRequested, the
+// request is audited once, and the run closes with StopHandedOff and no
+// resume token. A bound callback owns the whole session-side transition
+// and fires exactly once; without one the lifecycle persists context,
+// control and audit directly through the optional session ports.
+func (lc *Lifecycle) handoffTerminal(ctx context.Context, st runtime.State, hctx types.HandoffContext) error {
+	switch {
+	case lc.handoff != nil:
+		if err := lc.handoff(ctx, hctx); err != nil {
+			return err
+		}
+	case lc.sessions != nil:
+		if err := lc.sessions.UpdateSession(ctx, lc.sessionID, stores.SessionPatch{Handoff: &hctx}); err != nil {
+			return err
+		}
+		if cw, ok := lc.sessions.(SessionControlWriter); ok {
+			if err := cw.SetControl(ctx, lc.sessionID, stores.ControlHandoffRequested); err != nil {
+				return err
+			}
+		}
+		if a, ok := decisionAuditFrom(ctx); ok {
+			if err := a.Append(ctx, stores.AuditRecord{
+				Kind:      auditHandoffRequest,
+				SessionID: lc.sessionID,
+				RunID:     lc.lease.RunID,
+				Flow:      lc.flow,
+				Decision:  RequestHumanName,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return lc.finishRun(ctx, st, stores.Finished, nil, types.StopHandedOff)
+}
+
 // finishTurn verifies every Uncertain entry, closes the run and returns
 // the terminal events ending in Done. A Finish refused with
 // ErrSignalsPending drains the mailbox, appends the steers to history and
@@ -974,7 +983,7 @@ func (lc *Lifecycle) finishTurn(ctx context.Context, st runtime.State, terminal 
 			return st, nil, false, err
 		}
 	}
-	err := lc.finishRun(ctx, st, stores.Finished, unknown, types.StopCompleted)
+	err := lc.finishRun(ctx, st, stores.Finished, unknown, terminal)
 	if errors.Is(err, types.ErrSignalsPending) {
 		// A steer arrived between the safe point and Finish: drain it and
 		// run one more turn.
@@ -999,7 +1008,7 @@ func (lc *Lifecycle) finishTurn(ctx context.Context, st runtime.State, terminal 
 	}
 	lc.writeCacheEntry(ctx, st, terminal, unknown)
 	lc.consolidate(ctx)
-	return st, []types.Event{lc.done(st, unknown, types.StopCompleted)}, false, nil
+	return st, []types.Event{lc.done(st, unknown, terminal)}, false, nil
 }
 
 // writeCacheEntry applies the never-cache-failures gate before the

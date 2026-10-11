@@ -190,6 +190,7 @@ ID: `tools.egress-audited`
 - WHEN a request is denied
 - THEN the audit record names the tool, the run id, the host and the reason, and never the request body
 
+
 ### Requirement: Names and identity
 
 A tool name matches `^[a-z][a-z0-9_]{0,63}$`; `NewTool` and `Build` reject anything else with `ErrToolName`, and no adapter ever rewrites a name — a provider that cannot accept a valid name fails `Build` for that profile. Two tools with the same name in one flow (`Deferred`, provider-executed, sandbox, skills and imported sets included) fail `Build` with `ErrToolCollision{Name, Sources}`. The names `search_tools`, `read_output`, `notes_read`, `notes_write`, `memory_read`, `memory_write`, `load_skill` and `read_skill_resource` are reserved for the harness. `ToolSpec.Name` is the identity used by the pinned manifest, session grants, `CallKey`, taint policy, audit and `approve:<name>` scopes: a renamed tool is a new tool and nothing migrates. Imported sets are namespaced at wiring (`interop`) as `<ns>__<tool>`.
@@ -220,6 +221,7 @@ ID: `tools.rename-is-new-tool`
 ID: `tools.tool-value-shared-and-concurrent`
 - WHEN two runs call the same `Tool` value at once for different tenants
 - THEN each call reads its own principal from `ctx` and neither observes the other's arguments or results
+
 
 ### Requirement: Tool contract
 
@@ -253,6 +255,7 @@ ID: `tools.notes-survive-reset`
 - WHEN the agent writes to `notes_write` and the run ends; a new run starts in the same session with truncated history
 - THEN the first model request of the new run contains the notes in `SlotSession`
 
+
 ### Requirement: Tool author contract
 
 #### Scenario: schema from tags
@@ -280,6 +283,7 @@ ID: `tools.default-timeout`
 - WHEN a `ReadOnly` tool without `WithTimeout` blocks for 11 s
 - THEN it is cancelled at 10 s and the result is `Failed(Retryable)`
 
+
 ### Requirement: Tool spec pinning
 
 #### Scenario: poisoned description
@@ -297,6 +301,7 @@ ID: `tools.untrusted-effect-cap`
 - WHEN an imported tool declares `SideEffect` and no policy raises `MaxEffect`
 - THEN the tool is registered as `ReadOnly`, `gohan.tool.effect_capped` increments, and the gate treats it accordingly
 
+
 ### Requirement: Dynamic tools and inspection
 
 #### Scenario: tool filter per turn
@@ -308,6 +313,7 @@ ID: `tools.tool-filter-per-turn`
 ID: `tools.inspect-from-another-pod`
 - WHEN a run is in progress on pod A
 - THEN `Inspect(runID)` on pod B returns its current turn, last `Seq`, pending calls and cost from stores
+
 
 ### Requirement: Deferred tools
 
@@ -327,7 +333,9 @@ ID: `tools.governed-while-deferred`
 - THEN the call is an unknown-tool error; WHEN it calls it after discovery without the required scope
 - THEN the scope check denies it
 
+
 ### Requirement: tool/exec
+
 
 ### Requirement: Provider-executed tools
 
@@ -361,6 +369,7 @@ ID: `tools.provider-approval-as-suspension`
 ID: `tools.provider-result-origin`
 - WHEN a provider search returns result blocks
 - THEN they are appended as a `ToolResult` with `OriginProvider{"web_search"}` and the encrypted payload round-trips as `Raw` on the next call
+
 
 ### Requirement: Verification
 
@@ -398,3 +407,68 @@ ID: `tools.output-cap`
 ID: `tools.env-allowlist`
 - WHEN the parent has `SECRET=x` and the allowlist is empty
 - THEN the child environment does not contain `SECRET`
+
+
+### Requirement: Fetched response cap and store
+
+A tool that returns a fetched response MUST bound its inline content by `ToolSpec.MaxOutput` and MUST spill the rendered response to a wired `OutputStore`, returning a head excerpt beside a `Ref`. `std/tool/http.Fetch` MUST honour this. A response of at most `MaxOutput` bytes MAY stay whole inline with no `Ref`. A larger response MUST NOT be returned whole inline, and the head excerpt MUST be at most `MaxOutput` bytes plus the truncation marker.
+
+#### Scenario: web_fetch overflow stored
+ID: `tools.fetch-output-stored`
+- WHEN `web_fetch` receives a response larger than `MaxOutput` with an output store wired
+- THEN the result carries a head excerpt plus a `Ref`, `read_output(ref)` returns the full rendered response, and `gohan.output.stored` increments
+
+#### Scenario: web_fetch capped without a store
+ID: `tools.fetch-output-no-store`
+- WHEN `web_fetch` receives a response larger than `MaxOutput` and no store is wired
+- THEN the result carries a bounded head excerpt and a marker naming the dropped bytes and the missing store
+
+
+### Requirement: Fetched rendered text includes the status line
+
+The rendered response MUST be the HTTP status line followed by the body. The status prefix MUST count against `MaxOutput` and MUST be part of the stored document, so the prefix cannot push inline content past the cap.
+
+#### Scenario: web_fetch call shape stays compatible
+ID: `tools.fetch-options-compatible`
+- WHEN existing code calls `http.Fetch(policy)` with one argument and a response whose status line plus body fits `MaxOutput`
+- THEN the tool returns the whole fetched rendered text with no `Ref`, and no store option is required
+
+
+### Requirement: Egress response lifetime
+
+The egress client MUST bound the whole response, not the request only. Its time limit MUST stay in force until the body ends. The client MUST release the per-request transport and cancel its time limit exactly once. The release MUST NOT depend on the caller closing the body. A release MUST be safe to run twice. On a terminal read error the client MUST return the read bytes and the original error unchanged. Cleanup MUST NOT change the checked-address dial, proxy validation, or the redirect rules.
+
+#### Scenario: body read bounded by the policy time limit
+ID: `tools.egress-body-read-bounded`
+- WHEN an allowed host sends response headers and then stalls, and the caller reads the body
+- THEN the read stops at the policy time limit with a permanent failure rather than hanging, the transport is released before any caller close, and the returned bytes and error are the ones the underlying body produced
+
+#### Scenario: early request error releases the transport
+ID: `tools.egress-early-error-cleanup`
+- WHEN a request is refused before a response exists (denied address, disallowed scheme, or unsupported proxy)
+- THEN no idle connection survives the refusal
+
+#### Scenario: size-limit refusal releases the transport
+ID: `tools.egress-oversize-cleanup`
+- WHEN a response exceeds `MaxBytes`
+- THEN the body is closed, the size-limit refusal is returned, and no idle connection survives it
+
+#### Scenario: release is idempotent
+ID: `tools.egress-close-idempotent`
+- WHEN the caller closes the body twice, or closes it after reaching end of file
+- THEN the transport is released exactly once and the client does not panic
+
+#### Scenario: cleanup preserves the request checks
+ID: `tools.egress-cleanup-preserves-checks`
+- WHEN a response ends normally and the transport is released
+- THEN the dial still uses the checked address, and the rebinding, proxy and redirect rules are unchanged
+
+### Requirement: Egress connection ownership
+
+The egress client MUST NOT reuse or pool a connection before a measurement shows that reuse keeps the checked-address dial, the proxy validation, and the redirect rules intact. Until then, each request MUST own its transport. The client MUST close that transport's idle connections when the response ends.
+
+#### Scenario: per-request transport is released
+ID: `tools.egress-per-request-transport-released`
+- WHEN two requests run in sequence over the same client
+- THEN each request owns its transport and no idle connection survives the first response
+

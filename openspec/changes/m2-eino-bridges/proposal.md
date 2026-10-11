@@ -2,21 +2,31 @@
 
 ## Why
 
-M2's first wave shipped the eino runtime and the raw model, tool and message bridges (`m2-eino-runtime`, archived `2026-10-07`). Two `runtime` acceptance rows still sit unproven on the bridge-fidelity side, both assigned to `m2-eino-bridges` by `openspec/changes/m2/design.md` §2.1.
+M2's first wave shipped the eino runtime and the raw model, tool and message bridges (`m2-eino-runtime`, archived `2026-10-07`). Three acceptance rows sit unproven on the bridge-fidelity side, and all three are assigned to `m2-eino-bridges`: two by `openspec/changes/m2/design.md` §2.1 and one by §2.5.
 
-`runtime.foreign-tool-under-native` (row 28): the mixing chain runs, but no shipped adapter symbol exposes a supported foreign-tool-to-native seam. The only bridge from an imported eino `tool.InvokableTool` to `types.Tool` lives in a test file — `nativeForeignTool` (`adapter/eino/foreign_tool_test.go:38`), used by `TestForeignToolUnderNative` (`adapter/eino/foreign_tool_test.go:167`). The *Component mixing* requirement already demands the conversion go "through the exported seams" (`openspec/specs/runtime/spec.md:345`); a test-local shim satisfies the chain but not that contract.
+`runtime.foreign-tool-under-native` (row 28): the mixing chain runs, but no shipped adapter symbol exposes a supported foreign-tool-to-native seam. The only bridge from an imported eino `tool.InvokableTool` to `types.Tool` lives in a test file — `nativeForeignTool` (`adapter/eino/foreign_tool_test.go:38`), whose `Spec()` returns only `types.ToolSpec{Name: "echo"}` (`:40`) and whose `Call` unmarshals the upstream string straight into `types.ToolResult` (`:44`). The proof harness calls that shim directly instead of the governed pipeline, so nothing reaches `Build`/`NewNativeConversation`/`Send`. The *Component mixing* requirement demands every conversion go through the exported seams (`openspec/specs/runtime/spec.md:343`); a test-local shim satisfies the chain but not the contract.
 
-`runtime.message-round-trip` (row 30): the eino leg ships — `EncodeMessages`/`DecodeMessages` (`adapter/eino/bridge.go:30,43`) with its declared fidelity (`adapter/eino/bridge.go:12-18`) and the reserved opaque channel `gohanBlockType` (`adapter/eino/bridge.go:19`), proven by `TestMessageBridge/runtime.message-round-trip` (`adapter/eino/message_bridge_test.go`). The fidelity contract has no shared home both bridges run, and the adk-go leg does not exist.
+`runtime.message-round-trip` (row 30): the eino leg ships — `EncodeMessages`/`DecodeMessages` (`adapter/eino/bridge.go`) — but the codec drops the `BlockBase` (`Origin`, `Seq`) of every natively-carried kind and ignores the `Blob` field on `Image`/`Audio`/`File` (`core/types/message.go:57,74`); `blobFields` keeps only `Data` or `URL`. The declared fidelity (`adapter/eino/bridge.go:12-19`) names block order and no dropped block, so the codec must carry the block base and the blob too. The adk-go leg does not exist.
 
-Why now: M2 is the freeze point (`docs/overview.md:110-112`), so the exported seam this change adds must settle before `m2-api-freeze`, and the M2/M3 split of the message id must be stated while the lane is still open.
+`guards.origin-survives-conversion` (`openspec/specs/guards/spec.md:117`): `BlockOrigin()` must survive a tool-result `Part`'s conversion to the framework types and back. No test names it today, and the eino codec above is exactly where it must be proven.
+
+Why now: M2 is the freeze point, so the exported seam and the metadata contract it carries must settle before `m2-api-freeze`.
 
 ## What Changes
 
-- **Added** an exported foreign-tool bridge in `adapter/eino`: it presents an imported eino `tool.BaseTool`/`tool.InvokableTool` as `types.Tool` with the tool's declared `ToolSpec`, preserves argument, result and error fidelity, and routes the call through `chains.ComposeToolChain` (`core/chains/chain.go:97`) like any governed tool. What exists today is only the test-local `nativeForeignTool` (`adapter/eino/foreign_tool_test.go:38`); the exported symbol does not exist.
-- **Added** a shared message-fidelity contract in `testkit/conformance` beside the suite at `testkit/conformance/runtime.go:53`, so the eino bridge satisfies it now and the adk-go bridge satisfies the identical contract in M3. It asserts block order, per-block-kind fidelity, no dropped source block, `Reasoning` only through its own provider, and opaque kinds through the reserved channel.
-- **Modified** the `runtime` *Component mixing* requirement: the prose names the tool-bridge fidelity obligation and the message-bridge declared-fidelity obligation; the three scenario blocks are reproduced byte-identically.
+- **Added** an exported foreign-tool bridge in `adapter/eino`. It presents an imported eino `tool.InvokableTool` as `types.Tool` (`core/types/tool.go:108`). It exports two constructors with these exact signatures, with `tool.InvokableTool` and `types.ToolSpec` from the sources read for this change. The second constructor selects the declared result mode; nothing else selects it:
 
-The model and tool bridges' turn machinery (`turnModel` `adapter/eino/runtime.go:300`, `turnTool` `adapter/eino/runtime.go:360`) shipped with the first wave and are not rebuilt here.
+  ```go
+  func NewForeignTool(ctx context.Context, imported tool.InvokableTool, spec types.ToolSpec) (types.Tool, error)
+  func NewForeignToolWithEnvelope(ctx context.Context, imported tool.InvokableTool, spec types.ToolSpec) (types.Tool, error)
+  ```
+
+  `spec` carries `Effect`, `Risk`, `Trust`, `RequiredScopes`, `Timeout` and `Egress` (`core/types/tool.go:80-101`). The constructor calls `Info(ctx)` once, validates the returned `*schema.ToolInfo`, resolves a zero `Trust` to `types.Untrusted`, and never reads `Effect`, `Risk` or `Capabilities` out of the upstream info. Result mapping is a declared bridge rule, never a guess. Upstream `tool.InvokableTool.InvokableRun` returns a plain string and declares no result discriminator (`components/tool/interface.go:38-46`), so the bridge owns the mode. `NewForeignTool` uses the conservative default and carries the upstream string verbatim as one `Text` block. `NewForeignToolWithEnvelope` recognizes exactly one shape: a JSON object with the single key `gohan_tool_result`, whose value is a `types.ToolResult` JSON document. The bridge parses that shape and keeps every other string as text. No other key, no nested path and no field order selects a mode. An error the imported tool returns surfaces unchanged, so `errors.Is` holds across the bridge.
+- **Fixed** the message codec in `adapter/eino`: it carries `BlockBase.Origin`/`Seq` for every declared block kind and the `Blob` (`Ref`, `SHA256`, `Bytes`) of `Image`/`Audio`/`File`, so `TestMessageBridge` (`adapter/eino/message_bridge_test.go:12`) keeps full fidelity under `reflect.DeepEqual`.
+- **Added** a message-fidelity contract in `testkit/conformance` beside the suite (`testkit/conformance/runtime.go:53`), satisfied by the eino codec now and by the adk-go bridge in M3.
+- **Proved** `runtime.foreign-tool-under-native` through the public path: a stack built with `Build` (`core/build.go:147`), a conversation from `NewNativeConversation` (`core/native_conversation.go:19`), driven by `Send`, with the exported bridge registered as a tool; an allowed call runs through the governed chain and a denied call is blocked by the batch gate. The direct-shim harness is replaced.
+- **Modified** the `runtime` *Component mixing* requirement: its prose states only that a foreign tool bridge MUST validate its declared spec before execution, MUST NOT infer an omitted governance field, and that a message bridge MUST carry `Origin`, `Seq` and any blob. The three existing scenario blocks are reproduced byte-identically.
+- **Added** three focused `runtime` requirements — *Foreign tool governance*, *Foreign tool result mapping* and *Message bridge fidelity* — with seven new proposed scenario ids. The governance detail lives here instead of in *Component mixing*, so this change adds a focused requirement rather than a competing replacement of the broad one.
 
 ## Capabilities
 
@@ -26,20 +36,25 @@ None.
 
 ### Modified Capabilities
 
-- `runtime`: one requirement modified — *Component mixing* — carrying the `runtime.foreign-tool-under-native` and `runtime.message-round-trip` scenarios.
+- `runtime`: one requirement modified — *Component mixing* — carrying the `runtime.foreign-tool-under-native`, `runtime.governed-components-in-eino-graph` and `runtime.message-round-trip` scenarios.
 
 ### Scenarios bound by this change
 
-Two ids, both `runtime`:
+Three existing ids: two `runtime` and one `guards`.
 
-- `runtime.foreign-tool-under-native` (row 28) — this change proves the **bridge-fidelity** leg only. The mixing chain (an imported eino tool running the full governed batch under the native runtime) was proven by `m2-eino-runtime` (`adapter/eino/foreign_tool_test.go:167`); this change adds the exported seam and its fidelity assertions.
-- `runtime.message-round-trip` (row 30) — the milestone splits one id across bridges. **Resolution adopted:** M2 proves the eino leg and records it; M3 proves the adk-go leg under the same requirement. This change does **not** claim the id closed on one bridge. Recorded conflict: the archived `m2-eino-runtime` package wrote that `m2-eino-bridges` "owns the adk-go leg" (its proposal *Impact*; its `design.md` §5), while `openspec/changes/m2/design.md` §3 conflict 3 says "M3 proves the adk-go leg under the same id's requirement", `openspec/changes/m3/proposal.md:7` lists `adapter/adkgo` as M3 scope, and `openspec/changes/m2/tasks.md` item 5 lists this change as an M2 second-wave lane. No adk-go adapter code exists in M2 (a `grep` for `adkgo` finds no `.go` adapter), so the adk-go leg cannot land in this lane; §3 conflict 3 governs and the adk-go leg is M3's.
+- `runtime.foreign-tool-under-native` (row 28) — the bridge-fidelity leg, proved through the public `Build`/`NewNativeConversation`/`Send` path. The mixing chain leg (`m2-eino-runtime`) stays.
+- `runtime.message-round-trip` (row 30) — the **eino leg** only. This change extends the archived eino acceptance of that row (`openspec/changes/archive/2026-10-07-m2-eino-runtime/specs/runtime/spec.md:170`); it adds no duplicate row and does not add a new id for the same claim. M3 proves the adk-go leg under the same requirement, so the id stays open.
+- `guards.origin-survives-conversion` (`openspec/specs/guards/spec.md:117`) — the eino codec preserves `BlockOrigin()` across tool-result conversion; the adk-go leg is M3's.
 
-`runtime.governed-components-in-eino-graph` is a third scenario in the same requirement but is not bound here: `m2/design.md` §2.1 assigns its acceptance row to `m2-eino-graph-native-resume`, so it is reproduced in the delta only to keep the requirement block complete.
+Seven new ids are proposed in the three added requirements: `runtime.foreign-tool-spec-declared`, `runtime.foreign-tool-trust-untrusted`, `runtime.foreign-tool-result-mapped`, `runtime.foreign-tool-envelope-parsed`, `runtime.foreign-tool-error-identity`, `runtime.message-block-base-carried`, `runtime.message-blob-carried`.
+
+`runtime.governed-components-in-eino-graph` is a third scenario of the same modified requirement, owned by `m2-eino-graph-native-resume` (`m2/design.md` §2.1); it is reproduced in the delta only because a MODIFIED requirement carries the complete block, and no task here binds it.
 
 ## Impact
 
-- Code: `adapter/eino` gains an exported foreign-tool bridge; `testkit/conformance` gains a message-fidelity contract both backends' bridges run.
-- Contract: `runtime.Runtime`, `runtime.AgentRun` and `StepGranularity` are untouched — this change adds no port method and no `runtime` field. No Contract block and no types index is edited.
-- Dependency: consumes `m2-eino-runtime` (archived) and the shipped governed tool chain; leaves the adk-go leg to M3; `m2-api-freeze` freezes the seam this change exports.
-- Not in scope: the eino graph flow and Native resume (`m2-eino-graph-native-resume`); the adk-go bridge (M3); any change to the shipped model/tool/message bridge machinery.
+- Code: `adapter/eino` gains `NewForeignTool` and codec fidelity fixes; `testkit/conformance` gains a message-fidelity contract.
+- Contract: `runtime.Runtime`, `runtime.AgentRun` and `StepGranularity` are untouched — no port method, no `runtime` field, no Contract block.
+- Registry: `openspec/scenarios.json` gains the seven proposed ids at apply time. The three existing ids keep their entries; no row is duplicated.
+- Types index: `docs/design/types.md` is regenerated at apply time with `task spec:types`, because the delta adds `### Requirement:` blocks whose prose names identifiers the generator scans. The regeneration is declared in the design (§4) and in task 5.3; authoring does not touch the generated file.
+- Dependency: consumes `m2-eino-runtime` (archived) and the shipped governed tool chain; leaves the adk-go leg to M3; `m2-api-freeze` freezes the seam this change exports. Ordering: the runtime composition lane (`restore-runtime-governance`) lands first, because both edit `adapter/eino/runtime.go` and the governed call path.
+- Not in scope: the eino graph flow and Native resume (`m2-eino-graph-native-resume`); the adk-go bridge (M3); the backend call-id binding (`restore-runtime-governance`); foreign runtime execution governance.

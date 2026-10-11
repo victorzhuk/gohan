@@ -2,6 +2,7 @@ package gohan
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/victorzhuk/gohan/core/stores"
 )
@@ -13,6 +14,16 @@ import (
 // Approve approves every pending call the run suspended on.
 func Approve() stores.ResumeInput {
 	return stores.ResumeInput{Verdict: stores.VerdictApprove}
+}
+
+// ApproveScope approves every pending call and asks for a session grant
+// whose lifetime is ttl. The grant is keyed by session, tool, fingerprint
+// and the verified approving subject; the grant store's policy caps the
+// TTL and the gate derives the expiry from the actual approval instant.
+// The grant and its granted_by_scope audit record are stored before the
+// approved call executes; a store failure fails the resume closed.
+func ApproveScope(ttl time.Duration) stores.ResumeInput {
+	return stores.ResumeInput{Verdict: stores.VerdictApprove, ScopeTTL: ttl}
 }
 
 // Reject rejects the pending calls with the reason the model sees as the

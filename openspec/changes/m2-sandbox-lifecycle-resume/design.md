@@ -4,88 +4,228 @@
 
 The sandbox port, the policy and the governed tool set ship from `2026-10-07-m2-sandbox-governance`: `Sandbox.Open(ctx, WorkspaceRef, SandboxPolicy) (Workspace, error)` (`core/types/sandbox.go:70-73`), the six-method `Workspace` including `Snapshot(ctx) (WorkspaceRef, error)` (`core/types/sandbox.go:77-85`), `Lifecycle` with `PerCall` and `PerSession` (`core/types/sandbox.go:14-24`), and `std/sandbox.New` building the four tools (`std/sandbox/sandbox.go:98-160`). The port method set is unchanged and frozen at the M2 exit under `docs/design/compatibility.md`.
 
-Three things the port declares are unused in production code, and this change is where they take effect:
+Four things the port declares or lacks shape this change:
 
-- `PerSession` is accepted by `New` and derives its effect, but the call path refuses it: `withWorkspace` returns `types.ErrPerSessionUnsupported` before opening anything (`std/sandbox/percall.go:16-31`, sentinel at `core/types/errors.go:69`). The `PerCall` path is complete and stays: one open, a deferred close guarded by a `sync.Once` (`std/sandbox/percall.go:25`), and secret resolution and redaction around the body (`std/sandbox/secrets.go:23`).
-- `Workspace.Snapshot` has no production caller: the only references are the interface declaration (`core/types/sandbox.go:82`) and the frozen Contract, so nothing produces a `WorkspaceRef` to persist.
-- `Checkpoint.Workspace WorkspaceRef` exists on the stored checkpoint (`core/stores/checkpoint.go:49`), and the suspend hook saves a checkpoint without it: `Lifecycle.suspend` builds a `stores.Checkpoint` and calls `r.Save` (`core/drive_lifecycle.go:699-743`, the `r.Save` call at `:730`) with `Workspace` left empty.
+- `PerSession` is accepted by `New` and derives its effect (`std/sandbox/sandbox.go:104-107`), but the call path refuses it: `withWorkspace` returns `types.ErrPerSessionUnsupported` before opening anything (`std/sandbox/percall.go:16-31`, sentinel at `core/types/errors.go:69`). The `PerCall` path is complete and stays.
+- `Workspace.Snapshot` has no production caller, so nothing produces a `WorkspaceRef` to persist.
+- `Checkpoint.Workspace WorkspaceRef` exists on the stored checkpoint (`core/stores/checkpoint.go:49`), and the suspend hook saves a checkpoint without it (`Lifecycle.suspend`, `core/drive_lifecycle.go:726-741`, `r.Save` at `:730`). The run's durable terminal write is `Lifecycle.finishRun` (`core/drive_lifecycle.go:1080-1091`); a terminal write refused with `ErrSignalsPending` keeps the run alive so the heartbeat survives.
+- No surface carries a live handle, an owner or a durable `WorkspaceRef`. `SessionStateMeta` carries only the shared-state value and version (`core/stores/session.go:120-127`). Ownership has a store-minted proof already: `Lease{RunID, Generation, Expires}` where `Generation` is minted by `Start`, `Heartbeat` and `Resuming` (`core/stores/runs.go:76-81`). The journal seam that makes replay work ships: `stores.Journal` answers by fingerprint (`core/stores/journal.go:56-61`) and a `Completed` entry's `Result` is the replayable payload (`:13-19`).
 
-No session-metadata surface carries a `WorkspaceRef` today. `SessionStateMeta` carries the shared-state value and version only (`core/stores/session.go:120-127`), and `SessionPatch` carries index fields (`Title`, `Archived`, `Pinned`, `Hold`, `Handoff`) only (`core/stores/session.go:96-104`). The journal seam that makes replay work for tool calls already ships: `stores.Journal` records a call and answers by fingerprint (`core/stores/journal.go:56-61`), a `Completed` entry's `Result` is the replayable `ExecResult` (`core/stores/journal.go:13-19`), and `replayModelStep` restores a recorded response instead of re-issuing it (`core/drive_model_journal.go:52-55`, entered from `core/drive_turn.go:296-308`). This change does not add a journal; it binds the sandbox call to it and adds the workspace restore so a replay sees the same files.
+The layer rule constrains placement. `docs/design/architecture.md:45-47` keeps ports, types and contracts in `core` and every default, matcher, heuristic, preset or policy value in `std`, with `core` never importing `std` (`.golangci.yml:11-37`). The coordinator holds policy and adapter state, so its implementation belongs in `std/sandbox`, not `core`.
 
 ## Goals / Non-Goals
 
-**Goals:** Implement the `PerSession` lifecycle so one workspace persists across turns through a session-scoped `WorkspaceRef`; snapshot the workspace on suspension and carry the ref in `Checkpoint.Workspace`; restore the workspace from that ref on a resume or recovery on another pod; prove that a replayed `run_code` uses the journaled `ExecResult` and never calls the adapter's `Exec` again; turn the four owned scenario ids green on the public path.
+**Goals:** implement the `PerSession` lifecycle with one lease-fenced live handle per `(session, run)`; persist a generation-fenced durable snapshot and carry it in the checkpoint at suspension; publish the durable snapshot before the run's terminal write and release the handle only after it succeeds; restore on another pod only from a generation not older than the stored one; close only the handle `Acquire` received from `Open`; fail `Build` when a `PerSession` build lacks the required surfaces; turn the owned scenario ids green on the public path.
 
-**Non-Goals:** No isolation technology, no `adapter/docker` and no `adapter/e2b` (separate changes). No port signature change, no new port method, no `Sandbox` or `Workspace` growth: the lifecycle change is an implementation, not a signature change. No second workspace handle for `PerCall`. No new egress, secret, output, limit or host-runner behaviour; those ship from the governance change. No snapshot format of the harness's own: the ref stays opaque. No `tool/exec` change.
+**Non-Goals:** no isolation technology, no `adapter/docker` and no `adapter/e2b` (separate changes). No port growth: `Sandbox` and `Workspace` keep their exact method sets. No second workspace handle for `PerCall`. No generic scheduler, retry or fallback framework. No new egress, secret, output, limit or host-runner behavior; those ship from governance. No snapshot format of the harness's own: the ref stays opaque. No conflicting output redaction: sanitization stays with `protect-tool-output-storage` (`std/sandbox/secrets.go` scans results only). No cleanup of a resource owned by a dead process; see the Admission section.
+
+## Admission
+
+One material prerequisite is unresolved, so this package is not admitted for implementation as a whole:
+
+- **No installed sandbox provider.** The adapter modules are `adapter/eino`, `adapter/postgres`, `adapter/openai`, `adapter/anthropic` and `adapter/otel`; none declares a sandbox provider. Nothing in the repository establishes that a snapshot survives `Workspace.Close`, how long a snapshot is retained, what a missing snapshot returns, or how a resource is closed by identity after its owning process is gone. Cross-pod restore acceptance needs the first three. Killed-pod cleanup needs the fourth.
+
+Killed-pod remote cleanup is a requested acceptance case. It stays open under task 6.5 and is not an accepted scope exclusion. The package cannot close the gap until a provider contract supplies durable enumeration and close by resource identity, so the case remains unmet and is reported as such in the lane acceptance report.
+
+The second prerequisite is resolved. The atomic owner check is no longer an open design question: D10 fixes the memory lock and guard protocol and D11 fixes the PostgreSQL session-then-run transaction. Both implementations implement that design; neither invents a second protocol.
+
+The local proofs (D9) do not depend on the provider beyond an in-memory fake adapter.
 
 ## Decisions
 
-### D1 — The per-session workspace ref lives on a new optional session-metadata surface
+### D1 — The coordinator implementation belongs in `std/sandbox`; core holds registration and lifecycle hooks
 
-The spec's Contract rule 4 stores the `PerSession` `WorkspaceRef` in session metadata, but no shipped surface can carry it (Context). This change declares one optional interface beside `SessionStateMeta` (`core/stores/session.go:120-127`), discovered by type assertion under the same rule every other optional store surface follows (`SessionForker` at `core/stores/session.go:32-37`, `SessionStateMeta` at `:120-127`):
+`core` cannot import `std` (`.golangci.yml:11-37`), and the coordinator holds the adapter and the policy, which are `std`-side values. Contracts therefore live in the floor and the implementation in `std`:
 
 ```go
-type SessionWorkspaceMeta interface {
-	WorkspaceRef(ctx context.Context, sessionID string) (WorkspaceRef, bool, error)
-	SetWorkspaceRef(ctx context.Context, sessionID string, ref WorkspaceRef) error
+// core/types/sandbox.go — proposed, all identifiers new
+// WorkspaceOwner fences a live handle to one run and one lease generation.
+type WorkspaceOwner struct {
+	RunID           string
+	LeaseGeneration uint64
+}
+
+// WorkspaceSnapshot is the durable outcome of one publication.
+type WorkspaceSnapshot struct {
+	Ref        WorkspaceRef
+	Generation int64
+}
+
+// SandboxHandles is the optional lifecycle coordinator beside the Sandbox
+// port. It owns one live Workspace per (session, owner) and never grows
+// Sandbox or Workspace.
+type SandboxHandles interface {
+	Acquire(ctx context.Context, sessionID string, owner WorkspaceOwner) (Workspace, error)
+	Publish(ctx context.Context, sessionID string, owner WorkspaceOwner) (WorkspaceSnapshot, error)
+	Release(ctx context.Context, sessionID string, owner WorkspaceOwner) error
+	Sweep(ctx context.Context, limit int) error
 }
 ```
 
-`MemorySessionLog` implements it beside `SharedStateMeta`/`SetSharedStateMeta` (`core/stores/session_memory.go:747-748,836-838`). This is a new optional store surface, named here because the core budget rule requires it: it is a store interface, and it is optional, so a `SessionLog` without it cannot run `PerSession` and the tool set refuses with `types.ErrPerSessionUnsupported` exactly as it does today. The ref is not versioned like shared state: only the owner run writes it, `Snapshot` is idempotent for an unchanged workspace, and last-write-wins is the correct semantics for one session's own workspace pointer. The value is an opaque `WorkspaceRef`, not a new stored shape, so no checkpoint schema or event changes.
+`Build` receives one already-constructed coordinator and passes the same instance to both callers:
 
-### D2 — The `PerSession` tool path opens from the stored ref and snapshots back; the reaper closes
+```go
+// core/build_options.go — proposed
+type SandboxRegistration struct {
+	Handles types.SandboxHandles
+	Policy  types.SandboxPolicy
+}
+
+func WithSandboxRegistration(reg SandboxRegistration) Option
+```
+
+The return type is `Option`, the type the existing option family uses (`core/build_options.go:17-19` declares `type Option func(*config) error`). A `BuildOption` identifier does not exist in the package, so no new option type is declared.
+
+`std/sandbox` constructs the coordinator from the adapter, the policy and the metadata surface, then hands the instance to `New`, so the tool set and the lifecycle hooks share one coordinator. `core` holds the registered instance for `suspend`, `finishRun` and `Recover`. `core` performs no adapter and no policy implementation. `WithSandboxRegistration` is a proposed `Option`; the existing option family in `core/build_options.go` is the pattern it follows.
+
+### D2 — Retained, owner-fenced handles replace per-call fresh handles
 
 `withWorkspace` (`std/sandbox/percall.go:16-31`) branches on `p.Lifecycle`. `PerCall` keeps today's Open → body → once-close path unchanged. `PerSession`:
 
-1. Resolve `SessionWorkspaceMeta` from the run `ctx`; without it, refuse with `types.ErrPerSessionUnsupported`.
-2. Read the stored ref (`WorkspaceRef`, `ok`). Absent means the session's first sandbox call: `Open` with the zero `WorkspaceRef`, which the port already declares as the fresh-workspace value (`core/types/sandbox.go:9-12`).
-3. Resolve secrets and run the body as `PerCall` does (`resolveSecrets`, `std/sandbox/secrets.go:23`; `redactSecrets`), so secret handling is identical across lifecycles.
-4. Call `Workspace.Snapshot`, then `SetWorkspaceRef` with the produced ref, so the next call in the session — and the suspend hook — can open from it.
-5. Do not `Close`. The handle is released by the reaper when the session's lease expires (D7).
+1. Resolve `SandboxHandles` from the run context; absent, refuse with `types.ErrPerSessionUnsupported`.
+2. `Acquire(ctx, sessionID, WorkspaceOwner{RunID, LeaseGeneration})`. If this owner already holds the handle, return the same handle. Otherwise open from the stored snapshot ref, record the owner and the handle, and register it. A second run owner in the same session is refused by the session lease, so the handle has exactly one owner.
+3. Resolve secrets and run the body as `PerCall` does, so secret handling is identical across lifecycles.
+4. Publish after every body invocation that may mutate (D6). Read-only calls publish nothing.
+5. Do not close. The handle is released after the suspension storage or after the terminal write (D4).
 
-Step 4's Snapshot after every call is what makes persistence durable and keeps the stored ref pointing at a snapshot that holds the latest files; it is also the ref the checkpoint carries (D4). Opening from a snapshot ref per call means a resumed session on another pod needs no live handle to continue: `Open(ctx, ref, p)` restores.
+### D3 — The durable snapshot is fenced by generation and validated by owner in one atomic write (D10 fixes the memory protocol, D11 the PostgreSQL protocol)
 
-### D3 — The snapshot format is the adapter's, not the harness's
+`SessionStateMeta` (`core/stores/session.go:120-127`) is the precedent. This change declares a sibling optional surface:
 
-`WorkspaceRef` is an opaque `string` (`core/types/sandbox.go:12`) and `Checkpoint.Workspace` carries it unchanged (`core/stores/checkpoint.go:49`). The harness MUST NOT parse, prefix or validate the ref's contents: it reads a ref from `Snapshot`, persists it through D1 and hands it back to `Open`. This is the format decision: the harness declares no format, and an adapter is free to encode a microVM id, a gVisor checkpoint path or a container commit id. The conformance suite (`m2-sandbox-adapter-conformance`) and the adapters bind to the opacity, not to a shape.
+```go
+// core/stores/session.go — proposed
+// WorkspaceMeta is the durable per-session workspace pointer. Generation is
+// the persisted compare-and-set token; zero denotes absent metadata.
+type WorkspaceMeta struct {
+	Ref        types.WorkspaceRef
+	Generation int64
+	Owner      types.WorkspaceOwner
+}
 
-### D4 — The suspend hook sets `Checkpoint.Workspace` from the session's snapshotted ref
+type SessionWorkspaceMeta interface {
+	WorkspaceMeta(ctx context.Context, sessionID string) (WorkspaceMeta, bool, error)
+	SetWorkspaceMeta(ctx context.Context, sessionID string, expectedGeneration int64, m WorkspaceMeta) (int64, error)
+}
+```
 
-`Lifecycle.suspend` already builds the checkpoint and calls `r.Save` (`core/drive_lifecycle.go:699-743`, `:730`). This change sets `Workspace` on that `stores.Checkpoint` before `Save`: when the run held a `PerSession` sandbox, the suspend hook reads the session's ref through `SessionWorkspaceMeta` (D1) and copies it into `Checkpoint.Workspace`. Because D2 snapshots after every call, that ref is `Snapshot`-produced and holds the files written before suspension, satisfying `sandbox.snapshot-on-suspend` without a second `Snapshot` at suspend time. The metadata copy is the only mechanism: no live workspace handle is bound into the run context, and D2's per-call snapshot keeps the stored ref fresh. `Checkpoint.Workspace` is empty for a `PerCall` run or a run with no sandbox, and `Resume` treats an empty ref as "no workspace to restore".
+There is no second token. `Generation` is the sole compare-and-set token, so the store does not mint a version the caller cannot see. `SetWorkspaceMeta` compares `expectedGeneration` and validates `m.Owner.LeaseGeneration` against the current lease generation in one atomic step. `Publish` writes `expectedGeneration + 1`. A compare-and-set loser returns an error; it never returns another owner's snapshot as its own, and there is no rebase and no successful-retry language. Restore rules:
 
-### D5 — Resume and recovery seed the session ref from `Checkpoint.Workspace`
+- A restore that presents metadata equal to the stored metadata issues no write.
+- A checkpoint older than the stored generation leaves the stored snapshot in place and records the skipped restore.
+- A checkpoint newer than the stored generation MUST have a matching durable publication, and the restore fails without one.
+- Generation zero with an empty ref opens fresh.
+- Generation zero with a nonempty legacy ref requires an explicit `ImportWorkspaceMeta` call (D12) into absent metadata.
 
-`Resume` consumes the token and re-drives the checkpoint (`core/resume.go:459`); `Recover` reclaims a stale run and replays its state (`core/recover.go:22-31`, `Recover` at `:28`). Both read the `stores.Checkpoint` they already hold. This change adds: when `Checkpoint.Workspace` is non-empty, seed `SessionWorkspaceMeta.SetWorkspaceRef(ctx, cp.SessionID, cp.Workspace)` before the run re-drives. The next sandbox call then follows D2 step 2 and `Open`s from that ref, so the restored workspace holds the files written before suspension. The seed runs before any tool executes, beside the credential re-issue that `recoveryContext` already performs (`core/recover.go:610`), so restoration cannot race a tool call. No new admission is needed: the resume path already validates the transport principal, the token and the input before this point.
+`MemorySessionLog` implements the surface beside `SharedStateMeta`/`SetSharedStateMeta` (`core/stores/session_memory.go:747-748,836-838`) under the lock protocol of D10. `adapter/postgres` implements it on its concrete session store under the transaction protocol of D11. `stores.Checkpoint` gains one additive field at apply time, `WorkspaceGeneration int64`, so a resume can compare generations; a checkpoint written before this change reads zero.
 
-### D6 — Replay reuses the journaled `ExecResult`; the change proves it and does not add a journal
+### D4 — Suspension publishes before the save and releases after the suspension transition; the terminal path publishes before the terminal write
 
-A sandbox call is a tool call, so it is journaled under the shipped path: `Reserve` pins the call key, `Complete` records the `types.ToolResult`, and a replay answers from the `Completed` entry's `Result` (`core/stores/journal.go:56-61,13-19`). `Replay`/`Recover` re-enter the batch phase and replay recorded results from the state and journal rather than re-executing (`core/drive_model_journal.go:52-55`, `core/drive_turn.go:296-308,565-575`). This change adds no journal, no entry field and no replay branch; it proves the guarantee for a sandbox `ExecResult` and adds the workspace restore (D5) that must accompany the replay so the replayed result and the restored files agree. `sandbox.replay-no-reexec` asserts the adapter's `Exec` is not called again.
+Ordering is the whole correctness claim, so it is fixed:
 
-### D7 — The reaper boundary: `Close` for a `PerSession` workspace is the lease-expiry sweep
+- **Suspension** (`Lifecycle.suspend`, `core/drive_lifecycle.go:726-741`, `r.Save` at `:730`): `Publish` → `r.Save` with the returned ref and generation in `Checkpoint.Workspace` and `Checkpoint.WorkspaceGeneration` → the run's suspension transition → `Release` → `Suspended`. A run with no acquired workspace performs no snapshot. A snapshot or compare-and-set failure produces no successful suspension, and no checkpoint is saved. When `Close` fails during the release, the durable snapshot stays and a cleanup record remains for the next sweep.
+- **Terminal** (a completed, failed or detached run): `Publish` → the terminal write → `Release` → the terminal event. A detached run uses this same order and creates no checkpoint. A terminal write refused with `ErrSignalsPending` (`core/types/errors.go:37`) preserves the live handle and the heartbeat, and no release runs. A terminal `Publish` failure records `Failed` without a successful result ref; it does not invent an uncertain-workspace `RunState`, and it does not repeat the failing `Publish` while recording the failure.
 
-The spec puts `Close` for `PerSession` on the reaper when the session's lease expires (Contract rule 4). `core` owns the existing lease-expiry reclaim: `recoverStaleAfter = stores.LeaseTTL` (`core/recover.go:22`) and `Stack.Recover` reclaims runs whose lease expired (`core/recover.go:28-31`). The close path reaches the port without a `core` → `std/sandbox` import (depguard denies it, as the governance design recorded for the host-exec warning): the `Stack` carries the configured `types.Sandbox` through a build option, and on a reclaim that finds a session with no live lease and a stored `PerSession` ref, the reaper opens the workspace with that ref and calls `Close`, then clears the ref through `SetWorkspaceRef` with the empty value. Opening to close is the only path the frozen port allows — `Sandbox` is a one-method factory and gains no close-by-ref method — and it is safe because a restored workspace's `Close` releases the snapshot's resources without reading or writing files. A build with no `Sandbox` wired leaves the boundary inert: nothing was opened, so nothing leaks.
+### D5 — Resume and recovery restore only from a generation not older than the stored one
 
-### D8 — No Contract code block changes; the port freezes unchanged
+`Resume` consumes the token and re-drives the checkpoint (`core/resume.go:459`); `Recover` reclaims a stale run (`core/recover.go:22-31`). Both read the `stores.Checkpoint` they already hold. Before the run re-drives, beside the credential re-issue (`core/recover.go:610`), the restore runs under the D3 rules. The restore runs before any tool executes, so it cannot race a tool call.
 
-This change edits no Contract code block in `openspec/specs/sandbox/spec.md`. The port (`Sandbox`, `Workspace`), the value types (`WorkspaceRef`, `Lifecycle`, `SandboxPolicy`) and the optional interfaces (`SecretResolver`, `WorkspaceLister`) are unchanged at v1; the ADR that settles the sandbox capability is ADR-0129 (cited in the spec header, `openspec/specs/sandbox/spec.md:3`) and the sandboxed-execution ADR is ADR-0093. The one new type is `SessionWorkspaceMeta` in `core/stores`. It is not part of the sandbox capability's Contract block, and it is Contract-adjacent in `stores`: `SessionIndex`, its precedent, lives in the `stores` Contract code block (`openspec/specs/stores/spec.md:252-255`) and in the Contract prose and the Postgres contract requirement (`:336`, `:643`). The `stores` main-spec edit at apply time therefore has three parts: the optional-interface entry beside `SessionIndex`, the sentence in the `Optional interfaces` requirement (`:456`), and the Postgres-contract note (`:643`); each lands with the main-spec edit at apply time under a new ADR (next number) deciding the optional surface, and `docs/design/types.md` regenerates to index it. No sandbox Contract code block changes. `docs/design/types.md` is regenerated to index the new store surface; the `Workspace` and `WorkspaceRef` index entries are unchanged.
+### D6 — A mutating call publishes after the body and settles failure as an explicit unknown result
+
+A sandbox call is journaled like any tool call: `Complete` records the `types.ToolResult` (`core/stores/journal.go:56-61`) and a replay answers from it (`:13-19`). A `Publish` failure is not an ordinary tool error, because the mutation may already have happened inside the workspace. The `PerSession` path therefore returns an explicit `types.ToolResult` with `Outcome: types.Unknown` and `Error.Kind: types.OutcomeUnknown` (`core/tool_call.go:76-85`), and the existing execution path records the uncertainty under the original `CallKey` through its one governance and journal path (`core/tool_call.go:144-181`). No second governance or journal path is added. The sandbox effect derivation (`std/sandbox/effect.go:16-21`) is unchanged.
+
+The publication attempt covers every body invocation that may mutate, not only a clean success: a nonzero execution exit and a partial-write error still attempt the publication, because the mutation may be durable in the workspace even though the call reports failure. Read-only calls (`read_file`, `list_files`) publish nothing. Any error message or output the path records is sanitized before persistence, by the owner of `protect-tool-output-storage`.
+
+### D7 — Release closes the acquired handle; the sweep is bounded and locally sourced
+
+`Release` closes the exact `Workspace` that `Acquire` returned from `Open` (`core/types/sandbox.go:77-85`). The coordinator never opens a workspace in order to close one: a fresh `Open` restores from a snapshot and creates a new resource, so closing it cleans nothing. A successful close removes the live record and leaves the durable snapshot reference untouched. A failed close leaves a cleanup record and the durable snapshot, so a later sweep retries.
+
+Claiming a record for cleanup and acquiring a live handle for use are mutually exclusive, so a sweep cannot close a handle a live run is using. A cleanup record carries the lease generation and the resource identity of the record it describes, so a stale claim cannot act on a new owner's handle. `Sweep(ctx, limit)` takes a positive limit and processes at most that many records. `Stack.Recover` invokes `Sweep` even when `Runs.Stale` returns no rows (`core/recover.go:37-58`), because cleanup records outlive a run's stale listing.
+
+Remote cleanup of a resource whose owner process is absent is a requested acceptance case that stays unmet until a provider supplies durable enumeration and close by resource identity (Admission, task 6.5). A process-local live map cannot enumerate resources from a dead pod, so no implementation in this package can close that gap today.
+
+### D8 — Admission, contract edits and the frozen port
+
+`Build` (`core/build.go:157`) MUST fail when a registered policy declares `PerSession` and the build wires no coordinator or no `SessionWorkspaceMeta` (`sandbox.build-refuses-incapable-persession`), returning no tool set. The `sandbox` port and its value types are unchanged, so the frozen Contract code block does not move: the ADR that settles the capability is ADR-0129 (`openspec/specs/sandbox/spec.md:3`) and the sandboxed-execution ADR is ADR-0093. Two contract edits land at apply time under one new ADR, whose number is decided then: the `sandbox` main-spec `Lifecycle and resume` prose correction from D4 and D5, and the `stores` optional-interface entry for `SessionWorkspaceMeta` beside `SessionIndex` (`openspec/specs/stores/spec.md:252-255`). The scenario registry, the Contract edits and the type additions land at apply time. `docs/design/types.md` regenerates to index `SandboxHandles`, `WorkspaceOwner`, `WorkspaceSnapshot`, `WorkspaceMeta`, `SessionWorkspaceOwnerGuard`, `ImportWorkspaceMeta` and `Checkpoint.WorkspaceGeneration`; the `Workspace` and `WorkspaceRef` index entries are unchanged. The ADR also records the memory lock order of D10, the PostgreSQL row-lock order of D11, the explicit import of D12, and the unresolved provider blocker. No ADR number is reserved during authoring.
 
 ### D9 — Public-path proofs
 
-The four owned scenarios are subtests named exactly their ids, driven through the public `Build`/`Send`/`Resume` path with an in-package fake `Sandbox` that records `Open`/`Exec`/`Snapshot`/`Close` calls and a fake `SessionWorkspaceMeta` that records the ref, so no test reaches a container or a network:
+The owned scenarios are subtests named exactly their ids, driven through the public `Build`/`Send`/`Resume` path with an in-package fake `Sandbox` that records `Open`, `Exec`, `Snapshot` and `Close`, and a shared snapshot backend. The fake backend outlives the handle close, so a snapshot recorded before a close is still readable after it.
 
-- `sandbox.per-session-persists` (`std/sandbox/scenarios_test.go`) — turn 1 writes `data.csv` and the ref is persisted; turn 2's `Open` receives that ref and the read returns the file; the second call never re-uploads it.
-- `sandbox.snapshot-on-suspend` (`core/...`, driving `suspend`) — a `PerSession` run that wrote files suspends for `HumanApproval`; the saved checkpoint's `Workspace` holds the `Snapshot`-produced ref.
-- `sandbox.resume-restores` (`core/...`, driving `Resume`) — resuming on a second fake pod opens from `Checkpoint.Workspace` and the fake workspace reports the file written before suspension.
-- `sandbox.replay-no-reexec` (`core/...`, driving the replay path) — a run whose `run_code` completed before suspending replays the journaled `ExecResult`; the fake `Exec` call count does not increase.
+- `sandbox.per-session-persists` (`std/sandbox`) — turn 1 writes `data.csv`; the terminal publication stores a snapshot; turn 2's `Acquire` restores that snapshot and the read returns the file without a re-upload.
+- `sandbox.snapshot-on-suspend` (`core`) — a `PerSession` run that wrote files suspends for `HumanApproval`; the saved checkpoint holds the `Snapshot`-produced ref and its generation.
+- `sandbox.resume-restores` (`core`) — resuming opens from `Checkpoint.Workspace` and the workspace reports the file written before suspension.
+- `sandbox.replay-no-reexec` (`core`) — a run whose `run_code` completed before suspending replays the journaled `ExecResult`; the fake `Exec` count does not increase.
+- The cross-pod cases build two stacks with independent coordinator instances and independent adapter instances over shared durable metadata and one snapshot backend. Pod A writes, snapshots and closes its own handle. Pod B restores the ref and reports pod A's file. A missing or expired snapshot returns an error and opens no fresh workspace. A cleanup case starts from a record whose owner process is absent, recovery reaches cleanup with zero stale running rows, and a live lease prevents cleanup. No test seeds metadata through private field writes; every case writes metadata through `SetWorkspaceMeta` on a store instance and reads it back through `WorkspaceMeta`.
+- The import cases drive `ImportWorkspaceMeta` (D12) on both stores: one case seeds a session through the public append path, takes the owner through `Runs.Start`, imports a generation-zero snapshot, and reads back generation one with the same ref. The refusal cases present an unauthorized principal, a stale owner, a nonzero input generation, an empty ref and existing metadata, and each case asserts the stored metadata is unchanged.
+
+### D10 — The memory store validates the owner under one mutex it keeps through the write
+
+`MemorySessionLog` holds its own mutex (`core/stores/session_memory.go:64-66`) and `MemoryRuns` holds a second (`core/stores/runs.go:142`). The owner proof lives in the run record, so validating it under the session mutex alone admits a stale owner: `Delete` already proves this shape, because it holds `MemorySessionLog.mu` while `SessionLeaseActive` takes `MemoryRuns.mu` (`core/stores/session_memory.go:416-418,437-446`). `SetWorkspaceMeta` repeats the pattern with a full proof instead of a boolean.
+
+```go
+// core/stores/session_memory.go — proposed
+// SessionWorkspaceOwnerGuard validates a write owner while its own lock is
+// held. The callback runs inside that lock, so it MUST NOT call back into
+// either store.
+type SessionWorkspaceOwnerGuard interface {
+	WithWorkspaceOwner(ctx context.Context, sessionID string, owner types.WorkspaceOwner, write func() error) error
+}
+
+// WithSessionWorkspaceOwnerGuard wires the guard. Wire the same MemoryRuns
+// instance the stack uses.
+func WithSessionWorkspaceOwnerGuard(guard SessionWorkspaceOwnerGuard) MemorySessionOption
+```
+
+The protocol, in order:
+
+1. `SetWorkspaceMeta` takes `MemorySessionLog.mu` and reads the caller authority through the existing `scopeSessionWrite` check (`core/stores/session_memory.go:25-30`).
+2. It reads the stored generation and compares it with `expectedGeneration`. A mismatch returns `types.ErrVersionConflict` (`core/types/errors.go:40`) and issues no write.
+3. It calls `guard.WithWorkspaceOwner` and lets the guard run the write under its own lock. An absent guard refuses every write.
+4. The guard validates the proof against `MemoryRuns`, then calls `write` with both locks held.
+
+The proof requires all four checks against the run record (`core/stores/runs.go:435-459`, `core/stores/runs_leases.go:13-57`): `onSess[sessionID] == owner.RunID`, the run's `SessionID` equals `sessionID`, `owner.LeaseGeneration` equals the stored lease generation and is nonzero, and the record is live and unexpired against the store clock. An invalid proof returns `types.ErrRunNotActive` (`core/types/errors.go:34`). A generation that is present but different returns `types.ErrVersionConflict`, so a stale lease and a stale compare-and-set token are distinguishable.
+
+The callback MUST NOT take either mutex, call another store, or call a provider or caller callback. It only assigns the metadata fields.
+
+The lock order is fixed and one-directional: `MemorySessionLog.mu` precedes `MemoryRuns.mu`. `Delete` already holds the session mutex while `SessionLeaseActive` takes the runs mutex, so the reverse acquisition is never introduced. The consequence is recorded as a risk: a caller-provided principal or dependency extractor MUST NOT re-enter the session store while a run mutation holds the runs mutex.
+
+### D11 — PostgreSQL validates the owner under session-then-run row locks in one transaction
+
+`Start` takes the advisory session lock first and then reads the newest run row (`adapter/postgres/runs.go:156-207`); `Heartbeat` and `Reclaim` each lock only `run_record` (`adapter/postgres/runs.go:224-264`, `:393-433`); `getSession` locks the session row for update (`adapter/postgres/session.go:125-140`). `SetWorkspaceMeta` follows that order:
+
+1. One transaction. Take the existing session serialization lock (`lockSession`, `adapter/postgres/runs.go:150-155`).
+2. Lock `session_record` for the session.
+3. Lock the owning `run_record` last.
+4. Authorize the session write through the existing access check, then validate session identity, run identity, current generation, active state and lease expiry under the row locks.
+5. Compare the stored workspace generation with `expectedGeneration`; a mismatch returns `types.ErrVersionConflict` and writes nothing.
+6. Write `expectedGeneration+1` and commit without releasing the owner row lock.
+
+Because `Heartbeat` and `Reclaim` lock `run_record`, neither can change the validated lease between the validation and the commit. Any operation that needs both rows uses the session-before-run order. A run-only mutation keeps run-only locking.
+
+### D12 — A legacy workspace ref is imported by an explicit store operation
+
+D3's restore rules need one named operation, because `SetWorkspaceMeta` cannot express "generation zero in, generation one out" without a caller that already knows the target generation.
+
+```go
+// core/stores/session.go — proposed, on the optional SessionWorkspaceMeta surface
+ImportWorkspaceMeta(ctx context.Context, sessionID string, owner types.WorkspaceOwner, legacy types.WorkspaceSnapshot) (types.WorkspaceSnapshot, error)
+```
+
+`MemorySessionLog` and the PostgreSQL session store both implement it. It requires the existing session-write authority and a current owner lease. It never accepts a caller-supplied owner without store validation. The preconditions are `legacy.Generation == 0`, a nonempty `legacy.Ref`, and absent durable workspace metadata. The effect is one atomic write of generation one carrying the supplied ref and the validated owner, and the returned snapshot is that persisted value. The refusals are an unauthorized caller, a stale owner, a nonzero input generation, an empty ref, and existing metadata. Every refusal leaves the store unchanged.
+
+`Resume` and `Recover` never call the operation implicitly. A session whose only ref is a legacy one refuses to restore until an authorized caller imports it. The tests seed the session through the public append path and the owner through `Runs.Start`, then import through `ImportWorkspaceMeta`. No test writes private fields.
 
 ## Risks / Trade-offs
 
-- [Risk] A new optional store surface (`SessionWorkspaceMeta`) touches the `core/stores` port tier the freeze watches. → Accepted: optional surfaces are the declared growth path (`SessionForker`, `SessionStateMeta`), the sandbox port itself does not change, and a `SessionLog` without it keeps today's refusal. The surface is named in this design because the core budget rule requires store-interface additions to be declared.
-- [Risk] Snapshotting after every `PerSession` call could be expensive on a real adapter. → Accepted and bounded: correctness first, and the ref must hold the latest files for a suspend that may arrive between calls. An adapter is free to make `Snapshot` cheap against an unchanged workspace; the tool set does not snapshot twice in one call.
-- [Risk] The reaper opens a workspace only to close it, which is inelegant on the frozen port. → Accepted: `Sandbox` is a one-method factory with no close-by-ref method (D7), and closing through `Open` + `Close` is the only path that does not grow the port. A build without a `Sandbox` wired leaves the boundary inert.
-- [Risk] The `PerSession` ref and the checkpoint ref can diverge if a call snapshots after the suspend hook reads the ref. → Mitigated: the suspend hook reads the ref after the last call in the turn has snapshotted (D4), so the checkpoint carries a ref at least as fresh as the last completed call.
-- [Trade-off] Resume restores by seeding session metadata rather than binding a live workspace handle into the run context. → Accepted: metadata is the durable, pod-independent carrier the Contract rule names, and it keeps the sandbox handle's lifetime inside `std/sandbox`, not `core`.
+- [Risk] A new coordinator port and a new optional store surface touch the tier the freeze watches. → Accepted: the sandbox port itself does not change, optional surfaces are the declared growth path (`SessionStateMeta`), and a build without a coordinator keeps today's `ErrPerSessionUnsupported` refusal.
+- [Risk] The coordinator implementation in `std/sandbox` means core reaches a `std` behavior through one port instance. → Accepted and bounded: core holds the registered `types.SandboxHandles` value only, depguard keeps the import out (`core/drive_lifecycle.go:700-763` is the seam), and `Build` fails a `PerSession` policy with no registration.
+- [Risk] Publishing after every mutating body adds a snapshot to the call's latency. → Accepted and scoped: only bodies that may mutate publish, and durability before a replayable result is the correctness requirement.
+- [Risk] An atomic owner check is stricter than a compare-and-set and can reject a publication a run believes it owns. → Accepted: the lease generation is store-minted, so a rejection names a real fence, and the run records the failure rather than retrying.
+- [Risk] The memory owner check holds two mutexes across a callback, so a caller-supplied extractor that re-enters the session store while the runs mutex is held deadlocks. → Accepted and constrained: the lock order is `MemorySessionLog.mu` before `MemoryRuns.mu`, the callback only assigns metadata fields, and the constraint is stated in D10 and verified by task 2.4.
+- [Risk] Killed-pod cleanup is requested but not delivered. → Open blocker, not an accepted exclusion (Admission): the case needs a provider that keeps durable records and closes by resource identity. Task 6.5 stays unstarted and the lane report names the case unmet.
+- [Risk] The PostgreSQL owner check adds a run row lock to every workspace publication. → Accepted and bounded: only `run_record` rows for the session's current run are locked, and `Heartbeat` and `Reclaim` already lock that row, so no new lock class appears.
+- [Trade-off] The durable snapshot is a second session-scoped pointer beside shared state. → Accepted: the Contract rule names a stored ref, and generation plus owner fencing is what prevents the overwrite the audit found.
 
 ## Migration Plan
 
-No data migration and no stored-shape change: `Checkpoint.Workspace` already holds a `WorkspaceRef` and was empty; it now carries a ref for a `PerSession` run. `core/stores` gains the optional `SessionWorkspaceMeta` interface and its `MemorySessionLog` implementation; `std/sandbox/percall.go` replaces the `PerSession` refusal branch with the path in D2; `core/drive_lifecycle.go` sets `Checkpoint.Workspace` in `suspend`; `core/resume.go` and `core/recover.go` seed the session ref before re-driving; `core` gains the `Sandbox` build option the reaper reads. No exported contract changes outside the new optional surface. Shared driver files (`core/build_options.go`) follow the milestone's admission-order rule (`openspec/changes/m2/tasks.md:19`): the `m2-context-persisted-compaction` lane is admitted first, and the two lanes never touch a shared driver file concurrently. Keep the module pre-v1 and create no release tag while authoring; `m2-api-freeze` runs the port compatibility check and cuts `v1.0.0` at the M2 exit.
+`stores.Checkpoint` gains one additive field (`WorkspaceGeneration`) at apply time; a checkpoint written before this change reads it as zero, which restores only a session with no stored snapshot (D5), so an in-flight old checkpoint resumes without clobbering a newer one. No data migration and no removal: `Checkpoint.Workspace` keeps its shape. A session with only a legacy ref is not migrated: the operator imports it through `ImportWorkspaceMeta` (D12) while it holds a live run lease. `core/types` gains the coordinator port and its owner and snapshot value types; `core/stores` gains the optional `SessionWorkspaceMeta`, its `ImportWorkspaceMeta` operation and the `SessionWorkspaceOwnerGuard` seam with the `MemorySessionLog` and `adapter/postgres` implementations; `std/sandbox` gains the coordinator implementation, the coordinator construction shared with `New`, and the `PerSession` path in place of the refusal; `core` gains `WithSandboxRegistration`, the `Build` admission, and the `suspend`, `finishRun` and `Recover` hooks. The `sandbox` main-spec correction, the `stores` optional-interface edit, the scenario registry entries, the Contract edits and the new ADR land at apply time (D8), and `docs/design/types.md` regenerates. Shared driver files (`core/build.go`, `core/build_options.go`, `core/drive_lifecycle.go`) follow the milestone's admission-order rule (`openspec/changes/m2/tasks.md:19`): the runtime-composition lane is admitted first and the lifecycle-repair lane follows on the same files. Keep the module pre-v1 and create no release tag while authoring; `m2-api-freeze` runs the port compatibility check and cuts `v1.0.0` at the M2 exit.

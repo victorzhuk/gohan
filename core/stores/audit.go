@@ -33,6 +33,7 @@ const (
 	AuditGrantedScope AuditKind = "granted_by_scope"
 	AuditEgressDenied AuditKind = "egress_denied"
 	AuditNoticeDead   AuditKind = "notice_dead"
+	AuditCompacted    AuditKind = "compaction"
 )
 
 // AuditRecord is one entry of the decision trail. It carries checksums and
@@ -61,6 +62,7 @@ type AuditRecord struct {
 	Stage        types.GuardStage
 	Model        string
 	ModelVersion string
+	Compaction   *CompactionAudit
 	ManifestHash string
 	PrevHash     string
 	Hash         string
@@ -145,6 +147,73 @@ func (s *MemoryAuditLog) Append(ctx context.Context, r AuditRecord) error {
 	}
 	s.byTenant[rec.Tenant] = append(chain, auditRow{rec: rec, raw: raw})
 	return nil
+}
+
+// AppendCompactionAudit records a compaction audit record once per
+// (SessionID, PublicationID) and reports whether a new record was sealed. An
+// identical duplicate returns false and changes nothing. A different
+// producer payload under the same identity returns errCompactionConflict and
+// changes nothing. At, PrevHash, and Hash are sink-owned: AppendCompactionAudit
+// stamps At at the store clock, chains PrevHash, and seals with the legacy
+// hash plus the shared compaction segment.
+func (s *MemoryAuditLog) AppendCompactionAudit(ctx context.Context, record AuditRecord) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("audit compaction append: %w", err)
+	}
+	if record.Kind != AuditCompacted || record.SessionID == "" || record.Compaction == nil || record.Compaction.PublicationID == "" {
+		return false, errCompactionPayload
+	}
+	pending := record
+	pending.Compaction = CloneCompactionAudit(record.Compaction)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.byTenant == nil {
+		s.byTenant = make(map[string][]auditRow)
+	}
+	for _, chain := range s.byTenant {
+		for _, row := range chain {
+			if row.rec.SessionID != pending.SessionID || row.rec.Compaction == nil || row.rec.Compaction.PublicationID != pending.Compaction.PublicationID {
+				continue
+			}
+			if !auditCompactionEqual(row.rec, pending) {
+				return false, errCompactionConflict
+			}
+			return false, nil
+		}
+	}
+	pending.At = s.now()
+	chain := s.byTenant[pending.Tenant]
+	for i := len(chain) - 1; i >= 0; i-- {
+		if chain[i].rec.SessionID == pending.SessionID {
+			pending.PrevHash = chain[i].rec.Hash
+			break
+		}
+	}
+	pending.Hash = auditHash(pending)
+	raw, err := encodeEnvelope("AuditRecord", pending)
+	if err != nil {
+		return false, err
+	}
+	s.byTenant[pending.Tenant] = append(chain, auditRow{rec: pending, raw: raw})
+	return true, nil
+}
+
+// auditCompactionEqual reports whether two compaction audit records carry the
+// same producer-owned fields. At, PrevHash, and Hash are sink-owned and stay
+// out of the comparison; the payload compares through the shared canonical
+// segment.
+func auditCompactionEqual(a, b AuditRecord) bool {
+	return a.Kind == b.Kind && a.SessionID == b.SessionID && a.RunID == b.RunID &&
+		a.RootRunID == b.RootRunID && a.Flow == b.Flow && a.Subject == b.Subject &&
+		a.Tenant == b.Tenant && a.Tool == b.Tool && a.Effect == b.Effect &&
+		a.ArgsChecksum == b.ArgsChecksum && a.Decision == b.Decision &&
+		a.Host == b.Host && a.Reason == b.Reason && a.Confidence == b.Confidence &&
+		a.Approver == b.Approver && a.Verdict == b.Verdict && a.Outcome == b.Outcome &&
+		a.ResultSHA == b.ResultSHA && a.ResultBytes == b.ResultBytes &&
+		a.Stage == b.Stage && a.Model == b.Model && a.ModelVersion == b.ModelVersion &&
+		a.ManifestHash == b.ManifestHash &&
+		string(CompactionAuditHashBytes(a.Compaction)) == string(CompactionAuditHashBytes(b.Compaction))
 }
 
 // SeedRecord installs envelope as the stored bytes of identity, so the next
@@ -294,5 +363,8 @@ func auditHash(r AuditRecord) string {
 		r.Flow, r.Subject, r.Tenant, r.Tool, int(r.Effect), r.ArgsChecksum, r.Decision,
 		r.Approver, strconv.FormatFloat(r.Confidence, 'b', -1, 64), r.Verdict, int(r.Outcome), r.ResultSHA,
 		r.ResultBytes, int(r.Stage), r.Model, r.ModelVersion, r.ManifestHash, r.PrevHash)
+	// A nil compaction payload writes no bytes, so legacy records keep their
+	// historical hash bytes byte for byte.
+	h.Write(CompactionAuditHashBytes(r.Compaction))
 	return hex.EncodeToString(h.Sum(nil))
 }

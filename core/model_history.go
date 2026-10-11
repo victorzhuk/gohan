@@ -16,6 +16,14 @@ func ProviderHistory(msgs []types.Message) []types.Message {
 		if m.Role == types.RoleAssistant && m.Meta[metaFinish] == types.FinishError {
 			continue
 		}
+		// Reserved metadata messages are internal: approval receipts and
+		// foreign admission records never reach a provider.
+		if _, ok := m.Meta[ApprovalReceiptKey]; ok {
+			continue
+		}
+		if _, ok := m.Meta[foreignAdmissionKey]; ok {
+			continue
+		}
 		out = append(out, m)
 	}
 	return out

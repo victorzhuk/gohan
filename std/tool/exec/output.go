@@ -6,12 +6,8 @@ import (
 
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std/outputs"
 )
-
-// DefaultMaxOutput is the per-stream inline cap (tools contract default):
-// bytes beyond it are dropped from the inline result, and content larger
-// than the cap is stored whole with a retrievable ref.
-const DefaultMaxOutput = 64 * 1024
 
 // OutputStoredMetric counts stored large outputs (docs/gohan-spec.md:
 // `gohan.output.stored` by tool).
@@ -36,27 +32,17 @@ type OutputCapper struct {
 // content lives. Nothing is stored and no ref is returned when Store is
 // nil or the output fits.
 func (c OutputCapper) Cap(ctx context.Context, stream string, data []byte) ([]types.Block, string, error) {
-	max := c.Max
-	if max <= 0 {
-		max = DefaultMaxOutput
+	blocks, ref, err := outputs.StoreOutput(ctx, outputs.OutputStoreParams{
+		Store:  c.Store,
+		Run:    c.Run,
+		Tool:   c.Tool,
+		Max:    c.Max,
+		Stream: stream,
+		Data:   data,
+		Tel:    c.Tel,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("exec: store %s output: %w", stream, err)
 	}
-	if len(data) <= max {
-		return []types.Block{types.Text{Text: string(data)}}, "", nil
-	}
-	ref := ""
-	if c.Store != nil {
-		var err error
-		ref, err = c.Store.Put(ctx, c.Run, []types.Block{types.Text{Text: string(data)}})
-		if err != nil {
-			return nil, "", fmt.Errorf("exec: store %s output: %w", stream, err)
-		}
-		if c.Tel != nil {
-			c.Tel.Count(ctx, OutputStoredMetric, 1, types.String(types.KeyToolName, c.Tool))
-		}
-	}
-	dropped := len(data) - max
-	marker := fmt.Sprintf("\n[%s truncated at %d bytes, %d bytes dropped; full output ref: %s]",
-		stream, max, dropped, ref)
-	head := string(data[:max]) + marker
-	return []types.Block{types.Text{Text: head}}, ref, nil
+	return blocks, ref, nil
 }

@@ -22,6 +22,9 @@ const (
 	extraKindKey     = "gohan.kind"
 	extraValueKey    = "gohan.value"
 	extraProviderKey = "gohan.provider"
+	extraOriginKey   = "gohan.origin"
+	extraSeqKey      = "gohan.seq"
+	extraBlobKey     = "gohan.blob"
 )
 
 // EncodeMessages converts gohan messages to eino agentic messages. The
@@ -89,45 +92,47 @@ func encodeBlock(provider string, role schema.AgenticRoleType, b types.Block) (*
 			text.Type = schema.ContentBlockTypeUserInputText
 			text.UserInputText = &schema.UserInputText{Text: r.Text}
 		}
+		carryBase(text, r.BlockBase)
 		return text, nil
 	case types.Reasoning:
 		if r.Provider != provider {
 			return nil, nil
 		}
-		return &schema.ContentBlock{
+		rb := &schema.ContentBlock{
 			Type:      schema.ContentBlockTypeReasoning,
 			Reasoning: &schema.Reasoning{Text: r.Text, Signature: string(r.Signature)},
-		}, nil
+		}
+		carryBase(rb, r.BlockBase)
+		return rb, nil
 	case types.Image:
 		img := &schema.UserInputImage{URL: r.URL, MIMEType: r.MIME}
 		if len(r.Data) > 0 {
 			img.Base64Data = base64.StdEncoding.EncodeToString(r.Data)
-			img.URL = ""
 		}
-		return &schema.ContentBlock{Type: schema.ContentBlockTypeUserInputImage, UserInputImage: img}, nil
+		return newBlobBlock(schema.ContentBlockTypeUserInputImage, img, r.BlockBase, r.Blob), nil
 	case types.Audio:
 		aud := &schema.UserInputAudio{URL: r.URL, MIMEType: r.MIME}
 		if len(r.Data) > 0 {
 			aud.Base64Data = base64.StdEncoding.EncodeToString(r.Data)
-			aud.URL = ""
 		}
-		return &schema.ContentBlock{Type: schema.ContentBlockTypeUserInputAudio, UserInputAudio: aud}, nil
+		return newBlobBlock(schema.ContentBlockTypeUserInputAudio, aud, r.BlockBase, r.Blob), nil
 	case types.File:
 		f := &schema.UserInputFile{URL: r.URL, Name: r.Name, MIMEType: r.MIME}
 		if len(r.Data) > 0 {
 			f.Base64Data = base64.StdEncoding.EncodeToString(r.Data)
-			f.URL = ""
 		}
-		return &schema.ContentBlock{Type: schema.ContentBlockTypeUserInputFile, UserInputFile: f}, nil
+		return newBlobBlock(schema.ContentBlockTypeUserInputFile, f, r.BlockBase, r.Blob), nil
 	case types.ToolUse:
-		return &schema.ContentBlock{
+		call := &schema.ContentBlock{
 			Type: schema.ContentBlockTypeFunctionToolCall,
 			FunctionToolCall: &schema.FunctionToolCall{
 				CallID:    r.ID,
 				Name:      r.Name,
 				Arguments: string(r.Args),
 			},
-		}, nil
+		}
+		carryBase(call, r.BlockBase)
+		return call, nil
 	case types.Document:
 		return opaqueBlock(types.KindDocument, r, "")
 	case types.ToolResult:
@@ -149,6 +154,70 @@ func opaqueBlock(kind types.BlockKind, value any, provider string) (*schema.Cont
 		extra[extraProviderKey] = provider
 	}
 	return &schema.ContentBlock{Type: gohanBlockType, Extra: extra}, nil
+}
+
+// carryBase stores the block's Origin and Seq in the reserved Extra keys,
+// so a native channel block keeps its provenance across the conversion.
+func carryBase(cb *schema.ContentBlock, base types.BlockBase) {
+	if base.Origin == (types.Origin{}) && base.Seq == 0 {
+		return
+	}
+	if cb.Extra == nil {
+		cb.Extra = map[string]any{}
+	}
+	if base.Origin != (types.Origin{}) {
+		cb.Extra[extraOriginKey] = base.Origin
+	}
+	if base.Seq != 0 {
+		cb.Extra[extraSeqKey] = base.Seq
+	}
+}
+
+// newBlobBlock builds a native channel block with the blob beside the
+// inline data and URL fields.
+func newBlobBlock(t schema.ContentBlockType, payload any, base types.BlockBase, blob types.Blob) *schema.ContentBlock {
+	cb := &schema.ContentBlock{Type: t}
+	switch t {
+	case schema.ContentBlockTypeUserInputImage:
+		cb.UserInputImage = payload.(*schema.UserInputImage)
+	case schema.ContentBlockTypeUserInputAudio:
+		cb.UserInputAudio = payload.(*schema.UserInputAudio)
+	case schema.ContentBlockTypeUserInputFile:
+		cb.UserInputFile = payload.(*schema.UserInputFile)
+	}
+	carryBase(cb, base)
+	if blob != (types.Blob{}) {
+		if cb.Extra == nil {
+			cb.Extra = map[string]any{}
+		}
+		cb.Extra[extraBlobKey] = blob
+	}
+	return cb
+}
+
+// applyBase reads the reserved keys back, removes them from the Extra map
+// and returns the block base and blob they carried.
+func applyBase(base types.BlockBase, cb *schema.ContentBlock) (types.BlockBase, types.Blob) {
+	var blob types.Blob
+	if len(cb.Extra) == 0 {
+		return base, blob
+	}
+	if o, ok := cb.Extra[extraOriginKey].(types.Origin); ok {
+		base.Origin = o
+	}
+	if s, ok := cb.Extra[extraSeqKey].(int64); ok {
+		base.Seq = s
+	}
+	if b, ok := cb.Extra[extraBlobKey].(types.Blob); ok {
+		blob = b
+	}
+	delete(cb.Extra, extraOriginKey)
+	delete(cb.Extra, extraSeqKey)
+	delete(cb.Extra, extraBlobKey)
+	if len(cb.Extra) == 0 {
+		cb.Extra = nil
+	}
+	return base, blob
 }
 
 func decodeMessage(provider string, am *schema.AgenticMessage) (types.Message, error) {
@@ -186,46 +255,54 @@ func decodeBlock(provider string, cb *schema.ContentBlock) (types.Block, error) 
 	}
 	switch cb.Type {
 	case schema.ContentBlockTypeUserInputText:
-		return types.Text{Text: cb.UserInputText.Text}, nil
+		base, _ := applyBase(types.BlockBase{}, cb)
+		return types.Text{BlockBase: base, Text: cb.UserInputText.Text}, nil
 	case schema.ContentBlockTypeAssistantGenText:
-		return types.Text{Text: cb.AssistantGenText.Text}, nil
+		base, _ := applyBase(types.BlockBase{}, cb)
+		return types.Text{BlockBase: base, Text: cb.AssistantGenText.Text}, nil
 	case schema.ContentBlockTypeReasoning:
+		base, _ := applyBase(types.BlockBase{}, cb)
 		r := cb.Reasoning
 		if r == nil {
 			return nil, fmt.Errorf("bridge: eino reasoning block without payload")
 		}
 		return types.Reasoning{
+			BlockBase: base,
 			Text:      r.Text,
 			Signature: []byte(r.Signature),
 			Provider:  provider,
 		}, nil
 	case schema.ContentBlockTypeUserInputImage:
+		base, blob := applyBase(types.BlockBase{}, cb)
 		img := cb.UserInputImage
 		data, url, err := blobFields(img.Base64Data, img.URL)
 		if err != nil {
 			return nil, fmt.Errorf("bridge: image block: %w", err)
 		}
-		return types.Image{MIME: img.MIMEType, Data: data, URL: url}, nil
+		return types.Image{BlockBase: base, Blob: blob, MIME: img.MIMEType, Data: data, URL: url}, nil
 	case schema.ContentBlockTypeUserInputAudio:
+		base, blob := applyBase(types.BlockBase{}, cb)
 		aud := cb.UserInputAudio
 		data, url, err := blobFields(aud.Base64Data, aud.URL)
 		if err != nil {
 			return nil, fmt.Errorf("bridge: audio block: %w", err)
 		}
-		return types.Audio{MIME: aud.MIMEType, Data: data, URL: url}, nil
+		return types.Audio{BlockBase: base, Blob: blob, MIME: aud.MIMEType, Data: data, URL: url}, nil
 	case schema.ContentBlockTypeUserInputFile:
+		base, blob := applyBase(types.BlockBase{}, cb)
 		f := cb.UserInputFile
 		data, url, err := blobFields(f.Base64Data, f.URL)
 		if err != nil {
 			return nil, fmt.Errorf("bridge: file block: %w", err)
 		}
-		return types.File{MIME: f.MIMEType, Name: f.Name, Data: data, URL: url}, nil
+		return types.File{BlockBase: base, Blob: blob, MIME: f.MIMEType, Name: f.Name, Data: data, URL: url}, nil
 	case schema.ContentBlockTypeFunctionToolCall:
+		base, _ := applyBase(types.BlockBase{}, cb)
 		call := cb.FunctionToolCall
 		if call == nil {
 			return nil, fmt.Errorf("bridge: eino tool call block without payload")
 		}
-		return types.ToolUse{ID: call.CallID, Name: call.Name, Args: jsontext.Value(call.Arguments)}, nil
+		return types.ToolUse{BlockBase: base, ID: call.CallID, Name: call.Name, Args: jsontext.Value(call.Arguments)}, nil
 	default:
 		return nil, fmt.Errorf("bridge: unknown eino block type %q", cb.Type)
 	}
@@ -284,7 +361,7 @@ func blobFields(base64Data, url string) ([]byte, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	return data, "", nil
+	return data, url, nil
 }
 
 func agenticRole(r types.Role) (schema.AgenticRoleType, error) {

@@ -83,6 +83,8 @@ type Stores struct {
 	EventLog    *postgres.EventLog
 	Checkpoints *postgres.Checkpoints
 	Journal     *postgres.Journal
+	Notes       *postgres.Notes
+	Outputs     *postgres.Outputs
 }
 
 // Ports returns the stack-level Stores value.
@@ -93,6 +95,8 @@ func (s Stores) Ports() stores.Stores {
 		EventLog:    s.EventLog,
 		Checkpoints: s.Checkpoints,
 		Journal:     s.Journal,
+		OutputStore: s.Outputs,
+		Notes:       s.Notes,
 	}
 }
 
@@ -108,13 +112,22 @@ func NewStores(t *testing.T, schema string) Stores {
 		t.Fatalf("postgres.New: %v", err)
 	}
 	t.Cleanup(db.Close)
+	runs := postgres.NewRuns(db)
+	notes := postgres.NewNotes(db)
+	checkpoints := postgres.NewCheckpoints(db)
+	outputs := postgres.NewOutputs(db)
 	return Stores{
 		DB:          db,
-		SessionLog:  postgres.NewSessionLog(db, postgres.WithSessionPrincipals(types.PrincipalFrom)),
-		Runs:        postgres.NewRuns(db),
+		SessionLog:  postgres.NewSessionLog(db,
+			postgres.WithSessionPrincipals(types.PrincipalFrom),
+			postgres.WithSessionDependents(runs, notes, checkpoints, outputs),
+		),
+		Runs:        runs,
 		EventLog:    postgres.NewEventLog(db),
-		Checkpoints: postgres.NewCheckpoints(db),
+		Checkpoints: checkpoints,
 		Journal:     postgres.NewJournal(db),
+		Notes:       notes,
+		Outputs:     outputs,
 	}
 }
 

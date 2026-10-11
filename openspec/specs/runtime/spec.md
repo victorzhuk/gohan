@@ -211,6 +211,7 @@ ID: `runtime.done-after-finish`
 - WHEN a run completes
 - THEN `Runs.Finish` has been called before `Done` is observable on the stream, and `Done` is the last event
 
+
 ### Requirement: Health
 
 `Health` runs the readiness checks with a bounded ctx (default 2 s) and reports each by name: every configured store answers a ping and the Postgres schema is within the skew rule; every platform provider key validated at `Build` is still accepted (re-checked at most once per minute, cached); `shutdown` is false once `Shutdown` began. `Ready` is the conjunction of the required checks; breaker state per endpoint is reported (`breaker:<endpoint>`) but never affects `Ready`.
@@ -226,6 +227,7 @@ ID: `runtime.readyz-false-on-schema-skew`
 ID: `runtime.readyz-false-during-shutdown`
 - WHEN `Shutdown` has begun while runs drain
 - THEN `/readyz` answers 503 and `/healthz` still answers 200 until the process exits
+
 
 ### Requirement: Graceful shutdown
 
@@ -264,6 +266,7 @@ ID: `runtime.preempted-resume-continue`
 ID: `runtime.shutdown-grace-exhausted`
 - WHEN the `Shutdown` ctx expires while a `SideEffect` tool is still executing
 - THEN `Shutdown` returns `ErrShutdownIncomplete` naming the run and the run is later reclaimed as stale by `Recover`
+
 
 ### Requirement: Tool batch protocol
 
@@ -309,6 +312,7 @@ ID: `runtime.sequential-tools-hint`
 - WHEN a flow is built with `SequentialTools()` or the profile has `ParallelTools: false`
 - THEN the model request asks for single-call turns and a multi-call response is still executed by the batch protocol
 
+
 ### Requirement: Runtime conformance
 
 `conformance.Runtime(t, newRuntime)` SHALL pass for `native`, `eino`, `adkgo`. A backend propagates `ctx` unchanged into every component call, translates a component's suspend signal into its own mechanism and back into `Suspended`, and honours cancellation.
@@ -340,9 +344,12 @@ ID: `runtime.cancellation`
 - WHEN ctx is cancelled mid-stream
 - THEN the iterator yields `context.Canceled` and no further components run
 
+
 ### Requirement: Component mixing
 
 A backend MUST reach every governed model, tool and message conversion through the exported seams, so mixing a foreign component under the native runtime and mixing governed components inside a foreign graph run the same chains. A message bridge MUST declare the fidelity it keeps, and MUST NOT drop a block the source carried.
+
+A foreign tool bridge MUST validate its declared spec before execution and MUST NOT infer a governance field the upstream tool info omits. A message bridge MUST carry each block's `Origin` and `Seq` and any blob the source held.
 
 #### Scenario: foreign tool under native
 ID: `runtime.foreign-tool-under-native`
@@ -358,3 +365,181 @@ ID: `runtime.governed-components-in-eino-graph`
 ID: `runtime.message-round-trip`
 - WHEN a `Message` with reasoning, text, image, document, tool use and `Raw` blocks is converted to eino `AgenticMessage` / adk-go `genai.Content` and back
 - THEN block order is preserved and each block matches the adapter's declared fidelity (`Reasoning` preserved only through its own provider)
+
+### Requirement: Foreign per-call governed path
+
+A foreign flow MUST run from the resolved native configuration. Every tool call a foreign run makes MUST take the same governed path the native batch protocol uses per call: the approval gate and the native budget reservation MUST run before the tool implementation. The composed tool chain MUST remain the only ordinary-tool journal wrapper, so a call is journaled exactly once.
+
+#### Scenario: mixed stack builds and invokes
+ID: `runtime.foreign-mixed-stack-invoke`
+- WHEN a stack registers a native flow and a foreign flow over the same driver and a foreign run executes a governed tool call
+- THEN the call passes the gate and the effect journal exactly once and the tool result reaches the model
+
+#### Scenario: allowed foreign call
+ID: `runtime.foreign-call-allowed`
+- WHEN a foreign run calls an `Idempotent` tool the policy allows
+- THEN the gate returns `Allow`, the journal records one `Completed` entry for the call key, and the tool runs once
+
+#### Scenario: denied foreign call
+ID: `runtime.foreign-call-denied`
+- WHEN the gate denies a foreign run's `SideEffect` call
+- THEN the model receives a `Failed(Permanent)` result reading `not_executed:` and the tool implementation never runs
+
+
+### Requirement: Foreign call identity is required
+
+A foreign call that carries no stable `ToolUse` identity MUST fail closed with a `Failed(Permanent)` result before the gate, the reservation and any side effect, and MUST NOT be journaled.
+
+#### Scenario: missing call identity fails closed
+ID: `runtime.foreign-call-identity-required`
+- WHEN a foreign backend delivers a tool call with no stable call id
+- THEN the call fails closed before the gate and before any side effect, and no journal entry is written
+
+
+### Requirement: Foreign call identity
+
+A foreign backend MUST supply a stable call id per tool call, and the adapter MUST carry it into the governed call unchanged. The id on the governed `ToolUse`, the journal call key and the appended `ToolResult` MUST agree, so a resumed or recovered turn matches the completed call instead of re-executing it. Two calls to one tool in one turn MUST stay distinct under their own ids.
+
+#### Scenario: call id round trip
+ID: `runtime.foreign-call-id-round-trip`
+- WHEN a foreign backend calls a tool with id `call-1`
+- THEN the governed `ToolUse`, the journal call key and the appended `ToolResult` all carry `call-1`
+
+#### Scenario: two calls in one turn
+ID: `runtime.foreign-call-id-distinct`
+- WHEN one foreign turn carries two calls to the same tool with ids `call-1` and `call-2`
+- THEN each is gated and journaled under its own id and neither result is attached to the other call
+
+
+### Requirement: Foreign invocation context
+
+The caller's identity, deadline and cancellation lineage MUST reach every foreign model and tool call. A foreign run started by `Send`, resumed by `Resume` and reclaimed by `Recover` MUST observe the caller's principal, credential, run identity and deadline. A derived context MUST preserve that lineage; it does not promise the same context object inside a shielded call.
+
+#### Scenario: context preserved across entry paths
+ID: `runtime.foreign-ctx-preserved`
+- WHEN a foreign run is started by `Send`, resumed by `Resume` and reclaimed by `Recover`
+- THEN each path carries the caller's identity, deadline and cancellation lineage into every model and tool call
+
+
+### Requirement: Foreign cancellation stops the turn by effect
+
+Cancellation MUST behave by effect. A `ReadOnly` call is not shielded, so cancellation reaches the call, the call aborts, and no later component of that turn runs. After a non-`ReadOnly` call begins its committed execution, the shield settles the call, the journal completes its result, and cancellation stops the components after settlement. Cancellation MUST NOT discard a committed result before journal settlement, and a `ReadOnly` call MUST NOT gain a journal requirement it did not have.
+
+#### Scenario: cancellation stops the turn
+ID: `runtime.foreign-cancellation`
+- WHEN the caller's ctx is cancelled during a foreign turn
+- THEN an unshielded `ReadOnly` call aborts and no further component of that turn runs, while a committed non-`ReadOnly` call settles and journals its result before the run stops
+
+
+### Requirement: Foreign recovery replays a completed call
+
+`Recover` MUST answer a completed non-`ReadOnly` call from the journal and MUST NOT re-execute it.
+
+#### Scenario: completed call recovered without re-execution
+ID: `runtime.foreign-completed-call-replayed`
+- WHEN a foreign run crashes after a non-`ReadOnly` call completed and was journaled
+- THEN `Recover` replays the result from the journal, does not re-execute the call, and finishes the run
+
+
+### Requirement: Atomic shutdown admission
+
+The shutdown admission decision and the registration of a starting run in
+the in-flight set MUST happen as one atomic operation. `Shutdown` MUST NOT
+be able to begin between the decision and the registration and leave the
+run unregistered. Registration MUST happen before `Runs.Start` on every
+constructor path. A run that races `Shutdown` MUST either be registered
+before the shutdown set is armed or be refused with
+`types.ErrShuttingDown`.
+
+#### Scenario: registration is not lost to shutdown
+ID: `runtime.shutdown-admission-atomic`
+- WHEN a `Send` registers a run concurrently with `Shutdown`
+- THEN the run is either registered before the preemption set is armed, or refused with `types.ErrShuttingDown`; no run starts unregistered
+
+#### Scenario: every constructor admits before start
+ID: `runtime.shutdown-admission-every-constructor`
+- WHEN a run starts through the native constructor or the foreign constructor
+- THEN it is registered in the in-flight set before `Runs.Start`
+
+#### Scenario: resume admits before start
+ID: `runtime.shutdown-admission-resume`
+- WHEN `Resume` starts a run
+- THEN it is registered in the in-flight set before `Runs.Start`
+
+
+### Requirement: Terminal stop reason preservation
+
+The lifecycle MUST pass the run's terminal `StopReason` to both the final
+`Done` event and the durable run record. It MUST NOT substitute
+`StopCompleted` for a terminal reason. A run that ends because a limit was
+reached, because a cancel signal arrived, or because the model requested a
+human MUST report that reason.
+
+#### Scenario: done carries the limit reason
+ID: `runtime.done-carries-limit-reason`
+- WHEN a run ends because `MaxTurns` was reached
+- THEN `Done.Reason` is `StopLimit`
+
+#### Scenario: durable record carries the terminal reason
+ID: `runtime.finish-carries-terminal-reason`
+- WHEN a run ends with a non-completed reason and the runs store implements `FinishReasonRecorder`
+- THEN the stored reason is that terminal reason, not `StopCompleted`
+
+#### Scenario: cancelled run keeps its reason
+ID: `runtime.cancelled-run-keeps-reason`
+- WHEN a pending cancel signal ends the run at a safe point
+- THEN `Done.Reason` is `StopCancelled` and the durable reason matches
+
+#### Scenario: handed-off run keeps its reason
+ID: `runtime.handed-off-run-keeps-reason`
+- WHEN the model requested a human and the run closes
+- THEN `Done.Reason` is `StopHandedOff` and the durable reason matches
+
+
+### Requirement: Foreign tool governance
+
+A foreign tool bridge MUST present an imported framework tool as `types.Tool` and MUST take its governance metadata explicitly. It MUST NOT infer `Effect`, `Risk` or `Capabilities` from a field the upstream tool info omits. A zero `Trust` MUST resolve to `Untrusted`. The bridge MUST validate the declared spec before the tool can execute, MUST preserve argument, result and error identity so `errors.Is` holds, and MUST route every call through the governed tool chain.
+
+#### Scenario: foreign tool spec declared
+ID: `runtime.foreign-tool-spec-declared`
+- WHEN a bridge is constructed with an explicit `types.ToolSpec`
+- THEN the returned value reports that spec and a mis-declared upstream tool info fails construction before any call runs
+
+#### Scenario: foreign tool trust untrusted
+ID: `runtime.foreign-tool-trust-untrusted`
+- WHEN a bridge is constructed with the zero `Trust` value
+- THEN the reported spec carries `types.Untrusted`, whatever the upstream tool info declares
+
+#### Scenario: foreign tool error identity
+ID: `runtime.foreign-tool-error-identity`
+- WHEN an imported tool returns a wrapped sentinel error
+- THEN `errors.Is` holds for that sentinel at the caller of the governed chain
+
+### Requirement: Foreign tool result mapping
+
+A foreign tool bridge MUST take its result mode as an explicit construction choice. The default constructor MUST carry every result string verbatim as one `Text` block and MUST NOT parse it. The envelope constructor MUST parse only a JSON object whose single key is `gohan_tool_result` and whose value is a `types.ToolResult` with content blocks or an explicit outcome. It MUST keep every other string as text and MUST NOT fail a call on it. No argument schema selects the mode.
+
+#### Scenario: foreign tool result mapped
+ID: `runtime.foreign-tool-result-mapped`
+- WHEN the default constructor is used and the imported tool returns any string
+- THEN the result holds one `Text` block with that string verbatim, and the string is never parsed as JSON
+
+#### Scenario: foreign tool envelope result parsed
+ID: `runtime.foreign-tool-envelope-parsed`
+- WHEN the envelope constructor is used and the imported tool returns a JSON object whose only key is `gohan_tool_result`
+- THEN the envelope value is parsed into the reported `ToolResult` blocks, and any other string stays one `Text` block
+
+### Requirement: Message bridge fidelity
+
+A message bridge MUST carry each block's `Origin` and `Seq` and any blob the source held, whether stored as `Data`/`URL` or as `Blob`, for every block kind it declares. It MUST NOT drop a URL that accompanies data. A block kind the framework carries without a channel of its own MUST round-trip through the reserved opaque channel.
+
+#### Scenario: message block base carried
+ID: `runtime.message-block-base-carried`
+- WHEN a message carries `Origin` and `Seq` on every block kind the adapter declares
+- THEN the converted and re-decoded blocks keep the same origin and sequence
+
+#### Scenario: message blob carried
+ID: `runtime.message-blob-carried`
+- WHEN an `Image`, `Audio` or `File` block carries `Data`, a `URL` and a `Blob`
+- THEN all three survive the conversion and no `URL` is discarded
+

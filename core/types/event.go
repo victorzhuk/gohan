@@ -90,11 +90,12 @@ type LimitWarning struct {
 }
 
 type Compacted struct {
-	FromVersion  int64
-	ToVersion    int64
-	TokensBefore int
-	TokensAfter  int
-	Policy       string
+	FromVersion   int64
+	ToVersion     int64
+	TokensBefore  int
+	TokensAfter   int
+	Policy        string
+	PublicationID string
 }
 
 type StateChanged struct {

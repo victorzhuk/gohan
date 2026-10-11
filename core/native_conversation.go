@@ -13,8 +13,11 @@ import (
 
 // NewNativeConversation builds the streaming conversation for a registered
 // native definition over stack. The name must resolve to a definition Build
-// registered; an unknown name is refused before any invocation. Every run
-// gets its own runtime instance and its own accounting ledger, so
+// registered; an unknown name is refused before any invocation. The
+// constructor binds the stack itself — shutdown admission, tenant, title
+// profile and the frozen flag snapshot — before the option loop, so every
+// run admits against the same stack. Every run gets its own runtime
+// instance and its own accounting ledger, so
 // concurrent sessions share neither runtime state nor spend.
 func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption) (Conversation, error) {
 	if stack == nil {
@@ -25,10 +28,12 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 		return nil, fmt.Errorf("gohan: flow %q is not a registered native definition", name)
 	}
 	c := &conversation{spec: name, live: map[string]string{}}
+	c.bindStack(stack)
 	c.log = stack.stores.SessionLog
 	c.cps = stack.stores.Checkpoints
 	c.creds = stack.credentials
 	c.policySrc = stack.approvalPolicy
+	c.approvalGrants = stack.approvalGrants
 	c.allowAnonymous = stack.allowAnonymous
 	c.telemetry = stack.telemetry
 	if l, ok := stack.Limits(name); ok {
@@ -54,7 +59,7 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 		}
 
 		tc := stack.nativeTurnConfig(cfg)
-		tc.gate = nativeBatchGate(cfg, hist)
+		tc.gate = nativeBatchGate(cfg, hist, c.approvalGrants)
 		restored := false
 		tc.reserve = func(ctx context.Context, n int) (context.Context, func(), error) {
 			if !restored {
@@ -84,7 +89,7 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 		ctx = chains.WithLimitsState(ctx, ledger)
 
 		tc := stack.nativeTurnConfig(cfg)
-		tc.gate = nativeBatchGate(cfg, hist)
+		tc.gate = nativeBatchGate(cfg, hist, c.approvalGrants)
 		restored := false
 		tc.reserve = func(ctx context.Context, n int) (context.Context, func(), error) {
 			if !restored {
@@ -131,9 +136,15 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 // verdict projects onto the batch protocol's outcomes. A nil decider keeps
 // the core default — read-only and idempotent calls pass, everything else
 // asks; a decider error asks rather than widening permission.
-func nativeBatchGate(cfg *resolvedNativeConfig, hist stores.History) runtime.BatchGate {
+func nativeBatchGate(cfg *resolvedNativeConfig, hist stores.History, grants ...permission.GrantStore) runtime.BatchGate {
 	lookup := specLookup(cfg.specs)
 	grant := receiptGrantCheck(hist)
+	var scoped []func(context.Context, *permission.ToolInvocation) bool
+	for _, g := range grants {
+		if g != nil {
+			scoped = append(scoped, scopeGrantCheck(g))
+		}
+	}
 	return func(ctx context.Context, call types.ToolUse) runtime.BatchDecision {
 		spec, ok := lookup(call.Name)
 		if !ok {
@@ -141,7 +152,18 @@ func nativeBatchGate(cfg *resolvedNativeConfig, hist stores.History) runtime.Bat
 		}
 		run, _ := RunInfoFrom(ctx)
 		inv := &permission.ToolInvocation{Spec: spec, Call: call, Run: run}
-		opts := []permission.Option{permission.WithGrantCheck(grant)}
+		granted := func(ctx context.Context, candidate *permission.ToolInvocation) bool {
+			if grant(ctx, candidate) {
+				return true
+			}
+			for _, check := range scoped {
+				if check(ctx, candidate) {
+					return true
+				}
+			}
+			return false
+		}
+		opts := []permission.Option{permission.WithGrantCheck(granted)}
 		if cfg.taintPolicy != nil {
 			opts = append(opts, permission.WithTaintHook(cfg.taintPolicy))
 		}

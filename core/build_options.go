@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/guards"
 	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
@@ -45,38 +46,41 @@ func WithSunsetWarnOnly() Option {
 }
 
 type config struct {
-	flags            types.Flags
-	frozen           map[string]any
-	foreign          []ForeignSpec
-	models           []types.Model
-	middleware       []types.ModelMiddleware
-	estimator        types.TokenEstimator
-	keys             types.ProviderKeySource
-	credentials      types.CredentialSource
-	secrets          types.SecretResolver
-	notifier         types.Notifier
-	approvalPolicy   permission.ApprovalPolicySource
-	verifier         types.Verifier
-	egressClient     func(p types.EgressPolicy) *http.Client
-	logger           *slog.Logger
-	telemetry        types.Telemetry
-	pinned           *types.PinnedManifest
-	prompts          chains.PromptSet
-	sequentialTools  bool
-	allowAnonymous   bool
-	allowCache       bool
-	maxParallelTools int
-	limits           map[string]types.RunLimits
-	recovery         map[string]runtime.Runtime
-	stores           stores.Stores
-	redactor         types.Redactor
-	redactionPolicy  types.RedactionPolicy
-	tenant           types.Tenant
-	native           []NativeSpec
-	consolidator     func(ConsolidationWiring) MemoryConsolidator
-	sunsetWindow     time.Duration
-	sunsetWarnOnly   bool
-	titleProfile     string
+	flags              types.Flags
+	frozen             map[string]any
+	foreign            []ForeignSpec
+	models             []types.Model
+	middleware         []types.ModelMiddleware
+	estimator          types.TokenEstimator
+	contextGuard       guards.Guard
+	compactionFallback stores.CompactionFallback
+	keys               types.ProviderKeySource
+	credentials        types.CredentialSource
+	secrets            types.SecretResolver
+	notifier           types.Notifier
+	approvalPolicy     permission.ApprovalPolicySource
+	approvalGrants     permission.GrantStore
+	verifier           types.Verifier
+	egressClient       func(p types.EgressPolicy) *http.Client
+	logger             *slog.Logger
+	telemetry          types.Telemetry
+	pinned             *types.PinnedManifest
+	prompts            chains.PromptSet
+	sequentialTools    bool
+	allowAnonymous     bool
+	allowCache         bool
+	maxParallelTools   int
+	limits             map[string]types.RunLimits
+	recovery           map[string]runtime.Runtime
+	stores             stores.Stores
+	redactor           types.Redactor
+	redactionPolicy    types.RedactionPolicy
+	tenant             types.Tenant
+	native             []NativeSpec
+	consolidator       func(ConsolidationWiring) MemoryConsolidator
+	sunsetWindow       time.Duration
+	sunsetWarnOnly     bool
+	titleProfile       string
 }
 
 // WithTenant binds the build to a tenant identity. A tenant with a
@@ -177,6 +181,17 @@ func WithApprovalPolicySource(src permission.ApprovalPolicySource) Option {
 	}
 }
 
+// ApprovalGrants binds the store session grants from ApproveScope are
+// written to and read from. The caller passes the floor interface value;
+// std supplies the in-memory implementation. A build without one refuses
+// a scoped approval rather than granting without a stored grant.
+func ApprovalGrants(store permission.GrantStore) Option {
+	return func(c *config) error {
+		c.approvalGrants = store
+		return nil
+	}
+}
+
 // WithEgressClient sets the HTTP client factory for tool egress policies.
 func WithEgressClient(fn func(p types.EgressPolicy) *http.Client) Option {
 	return func(c *config) error {
@@ -198,6 +213,26 @@ func WithModelMiddleware(mw ...types.ModelMiddleware) Option {
 func WithEstimator(est types.TokenEstimator) Option {
 	return func(c *config) error {
 		c.estimator = est
+		return nil
+	}
+}
+
+// WithCompactionFallback sets the projection Build applies when a guard
+// rejects a composed compaction summary. A flow whose policy carries a
+// compactor requires a fallback that validates against the flow's profile.
+func WithCompactionFallback(p stores.CompactionFallback) Option {
+	return func(c *config) error {
+		c.compactionFallback = p
+		return nil
+	}
+}
+
+// WithCompactionGuard sets the context guard the compaction stage consults
+// at types.StageContext before a composed summary is persisted. A flow
+// whose policy carries a compactor requires a configured guard at Build.
+func WithCompactionGuard(g guards.Guard) Option {
+	return func(c *config) error {
+		c.contextGuard = g
 		return nil
 	}
 }

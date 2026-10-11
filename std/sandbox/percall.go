@@ -7,13 +7,16 @@ import (
 	"sync"
 
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std/outputs"
 )
 
 // withWorkspace runs one workspace lifecycle: Open, the call body, Close.
 // The deferred close is guarded by a once, so a body that panics still
 // closes exactly once and can neither leak the workspace nor close it
-// twice.
-func withWorkspace(ctx context.Context, sb types.Sandbox, p types.SandboxPolicy, body func(context.Context, types.Workspace) ([]types.Block, error)) ([]types.Block, error) {
+// twice. The body receives the sanitizer built from the resolved secrets,
+// because the values are local to this call: the body must apply it at the
+// output boundary, before any byte is capped, excerpted or stored.
+func withWorkspace(ctx context.Context, sb types.Sandbox, p types.SandboxPolicy, body func(context.Context, types.Workspace, outputs.SanitizeFunc) ([]types.Block, error)) ([]types.Block, error) {
 	if p.Lifecycle == types.PerSession {
 		return nil, types.ErrPerSessionUnsupported
 	}
@@ -27,7 +30,7 @@ func withWorkspace(ctx context.Context, sb types.Sandbox, p types.SandboxPolicy,
 	if err != nil {
 		return nil, err
 	}
-	blocks, err := body(ctx, w)
+	blocks, err := body(ctx, w, boundarySanitizer(secrets))
 	return redactSecrets(ctx, secrets, blocks, err)
 }
 

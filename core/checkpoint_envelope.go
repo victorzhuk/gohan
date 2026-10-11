@@ -116,6 +116,9 @@ func decodeEnvelope(cp stores.Checkpoint, rt runtime.Runtime, spec string) (chec
 	if env.State.Turn < 0 || env.State.HistoryVersion < 0 {
 		return checkpointEnvelope{}, runtime.State{}, fmt.Errorf("%w: negative turn or history version", types.ErrCheckpointIncompatible)
 	}
+	if err := validateForeignProgress(env.State.Foreign); err != nil {
+		return checkpointEnvelope{}, runtime.State{}, err
+	}
 	if err := validatePending(env.State.Pending, env.Approvals); err != nil {
 		return checkpointEnvelope{}, runtime.State{}, err
 	}

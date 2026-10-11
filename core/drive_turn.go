@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/guards"
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
@@ -48,6 +49,29 @@ type turnConfig struct {
 	// provider-executed specs before the request is sent and drops the
 	// declarations the verdict refuses; nil leaves the request untouched.
 	providerGate func(ctx context.Context, req types.ModelRequest) (types.ModelRequest, error)
+	// compactionFallback is the injected fallback the compaction stage
+	// applies when a guard rejects a composed summary; a flow without an
+	// active compactor carries nil.
+	compactionFallback stores.CompactionFallback
+	// compactionCount resolves the full-request token count the compaction
+	// trigger measures with; nil when the flow has no active compactor.
+	compactionCount func(ctx context.Context, req types.ModelRequest) (int, error)
+	// compactor is the policy's compaction hook; nil keeps the plain path.
+	compactor stores.Compactor
+	// contextGuard is the guard the compaction stage consults at
+	// StageContext before a summary is persisted; nil refuses the stage.
+	contextGuard guards.Guard
+	// compactionAppend is the session compaction append seam bound at
+	// build; nil when the session log implements no
+	// stores.SessionCompactionAppender.
+	compactionAppend func(ctx context.Context, sessionID string, expectedVersion int64, msg types.Message) (int64, error)
+	// compactionAudit and compactionEvents are the publication sinks; a
+	// nil sink is skipped by the publication and reconciliation paths.
+	compactionAudit  stores.CompactionAuditAppender
+	compactionEvents stores.CompactionEventAppender
+	// compactionLoad reloads the durable history after the compaction
+	// append commit; nil when the session log exposes no load seam.
+	compactionLoad func(ctx context.Context, sessionID string) ([]types.Message, int64, error)
 	// onTruncated decides the retry turn a truncated tool call earns. It
 	// returns the larger output allowance for the retry and the truncation
 	// result handed back to the model; an error ends the run when the
@@ -249,6 +273,25 @@ func appendFailedPartial(ctx context.Context, st runtime.State, env *turnEnv, re
 	return nil
 }
 
+// assembleTurnRequest assembles the request one model invocation sends:
+// the resolved assembler over the working history, then the same options
+// and provider declaration transformations the actual invocation applies.
+// The compaction stage uses it for the prospective and the same-turn
+// measurements, so every assembled request carries them.
+func assembleTurnRequest(ctx context.Context, env *turnEnv, version int64) (types.ModelRequest, error) {
+	req, err := env.c.assemble(withHistoryVersion(ctx, version), env.assemblyInput(ctx, env.msgs))
+	if err != nil {
+		return req, err
+	}
+	if env.maxTokens > 0 {
+		req.Options.MaxTokens = env.maxTokens
+	}
+	if env.c.providerGate != nil {
+		return env.c.providerGate(ctx, req)
+	}
+	return req, nil
+}
+
 func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
 	env := turnEnvFrom(ctx)
 	c := env.c
@@ -268,17 +311,17 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 		// working history here, so the next request carries them.
 		env.msgs = append(env.msgs, notes.take()...)
 	}
-	req, err := c.assemble(withHistoryVersion(ctx, st.HistoryVersion), env.assemblyInput(ctx, env.msgs))
+	req, err := assembleTurnRequest(ctx, env, st.HistoryVersion)
 	if err != nil {
 		return st, nil, runtime.Continue, err
 	}
-	if env.maxTokens > 0 {
-		req.Options.MaxTokens = env.maxTokens
+	req, stageEvents, err := runCompactionStage(ctx, &st, env, req)
+	if err != nil {
+		return st, nil, runtime.Continue, err
 	}
-	if c.providerGate != nil {
-		req, err = c.providerGate(ctx, req)
-		if err != nil {
-			return st, nil, runtime.Continue, err
+	if len(stageEvents) > 0 {
+		for _, ev := range stageEvents {
+			env.emitDelta(ctx, ev)
 		}
 	}
 	env.turn++
@@ -307,6 +350,13 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 		if !created && entry.State == stores.Completed {
 			return replayModelStep(ctx, st, env, entry)
 		}
+	}
+
+	// Every actual provider invocation reconciles the durable compaction
+	// publications the loaded history carries, whatever the flow's policy;
+	// a validation or sink failure refuses the provider call.
+	if err := reconcileCompactionPublications(ctx, c, env.msgs); err != nil {
+		return st, nil, runtime.Continue, err
 	}
 
 	var sb strings.Builder

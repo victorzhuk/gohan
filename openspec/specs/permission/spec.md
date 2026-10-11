@@ -88,10 +88,18 @@ type Grant struct {
 	ExpiresAt   time.Time
 }
 
+type GrantStore interface {
+	Put(ctx context.Context, sessionID string, g Grant) error
+	Find(ctx context.Context, sessionID, tool string, fp Fingerprint, subject string) (Grant, bool, error)
+}
+
+func ApprovalGrants(store permission.GrantStore) Option
 func ApproveScope(ttl time.Duration) ResumeInput
 ```
 
-Order inside the gate: hard blocks (scope check, live emergency flags, `Deny` from rules) → taint policy (`taint`; `Deny` fails the call, `Ask` forces suspension regardless of grants) → existing session grant for `(tool, fingerprint, subject)` → decider → `Ask`. A live emergency deny is re-checked on resume after approval and wins over the approval. `Ask` suspends with an `ApprovalRequest` as payload; `DiffFromLast` is computed against the last approved call with the same tool in the session; `ArgOrigins` says per argument whether it came from user text, a tool result or model inference. `Resume(ApproveScope(2h))` approves the call (the approver comes from the ctx principal) and stores a `Grant` in session metadata; any change in fingerprint (or in the declared `FingerprintFields`) misses the grant. Grants never outlive the session, are capped by `MaxGrantTTL` (default 4 h), and are audit records (`AuditGrant`). Tenant-wide standing permissions are expressed as rules or scopes in reviewed configuration, not as grants.
+`Grant` and `GrantStore` are declared by `core/permission` and referenced everywhere else as `permission.Grant` and `permission.GrantStore`; core no longer aliases them. The store implementation and its lifetime policy stay in `std/permission` (`MemoryGrantStore`, `MaxGrantTTL`, `GrantedByScope`), so the driver never chooses a grant's own policy. A caller's `ApproveScope(ttl)` is a request, not an assignment: the bound store's policy is the cap, and `Build(ApprovalGrants(store))` binds the only store a scoped approval may use.
+
+Order inside the gate: hard blocks (scope check, live emergency flags, `Deny` from rules) → taint policy (`taint`; `Deny` fails the call, `Ask` forces suspension regardless of grants) → existing session grant for `(tool, fingerprint, subject)` → decider → `Ask`. A live emergency deny is re-checked on resume after approval and wins over the approval. `Ask` suspends with an `ApprovalRequest` as payload; `DiffFromLast` is computed against the last approved call with the same tool in the session; `ArgOrigins` says per argument whether it came from user text, a tool result or model inference. `Resume(ApproveScope(2h))` approves the call (the approver comes from the ctx principal) and stores one `Grant` per approved call through the bound `GrantStore`; any change in fingerprint (or in the declared `FingerprintFields`) misses the grant. A stored grant's lifetime MUST be capped by the bound store's policy and MUST NOT be set by a driver default; the expiry derives from the actual approval instant, never from the request's recorded expiry. The grant and its `granted_by_scope` audit record land before the approved call executes. Grants live inside one session only, and every grant use is an audit record. Tenant-wide standing permissions are expressed as rules or scopes in reviewed configuration, not as grants.
 
 **Who may approve.** An `ApprovalPolicy` per `RiskTier` is evaluated inside `Resume` before an `Approve()`, `EditArgs()` or `ApproveScope()` is accepted; `Reject()` needs only session access. `Resume` reloads the request's `ApprovalRequest` from `Checkpoint.Data` and evaluates the policy for its `Risk` against the persisted `History.Owner`, the transport principal and the request's own eligibility. The policy comes from an injected `permission.ApprovalPolicySource` (`Conversation` option; `std/permission` supplies the default over `TierPolicy`), never from core's own choice: a conversation configured without a source refuses `Approve()`, `EditArgs()` and `ApproveScope()` with `ErrApproverNotEligible`, and the policy is resolved again before a decision is accepted so a tightened policy applies to approvals already collected. Owner exceptions use the session owner, never `Checkpoint.Originator`, and never bypass the `RiskHigh` scope requirement. `Reject()` needs only session access. A collected approval is stored in the checkpoint and bound to the session, run, argument generation, call id, tool name and complete argument value; authorization is rechecked immediately before the tool executes, because a fingerprint can be unchanged while a non-fingerprinted argument changed. `EditArgs()` is a revision proposal: it requires edit eligibility, increments the argument generation, clears every collected approval, and leaves the request pending for its own approvals. Approvals and rejections are recorded as a trusted `gohan.approval` receipt in `Message.Meta` when they reach quorum, and previous approved arguments for `DiffFromLast` are read from the latest such receipt for the tool, never from `Journal.ByFingerprint`. Defaults (`std/permission`, overridable with `agent.WithApprovalPolicy(tier, p)`; `flowdef` declares `approval:` per tool): `RiskLow` — the session owner or `session:write`; `RiskMedium` — the owner or `approve:<tool>`; `RiskHigh` — `approve:<tool>` **and** `SeparateFromOriginator` (the approver's subject differs from `Checkpoint.Originator.Subject` and from the run's calling principal), `Quorum` 1; `RiskHigh` with `Reversible: false` defaults to `Quorum` 2. An ineligible principal gets `ErrApproverNotEligible` (`Permanent`), the token stays unconsumed and audit records `approval_refused{reason}` with `reason` one of `separate_from_originator` (self-approval; `permission.self-approval-refused-high-risk`), `missing_scope`, `excluded_subject` or `duplicate_approver` (a repeated quorum approval; `permission.quorum-two-approvers`). With `Quorum > 1` the token stays valid until quorum: each partial approval is recorded in the checkpoint, approvers must be distinct subjects, and `EditArgs` is accepted only from the first approver. `ApprovalRequest.Eligible` carries the resolved scopes, excluded subjects and quorum so transports can route the request; `EscalateOnExpiry` walks `ApprovalPolicy.Escalation` (scopes in order) and passes the next target to `Waker.Schedule` in the payload. Journal and audit record `Approver` and `ApprovedVia{Scope, Policy, ActingFor}`, where `ActingFor` is the human whose credential was exchanged when a service approves on behalf of someone; proposer and approver are always separate fields. A session grant (`ApproveScope`) requires the same eligibility as the approval it derives from.
 
@@ -176,3 +184,37 @@ ID: `permission.expiry-default`
 ID: `permission.queue-flood`
 - WHEN a subject already has the policy's `MaxPending` approvals pending
 - THEN a further `Ask` fails the run with `*LimitExceededError{Limit: "pending_approvals"}`
+
+
+### Requirement: Foreign tool approval reaches the gate on native terms
+
+A tool call made by a foreign runtime MUST reach the gate on the same terms a native call does: hard blocks, taint policy, existing session grants and the decider MUST all run per call. `Ask` MUST suspend the run with one `ApprovalRequest` built from the foreign call's identity and arguments, and `Deny` MUST yield the `Failed(Permanent)` `not_executed:` result without running the tool.
+
+#### Scenario: foreign ask suspends
+ID: `permission.foreign-ask`
+- WHEN a foreign run calls a `SideEffect` tool with no matching grant
+- THEN the run suspends with one `ApprovalRequest` naming the call and, on `Resume(Approve())`, the call executes once
+
+#### Scenario: foreign deny never runs the tool
+ID: `permission.foreign-deny`
+- WHEN the policy denies a foreign run's call
+- THEN the tool implementation does not run, no journal entry is written, and the model receives a `not_executed:` result
+
+### Requirement: Approved foreign call honours the session grant
+
+An approved foreign call MUST store and honour the same session `Grant` a native call does, MUST execute once across the drive that suspended it and the resume that approved it, and MUST NOT charge its tool budget twice. The grant MUST be keyed on the verifying approving subject and never on the session originator, and its expiry MUST derive from the approval instant.
+
+#### Scenario: foreign grant reused
+ID: `permission.foreign-grant-reused`
+- WHEN a foreign call is approved with `ApproveScope(2h)` by subject `op` and the model issues the same fingerprint again in the session under a fresh call id
+- THEN the second call executes without suspension, the stored grant names subject `op` and the granted tool, and the audit records the scope grant
+
+### Requirement: Scoped grant lifetime is the grant store's policy
+
+A stored grant's lifetime MUST be capped by the bound grant store's policy and MUST NOT be set by a driver default. A scoped approval delivered with no bound grant store MUST fail closed instead of executing the approved call.
+
+#### Scenario: scoped approval without a grant store fails closed
+ID: `permission.foreign-grant-store-required`
+- WHEN a resume delivers `ApproveScope(2h)` for a foreign call and the stack bound no grant store
+- THEN the resume fails before the approved call runs and no grant is stored
+

@@ -5,6 +5,7 @@ package context
 
 import (
 	"context"
+	"errors"
 
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
@@ -44,6 +45,19 @@ func NewTruncate(opts ...TruncateOption) Truncate {
 		opt(&t)
 	}
 	return t
+}
+
+// ValidateCompactionFallback reports whether the projection can serve as
+// the injected compaction fallback for the profile: it refuses a nil
+// estimator and a non-positive usable budget.
+func (t Truncate) ValidateCompactionFallback(p types.ModelProfile) error {
+	if t.estimator == nil {
+		return errors.New("gohan: truncate fallback has no token estimator")
+	}
+	if t.limit(p) <= 0 {
+		return errors.New("gohan: truncate fallback has no positive usable budget for profile " + p.Name)
+	}
+	return nil
 }
 
 // Project returns a copy of the history whose oldest droppable turns are

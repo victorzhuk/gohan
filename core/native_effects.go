@@ -27,17 +27,25 @@ func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 	tc := turnConfig{
 		// Supervision wraps only the provider, so the chain steps and
 		// the middleware above it keep running on the caller's goroutine.
-		model:        recordRunCost(runModelChain(cfg.modelChain, deprecatedRoute(s.telemetry, cfg.profile, NewModelStream(cfg.model).Generate, s.successorModelFunc(cfg.profile)))),
-		assemble:     withProjections(cfg.contextPolicy, cfg.profile, nativeAssemble(cfg.flow, s.prompts, cfg.assemble, cfg.redactor, cfg.redactionPolicy, s.stores.RedactionMaps, newBlobAssembly(cfg.profile.Name, cfg.model, s.stores))),
-		providerGate: providerDeclarationGate(cfg),
-		maxTurns:     cfg.limits.MaxTurns,
-		limits:       cfg.limits,
-		profile:      cfg.profile,
-		specs:        cfg.specs,
-		taintPolicy:  cfg.taintPolicy,
-		instruction:  cloneBlocks(cfg.instruction),
-		secrets:      s.secrets,
-		clients:      cfg.clients,
+		model:              recordRunCost(runModelChain(cfg.modelChain, deprecatedRoute(s.telemetry, cfg.profile, NewModelStream(cfg.model).Generate, s.successorModelFunc(cfg.profile)))),
+		assemble:           collapseBeforeProjections(withProjections(cfg.contextPolicy, cfg.profile, nativeAssemble(cfg.flow, s.prompts, cfg.assemble, cfg.redactor, cfg.redactionPolicy, s.stores.RedactionMaps, newBlobAssembly(cfg.profile.Name, cfg.model, s.stores)))),
+		providerGate:       providerDeclarationGate(cfg),
+		compactionFallback: cfg.compactionFallback,
+		compactionCount:    cfg.compactionCount,
+		compactor:          cfg.contextPolicy.Compactor,
+		contextGuard:       cfg.contextGuard,
+		compactionAppend:   compactionAppendOf(s.stores.SessionLog),
+		compactionAudit:    compactionAuditOf(s.stores.Audit),
+		compactionEvents:   compactionEventOf(s.stores.EventLog),
+		compactionLoad:     compactionLoadOf(s.stores.SessionLog),
+		maxTurns:           cfg.limits.MaxTurns,
+		limits:             cfg.limits,
+		profile:            cfg.profile,
+		specs:              cfg.specs,
+		taintPolicy:        cfg.taintPolicy,
+		instruction:        cloneBlocks(cfg.instruction),
+		secrets:            s.secrets,
+		clients:            cfg.clients,
 		scheduler: runtime.SchedulerConfig{
 			EffectOf:    nativeEffectOf(cfg.tools),
 			Parallel:    cfg.plan.ParallelTools,
@@ -55,6 +63,43 @@ func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 		}
 	}
 	return tc
+}
+
+// compactionAppendOf adapts the session log's optional compaction append
+// seam to the per-turn binding; nil when the log implements none.
+func compactionAppendOf(log stores.SessionLog) func(context.Context, string, int64, types.Message) (int64, error) {
+	if a, ok := log.(stores.SessionCompactionAppender); ok {
+		return a.AppendCompaction
+	}
+	return nil
+}
+
+// compactionAuditOf returns the audit log's compaction sink, or nil.
+func compactionAuditOf(log stores.AuditLog) stores.CompactionAuditAppender {
+	if a, ok := log.(stores.CompactionAuditAppender); ok {
+		return a
+	}
+	return nil
+}
+
+// compactionEventOf returns the event log's compaction sink, or nil.
+func compactionEventOf(log stores.EventLog) stores.CompactionEventAppender {
+	if a, ok := log.(stores.CompactionEventAppender); ok {
+		return a
+	}
+	return nil
+}
+
+// compactionLoadOf adapts the session log's load seam to the per-turn
+// binding the compaction stage reloads through.
+func compactionLoadOf(log stores.SessionLog) func(context.Context, string) ([]types.Message, int64, error) {
+	return func(ctx context.Context, sessionID string) ([]types.Message, int64, error) {
+		h, err := log.Load(ctx, sessionID)
+		if err != nil {
+			return nil, 0, err
+		}
+		return h.Messages, h.Version, nil
+	}
 }
 
 // nativeRun creates one run's effect pair over the bound configuration. The
@@ -268,6 +313,82 @@ func withHistoryVersion(ctx context.Context, v int64) context.Context {
 func historyVersionFrom(ctx context.Context) int64 {
 	v, _ := ctx.Value(historyVersionKey{}).(int64)
 	return v
+}
+
+// collapseBeforeProjections applies the persisted compaction view before the
+// declared projections. The collapse runs even when the projection list is
+// empty: the persisted block is already in history, so hiding needs no
+// store handle and no declared projection.
+func collapseBeforeProjections(
+	next func(context.Context, types.AssembleInput) (types.ModelRequest, error),
+) func(context.Context, types.AssembleInput) (types.ModelRequest, error) {
+	return func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+		in.History = collapseCompactionHistory(in.History)
+		return next(ctx, in)
+	}
+}
+
+// collapseCompactionHistory renders the persisted compaction view of the
+// loaded log. It selects the newest Compaction block by append position,
+// removes that block from its original message, drops every superseded
+// Compaction block and every message the selected block covers, and inserts
+// exactly one message carrying the selected summary at the head. A log with
+// no Compaction block returns the messages unchanged.
+func collapseCompactionHistory(messages []types.Message) []types.Message {
+	selected := -1
+	var current types.Compaction
+	for i, msg := range messages {
+		for _, b := range msg.Blocks {
+			if c, ok := b.(types.Compaction); ok {
+				selected = i
+				current = c
+			}
+		}
+	}
+	if selected < 0 {
+		return messages
+	}
+	covers := int(current.CoversUpTo)
+	if covers > len(messages) {
+		covers = len(messages)
+	}
+	if covers < 0 {
+		covers = 0
+	}
+	out := make([]types.Message, 0, len(messages)-covers+1)
+	out = append(out, types.Message{Role: types.RoleSystem, Blocks: current.Summary})
+	for i, msg := range messages {
+		if i < covers {
+			continue
+		}
+		if blocks, changed := dropCompactionBlocks(msg); changed {
+			if len(blocks) == 0 {
+				continue
+			}
+			msg.Blocks = blocks
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+// dropCompactionBlocks removes every Compaction block from one message and
+// keeps the message's other blocks and its metadata in place. It reports
+// whether the message carried a Compaction block at all.
+func dropCompactionBlocks(msg types.Message) ([]types.Block, bool) {
+	kept := make([]types.Block, 0, len(msg.Blocks))
+	dropped := false
+	for _, b := range msg.Blocks {
+		if _, ok := b.(types.Compaction); ok {
+			dropped = true
+			continue
+		}
+		kept = append(kept, b)
+	}
+	if !dropped {
+		return nil, false
+	}
+	return kept, true
 }
 
 // withProjections applies the resolved policy's projections in declared

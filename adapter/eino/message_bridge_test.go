@@ -9,25 +9,55 @@ import (
 	"github.com/victorzhuk/gohan/core/types"
 )
 
-func TestMessageBridge(t *testing.T) {
-	t.Run("runtime.message-round-trip", func(t *testing.T) {
-		in := []types.Message{{
+func bridgeFixtureMessages() []types.Message {
+	return []types.Message{
+		{
 			Role: types.RoleAssistant,
 			Blocks: []types.Block{
-				types.Reasoning{Text: "thought", Signature: []byte("sig"), Provider: "eino"},
-				types.Text{Text: "answer"},
-				types.Image{MIME: "image/png", Data: []byte{1, 2, 3}},
+				types.Reasoning{
+					BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginModel, Name: "conformance"}, Seq: 1},
+					Text:      "thought",
+					Signature: []byte("sig"),
+					Provider:  "eino",
+				},
+				types.Text{
+					BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginModel, Name: "conformance"}, Seq: 2},
+					Text:      "answer",
+				},
+				types.Image{
+					BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginUser, Name: "u1"}, Seq: 3},
+					MIME:      "image/png",
+					Data:      []byte{1, 2, 3},
+					URL:       "https://example.test/pic.png",
+					Blob:      types.Blob{Ref: "blb-1", SHA256: "aa11", Bytes: 3},
+				},
 				types.Document{
-					Source: "doc-source",
-					Meta:   map[string]string{"k": "v"},
+					BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginUser, Name: "u1"}, Seq: 4},
+					Source:    "doc-source",
+					Meta:      map[string]string{"k": "v"},
 					Content: []types.Block{
-						types.Text{Text: "inner"},
+						types.Text{BlockBase: types.BlockBase{Seq: 5}, Text: "inner"},
 					},
 				},
-				types.ToolUse{ID: "call-1", Name: "lookup", Args: jsontext.Value(`{"q":1}`)},
-				types.Raw{Provider: "eino", Value: map[string]any{"k": "v"}},
+				types.ToolUse{
+					BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginModel, Name: "conformance"}, Seq: 6},
+					ID:        "call-1",
+					Name:      "lookup",
+					Args:      jsontext.Value(`{"q":1}`),
+				},
+				types.Raw{
+					BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginProvider, Name: "eino"}, Seq: 7},
+					Provider:  "eino",
+					Value:     map[string]any{"k": "v"},
+				},
 			},
-		}}
+		},
+	}
+}
+
+func TestMessageBridge(t *testing.T) {
+	t.Run("runtime.message-round-trip", func(t *testing.T) {
+		in := bridgeFixtureMessages()
 		encoded, err := EncodeMessages("eino", in)
 		if err != nil {
 			t.Fatalf("encode: %v", err)
@@ -58,6 +88,88 @@ func TestMessageBridge(t *testing.T) {
 		}
 		if !reflect.DeepEqual(decoded, in) {
 			t.Fatalf("round trip lost fidelity:\ndecoded: %#v\ninput:    %#v", decoded, in)
+		}
+	})
+
+	t.Run("runtime.message-block-base-carried", func(t *testing.T) {
+		in := []types.Message{{
+			Role: types.RoleUser,
+			Blocks: []types.Block{
+				types.Text{BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginUser, Name: "u1"}, Seq: 10}, Text: "t"},
+				types.Reasoning{BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginModel, Name: "m"}, Seq: 11}, Text: "r", Provider: "eino"},
+				types.Image{BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginUser, Name: "u1"}, Seq: 12}, MIME: "image/jpeg", Data: []byte{9}},
+				types.Audio{BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginUser, Name: "u1"}, Seq: 13}, MIME: "audio/wav", Data: []byte{8}},
+				types.File{BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginUser, Name: "u1"}, Seq: 14}, Name: "f.txt", Data: []byte{7}},
+				types.ToolUse{BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginModel, Name: "m"}, Seq: 15}, ID: "c", Name: "echo"},
+			},
+		}}
+		decoded := roundTrip(t, "eino", in)
+		for i, want := range in[0].Blocks {
+			got := decoded[0].Blocks[i]
+			if got.BlockOrigin() != want.BlockOrigin() {
+				t.Fatalf("block %d origin = %+v, want %+v", i, got.BlockOrigin(), want.BlockOrigin())
+			}
+			if gotSeq(got) != wantSeq(want) {
+				t.Fatalf("block %d seq = %d, want %d", i, gotSeq(got), wantSeq(want))
+			}
+			if reflect.TypeOf(got) != reflect.TypeOf(want) {
+				t.Fatalf("block %d kind = %T, want %T", i, got, want)
+			}
+		}
+	})
+
+	t.Run("runtime.message-blob-carried", func(t *testing.T) {
+		in := []types.Message{{
+			Role: types.RoleUser,
+			Blocks: []types.Block{
+				types.Image{MIME: "image/png", Data: []byte{1, 2}, URL: "https://example.test/a.png", Blob: types.Blob{Ref: "r1", SHA256: "aa", Bytes: 2}},
+				types.Audio{MIME: "audio/mpeg", URL: "https://example.test/a.mp3", Blob: types.Blob{Ref: "r2", SHA256: "bb", Bytes: 5}},
+				types.File{MIME: "text/plain", Name: "n.txt", Data: []byte{3}, URL: "https://example.test/n.txt", Blob: types.Blob{Ref: "r3", SHA256: "cc", Bytes: 1}},
+			},
+		}}
+		decoded := roundTrip(t, "eino", in)
+		want := in[0].Blocks
+		for i, b := range decoded[0].Blocks {
+			var gotData []byte
+			var gotURL string
+			var gotBlob types.Blob
+			switch v := b.(type) {
+			case types.Image:
+				gotData, gotURL, gotBlob = v.Data, v.URL, v.Blob
+			case types.Audio:
+				gotData, gotURL, gotBlob = v.Data, v.URL, v.Blob
+			case types.File:
+				gotData, gotURL, gotBlob = v.Data, v.URL, v.Blob
+			default:
+				t.Fatalf("block %d kind = %T, want a blob kind", i, b)
+			}
+			w := want[i]
+			wantData, wantURL, wantBlob := blobOf(w)
+			if string(gotData) != string(wantData) || gotURL != wantURL || gotBlob != wantBlob {
+				t.Fatalf("block %d = data %q url %q blob %+v, want data %q url %q blob %+v",
+					i, gotData, gotURL, gotBlob, wantData, wantURL, wantBlob)
+			}
+		}
+	})
+
+	t.Run("guards.origin-survives-conversion", func(t *testing.T) {
+		in := []types.Message{{
+			Role: types.RoleAssistant,
+			Blocks: []types.Block{
+				types.ToolResult{
+					BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginTool, Name: "lookup"}, Seq: 21},
+					ID:        "call-1",
+					Content:   []types.Block{types.Text{Text: "res"}},
+				},
+			},
+		}}
+		decoded := roundTrip(t, "eino", in)
+		res, ok := decoded[0].Blocks[0].(types.ToolResult)
+		if !ok {
+			t.Fatalf("decoded block %T, want types.ToolResult", decoded[0].Blocks[0])
+		}
+		if want := (types.Origin{Kind: types.OriginTool, Name: "lookup"}); res.BlockOrigin() != want {
+			t.Fatalf("tool result origin = %+v, want %+v", res.BlockOrigin(), want)
 		}
 	})
 
@@ -94,4 +206,55 @@ func TestMessageBridge(t *testing.T) {
 			t.Fatalf("decoded block %T, want types.Text", decoded[0].Blocks[0])
 		}
 	})
+}
+
+func roundTrip(t *testing.T, provider string, in []types.Message) []types.Message {
+	t.Helper()
+	encoded, err := EncodeMessages(provider, in)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DecodeMessages(provider, encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return decoded
+}
+
+func wantSeq(b types.Block) int64 { return blockBase(b).Seq }
+
+func gotSeq(b types.Block) int64 { return blockBase(b).Seq }
+
+func blockBase(b types.Block) types.BlockBase {
+	switch v := b.(type) {
+	case types.Text:
+		return v.BlockBase
+	case types.Reasoning:
+		return v.BlockBase
+	case types.Image:
+		return v.BlockBase
+	case types.Audio:
+		return v.BlockBase
+	case types.File:
+		return v.BlockBase
+	case types.ToolUse:
+		return v.BlockBase
+	case types.ToolResult:
+		return v.BlockBase
+	default:
+		return types.BlockBase{}
+	}
+}
+
+func blobOf(b types.Block) ([]byte, string, types.Blob) {
+	switch v := b.(type) {
+	case types.Image:
+		return v.Data, v.URL, v.Blob
+	case types.Audio:
+		return v.Data, v.URL, v.Blob
+	case types.File:
+		return v.Data, v.URL, v.Blob
+	default:
+		return nil, "", types.Blob{}
+	}
 }

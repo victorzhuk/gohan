@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -12,7 +13,9 @@ import (
 )
 
 // Runs persists run rows, store-clock leases, the signal mailbox and the
-// notice outbox on Postgres.
+// notice outbox on Postgres. RunForSession is the per-session lookup the
+// lifecycle lane's Conversation.ActiveRun consumes; this store's lookup
+// acceptance precedes that lane's cross-pod acceptance.
 type Runs struct {
 	db    *DB
 	reg   *stores.SchemaRegistry
@@ -150,9 +153,31 @@ func lockSession(ctx context.Context, q executor, sessionID string) error {
 	return nil
 }
 
+// operationLockKey encodes (tenant, operation_id) as a length-prefixed
+// tuple so no tenant and operation id pair from a different split hashes to
+// the same key.
+func operationLockKey(tenant, operationID string) string {
+	return strconv.Itoa(len(tenant)) + ":" + tenant + strconv.Itoa(len(operationID)) + ":" + operationID
+}
+
+// lockOperation takes the transaction advisory lock that serialises Start
+// calls racing one tenant-scoped operation id across sessions. Every Start
+// path takes it before the session lock, so the fixed order prevents
+// deadlock.
+func lockOperation(ctx context.Context, q executor, tenant, operationID string) error {
+	if _, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, operationLockKey(tenant, operationID)); err != nil {
+		return fmt.Errorf("lock operation %s: %w", operationID, err)
+	}
+	return nil
+}
+
 // Start records a new run and mints its lease. A live lease on the session
 // refuses with types.ErrRunActive; a recorded operation id refuses with
-// stores.OperationExistsError naming the recorded run.
+// stores.OperationExistsError naming the recorded run. For a non-empty
+// OperationID the operation lock is taken before the session lock and the
+// duplicate lookup runs only under it, so run_record_operation stays the
+// uniqueness authority and a cross-session race never surfaces a raw
+// unique-violation.
 func (s *Runs) Start(ctx context.Context, r stores.Run, ttl time.Duration) (stores.Lease, error) {
 	tx, err := s.db.pool.Begin(ctx)
 	if err != nil {
@@ -160,10 +185,15 @@ func (s *Runs) Start(ctx context.Context, r stores.Run, ttl time.Duration) (stor
 	}
 	defer tx.Rollback(ctx)
 
+	tenant := s.tenant(ctx)
+	if r.OperationID != "" {
+		if err := lockOperation(ctx, txConn{tx}, tenant, r.OperationID); err != nil {
+			return stores.Lease{}, fmt.Errorf("start run %s: %w", r.RunID, err)
+		}
+	}
 	if err := lockSession(ctx, txConn{tx}, r.SessionID); err != nil {
 		return stores.Lease{}, fmt.Errorf("start run %s: %w", r.RunID, err)
 	}
-	tenant := s.tenant(ctx)
 	if r.OperationID != "" {
 		var recorded string
 		err := tx.QueryRow(ctx, `SELECT run_id FROM run_record WHERE tenant = $1 AND operation_id = $2`, tenant, r.OperationID).Scan(&recorded)
@@ -527,20 +557,63 @@ func (s *Runs) Drain(ctx context.Context, l stores.Lease) ([]stores.Signal, erro
 	return out, nil
 }
 
-// DeleteSessionDependents removes the runs, signals and notices of one
-// session in the caller's transaction.
-func (s *Runs) DeleteSessionDependents(ctx context.Context, sessionID string) error {
-	if _, err := s.db.pool.Exec(ctx,
+// sessionRunFinder is the structural shape of core's optional per-session
+// run lookup. The adapter asserts it without importing core.
+type sessionRunFinder interface {
+	RunForSession(ctx context.Context, sessionID string) (stores.Run, error)
+}
+
+var _ sessionRunFinder = (*Runs)(nil)
+
+// RunForSession returns the session's most recent run whose state is
+// Running or Resuming and whose non-null lease expires strictly after the
+// store clock, or stores.ErrRunNotFound when no row is eligible. It is a
+// plain pool read that lets the lifecycle lane's Conversation.ActiveRun
+// reach a run another pod started; owner authorization stays with that
+// lane, and Signal remains the cross-pod control handle.
+func (s *Runs) RunForSession(ctx context.Context, sessionID string) (stores.Run, error) {
+	r, err := scanRunRow(s.db.pool.QueryRow(ctx,
+		`SELECT `+runColumns+` FROM run_record
+		 WHERE session_id = $1 AND state IN ($2, $3) AND lease_expires IS NOT NULL AND lease_expires > $4
+		 ORDER BY started_at DESC, run_id DESC LIMIT 1`,
+		sessionID, stores.Running, stores.Resuming, s.db.clock()))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return stores.Run{}, runNotFound(sessionID, "session")
+	}
+	if err != nil {
+		return stores.Run{}, fmt.Errorf("run for session %s: %w", sessionID, err)
+	}
+	return s.decode(ctx, r)
+}
+
+// deleteRunDependents removes the runs, signals and notices of one session
+// through q. The pool and transaction entries share it, so both paths run
+// the same statements in the same order.
+func deleteRunDependents(ctx context.Context, q executor, sessionID string) error {
+	if _, err := q.Exec(ctx,
 		`DELETE FROM run_signal WHERE run_id IN (SELECT run_id FROM run_record WHERE session_id = $1)`, sessionID); err != nil {
 		return fmt.Errorf("delete signals of session %s: %w", sessionID, err)
 	}
-	if _, err := s.db.pool.Exec(ctx, `DELETE FROM run_notice WHERE session_id = $1`, sessionID); err != nil {
+	if _, err := q.Exec(ctx, `DELETE FROM run_notice WHERE session_id = $1`, sessionID); err != nil {
 		return fmt.Errorf("delete notices of session %s: %w", sessionID, err)
 	}
-	if _, err := s.db.pool.Exec(ctx, `DELETE FROM run_record WHERE session_id = $1`, sessionID); err != nil {
+	if _, err := q.Exec(ctx, `DELETE FROM run_record WHERE session_id = $1`, sessionID); err != nil {
 		return fmt.Errorf("delete runs of session %s: %w", sessionID, err)
 	}
 	return nil
+}
+
+// DeleteSessionDependents removes the runs, signals and notices of one
+// session on the pool.
+func (s *Runs) DeleteSessionDependents(ctx context.Context, sessionID string) error {
+	return deleteRunDependents(ctx, poolConn{s.db.pool}, sessionID)
+}
+
+// deleteSessionDependentsTx removes the runs, signals and notices of one
+// session inside the caller's transaction, so the session delete commits
+// or rolls back with them.
+func (s *Runs) deleteSessionDependentsTx(ctx context.Context, tx pgx.Tx, sessionID string) error {
+	return deleteRunDependents(ctx, txConn{tx}, sessionID)
 }
 
 // CopySessionDependents has no runs to move: a fork copies history, not

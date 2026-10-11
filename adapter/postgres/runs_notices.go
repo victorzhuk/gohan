@@ -193,7 +193,12 @@ func noticeID() string {
 }
 
 // Notices claims up to limit pending notices for the calling dispatcher for
-// noticeClaimTTL; a claim another dispatcher still holds is skipped.
+// noticeClaimTTL. The claim is taken inside the notice transaction with
+// FOR UPDATE SKIP LOCKED: the transaction locks the claimable rows, updates
+// only the rows it locked, and returns only those rows, so two concurrent
+// dispatchers never receive the same notice id. An unacknowledged claim
+// lapses after noticeClaimTTL and the notice returns to pending with its id
+// unchanged.
 func (s *Runs) Notices(ctx context.Context, limit int) ([]types.RunNotice, error) {
 	tx, err := s.db.pool.Begin(ctx)
 	if err != nil {
@@ -204,7 +209,7 @@ func (s *Runs) Notices(ctx context.Context, limit int) ([]types.RunNotice, error
 	now := s.db.clock()
 	rows, err := tx.Query(ctx,
 		`SELECT seq, id, run_id, session_id, tenant, kind, reason, at FROM run_notice
-		 WHERE claim IS NULL OR claim <= $1 ORDER BY seq LIMIT $2`,
+		 WHERE claim IS NULL OR claim <= $1 ORDER BY seq LIMIT $2 FOR UPDATE SKIP LOCKED`,
 		now.Add(-noticeClaimTTL), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list notices: %w", err)
@@ -227,11 +232,15 @@ func (s *Runs) Notices(ctx context.Context, limit int) ([]types.RunNotice, error
 		return nil, fmt.Errorf("list notices: %w", err)
 	}
 	claimed := make([]types.RunNotice, 0, len(out))
+	seqs := make([]int64, 0, len(out))
 	for _, p := range out {
-		if _, err := tx.Exec(ctx, `UPDATE run_notice SET claim = $1 WHERE seq = $2`, now, p.seq); err != nil {
-			return nil, fmt.Errorf("claim notice %s: %w", p.n.ID, err)
-		}
+		seqs = append(seqs, p.seq)
 		claimed = append(claimed, p.n)
+	}
+	if len(seqs) > 0 {
+		if _, err := tx.Exec(ctx, `UPDATE run_notice SET claim = $1 WHERE seq = ANY($2)`, now, seqs); err != nil {
+			return nil, fmt.Errorf("claim notices: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("list notices: %w", err)
@@ -239,7 +248,9 @@ func (s *Runs) Notices(ctx context.Context, limit int) ([]types.RunNotice, error
 	return claimed, nil
 }
 
-// AckNotice removes one claimed notice after delivery.
+// AckNotice removes one claimed notice after delivery. The claim row itself
+// expires after noticeClaimTTL, so a notice no dispatcher acknowledges
+// returns to pending rather than staying locked.
 func (s *Runs) AckNotice(ctx context.Context, id string) error {
 	tag, err := s.db.pool.Exec(ctx, `DELETE FROM run_notice WHERE id = $1`, id)
 	if err != nil {

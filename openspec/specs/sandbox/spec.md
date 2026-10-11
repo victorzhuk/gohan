@@ -103,6 +103,7 @@ ID: `sandbox.egress-allowlisted`
 - WHEN `Egress` lists `api.example.com` and code connects to it and to another host
 - THEN the first succeeds and the second is denied
 
+
 ### Requirement: Secrets
 
 Each `SecretRef` MUST be resolved at `Open` for the run originator through the optional `SecretResolver` port, `Resolve(ctx, Principal, name) (string, error)`, which is distinct from `CredentialSource` and takes the `SecretRef` name, and the resolved environment MUST be injected through `Workspace.SetEnv`. The run `Credential` MUST NOT substitute for a resolver and MUST NOT enter the workspace; a build without a resolver MUST inject nothing and the secret-named call MUST fail.
@@ -118,6 +119,7 @@ ID: `sandbox.secret-injected`
 ID: `sandbox.secret-leak-redacted`
 - WHEN `run_code` prints the injected value
 - THEN the tool result carries a redaction marker and `gohan.sandbox.secret_leak` increments
+
 
 ### Requirement: Lifecycle and resume
 
@@ -148,6 +150,7 @@ ID: `sandbox.per-call-closes`
 - WHEN a `PerCall` tool call finishes or panics
 - THEN `Close` has been called exactly once
 
+
 ### Requirement: Limits and outputs
 
 `Stdout` and `Stderr` MUST be capped by `ToolSpec.MaxOutput`; overflow and files the model asks to return MUST go to the `OutputStore` and come back as `File` blocks with a `Ref` beside a head excerpt. `RunLimits.MaxSandboxSeconds` MUST bound cumulative `ExecResult.Seconds` per run tree and `Usage.SandboxSeconds` MUST report the spend; exceeding the budget MUST return `*LimitExceededError{Limit: "MaxSandboxSeconds"}`.
@@ -167,6 +170,7 @@ ID: `sandbox.output-to-store`
 - WHEN stdout exceeds `MaxOutput` or the model returns a produced file
 - THEN the result carries a head excerpt plus `Ref` and the content is in `OutputStore`
 
+
 ### Requirement: Host runner
 
 `tool/exec` MUST stay the no-isolation runner for fixed-argv commands, and sandbox execution MUST NOT replace it. `Build` MUST warn when `tool/exec` is registered without `AllowHostExec()`, and the warning MUST name the tool.
@@ -180,3 +184,47 @@ ID: `sandbox.egress-shares-policy-type`
 ID: `sandbox.host-exec-warning`
 - WHEN `tool/exec` is registered without `AllowHostExec()`
 - THEN `Build` logs a warning naming the tool
+
+
+### Requirement: Sanitization precedes persistence
+
+Tool output bytes MUST be sanitized for every injected secret value before any byte is persisted to the `OutputStore` or rendered as an inline excerpt. The stored document and the head excerpt MUST both derive from the sanitized bytes, so a `Ref` served by `read_output` cannot carry an injected value. Sanitization MUST be idempotent, and MUST NOT alter bytes when the policy injects no value.
+
+#### Scenario: stored output is redacted
+ID: `sandbox.output-stored-redacted`
+- WHEN `run_code` prints an injected value and stdout exceeds `MaxOutput`
+- THEN the `OutputStore` holds the redacted bytes and the result's head excerpt carries the redaction marker
+
+#### Scenario: read_output cannot re-enter the value
+ID: `sandbox.output-ref-sanitized`
+- WHEN the `Ref` produced by a redacted result is read back through `read_output`
+- THEN the returned content contains no injected value
+
+#### Scenario: redaction is deterministic
+ID: `sandbox.output-redaction-deterministic`
+- WHEN two calls emit equal stdout containing the same injected value
+- THEN both results carry the same content-addressed `Ref` and the same redacted excerpt
+
+### Requirement: Route-independent leak counting
+
+Every occurrence of an injected value in a stream MUST increment `gohan.sandbox.secret_leak` exactly once, whether the bytes stay inline or spill to the store, and a second sanitization pass over an already-redacted result MUST NOT count again. The inline text MUST be bounded by `ToolSpec.MaxOutput` measured after sanitization, plus the truncation marker.
+
+#### Scenario: count is route independent
+ID: `sandbox.leak-count-route-independent`
+- WHEN a call prints an injected value twice with stdout under the cap and a second call prints it over the cap
+- THEN `gohan.sandbox.secret_leak` counts every occurrence once for both routes
+
+#### Scenario: excerpt bounded after redaction
+ID: `sandbox.excerpt-cap-boundary`
+- WHEN sanitized stdout reaches exactly `MaxOutput` bytes and one byte beyond it
+- THEN the first result is returned inline with no `Ref` and the second carries a head excerpt of at most `MaxOutput` bytes plus the marker
+
+### Requirement: Overflow without a store
+
+When a stream exceeds `MaxOutput` and no `OutputStore` is wired, the tool MUST return the sanitized head excerpt with a marker that names the dropped byte count and states that no store is configured. It MUST NOT return the whole body inline, and it MUST NOT persist bytes.
+
+#### Scenario: no-store overflow is explicit
+ID: `sandbox.no-store-overflow`
+- WHEN stdout exceeds `MaxOutput` and no `OutputStore` is wired
+- THEN the result carries a bounded head excerpt and a marker naming the dropped bytes and the missing store, and no `Ref` is produced
+

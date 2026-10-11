@@ -359,6 +359,38 @@ func (s *MemoryRuns) ByOperation(ctx context.Context, tenant, operationID string
 	return s.decodeRun(ctx, s.runs[runID])
 }
 
+// RunActive reports whether the run row is active: state Running or
+// Resuming with a heartbeat the lease TTL still covers at now. The
+// store-clock check lives in each store; callers without one judge
+// liveness through this rule.
+func RunActive(r Run, now time.Time) bool {
+	switch r.State {
+	case Running, Resuming:
+		return r.Heartbeat.Add(LeaseTTL).After(now)
+	default:
+		return false
+	}
+}
+
+// RunForSession returns the run the session currently drives: state
+// Running or Resuming with a live lease on the store clock. A suspended,
+// terminal or lease-expired run reports ErrRunNotFound, so a caller
+// cannot name a run no pod is driving.
+func (s *MemoryRuns) RunForSession(ctx context.Context, sessionID string) (Run, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	runID, ok := s.onSess[sessionID]
+	if !ok {
+		return Run{}, fmt.Errorf("%w: session %s", ErrRunNotFound, sessionID)
+	}
+	rec := s.runs[runID]
+	now := s.now()
+	if rec == nil || (rec.run.State != Running && rec.run.State != Resuming) || rec.expiredAt(now) {
+		return Run{}, fmt.Errorf("%w: session %s", ErrRunNotFound, sessionID)
+	}
+	return s.decodeRun(ctx, rec)
+}
+
 // ByID returns the run with the given id in any state, including finished
 // and failed ones. Cross-pod inspection reads through it; like
 // PreemptedLister it is an optional surface on Runs, discovered by type

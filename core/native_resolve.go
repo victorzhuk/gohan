@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/guards"
 	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
@@ -35,6 +36,18 @@ type resolvedNativeConfig struct {
 	redactionPolicy types.RedactionPolicy
 	memoryPolicy    stores.MemoryPolicy
 	contextPolicy   stores.ContextPolicy
+	// compactionFallback is the injected fallback Build validated against
+	// the profile for a flow whose policy carries a compactor.
+	compactionFallback stores.CompactionFallback
+	// compactionCount resolves the full-request token count the compaction
+	// trigger measures with: the model's TokenCounter when the model
+	// implements the port, otherwise the declared estimator. Build resolves
+	// it once per flow; a nil value never reaches a resolved configuration.
+	compactionCount func(context.Context, types.ModelRequest) (int, error)
+	// contextGuard is the guard the compaction stage consults at
+	// StageContext before a summary is persisted; a flow whose policy
+	// carries a compactor requires one at Build.
+	contextGuard guards.Guard
 }
 
 // resolvedNative returns the resolved configuration Build computed for the
@@ -42,6 +55,56 @@ type resolvedNativeConfig struct {
 func (s *Stack) resolvedNative(flow string) (*resolvedNativeConfig, bool) {
 	c, ok := s.native[flow]
 	return c, ok
+}
+
+// activeCompactor resolves the compaction seams a flow whose policy carries
+// a compactor runs with: the counting source and the validated injected
+// fallback. A flow without a compactor keeps the plain path and returns
+// zero values. The refusal names the flow and the profile.
+func (s *Stack) activeCompactor(flow string, profile types.ModelProfile, cp stores.ContextPolicy, model types.Model, guard guards.Guard) (guards.Guard, stores.CompactionFallback, func(context.Context, types.ModelRequest) (int, error), error) {
+	if cp.Compactor == nil {
+		return nil, nil, nil, nil
+	}
+	if guard == nil {
+		return nil, nil, nil, fmt.Errorf("flow %q: profile %q: compaction needs a context guard bound with WithCompactionGuard", flow, profile.Name)
+	}
+	count := compactionCountOf(model, s.estimator, profile.Caps)
+	if count == nil {
+		return nil, nil, nil, fmt.Errorf("flow %q: profile %q: compaction needs a token count: the model implements no TokenCounter and no estimator is declared", flow, profile.Name)
+	}
+	fallback := s.compactionFallback
+	if fallback == nil {
+		return nil, nil, nil, fmt.Errorf("flow %q: profile %q: compaction needs a declared compaction fallback", flow, profile.Name)
+	}
+	if err := fallback.ValidateCompactionFallback(profile); err != nil {
+		return nil, nil, nil, fmt.Errorf("flow %q: profile %q: compaction fallback: %w", flow, profile.Name, err)
+	}
+	if _, ok := s.stores.SessionLog.(stores.SessionCompactionAppender); !ok {
+		return nil, nil, nil, fmt.Errorf("flow %q: profile %q: compaction needs a session log that implements stores.SessionCompactionAppender", flow, profile.Name)
+	}
+	if _, ok := s.stores.Audit.(stores.CompactionAuditAppender); !ok {
+		return nil, nil, nil, fmt.Errorf("flow %q: profile %q: compaction needs an audit log that implements stores.CompactionAuditAppender", flow, profile.Name)
+	}
+	if _, ok := s.stores.EventLog.(stores.CompactionEventAppender); !ok {
+		return nil, nil, nil, fmt.Errorf("flow %q: profile %q: compaction needs an event log that implements stores.CompactionEventAppender", flow, profile.Name)
+	}
+	return guard, fallback, count, nil
+}
+
+// compactionCountOf resolves the full-request counting source: the model's
+// TokenCounter when the model implements the port, otherwise the declared
+// estimator. A nil result means no source is resolvable; no default
+// estimator is invented.
+func compactionCountOf(model types.Model, est types.TokenEstimator, caps types.Caps) func(context.Context, types.ModelRequest) (int, error) {
+	if counter, ok := model.(types.TokenCounter); ok {
+		return counter.Count
+	}
+	if est != nil {
+		return func(_ context.Context, req types.ModelRequest) (int, error) {
+			return est.Estimate(req, caps), nil
+		}
+	}
+	return nil
 }
 
 // resolveNative resolves every registered definition once: model by profile
@@ -52,6 +115,9 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 	for _, spec := range defs {
 		name := spec.Request.Name
 		if _, dup := resolved[name]; dup {
+			return fmt.Errorf("flow %q: already registered", name)
+		}
+		if _, dup := s.native[name]; dup {
 			return fmt.Errorf("flow %q: already registered", name)
 		}
 		model, ok := modelForProfile(s.models, spec.Profile)
@@ -145,32 +211,45 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 				return fmt.Errorf("flow %q: memory policy: %w", name, types.ErrMemoryStoreRequired)
 			}
 		}
+		guard, fallback, count, err := s.activeCompactor(name, profiles[spec.Profile], spec.ContextPolicy, model, s.contextGuard)
+		if err != nil {
+			return err
+		}
 		resolved[name] = &resolvedNativeConfig{
-			flow:            name,
-			model:           model,
-			profile:         profiles[spec.Profile],
-			plan:            plan,
-			request:         req,
-			instruction:     cloneBlocks(spec.Instruction),
-			tools:           cloneTools(spec.Tools),
-			specs:           req.Tools,
-			clients:         clients,
-			assemble:        assemble,
-			modelChain:      cloneModelChain(modelChain),
-			toolChain:       cloneToolChain(spec.ToolChain),
-			limits:          limits,
-			decider:         spec.Decider,
-			taintPolicy:     spec.TaintPolicy,
-			liveControl:     spec.LiveControl,
-			verifier:        verifier,
-			redactor:        redactor,
-			redactionPolicy: redactionPolicy,
-			memoryPolicy:    spec.MemoryPolicy,
-			contextPolicy:   spec.ContextPolicy,
+			flow:               name,
+			model:              model,
+			profile:            profiles[spec.Profile],
+			plan:               plan,
+			request:            req,
+			instruction:        cloneBlocks(spec.Instruction),
+			tools:              cloneTools(spec.Tools),
+			specs:              req.Tools,
+			clients:            clients,
+			assemble:           assemble,
+			modelChain:         cloneModelChain(modelChain),
+			toolChain:          cloneToolChain(spec.ToolChain),
+			limits:             limits,
+			decider:            spec.Decider,
+			taintPolicy:        spec.TaintPolicy,
+			liveControl:        spec.LiveControl,
+			verifier:           verifier,
+			redactor:           redactor,
+			redactionPolicy:    redactionPolicy,
+			memoryPolicy:       spec.MemoryPolicy,
+			contextPolicy:      spec.ContextPolicy,
+			compactionFallback: fallback,
+			compactionCount:    count,
+			contextGuard:       guard,
 		}
 	}
 
-	s.native = resolved
+	if s.native == nil {
+		s.native = resolved
+		return nil
+	}
+	for name, cfg := range resolved {
+		s.native[name] = cfg
+	}
 	return nil
 }
 

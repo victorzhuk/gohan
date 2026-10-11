@@ -8,6 +8,7 @@ import (
 
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	gohan "github.com/victorzhuk/gohan/core"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
@@ -223,6 +224,9 @@ func (s *EventLog) EraseRuns(ctx context.Context, runIDs []string) (int, error) 
 	if err != nil {
 		return 0, fmt.Errorf("erase events: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM event_compaction_publication WHERE run_id = ANY($1)`, runIDs); err != nil {
+		return 0, fmt.Errorf("erase events: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM event_seq WHERE run_id = ANY($1)`, runIDs); err != nil {
 		return 0, fmt.Errorf("erase event sequences: %w", err)
 	}
@@ -287,17 +291,6 @@ func (j *Journal) EraseSessions(ctx context.Context, sessionIDs []string) (int, 
 	return int(tag.RowsAffected()), nil
 }
 
-// EraseSubject drops the subject's output refs and reports how many were
-// removed; a ref another subject still claims stays.
-func (s *Outputs) EraseSubject(ctx context.Context, tenant, subject string) (int, error) {
-	tag, err := s.db.pool.Exec(ctx,
-		`DELETE FROM output_record WHERE tenant = $1 AND subject = $2`, tenant, subject)
-	if err != nil {
-		return 0, fmt.Errorf("erase outputs: %w", err)
-	}
-	return int(tag.RowsAffected()), nil
-}
-
 // EraseSubject drops the subject-scope notes and the erased sessions'
 // session-scope notes.
 func (s *Notes) EraseSubject(ctx context.Context, tenant, subject string, sessions []string) ([]string, error) {
@@ -310,15 +303,34 @@ func (s *Notes) EraseSubject(ctx context.Context, tenant, subject string, sessio
 	return nil, nil
 }
 
-// DeleteSessionDependents drops the session-scope notes of one session, so
-// registering the notes store as a session dependent carries them through
-// the delete cascade.
-func (s *Notes) DeleteSessionDependents(ctx context.Context, sessionID string) error {
-	if _, err := s.db.pool.Exec(ctx,
+// deleteNotesDependents removes the session-scope notes of one session
+// through q. The pool and transaction entries share it.
+func deleteNotesDependents(ctx context.Context, q executor, sessionID string) error {
+	if _, err := q.Exec(ctx,
 		`DELETE FROM notes_record WHERE scope = $1 AND session = $2`,
 		int(stores.ScopeSession), sessionID); err != nil {
 		return fmt.Errorf("delete notes of session %s: %w", sessionID, err)
 	}
+	return nil
+}
+
+// DeleteSessionDependents drops the session-scope notes of one session on
+// the pool, so registering the notes store as a session dependent carries
+// them through the delete cascade.
+func (s *Notes) DeleteSessionDependents(ctx context.Context, sessionID string) error {
+	return deleteNotesDependents(ctx, poolConn{s.db.pool}, sessionID)
+}
+
+// deleteSessionDependentsTx drops the session-scope notes of one session
+// inside the caller's transaction, so the session delete commits or rolls
+// back with them.
+func (s *Notes) deleteSessionDependentsTx(ctx context.Context, tx pgx.Tx, sessionID string) error {
+	return deleteNotesDependents(ctx, txConn{tx}, sessionID)
+}
+
+// CopySessionDependents carries nothing: session-scope notes belong to the
+// session that wrote them, so a fork starts with an empty notes map.
+func (s *Notes) CopySessionDependents(ctx context.Context, from, to string) error {
 	return nil
 }
 
@@ -350,13 +362,4 @@ func blobRefs(ctx context.Context, db *DB, tenant, subject string) ([]string, er
 		refs = append(refs, ref)
 	}
 	return refs, rows.Err()
-}
-
-func appendUniqueRefs(dst []string, add ...string) []string {
-	for _, ref := range add {
-		if !slices.Contains(dst, ref) {
-			dst = append(dst, ref)
-		}
-	}
-	return dst
 }

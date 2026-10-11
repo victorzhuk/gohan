@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/victorzhuk/gohan/core/stores"
 )
 
@@ -24,6 +25,27 @@ type AuditLog struct {
 // NewAuditLog builds the audit log on db.
 func NewAuditLog(db *DB) *AuditLog {
 	return &AuditLog{db: db, schemas: stores.NewSchemaRegistry()}
+}
+
+var (
+	// errCompactionPayload rejects a malformed or unauthorized publication
+	// request before any identity lookup runs. It mirrors the memory
+	// store's sentinel of the same message.
+	errCompactionPayload = errors.New("gohan: invalid compaction publication")
+	// errCompactionConflict rejects a publication that reuses an accepted
+	// identity with different producer fields. It never wraps
+	// types.ErrVersionConflict.
+	errCompactionConflict = errors.New("gohan: conflicting compaction publication")
+	// errCompactionRetry marks the unique-constraint loss that loses a
+	// race: the caller rolls back, re-resolves the identity, and retries.
+	errCompactionRetry = errors.New("gohan: audit compaction retry")
+)
+
+// isUniqueViolation reports whether err is a Postgres unique-constraint
+// failure, the transactional uniqueness the compaction sinks lean on.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 // Append records r at the store clock's instant: PrevHash links the
@@ -200,5 +222,137 @@ func auditHash(r stores.AuditRecord) string {
 		r.Flow, r.Subject, r.Tenant, r.Tool, int(r.Effect), r.ArgsChecksum, r.Decision,
 		r.Approver, strconv.FormatFloat(r.Confidence, 'b', -1, 64), r.Verdict, int(r.Outcome), r.ResultSHA,
 		r.ResultBytes, int(r.Stage), r.Model, r.ModelVersion, r.ManifestHash, r.PrevHash)
+	// A nil compaction payload writes no bytes, so legacy records keep their
+	// historical hash bytes byte for byte. The memory hasher appends the
+	// same shared segment, so the two implementations cannot drift.
+	h.Write(stores.CompactionAuditHashBytes(r.Compaction))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// AppendCompactionAudit records a compaction audit record once per
+// (SessionID, PublicationID) and reports whether a new record was sealed. An
+// identical duplicate returns false and changes nothing. A different
+// producer payload under the same identity returns errCompactionConflict and
+// changes nothing. At, PrevHash, and Hash are sink-owned: the chain read and
+// the insert share one transaction, and the partial unique index on
+// (session_id, publication_id) is the deduplication barrier.
+func (a *AuditLog) AppendCompactionAudit(ctx context.Context, record stores.AuditRecord) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("audit compaction append: %w", err)
+	}
+	if record.Kind != stores.AuditCompacted || record.SessionID == "" || record.Compaction == nil || record.Compaction.PublicationID == "" {
+		return false, errCompactionPayload
+	}
+	pending := record
+	pending.Compaction = stores.CloneCompactionAudit(record.Compaction)
+
+	// A concurrent winner that commits between the identity lookup and the
+	// insert surfaces as a unique-constraint failure; the bounded retry
+	// re-resolves the identity and reports the duplicate instead. Every
+	// exit other than the commit rolls the transaction back, so no pooled
+	// connection is held when the function returns.
+	for range 3 {
+		tx, err := a.db.pool.Begin(ctx)
+		if err != nil {
+			return false, fmt.Errorf("audit compaction append: %w", err)
+		}
+		committed, err := a.appendCompactionAuditTx(ctx, tx, pending)
+		if err != nil {
+			if !errors.Is(err, errCompactionRetry) {
+				_ = tx.Rollback(ctx)
+				return false, err
+			}
+			if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+				return false, fmt.Errorf("audit compaction append: %w", err)
+			}
+			continue
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return false, fmt.Errorf("audit compaction append: %w", err)
+		}
+		return committed, nil
+	}
+	return false, fmt.Errorf("audit publication %s: %w", pending.Compaction.PublicationID, errCompactionConflict)
+}
+
+// appendCompactionAuditTx resolves the identity, links and seals the chain,
+// and inserts the record inside the caller's transaction. It reports whether
+// a new record was sealed and never commits or rolls back: the caller owns
+// the transaction end. A lost race returns errCompactionRetry so the caller
+// re-resolves the identity against the winner's commit.
+func (a *AuditLog) appendCompactionAuditTx(ctx context.Context, tx pgx.Tx, pending stores.AuditRecord) (bool, error) {
+	duplicate, err := a.compactionAuditDuplicate(ctx, tx, pending)
+	if err != nil {
+		return false, err
+	}
+	if duplicate {
+		return false, nil
+	}
+	err = tx.QueryRow(ctx,
+		`SELECT hash FROM audit_record WHERE session_id = $1 ORDER BY seq DESC LIMIT 1`,
+		pending.SessionID).Scan(&pending.PrevHash)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		pending.PrevHash = ""
+	case err != nil:
+		return false, fmt.Errorf("audit compaction append: %w", err)
+	}
+	pending.At = a.db.clock()
+	pending.Hash = auditHash(pending)
+	raw, err := encodeRecord("AuditRecord", pending)
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO audit_record (session_id, seq, kind, at, tenant, prev_hash, hash, payload, publication_id)
+		 SELECT $1, COALESCE(MAX(seq), 0) + 1, $2, $3, $4, $5, $6, $7, $8 FROM audit_record WHERE session_id = $1`,
+		pending.SessionID, string(pending.Kind), pending.At, pending.Tenant, pending.PrevHash, pending.Hash, raw, pending.Compaction.PublicationID); err != nil {
+		if isUniqueViolation(err) {
+			return false, fmt.Errorf("audit publication %s: %w", pending.Compaction.PublicationID, errCompactionRetry)
+		}
+		return false, fmt.Errorf("audit compaction append: %w", err)
+	}
+	return true, nil
+}
+
+// compactionAuditDuplicate resolves the identity inside tx: true when an
+// identical record is already sealed, errCompactionConflict when the
+// identity carries different producer fields, false when the identity is
+// absent.
+func (a *AuditLog) compactionAuditDuplicate(ctx context.Context, tx pgx.Tx, pending stores.AuditRecord) (bool, error) {
+	var raw []byte
+	err := tx.QueryRow(ctx,
+		`SELECT payload FROM audit_record WHERE session_id = $1 AND publication_id = $2`,
+		pending.SessionID, pending.Compaction.PublicationID).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("audit compaction append: %w", err)
+	}
+	sealed, err := decode[stores.AuditRecord](ctx, a.schemas, raw)
+	if err != nil {
+		return false, fmt.Errorf("audit compaction append: %w", err)
+	}
+	if !auditCompactionEqual(sealed, pending) {
+		return false, fmt.Errorf("audit publication %s: %w", pending.Compaction.PublicationID, errCompactionConflict)
+	}
+	return true, nil
+}
+
+// auditCompactionEqual reports whether two compaction audit records carry the
+// same producer-owned fields. At, PrevHash, and Hash are sink-owned and stay
+// out of the comparison; the payload compares through the shared canonical
+// segment.
+func auditCompactionEqual(a, b stores.AuditRecord) bool {
+	return a.Kind == b.Kind && a.SessionID == b.SessionID && a.RunID == b.RunID &&
+		a.RootRunID == b.RootRunID && a.Flow == b.Flow && a.Subject == b.Subject &&
+		a.Tenant == b.Tenant && a.Tool == b.Tool && a.Effect == b.Effect &&
+		a.ArgsChecksum == b.ArgsChecksum && a.Decision == b.Decision &&
+		a.Host == b.Host && a.Reason == b.Reason && a.Confidence == b.Confidence &&
+		a.Approver == b.Approver && a.Verdict == b.Verdict && a.Outcome == b.Outcome &&
+		a.ResultSHA == b.ResultSHA && a.ResultBytes == b.ResultBytes &&
+		a.Stage == b.Stage && a.Model == b.Model && a.ModelVersion == b.ModelVersion &&
+		a.ManifestHash == b.ManifestHash &&
+		string(stores.CompactionAuditHashBytes(a.Compaction)) == string(stores.CompactionAuditHashBytes(b.Compaction))
 }

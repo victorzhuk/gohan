@@ -138,6 +138,25 @@ func (r *Runtime) Step(ctx context.Context, st runtime.State) (runtime.State, []
 	}
 	r.restore(st)
 	r.pending = nil
+	// A resumed run executes its checkpointed pending calls under their
+	// recorded ids before another model invocation: the pending assistant
+	// message is already in the restored backend history, so an approved
+	// call never regenerates through the model. One pending call clears
+	// only after its result settles, so a new suspension names the new
+	// pending call, never the replayed ask.
+	for len(st.Pending) > 0 {
+		call := st.Pending[0]
+		res, err := r.replayCall(ctx, call)
+		if err != nil {
+			var se *types.SuspendError
+			if errors.As(err, &se) {
+				return r.park(st, se), nil, runtime.Continue, se
+			}
+			return st, nil, runtime.Continue, err
+		}
+		r.msgs = append(r.msgs, res)
+		st.Pending = st.Pending[1:]
+	}
 	ag, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Model: turnModel{rt: r},
 		ToolsConfig: adk.ToolsConfig{
@@ -164,11 +183,12 @@ func (r *Runtime) Step(ctx context.Context, st runtime.State) (runtime.State, []
 		}
 		if se := r.takeSuspend(); se != nil {
 			// A governed component parked the run; the driver owns the
-			// checkpoint ordering, so the signal crosses as-is.
-			return r.withCheckpoint(st), nil, runtime.Continue, se
+			// checkpoint ordering, so the signal crosses as-is and the
+			// parked calls land in the state's pending queue.
+			return r.park(st, se), nil, runtime.Continue, se
 		}
 		if se, ok := errors.AsType[*types.SuspendError](err); ok {
-			return r.withCheckpoint(st), nil, runtime.Continue, se
+			return r.park(st, se), nil, runtime.Continue, se
 		}
 		return st, nil, runtime.Continue, err
 	}
@@ -185,7 +205,35 @@ func (r *Runtime) Step(ctx context.Context, st runtime.State) (runtime.State, []
 	return st, []types.Event{types.AssistantMessage{Message: res.asMessage()}}, runtime.Continue, nil
 }
 
+// replayCall runs one checkpointed pending call through its governed tool
+// under the recorded id and returns the result message the backend history
+// continues from.
+func (r *Runtime) replayCall(ctx context.Context, call types.ToolUse) (types.Message, error) {
+	for _, t := range r.run.Tools {
+		if t.Spec().Name != call.Name {
+			continue
+		}
+		res, err := t.Call(types.WithToolUse(ctx, call), call.Args)
+		if err != nil {
+			return types.Message{}, err
+		}
+		res.ID = call.ID
+		return types.Message{Role: types.RoleUser, Blocks: []types.Block{res}}, nil
+	}
+	return types.Message{}, fmt.Errorf("eino runtime: pending call %q names no declared tool", call.Name)
+}
+
 var _ runtime.Runtime = (*Runtime)(nil)
+
+// park records the calls a governed component suspended on into the
+// state's pending queue, so the driver's approval persistence sees the
+// same head-of-queue shape a native batch park produces.
+func (r *Runtime) park(st runtime.State, se *types.SuspendError) runtime.State {
+	if calls, ok := se.Payload.([]types.ToolUse); ok && len(calls) > 0 && len(st.Pending) == 0 {
+		st.Pending = calls
+	}
+	return r.withCheckpoint(st)
+}
 
 func (r *Runtime) einoTools() []tool.BaseTool {
 	if len(r.run.Tools) == 0 {
@@ -384,6 +432,36 @@ func (t turnTool) InvokableRun(ctx context.Context, args string, _ ...tool.Optio
 		return "", fmt.Errorf("eino runtime: bridge tool result: %w", err)
 	}
 	return string(b), nil
+}
+
+// toolCallIDHandler binds the backend call id each tool wrapper receives
+// onto the caller context, so the governed core can read the identity the
+// backend generated for the call.
+type toolCallIDHandler struct {
+	*adk.BaseChatModelAgentMiddleware
+}
+
+// NewToolCallIDHandler returns the middleware that carries the backend
+// tool call id through the caller context. Install it in
+// ChatModelAgentConfig.Handlers; a call without it fails closed.
+func NewToolCallIDHandler() adk.ChatModelAgentMiddleware {
+	return &toolCallIDHandler{}
+}
+
+func (h *toolCallIDHandler) WrapInvokableToolCall(_ context.Context, endpoint adk.InvokableToolCallEndpoint, tCtx *adk.ToolContext) (adk.InvokableToolCallEndpoint, error) {
+	call := types.ToolUse{}
+	if tCtx != nil {
+		call.ID = tCtx.CallID
+	}
+	return WithToolCallID(endpoint, call), nil
+}
+
+// WithToolCallID wraps a tool call endpoint so it binds call onto the
+// caller context before the endpoint runs.
+func WithToolCallID(endpoint adk.InvokableToolCallEndpoint, call types.ToolUse) adk.InvokableToolCallEndpoint {
+	return func(ctx context.Context, argsInJSON string, opts ...tool.Option) (string, error) {
+		return endpoint(types.WithToolUse(ctx, call), argsInJSON, opts...)
+	}
 }
 
 func toSchemaMessages(in []types.Message) []*schema.Message {

@@ -1,3 +1,6 @@
+// Package egress builds policy-checked HTTP clients. A client's time limit
+// covers the whole response including the body read; the per-request transport
+// and the limit are released exactly once when the body ends.
 package egress
 
 import (
@@ -11,6 +14,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/victorzhuk/gohan/core/types"
@@ -79,22 +83,34 @@ type transport struct {
 	cfg    config
 }
 
+// RoundTrip resolves and checks the host once, dials the checked address, and
+// returns a body whose lifetime carries the policy time limit: the limit ends
+// when the body ends, and the per-response release runs exactly once on the
+// first terminal read, the first Close, or an early return before a response.
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	ctx := req.Context()
+	var cancel context.CancelFunc
 	if t.cfg.timeout > 0 {
-		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, t.cfg.timeout)
-		defer cancel()
 		req = req.WithContext(ctx)
+	}
+	base := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
+	release := func() {
+		base.CloseIdleConnections()
+		if cancel != nil {
+			cancel()
+		}
 	}
 	ips, err := t.validatedIPs(ctx, req.URL)
 	if err != nil {
+		release()
 		return nil, err
 	}
-	base := http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
 	if t.cfg.proxy != nil {
 		if t.cfg.proxy.Scheme != "http" && t.cfg.proxy.Scheme != "https" {
-			return nil, errors.Join(t.denied(req.Context(), req.URL, "proxy scheme not supported"), ErrEgressProxyUnsupported)
+			err := errors.Join(t.denied(req.Context(), req.URL, "proxy scheme not supported"), ErrEgressProxyUnsupported)
+			release()
+			return nil, err
 		}
 		base.Proxy = http.ProxyURL(t.cfg.proxy)
 		base.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -116,17 +132,20 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := base.RoundTrip(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(req.Context().Err(), context.DeadlineExceeded) {
-			return nil, t.denied(req.Context(), req.URL, "timeout")
+			err = t.denied(req.Context(), req.URL, "timeout")
 		}
+		release()
 		return nil, err
 	}
 	if resp.ContentLength > t.policy.MaxBytes {
 		_ = resp.Body.Close()
+		release()
 		return nil, t.denied(req.Context(), req.URL, "size limit "+strconv.FormatInt(t.policy.MaxBytes, 10))
 	}
 	resp.Body = &limitedBody{
 		ReadCloser: resp.Body,
 		limit:      t.policy.MaxBytes,
+		release:    release,
 		deny: func() error {
 			return t.denied(req.Context(), req.URL, "size limit "+strconv.FormatInt(t.policy.MaxBytes, 10))
 		},
@@ -256,25 +275,51 @@ func (t *transport) denied(_ context.Context, u *url.URL, reason string) error {
 
 type limitedBody struct {
 	io.ReadCloser
-	limit int64
-	read  int64
-	done  bool
-	deny  func() error
+	limit   int64
+	read    int64
+	done    bool
+	deny    func() error
+	release func()
+	once    sync.Once
 }
 
+// releaseOnce runs the per-response release exactly once. It also closes the
+// embedded body on every terminal read result so the caller does not have to
+// close the body to release the transport.
+func (b *limitedBody) releaseOnce() {
+	if b.release != nil {
+		b.once.Do(b.release)
+	}
+}
+
+// Close releases the transport once and closes the underlying body. Repeated
+// calls are safe.
+func (b *limitedBody) Close() error {
+	b.releaseOnce()
+	return b.ReadCloser.Close()
+}
+
+// Read enforces the byte cap. Any terminal read result, including io.EOF and
+// the policy deadline error, closes the underlying body and releases the
+// transport before returning the bytes and the original error unchanged.
 func (b *limitedBody) Read(p []byte) (int, error) {
 	if b.done {
+		b.releaseOnce()
+		_ = b.ReadCloser.Close()
 		return 0, io.EOF
 	}
 	if b.read >= b.limit {
 		var probe [1]byte
 		n, err := b.ReadCloser.Read(probe[:])
 		if n > 0 {
-			_ = b.Close()
+			b.releaseOnce()
+			_ = b.ReadCloser.Close()
 			return 0, b.deny()
 		}
 		if err != nil {
 			b.done = true
+			b.releaseOnce()
+			_ = b.ReadCloser.Close()
 		}
 		return 0, err
 	}
@@ -284,5 +329,10 @@ func (b *limitedBody) Read(p []byte) (int, error) {
 	}
 	n, err := b.ReadCloser.Read(p)
 	b.read += int64(n)
+	if err != nil {
+		b.done = true
+		b.releaseOnce()
+		_ = b.ReadCloser.Close()
+	}
 	return n, err
 }

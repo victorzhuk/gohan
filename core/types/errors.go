@@ -54,6 +54,7 @@ var (
 	ErrToolName             = errors.New("gohan: tool name must match ^[a-z][a-z0-9_]{0,63}$")
 	ErrToolDescription      = errors.New("gohan: tool description carries an instruction directive")
 	ErrVerifyAuditUnbound   = errors.New("gohan: verify audit log is not bound")
+	ErrForeignCallID        = errors.New("gohan: foreign tool call carries no call id")
 
 	// model
 	ErrNoProviderKey    = errors.New("gohan: no provider key for this tenant and profile")

@@ -39,7 +39,11 @@ func NewJournal(db *DB, opts ...JournalOption) *Journal {
 }
 
 // Reserve pins the call key to a reserved entry, or returns the live entry
-// a retry reuses. A fingerprint mismatch on a live entry is refused with
+// a retry reuses. The reservation is insert-first: a fresh call key is
+// claimed by an insert that conflicts against the (session_id, call_id)
+// unique index, so concurrent first reservations serialise on the index
+// instead of a missing-row lock, and exactly one caller sees created=true.
+// A fingerprint mismatch on a live entry is refused with
 // stores.ErrJournalFingerprintMismatch; an expired entry is replaced.
 func (j *Journal) Reserve(ctx context.Context, k types.CallKey, tool string, fp stores.Fingerprint, args json.RawMessage) (stores.Entry, bool, error) {
 	now := j.db.clock()
@@ -60,7 +64,8 @@ func (j *Journal) Reserve(ctx context.Context, k types.CallKey, tool string, fp 
 
 // ReserveTx is the transaction-taking variant of Reserve: the caller-owned
 // transaction carries the reservation and the tool's own write to one
-// commit.
+// commit. It shares the insert-first statement path with Reserve, so both
+// entry points stay atomic inside a caller transaction.
 func (j *Journal) ReserveTx(ctx context.Context, tx pgx.Tx, k types.CallKey, tool string, fp stores.Fingerprint, args json.RawMessage) (stores.Entry, bool, error) {
 	return reserveOnTx(ctx, txConn{tx}, j.schemas, k, tool, fp, args, j.db.clock(), j.ttl)
 }
@@ -233,6 +238,7 @@ WHERE session_id = $1 AND call_id = $2 AND state = 0`,
 }
 
 func reserveOnTx(ctx context.Context, q executor, reg *stores.SchemaRegistry, k types.CallKey, tool string, fp stores.Fingerprint, args json.RawMessage, now time.Time, ttl time.Duration) (stores.Entry, bool, error) {
+	var raw []byte
 	fresh := stores.Entry{
 		State:       stores.Reserved,
 		Fingerprint: fp,
@@ -245,18 +251,31 @@ func reserveOnTx(ctx context.Context, q executor, reg *stores.SchemaRegistry, k 
 	if err != nil {
 		return stores.Entry{}, false, err
 	}
-	var raw []byte
+	// Insert first: the unique index on (session_id, call_id) is the
+	// serialisation point, so ten concurrent first reservations of one
+	// call key produce one inserted row and nine conflicts, never a
+	// unique-violation.
+	var one int
+	err = q.QueryRow(ctx, `
+INSERT INTO journal_record
+    (session_id, call_id, state, fingerprint, tool, args, at, expires_at, payload)
+VALUES ($1, $2, 0, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (session_id, call_id) DO NOTHING
+RETURNING 1`,
+		k.SessionID, k.CallID, string(fp), tool, args, now, now.Add(ttl), encoded).Scan(&one)
+	switch {
+	case err == nil:
+		return fresh, true, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		// The row exists: read it under the row lock and take the
+		// live/completed/expired branch.
+	case err != nil:
+		return stores.Entry{}, false, fmt.Errorf("journal reserve: %w", err)
+	}
 	err = q.QueryRow(ctx, `SELECT payload FROM journal_record WHERE session_id = $1 AND call_id = $2 FOR UPDATE`, k.SessionID, k.CallID).Scan(&raw)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		if _, err := q.Exec(ctx, `
-INSERT INTO journal_record
-    (session_id, call_id, state, fingerprint, tool, args, at, expires_at, payload)
-VALUES ($1, $2, 0, $3, $4, $5, $6, $7, $8)`,
-			k.SessionID, k.CallID, string(fp), tool, args, now, now.Add(ttl), encoded); err != nil {
-			return stores.Entry{}, false, fmt.Errorf("journal reserve: %w", err)
-		}
-		return fresh, true, nil
+		return stores.Entry{}, false, stores.ErrJournalCompleteMissed
 	case err != nil:
 		return stores.Entry{}, false, fmt.Errorf("journal reserve: %w", err)
 	}

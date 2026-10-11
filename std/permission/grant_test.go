@@ -29,7 +29,7 @@ func TestSessionGrant(t *testing.T) {
 		store := NewMemoryGrantStore(now)
 		suspended := request("deploy_prod", "deploy_prod:{\"env\":\"prod\"}")
 		suspended.Eligible.Scopes = []string{"approve:deploy_prod"}
-		_, _, err := ApproveGrant(ctx, store, "s1", suspended, types.Principal{Subject: "op", Scopes: []string{"session:write"}}, 2*time.Hour)
+		_, _, err := ApproveGrant(ctx, store, "s1", suspended, types.Principal{Subject: "op", Scopes: []string{"session:write"}}, 2*time.Hour, now())
 		if !errors.Is(err, corepermission.ErrApproverNotEligible) {
 			t.Fatalf("ineligible high-risk grant: got %v, want ErrApproverNotEligible", err)
 		}
@@ -41,9 +41,12 @@ func TestSessionGrant(t *testing.T) {
 	t.Run("permission.grant-removes-the-repeat-ask", func(t *testing.T) {
 		store := NewMemoryGrantStore(now)
 		suspended := request("create_booking", "create_booking:{\"room\":2}")
-		g, audit, err := ApproveGrant(ctx, store, "s1", suspended, types.Principal{Subject: "op", Scopes: []string{"approve:create_booking"}}, 2*time.Hour)
+		g, audit, err := ApproveGrant(ctx, store, "s1", suspended, types.Principal{Subject: "op", Scopes: []string{"approve:create_booking"}}, 2*time.Hour, now())
 		if err != nil {
 			t.Fatalf("approve: %v", err)
+		}
+		if want := now().Add(2 * time.Hour); !g.ExpiresAt.Equal(want) {
+			t.Fatalf("grant expiry = %v, want approval instant %v plus ttl", g.ExpiresAt, want)
 		}
 		if audit.Event != GrantedByScope {
 			t.Fatalf("audit event: got %q, want %q", audit.Event, GrantedByScope)
@@ -58,7 +61,7 @@ func TestSessionGrant(t *testing.T) {
 	t.Run("permission.fingerprint-change-misses-the-grant", func(t *testing.T) {
 		store := NewMemoryGrantStore(now)
 		suspended := request("create_booking", "create_booking:{\"room\":2}")
-		g, _, err := ApproveGrant(ctx, store, "s1", suspended, types.Principal{Subject: "op", Scopes: []string{"approve:create_booking"}}, 2*time.Hour)
+		g, _, err := ApproveGrant(ctx, store, "s1", suspended, types.Principal{Subject: "op", Scopes: []string{"approve:create_booking"}}, 2*time.Hour, now())
 		if err != nil {
 			t.Fatalf("approve: %v", err)
 		}
@@ -76,7 +79,7 @@ func TestSessionGrant(t *testing.T) {
 	t.Run("permission.grant-does-not-cross-sessions-or-principals", func(t *testing.T) {
 		store := NewMemoryGrantStore(now)
 		suspended := request("create_booking", "create_booking:{\"room\":2}")
-		g, _, err := ApproveGrant(ctx, store, "s1", suspended, types.Principal{Subject: "op", Scopes: []string{"approve:create_booking"}}, 2*time.Hour)
+		g, _, err := ApproveGrant(ctx, store, "s1", suspended, types.Principal{Subject: "op", Scopes: []string{"approve:create_booking"}}, 2*time.Hour, now())
 		if err != nil {
 			t.Fatalf("approve: %v", err)
 		}

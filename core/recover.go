@@ -259,26 +259,28 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 		ctx = withPendingReplay(ctx)
 	}
 	var driveErr error
-	if newRT, ok := s.resolvedForeign(run.Flow); ok {
+	if _, ok := s.resolvedForeign(run.Flow); ok {
 		// A registered foreign flow re-drives through the same governed
-		// wiring a live run got: the ledger seeded from what the run
-		// record reports as spent, and the governed components over the
-		// reloaded history.
-		ledger := chains.NewLimitsStateSeeded(run.Cost, chains.WithCostTelemetry(s.telemetry))
+		// wiring a live run got: the context, the runtime and the ledger
+		// foreignAgentRun returns stay the one ledger the run charges,
+		// and the returned runtime is the accounting decorator.
 		var hist stores.History
 		if s.stores.SessionLog != nil {
 			if h, err := s.stores.SessionLog.Load(ctx, run.SessionID); err == nil {
 				hist = h
 			}
 		}
-		fctx, _, fag, _, ferr := s.foreignAgentRun(run.Flow, hist, run.Cost, nil)
+		if st.Foreign != nil {
+			ctx = withForeignProgress(ctx, st.Foreign)
+		}
+		fctx, frt, fag, fled, ferr := s.foreignAgentRun(ctx, run.SessionID, run.Flow, hist, run.Cost, nil)
 		if ferr != nil {
 			return s.abandonWith(ctx, lease, run, fmt.Errorf("recover run %s: %w", run.RunID, ferr))
 		}
-		ctx = chains.WithLimitsState(fctx, ledger)
+		ctx = fctx
 		fag.Save = s.stores.Checkpoints.Put
-		ag, rt = fag, newRT()
-		opts = append(opts, WithLifecycleLedger(ledger))
+		ag, rt = fag, frt
+		opts = append(opts, WithLifecycleLedger(fled))
 		lc = NewLifecycle(opts...)
 	} else if cfg, ok := s.resolvedNative(run.Flow); ok {
 		// A registered native flow re-drives through the governed path built
@@ -513,6 +515,13 @@ func (s *Stack) replayState(ctx context.Context, run stores.Run, rt runtime.Runt
 		// The re-drive appends where the crash left the log: the pending
 		// calls' results land after whatever the session already carries.
 		HistoryVersion: s.sessionVersion(ctx, run.SessionID),
+	}
+	if _, ok := s.resolvedForeign(run.Flow); ok {
+		// A foreign flow keeps its backend inside the runtime, not in
+		// native bytes: Backend stays empty and the recovered drive
+		// rebuilds admission accounting from the run's admission records.
+		st.Pending = run.Pending
+		return st, nil, stores.ResumeInput{}, nil
 	}
 	if _, ok := s.resolvedNative(run.Flow); ok {
 		if err := s.reconstructNativeRunning(ctx, run, &st); err != nil {

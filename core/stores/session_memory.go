@@ -61,20 +61,21 @@ type sharedStateRow struct {
 // MemorySessionLog is the in-memory SessionLog and SessionIndex reference
 // implementation.
 type MemorySessionLog struct {
-	mu          sync.Mutex
-	now         func() time.Time
-	principals  PrincipalSource
-	dependents  []SessionDependent
-	leases      SessionLeaseHolder
-	audit       AuditLog
-	archivedFor time.Duration
-	sessions    map[string]*sessionRecord
-	blobIDs     map[string]map[string]blobIDRow
-	msgSeq      int64
-	idSeq       int64
-	schemas     *SchemaRegistry
-	raw         *MemoryRawRecords
-	region      string
+	mu           sync.Mutex
+	now          func() time.Time
+	principals   PrincipalSource
+	dependents   []SessionDependent
+	leases       SessionLeaseHolder
+	audit        AuditLog
+	archivedFor  time.Duration
+	sessions     map[string]*sessionRecord
+	blobIDs      map[string]map[string]blobIDRow
+	publications map[string]map[string]compactionPublicationRow
+	msgSeq       int64
+	idSeq        int64
+	schemas      *SchemaRegistry
+	raw          *MemoryRawRecords
+	region       string
 }
 
 type MemorySessionOption func(*MemorySessionLog)
@@ -250,12 +251,13 @@ type blobIDRow struct {
 
 func NewMemorySessionLog(opts ...MemorySessionOption) *MemorySessionLog {
 	s := &MemorySessionLog{
-		now:         time.Now,
-		archivedFor: defaultArchivedHold,
-		sessions:    make(map[string]*sessionRecord),
-		blobIDs:     make(map[string]map[string]blobIDRow),
-		schemas:     NewSchemaRegistry(),
-		raw:         NewMemoryRawRecords(),
+		now:          time.Now,
+		archivedFor:  defaultArchivedHold,
+		sessions:     make(map[string]*sessionRecord),
+		blobIDs:      make(map[string]map[string]blobIDRow),
+		publications: make(map[string]map[string]compactionPublicationRow),
+		schemas:      NewSchemaRegistry(),
+		raw:          NewMemoryRawRecords(),
 	}
 	for _, o := range opts {
 		o(s)
@@ -385,6 +387,161 @@ func (s *MemorySessionLog) Append(ctx context.Context, sessionID string, expecte
 	return rec.hist.Version, nil
 }
 
+// compactionPublicationRow is one accepted publication identity: the append
+// version it committed at and the immutable producer payload it committed.
+type compactionPublicationRow struct {
+	version int64
+	payload CompactionPublication
+}
+
+// AppendCompaction accepts a compaction publication as exactly one durable
+// message with a predetermined identity. Validation and authorization run
+// before the identity lookup, so a refused request never exposes a stored
+// publication. An identical retry returns the originally committed append
+// version even when expectedVersion is stale; a conflicting payload is
+// refused without mutation; an absent identity with a stale expectedVersion
+// is refused with types.ErrVersionConflict.
+func (s *MemorySessionLog) AppendCompaction(ctx context.Context, sessionID string, expectedVersion int64, message types.Message) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.sessions[sessionID]
+	if !ok {
+		return 0, fmt.Errorf("compaction session %s: %w", sessionID, ErrSessionNotFound)
+	}
+	payload, err := decodeCompactionPublication(message, sessionID)
+	if err != nil {
+		return 0, fmt.Errorf("compaction session %s: %w", sessionID, err)
+	}
+	p, err := s.principal(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("compaction session %s: %w", sessionID, err)
+	}
+	if err := s.checkAccess(p, rec.meta.Owner, scopeSessionWrite); err != nil {
+		return 0, fmt.Errorf("compaction session %s: %w", sessionID, err)
+	}
+	if row, ok := s.publications[sessionID][payload.PublicationID]; ok {
+		if row.payload != payload {
+			return 0, fmt.Errorf("compaction publication %s: %w", payload.PublicationID, errCompactionConflict)
+		}
+		return row.version, nil
+	}
+	if expectedVersion != rec.hist.Version {
+		return 0, fmt.Errorf("compaction session %s at version %d: %w", sessionID, expectedVersion, types.ErrVersionConflict)
+	}
+	stored := message
+	stored.ID = payload.PublicationID
+	stored.Meta = cloneMessageMeta(message.Meta)
+	stored.Meta[MetadataPayloadKey] = payload
+	payloadBytes, err := json.Marshal(stored)
+	if err != nil {
+		return 0, fmt.Errorf("compaction message: %w", err)
+	}
+	envelope, err := json.Marshal(RecordEnvelope{
+		Shape:         "Message",
+		SchemaVersion: int(CurrentSchemaVersion),
+		Payload:       payloadBytes,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("compaction message: %w", err)
+	}
+	now := s.now()
+	newVersion := rec.hist.Version + 1
+	rec.hist.Messages = append(rec.hist.Messages, stored)
+	rec.rawMessages = append(rec.rawMessages, envelope)
+	rec.hist.Version = newVersion
+	rec.hist.Owner = rec.meta.Owner
+	rec.meta.Messages = len(rec.hist.Messages)
+	rec.meta.LastActivity = now
+	if s.publications[sessionID] == nil {
+		s.publications[sessionID] = make(map[string]compactionPublicationRow)
+	}
+	s.publications[sessionID][payload.PublicationID] = compactionPublicationRow{
+		version: newVersion,
+		payload: payload,
+	}
+	return newVersion, nil
+}
+
+// decodeCompactionPublication validates the durable payload, the message
+// identity and the summary checksum of an incoming publication and returns
+// the payload with its PublicationID assigned. It runs no store lookup.
+func decodeCompactionPublication(message types.Message, sessionID string) (CompactionPublication, error) {
+	raw, ok := message.Meta[MetadataPayloadKey]
+	if !ok {
+		return CompactionPublication{}, fmt.Errorf("metadata %s: %w", MetadataPayloadKey, errCompactionPayload)
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return CompactionPublication{}, fmt.Errorf("metadata %s: %w", MetadataPayloadKey, errCompactionPayload)
+	}
+	var payload CompactionPublication
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		return CompactionPublication{}, fmt.Errorf("metadata %s: %w", MetadataPayloadKey, errCompactionPayload)
+	}
+	if payload.SessionID != sessionID {
+		return CompactionPublication{}, fmt.Errorf("payload session %s: %w", payload.SessionID, errCompactionPayload)
+	}
+	if payload.RunID == "" || payload.FromVersion < 0 || payload.ToVersion != payload.FromVersion+1 {
+		return CompactionPublication{}, fmt.Errorf("payload versions %d..%d: %w", payload.FromVersion, payload.ToVersion, errCompactionPayload)
+	}
+	identity := CompactionPublicationID(sessionID, payload.RunID, payload.FromVersion)
+	if payload.PublicationID != "" && payload.PublicationID != identity {
+		return CompactionPublication{}, fmt.Errorf("payload publication %s: %w", payload.PublicationID, errCompactionPayload)
+	}
+	if message.ID != "" && message.ID != identity {
+		return CompactionPublication{}, fmt.Errorf("message id %s: %w", message.ID, errCompactionPayload)
+	}
+	summary, err := compactionMessageSummary(message)
+	if err != nil {
+		return CompactionPublication{}, err
+	}
+	checksum, err := CompactionSummarySHA(summary)
+	if err != nil {
+		return CompactionPublication{}, fmt.Errorf("summary checksum: %w", errCompactionPayload)
+	}
+	if payload.SummarySHA != checksum {
+		return CompactionPublication{}, fmt.Errorf("summary sha %s: %w", payload.SummarySHA, errCompactionPayload)
+	}
+	payload.PublicationID = identity
+	return payload, nil
+}
+
+// compactionMessageSummary returns the summary of the message's single
+// compaction block.
+func compactionMessageSummary(message types.Message) ([]types.Block, error) {
+	var summary []types.Block
+	found := false
+	for _, b := range message.Blocks {
+		cb, ok := b.(types.Compaction)
+		if !ok {
+			continue
+		}
+		if found {
+			return nil, fmt.Errorf("message blocks: multiple compaction blocks: %w", errCompactionPayload)
+		}
+		summary = cb.Summary
+		found = true
+	}
+	if !found {
+		return nil, fmt.Errorf("message blocks: no compaction block: %w", errCompactionPayload)
+	}
+	return summary, nil
+}
+
+// cloneMessageMeta copies a message's Meta map one level deep, so a caller
+// mutation after the append cannot reach stored metadata.
+func cloneMessageMeta(meta map[string]any) map[string]any {
+	if meta == nil {
+		return nil
+	}
+	clone := make(map[string]any, len(meta))
+	for k, v := range meta {
+		clone[k] = v
+	}
+	return clone
+}
+
 // Link records a child or shadow session of a parent for the delete cascade.
 // Forks are never linked: they survive a parent delete.
 func (s *MemorySessionLog) Link(ctx context.Context, parentID, childID string, kind SessionKind) error {
@@ -424,6 +581,7 @@ func (s *MemorySessionLog) removeLocked(ctx context.Context, sessionID string) {
 	}
 	delete(s.sessions, sessionID)
 	delete(s.blobIDs, sessionID)
+	delete(s.publications, sessionID)
 	for _, kind := range []SessionKind{SessionChild, SessionShadow} {
 		for _, kid := range rec.kidsOf[kind] {
 			s.removeLocked(ctx, kid)

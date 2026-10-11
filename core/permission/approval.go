@@ -60,6 +60,24 @@ type ApprovalPolicySource interface {
 	ApprovalPolicy(ctx context.Context, risk types.RiskTier, tool string, reversible bool) (ApprovalPolicy, error)
 }
 
+// Grant is the stored permission one approval produced: a call of tool
+// with this fingerprint by subject skips the gate until ExpiresAt.
+type Grant struct {
+	Tool        string
+	Fingerprint stores.Fingerprint
+	Subject     string
+	Approver    string
+	ExpiresAt   time.Time
+}
+
+// GrantStore keeps session grants. The key is the session id, the tool
+// name, the call fingerprint and the verified approving subject. Grants
+// live inside one session only; a fork or a new session starts empty.
+type GrantStore interface {
+	Put(ctx context.Context, sessionID string, g Grant) error
+	Find(ctx context.Context, sessionID, tool string, fp stores.Fingerprint, subject string) (Grant, bool, error)
+}
+
 // ApprovalRequest is the payload a suspended call carries.
 type ApprovalRequest struct {
 	Tool         types.ToolSpec

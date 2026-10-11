@@ -30,6 +30,11 @@ type Conversation interface {
 	Attach(ctx context.Context, runID string, afterSeq int64) iter.Seq2[Event, error]
 	Cancel(ctx context.Context, sessionID string) error
 	Steer(ctx context.Context, sessionID string, msg Message) error
+	// ActiveRun reports the id of the run the session currently drives:
+	// state Running or Resuming with a live lease. Anything else,
+	// including a suspended, terminal or lease-expired run, reports
+	// types.ErrRunNotActive without an id.
+	ActiveRun(ctx context.Context, sessionID string) (string, error)
 }
 
 // SessionControlReader is the optional per-session control read on a
@@ -78,6 +83,7 @@ type conversation struct {
 	redactionMaps      stores.RedactionMaps
 	creds              types.CredentialSource
 	policySrc          permission.ApprovalPolicySource
+	approvalGrants     permission.GrantStore
 	toolSpecs          func(name string) (types.ToolSpec, bool)
 	verifier           types.Verifier
 	journal            stores.Journal
@@ -107,6 +113,19 @@ type conversation struct {
 	live    map[string]string
 	waiters map[string]map[chan struct{}]struct{}
 	ended   map[string]bool
+}
+
+// bindStack binds the stack-scoped state every constructor shares before
+// its option loop: the shutdown admission stack, the tenant, the title
+// profile and the frozen flag snapshot. Each constructor calls it before
+// reading per-flow configuration, so both flows admit runs against the
+// same stack.
+func (c *conversation) bindStack(stack *Stack) {
+	c.stack = stack
+	c.tenant = stack.Tenant()
+	c.titleProfile = stack.titleProfile
+	c.flags = stack.flags
+	c.frozen = stack.frozen
 }
 
 // markRunEnded records that the run produced its last event and wakes any
@@ -458,6 +477,54 @@ func (c *conversation) Cancel(ctx context.Context, sessionID string) error {
 		time.Sleep(time.Millisecond)
 	}
 	return nil
+}
+
+// ActiveRun reports the id of the run the session currently drives. The
+// owner check matches Cancel's, then the in-process live map resolves
+// first and the optional SessionRunFinder names a run another pod
+// started. A candidate counts only while its state is Running or
+// Resuming with a live lease; a stale local entry, a suspended run and a
+// terminal run all report types.ErrRunNotActive without an id.
+func (c *conversation) ActiveRun(ctx context.Context, sessionID string) (string, error) {
+	if err := c.checkSteerOwner(ctx, sessionID); err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	runID, ok := c.live[sessionID]
+	c.mu.Unlock()
+	if ok && c.runActive(ctx, sessionID, runID) {
+		return runID, nil
+	}
+	if f, ok := c.runs.(SessionRunFinder); ok {
+		r, err := f.RunForSession(ctx, sessionID)
+		if err == nil {
+			if stores.RunActive(r, time.Now()) {
+				return r.RunID, nil
+			}
+			return "", types.ErrRunNotActive
+		}
+	}
+	return "", types.ErrRunNotActive
+}
+
+// runActive validates a local live-map entry against the runs store. A
+// store with SessionRunFinder judges the lease on its own clock; one
+// without it answers through ByID and the shared active rule. A store
+// that can report neither keeps the local answer, matching the lookup
+// Cancel performs.
+func (c *conversation) runActive(ctx context.Context, sessionID, runID string) bool {
+	if f, ok := c.runs.(SessionRunFinder); ok {
+		r, err := f.RunForSession(ctx, sessionID)
+		return err == nil && r.RunID == runID
+	}
+	b, ok := c.runs.(interface {
+		ByID(context.Context, string) (stores.Run, error)
+	})
+	if !ok {
+		return true
+	}
+	r, err := b.ByID(ctx, runID)
+	return err == nil && stores.RunActive(r, time.Now())
 }
 
 // find resolves the session's live run: one this process started first,

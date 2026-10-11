@@ -1,0 +1,94 @@
+# Tasks
+
+Repair only `adapter/postgres`; every port signature stays unchanged. A task is done when its listed scenario IDs pass on the public path through the named store entry point. `-tags full` tasks need Docker and a bounded timeout. Lane unit acceptance is `timeout 3m go -C adapter/postgres test -short -timeout 2m ./...`; lane integration acceptance is `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -v ./...`.
+
+## 1. Output claims migration
+
+- [x] 1.1 Add goose migration `adapter/postgres/migrations/00005_output_claims.sql`: create `output_claim (ref text NOT NULL, session_id text NOT NULL, tenant text NOT NULL, subject text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (ref, session_id))` with `CREATE INDEX output_claim_owner ON output_claim (tenant, subject)` and `CREATE INDEX output_claim_session ON output_claim (session_id)`; create `output_legacy_claim (ref text NOT NULL, tenant text NOT NULL, subject text NOT NULL, PRIMARY KEY (ref, tenant, subject))` with `CREATE INDEX output_legacy_claim_owner ON output_legacy_claim (tenant, subject)`; create `session_cursor (cursor_id text NOT NULL PRIMARY KEY, tenant text NOT NULL, subject text NOT NULL, filters text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL)` with `CREATE INDEX session_cursor_expires ON session_cursor (expires_at)`; create `session_cursor_item (cursor_id text NOT NULL REFERENCES session_cursor (cursor_id) ON DELETE CASCADE, ordinal bigint NOT NULL, session_id text NOT NULL, PRIMARY KEY (cursor_id, ordinal))`; write a real `-- +goose Down` dropping all four tables.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestStores'` with the `stores.pg-fresh-equals-upgraded` subtest, and a manual `up` then `down` then `up` on one scratch schema leaves no residue.
+- [x] 1.2 Add the reconstructive data step to the same migration: insert session claims by joining `run_record.result_ref` and `run_record.session_id` to `output_record` and `session_record`, and insert one `output_legacy_claim` row per surviving `output_record` tenant and subject that has no surviving session attribution. Do not insert a synthetic session. Document in the migration header that owners discarded by an earlier `ON CONFLICT (ref) DO NOTHING` write, and bytes already erased, are irrecoverable.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestStores'` names `stores.pg-output-legacy-claims-preserved` and `stores.pg-fresh-equals-upgraded` against an upgraded fixture with legacy rows, and the fresh-versus-upgraded comparison covers legacy data behavior, not only schema shape.
+- [ ] 1.3 Confirm the migration alters no existing table and drops no column, so the previous release still runs against the new schema.
+  - verify: the `stores.pg-fresh-equals-upgraded` schema dump differs only by the four new tables, and a migrated previous-version schema accepts the previous adapter build.
+
+## 2. Output claim ledger
+
+- [x] 2.1 Change `Outputs.Put` (`adapter/postgres/outputs.go:29-47`) to take a ref-keyed transaction advisory lock in sorted order, insert the `output_record` row `ON CONFLICT (ref) DO NOTHING`, and insert a claim row for `(ref, ri.SessionID, ri.Principal.Tenant, ri.Principal.Subject)`. Commit the bytes and the claim together. Keep the ref derivation and `Get` behavior unchanged.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestOutputs'` names `stores.pg-output-put-erase-race` through `Outputs.Put`.
+- [x] 2.2 Make `Outputs.EraseSubject(tenant, subject)` (`adapter/postgres/erasure.go:283-296`) delete that subject's `output_claim` and `output_legacy_claim` rows and then delete every referenced `output_record` with no claim left, reporting the refs actually removed. Keep the row's own `(tenant, subject)` scope as the fallback for rows written before migration 00005.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestOutputs|TestErasure'` names `stores.pg-output-shared-ref-survives-erase` and `stores.pg-output-legacy-claims-preserved` through `Outputs.EraseSubject`.
+- [x] 2.3 Add `Outputs.deleteSessionDependentsTx(ctx, tx, sessionID)` and `Outputs.CopySessionDependents(ctx, from, to)` so the session cascade drops a session's claims and a fork inherits the parent's claims; register `Outputs` as a session dependent in the harness wiring.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestOutputs|TestDeleteCascade'` shows a forked session retaining a parent ref after the parent is deleted, through `SessionLog.Delete`.
+- [x] 2.4 Document the claim lifetime and the legacy owner claim on the `Outputs` type and in `adapter/postgres` package docs: a ref is content-addressed, one claim per session, delete-on-last-claim, legacy owner claims preserve pre-migration ownership, and `Get` carries no authorization.
+  - verify: `task lint` reports no doc-comment issue in `adapter/postgres`.
+- [ ] 2.5 Bind the store-suite cases for shared-ref, last-claim, legacy-claim and Put/erase race beside the existing `storetest` bindings in `adapter/postgres/storetest_bind_test.go`.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestStores'` names `stores.pg-output-shared-ref-survives-erase`, `stores.pg-output-last-claim-deletes-ref`, `stores.pg-output-legacy-claims-preserved` and `stores.pg-output-put-erase-race`, none zero-matched.
+
+## 3. Session index pagination
+
+- [x] 3.1 Rewrite `SessionLog.Sessions` (`adapter/postgres/session.go:430-489`) to select the complete matching membership in SQL: owner from `owner->>'Tenant'`/`owner->>'Subject'`, `Archived` from `archived`, `Kinds` from `kind`, `LastActivity` and `Control` from the `SessionMeta` envelope inside `session_record.payload`. Order by `LastActivity` descending then `session_id` descending. Clamp `Limit` to the default 25 and the maximum 200 before selecting. Do not read a `last_activity` column; none exists (`adapter/postgres/migrations/00001_baseline.sql:19-31`).
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestSessions'` names `stores.pg-sessions-order-and-filters` through `Sessions`, and the existing `stores.sessions-listed-by-owner`, `stores.control-in-session-index` and `stores.sessions-default-excludes-forks-children` subtests still pass.
+- [x] 3.2 Replace the bare-`session_id` cursor with the materialized snapshot from design D3. On the first page, insert the `session_cursor` header with `expires_at = created_at + stores.LeaseTTL` and write the complete ordered membership with one `INSERT ... SELECT ... row_number()` statement in the same transaction, then read the first ordinal range back. On later pages, select `WHERE cursor_id = $1 AND ordinal > $2 ORDER BY ordinal LIMIT $3`, resolve each id against the live row for current metadata, and return the last consumed ordinal as the next cursor so a deletion gap does not end the listing. Refuse a malformed, missing, expired or filter-mismatched cursor with an adapter error whose message begins `list sessions: invalid cursor`, and a cursor owned by another principal with `types.ErrSessionForbidden`. Never restart an expired cursor silently and impose no total-session cap.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestSessions'` names `stores.pg-sessions-snapshot-complete`, `stores.pg-sessions-cursor-expiration`, `stores.pg-sessions-cursor-owner-scope`, `stores.pg-sessions-cursor-membership`, `stores.pg-sessions-cursor-invalid` and `stores.pg-sessions-cursor-stable` through `Sessions`, and the existing `stores.sessions-order-last-activity` subtest still passes.
+- [x] 3.3 Prune expired cursors through the existing entry points: `Sessions` deletes expired `session_cursor` headers before it processes a first page or a continuation, and `Purge` (`adapter/postgres/session.go:382-427`) deletes expired headers inside its existing transaction even when it removes no sessions. Items go with the header through the cascade. Add no `Maintain` method and no port method.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestSessions'` names `stores.pg-sessions-cursor-pruned` through `Sessions` and through `Purge`.
+- [x] 3.4 Document the cursor contract on `adapter/postgres.SessionLog.Sessions` and in the `adapter/postgres` package docs (opaque, owner-scoped, membership-frozen, `LeaseTTL`-expiring, error prefix `list sessions: invalid cursor`), beside the existing adapter method comments. This lane edits no file under `core` or `std`, so the cursor lifetime stays an adapter behaviour and never becomes a shared contract for every `SessionIndex` implementation.
+  - verify: `task lint` reports no doc-comment issue for `adapter/postgres` and `timeout 2m go -C adapter/postgres build ./...` succeeds.
+- [x] 3.5 Register the seven pagination IDs in the adapter scenario test file beside the other `stores.*` subtests.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestStores'` names every ID from 3.2 and 3.3, none zero-matched.
+
+## 4. Journal reservation atomicity
+
+- [x] 4.1 Change `reserveOnTx` (`adapter/postgres/journal.go:235-283`) to insert-first: `INSERT ... ON CONFLICT (session_id, call_id) DO NOTHING RETURNING 1`; on a returned row return the fresh `Reserved` entry with `created=true`, otherwise read the existing row `FOR UPDATE` and run the current live/completed/expired branch unchanged.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestJournal'` names `stores.pg-journal-concurrent-reserve` through `Journal.Reserve`, and the existing `stores.concurrent-reserve`, `stores.reserve-fingerprint-mismatch`, `stores.complete-without-reservation` and `stores.same-transaction-journal` subtests still pass.
+- [x] 4.2 Confirm `ReserveTx` shares the same statement path so both entry points stay atomic inside a caller transaction.
+  - verify: the same test run drives both `Journal.Reserve` and `Journal.ReserveTx` races and passes.
+- [x] 4.3 Document the insert-first reservation on the `Reserve` and `ReserveTx` doc comments.
+  - verify: `task lint` green for `adapter/postgres`.
+
+## 5. Runs: operation-id uniqueness and run discovery
+
+- [x] 5.1 In `Runs.Start` (`adapter/postgres/runs.go:156-180`), take a transaction advisory lock for a non-empty `OperationID` before the existing session lock, keyed on an unambiguous length-prefixed `(tenant, operation_id)` tuple hashed by `hashtextextended`. Run the existing duplicate lookup only after the operation lock, keep `run_record_operation` (`adapter/postgres/migrations/00001_baseline.sql:53-55`) as the uniqueness authority, and return `stores.OperationExistsError{RunID: recorded}` for the loser. Remove the SQLSTATE `23505` re-read alternative; the failed insert has already aborted the transaction.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestRuns'` names `stores.pg-operation-id-cross-session-race` through `Runs.Start`, and the existing `stores.lease-exclusivity` and `stores.reclaim-race` subtests still pass.
+- [x] 5.2 Add `Runs.RunForSession(ctx context.Context, sessionID string) (stores.Run, error)` selecting `state IN (Running, Resuming)`, `lease_expires IS NOT NULL` and `lease_expires > $now` with `$now` from the store clock, ordered by `started_at DESC, run_id DESC`, returning the decoded `stores.Run` or `stores.ErrRunNotFound`. Satisfy the existing core `gohan.SessionRunFinder` (`core/conversation.go:41-46`) through a package-local structural assertion with the same signature; do not import `core`, and do not add or relocate the interface. Keep `Conversation.ActiveRun` and owner authorization with the lifecycle package.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestRuns'` names `stores.pg-run-for-session-active`, `stores.pg-run-for-session-none` and `stores.pg-run-for-session-ineligible` through `RunForSession`, and the existing `stores.signal-cancel-cross-pod` subtest still passes.
+- [x] 5.3 Document both behaviors on the `Runs` type and method comments, including that the lifecycle lane's `Conversation.ActiveRun` consumes `RunForSession`, and record that this lane's lookup acceptance precedes the lifecycle cross-pod acceptance.
+  - verify: `task lint` green for `adapter/postgres`.
+- [x] 5.4 Register the four IDs in the adapter scenario test file.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestStores'` names the four new IDs from 5.1 and 5.2, none zero-matched.
+
+## 6. Notice claim exclusivity
+
+- [x] 6.1 Rewrite `Runs.Notices` (`adapter/postgres/runs_notices.go:199-246`) to claim inside the notice transaction with `SELECT ... WHERE claim IS NULL OR claim <= $cutoff ORDER BY seq LIMIT $2 FOR UPDATE SKIP LOCKED`, update only the rows that transaction locked, and return only those rows. Keep `noticeClaimTTL = stores.LeaseTTL` and the store clock. Remove the compare-and-set-by-`seq` alternative.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestNotices'` names `stores.pg-notice-claim-exclusive` through `Runs.Notices`, and the existing `stores.notice-written-with-finish` subtest still passes.
+- [x] 6.2 Document the row-lock claim and its expiration on `Notices` and `AckNotice`.
+  - verify: `task lint` green for `adapter/postgres`.
+- [x] 6.3 Register the ID in the adapter scenario test file.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestStores'` names the new ID.
+
+## 7. In-transaction session cascade
+
+- [x] 7.1 Add the package-local transaction entry `deleteSessionDependentsTx(ctx context.Context, tx pgx.Tx, sessionID string) error` on `Runs`, `Notes`, `Outputs` and `Checkpoints`, each sharing one statement helper with its pool entry, as `Complete`/`CompleteTx` already do (`adapter/postgres/runs.go:532-546`, `adapter/postgres/checkpoint.go:319-336`).
+  - verify: `timeout 3m go -C adapter/postgres test -short -timeout 2m ./...` builds and `task lint` is green.
+- [x] 7.2 Change `SessionLog.removeSession` (`adapter/postgres/session.go:337-376`) to call the transaction entry through a package-local interface so `Delete`, `Purge` and `EraseSessions` delete the session and every dependent row in one commit. Every registered concrete store supplies the entry, so none falls back to the pool; the generic fallback stays only for a third-party dependent and remains outside the atomicity guarantee. Keep the recursion, deletion guards and fork-survival behavior unchanged.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestDeleteCascade'` names `stores.pg-cascade-in-one-transaction` through `Delete`, `Purge` and `EraseSessions`, each with a rollback case asserting the session and every dependent row survive, and the existing `stores.delete-cascades`, `stores.fork-survives-parent-delete` and `stores.feedback-cascades-on-erase` subtests still pass.
+- [x] 7.3 Document the transaction seam on the `SessionDependent` wiring in `adapter/postgres` docs, including the bounded atomicity guarantee.
+  - verify: `task lint` green for `adapter/postgres`.
+- [x] 7.4 Register the ID in the adapter scenario test file.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -run 'TestStores'` names the new ID.
+
+## 8. Contract, spec sync and registry (apply time)
+
+- [ ] 8.1 At apply time, sync the `stores` main spec from this delta and register exactly these proposed IDs in `openspec/scenarios.json`: `stores.pg-output-shared-ref-survives-erase`, `stores.pg-output-last-claim-deletes-ref`, `stores.pg-output-legacy-claims-preserved`, `stores.pg-output-put-erase-race`, `stores.pg-sessions-order-and-filters`, `stores.pg-sessions-cursor-stable`, `stores.pg-sessions-snapshot-complete`, `stores.pg-sessions-cursor-expiration`, `stores.pg-sessions-cursor-pruned`, `stores.pg-sessions-cursor-owner-scope`, `stores.pg-sessions-cursor-membership`, `stores.pg-sessions-cursor-invalid`, `stores.pg-journal-concurrent-reserve`, `stores.pg-operation-id-cross-session-race`, `stores.pg-notice-claim-exclusive`, `stores.pg-cascade-in-one-transaction`, `stores.pg-run-for-session-active`, `stores.pg-run-for-session-none`, `stores.pg-run-for-session-ineligible`.
+  - verify: `timeout 30s openspec validate repair-postgres-store-contracts --strict --no-interactive` reports `is valid`; `task spec:coverage` lists every ID above as covered and lists none that is absent.
+- [x] 8.2 At apply time, extend the `stores` Contract listing (`openspec/specs/stores/spec.md:641`) with the package-local transaction seams this change adds (`Runs`, `Notes`, `Outputs`, `Checkpoints` each gain `deleteSessionDependentsTx` beside the existing `CompleteTx` sentence) and regenerate the types index. No port gains a method, and the index regeneration covers what the adapter actually exposes.
+  - verify: `task api:check` reports no port-method change and the regenerated types index matches the adapter's exported surface.
+- [ ] 8.3 At apply time, record an ADR only if a decision from this change needs one; do not reserve an ADR number during authoring, and leave the ADR task unclaimed if none is needed.
+  - verify: `timeout 30s openspec validate repair-postgres-store-contracts --strict --no-interactive` still passes and the archive records either the ADR or the decision that none was required.
+
+## 9. Lane verification
+
+- [x] 9.1 Run the lane acceptance and report it as exactly the owned scenario IDs plus the public paths they drive: `SessionLog.Sessions` and `SessionLog.Purge`, `Outputs.Put` and `Outputs.Get`, `Outputs.EraseSubject`, `SessionLog.Delete`/`Purge`/`EraseSessions`, `Journal.Reserve`/`ReserveTx`, `Runs.Start`, `Runs.Notices`, `Runs.RunForSession` and `Runs.Signal`.
+  - verify: `timeout 12m go -C adapter/postgres test -tags full -timeout 10m -v ./...` and `timeout 3m go -C adapter/postgres test -short -timeout 2m ./...` and `task lint` are green; every owned ID appears as a named subtest with a nonzero match. M1 remains the completed regression floor; the global M2 gate is not a mandatory green gate for this lane.
+- [ ] 9.2 Record the change-specific regression depth at implementation: existing-service-strict behavior is asserted on every repaired public path, and each repair adds a focused failing-then-passing case before its fix lands.
+  - verify: each ID in 8.1 has a named subtest that fails without its repair and passes with it; no scenario is satisfied by a zero-matched test.

@@ -127,6 +127,20 @@ tasks:
           timeout 2m go -C examples run ./"$dir"
         done
 
+  security:scan:
+    desc: Run govulncheck in every workspace module from go list -m
+    vars:
+      MODFMT: '{{"{{.Dir}}"}}'
+    cmds:
+      - |
+        set -euo pipefail
+        inventory="$(go list -m -f '{{.MODFMT}}')"
+        [ -n "$inventory" ] || { echo "security:scan: empty module inventory" >&2; exit 1; }
+        for dir in $inventory; do
+          echo "security:scan: $dir"
+          go -C "$dir" run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./... || exit $?
+        done
+
   bench:gate:
     desc: Run the base/head performance regression gate (BASE/HEAD overrides)
     cmds:

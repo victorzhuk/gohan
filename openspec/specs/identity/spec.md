@@ -169,6 +169,7 @@ ID: `identity.token-never-exported`
 - WHEN content capture is enabled
 - THEN no span, log or metric contains the `Credential` token
 
+
 ### Requirement: Session ownership and resume boundaries
 
 A session is owned by the tenant that opened it. A call from another tenant MUST be refused before any store is read. A principal of the owner's tenant holding `session:read` MAY inspect without being the subject. A tool running inside a run MUST NOT consume that run's pending resume token. The recorded approver MUST come from the transport principal, with no API to pass another. A `Credential` MUST NOT appear in a checkpoint, an audit record or a span.
@@ -197,6 +198,7 @@ ID: `identity.approver-from-transport-only`
 ID: `identity.credential-not-on-principal`
 - WHEN a checkpoint, audit record or span is written for a run whose ctx carries a `Credential`
 - THEN none of them contains the token, and `Principal` has no field that could hold it
+
 
 ### Requirement: Context values
 
@@ -227,6 +229,7 @@ ID: `identity.idempotency-key-transport-only`
 - WHEN a tool calls `WithIdempotencyKey` on its own ctx and invokes a sub-flow
 - THEN `task lint` fails on the depguard rule and, at runtime, the sub-flow's `IdempotencyKey` returns `ok == false`
 
+
 ### Requirement: Run trees
 
 A sub-flow tree shares its root's run budget: cumulative cost across the hub and its sub-flows MUST be charged against the hub's limit, and the hub MUST abort when the limit is exceeded. `Recover` MUST reclaim a stale tree at its root and replay it, with the tree's spans nesting under the root `invoke_agent` span.
@@ -240,3 +243,30 @@ ID: `identity.tree-budget`
 ID: `identity.nested-spans-and-recovery`
 - WHEN a sub-flow run is stale after a crash
 - THEN `Recover` reclaims the root and replays the tree; spans nest under the root `invoke_agent`
+
+
+### Requirement: Detached reissue timing and run-ID stability
+
+For a `Detached` run, the harness MUST re-issue the credential through
+`CredentialSource` before the first effect executes, and it MUST call the
+source exactly once for the run. The run's ID MUST stay stable and MUST be
+discoverable for the whole run lifetime, so a caller can capture the ID
+before the run reaches a terminal state. A test harness MUST capture the
+run ID before it releases any run gate and MUST NOT widen a timeout to
+observe it.
+
+#### Scenario: reissue precedes the first effect
+ID: `identity.detached-reissue-before-first-effect`
+- WHEN a `Detached` run starts and a `CredentialSource` is configured
+- THEN the source is called once before the first model step and the fresh credential is visible on that step
+
+#### Scenario: run id is captured before the gate opens
+ID: `identity.detached-run-id-captured-before-gate`
+- WHEN a detached-run test needs the run ID
+- THEN it reads the ID through the handle before it closes the runtime gate, and no timeout is widened
+
+#### Scenario: no credential reuse on detach
+ID: `identity.detached-no-credential-reuse`
+- WHEN a `Detached` flow starts with a stale `Credential` in the caller's context
+- THEN the run observes the freshly issued token and never the caller's token
+

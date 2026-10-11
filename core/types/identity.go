@@ -110,6 +110,7 @@ const (
 	ctxRunInfo
 	ctxIdempotencyKey
 	ctxApproval
+	ctxToolUse
 )
 
 // WithApproval attaches the approval a resume delivered. Only harness code
@@ -134,6 +135,19 @@ func WithIdempotencyKey(ctx context.Context, key string) context.Context {
 // ctx. Only harness code calls it.
 func WithRunInfo(ctx context.Context, r RunInfo) context.Context {
 	return context.WithValue(ctx, ctxRunInfo, r)
+}
+
+// WithToolUse attaches the backend tool call the governed component is
+// executing. Only adapter code on the backend call sets it.
+func WithToolUse(ctx context.Context, call ToolUse) context.Context {
+	return context.WithValue(ctx, ctxToolUse, call)
+}
+
+// ToolUseFrom reports the carried tool call in ctx, or ok == false outside
+// a carried call.
+func ToolUseFrom(ctx context.Context) (ToolUse, bool) {
+	c, ok := ctx.Value(ctxToolUse).(ToolUse)
+	return c, ok
 }
 
 // PrincipalFrom reports the principal in ctx, or ok == false outside a run.

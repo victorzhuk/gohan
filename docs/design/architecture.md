@@ -165,4 +165,4 @@ Rules:
 5. Services import adapters only from their infrastructure/wiring packages. `examples/` ships a `depguard` rule that enforces this; teams copy it.
 6. `Explain` is a library call. There is no external CLI: a service exposes it as its own `explain` subcommand and/or mounts `std.ExplainHandler` on a debug port.
 
-Tooling: Go 1.27 (see §6.0), `go.work`, Taskfile, golangci-lint (incl. depguard) and govulncheck via `tool` directives, testcontainers, `-race` everywhere.
+Tooling: Go 1.27 (see §6.0), `go.work`, Taskfile, golangci-lint (incl. depguard) and govulncheck via `task security:scan`, which scans every workspace module reported by `go list -m`, testcontainers, `-race` everywhere.

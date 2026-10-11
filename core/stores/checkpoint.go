@@ -23,6 +23,11 @@ const (
 type ResumeInput struct {
 	Approver *types.Principal
 	Verdict  ApprovalVerdict
+	// ScopeTTL is the lifetime the approver asked for the session grant
+	// when the verdict approves with scope. The grant store's policy caps
+	// it; the gate derives the expiry from the approval instant, never
+	// from the request's own expiry.
+	ScopeTTL time.Duration
 	Args     json.RawMessage
 	Data     json.RawMessage
 	Reason   string

@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/guards"
 	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
@@ -71,35 +72,38 @@ type StrategyPlan struct {
 
 // Stack is the configured runtime Build returns.
 type Stack struct {
-	logger           *slog.Logger
-	telemetry        types.Telemetry
-	models           []types.Model
-	middleware       []types.ModelMiddleware
-	estimator        types.TokenEstimator
-	keys             types.ProviderKeySource
-	credentials      types.CredentialSource
-	secrets          types.SecretResolver
-	notifier         types.Notifier
-	approvalPolicy   permission.ApprovalPolicySource
-	verifier         types.Verifier
-	egressClient     func(p types.EgressPolicy) *http.Client
-	pinned           *types.PinnedManifest
-	prompts          chains.PromptSet
-	sequentialTools  bool
-	allowAnonymous   bool
-	allowCache       bool
-	maxParallelTools int
-	limits           map[string]types.RunLimits
-	stores           stores.Stores
-	tenant           types.Tenant
-	native           map[string]*resolvedNativeConfig
-	foreign          map[string]func() runtime.Runtime
-	recovery         map[string]runtime.Runtime
-	manifest         ReleaseManifest
-	consolidator     func(ConsolidationWiring) MemoryConsolidator
-	flags            types.Flags
-	frozen           map[string]any
-	titleProfile     string
+	logger             *slog.Logger
+	telemetry          types.Telemetry
+	models             []types.Model
+	middleware         []types.ModelMiddleware
+	estimator          types.TokenEstimator
+	contextGuard       guards.Guard
+	compactionFallback stores.CompactionFallback
+	keys               types.ProviderKeySource
+	credentials        types.CredentialSource
+	secrets            types.SecretResolver
+	notifier           types.Notifier
+	approvalPolicy     permission.ApprovalPolicySource
+	approvalGrants     permission.GrantStore
+	verifier           types.Verifier
+	egressClient       func(p types.EgressPolicy) *http.Client
+	pinned             *types.PinnedManifest
+	prompts            chains.PromptSet
+	sequentialTools    bool
+	allowAnonymous     bool
+	allowCache         bool
+	maxParallelTools   int
+	limits             map[string]types.RunLimits
+	stores             stores.Stores
+	tenant             types.Tenant
+	native             map[string]*resolvedNativeConfig
+	foreign            map[string]func() runtime.Runtime
+	recovery           map[string]runtime.Runtime
+	manifest           ReleaseManifest
+	consolidator       func(ConsolidationWiring) MemoryConsolidator
+	flags              types.Flags
+	frozen             map[string]any
+	titleProfile       string
 }
 
 // TitleProfile returns the profile the title recipe runs on: the option's
@@ -172,32 +176,35 @@ func Build(opts ...Option) (*Stack, error) {
 		titleProfile = cheapestProfile(profiles)
 	}
 	s := &Stack{
-		logger:           cfg.logger,
-		telemetry:        cfg.telemetry,
-		models:           cfg.models,
-		middleware:       cfg.middleware,
-		estimator:        cfg.estimator,
-		keys:             cfg.keys,
-		credentials:      cfg.credentials,
-		secrets:          cfg.secrets,
-		notifier:         cfg.notifier,
-		approvalPolicy:   cfg.approvalPolicy,
-		verifier:         cfg.verifier,
-		egressClient:     cfg.egressClient,
-		pinned:           cfg.pinned,
-		prompts:          cfg.prompts,
-		sequentialTools:  cfg.sequentialTools,
-		allowAnonymous:   cfg.allowAnonymous,
-		allowCache:       cfg.allowCache,
-		maxParallelTools: cfg.maxParallelTools,
-		limits:           limits,
-		recovery:         cfg.recovery,
-		stores:           cfg.stores,
-		tenant:           cfg.tenant,
-		consolidator:     cfg.consolidator,
-		flags:            cfg.flags,
-		frozen:           cfg.frozen,
-		titleProfile:     titleProfile,
+		logger:             cfg.logger,
+		telemetry:          cfg.telemetry,
+		models:             cfg.models,
+		middleware:         cfg.middleware,
+		estimator:          cfg.estimator,
+		contextGuard:       cfg.contextGuard,
+		compactionFallback: cfg.compactionFallback,
+		keys:               cfg.keys,
+		credentials:        cfg.credentials,
+		secrets:            cfg.secrets,
+		notifier:           cfg.notifier,
+		approvalPolicy:     cfg.approvalPolicy,
+		approvalGrants:     cfg.approvalGrants,
+		verifier:           cfg.verifier,
+		egressClient:       cfg.egressClient,
+		pinned:             cfg.pinned,
+		prompts:            cfg.prompts,
+		sequentialTools:    cfg.sequentialTools,
+		allowAnonymous:     cfg.allowAnonymous,
+		allowCache:         cfg.allowCache,
+		maxParallelTools:   cfg.maxParallelTools,
+		limits:             limits,
+		recovery:           cfg.recovery,
+		stores:             cfg.stores,
+		tenant:             cfg.tenant,
+		consolidator:       cfg.consolidator,
+		flags:              cfg.flags,
+		frozen:             cfg.frozen,
+		titleProfile:       titleProfile,
 	}
 	if err := checkResidency(cfg.tenant, cfg.stores, profiles); err != nil {
 		return nil, err

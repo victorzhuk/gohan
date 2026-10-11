@@ -79,7 +79,19 @@ type ForeignSpec struct {
 	Instruction  []types.Block
 	Tools        []types.Tool
 	ModelOptions types.ModelOptions
-	Assemble     func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error)
+	// ToolChain declares the per-call tool middleware the flow's calls run
+	// under, resolved exactly as a native definition's chain. An empty
+	// chain calls the raw governed tools.
+	ToolChain chains.ToolChain
+	// Decider decides every call inside the approval gate. A nil decider
+	// keeps the core default: read-only and idempotent calls pass,
+	// everything else asks.
+	Decider  types.Decider[*permission.ToolInvocation, permission.Verdict]
+	Assemble func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error)
+	// ContextPolicy declares this flow's context projection policy. A zero
+	// value keeps the flow on the plain assembly path: no projection runs
+	// and no compactor is consulted.
+	ContextPolicy stores.ContextPolicy
 }
 
 // WithForeignAgent registers a foreign-runtime flow definition before Build

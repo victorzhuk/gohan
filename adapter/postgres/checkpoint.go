@@ -142,7 +142,7 @@ func (s *Checkpoints) Consume(ctx context.Context, t types.ResumeToken, in store
 	if err != nil {
 		return stores.Checkpoint{}, fmt.Errorf("consume checkpoint: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck
 
 	r, err := s.live(ctx, txConn{tx}, t)
 	if err != nil {
@@ -221,7 +221,7 @@ func (s *Checkpoints) ConsumeIf(ctx context.Context, t types.ResumeToken, expect
 	if err != nil {
 		return stores.Checkpoint{}, fmt.Errorf("consume if: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck
 
 	r, err := s.live(ctx, txConn{tx}, t)
 	if err != nil {
@@ -257,7 +257,7 @@ func (s *Checkpoints) UpdatePending(ctx context.Context, t types.ResumeToken, ex
 	if err != nil {
 		return fmt.Errorf("update pending: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(ctx) //nolint:errcheck
 
 	r, err := s.live(ctx, txConn{tx}, t)
 	if err != nil {
@@ -320,12 +320,26 @@ func (s *Checkpoints) ResumeReady(ctx context.Context, limit int) ([]stores.Chec
 	return out, nil
 }
 
-// DeleteSessionDependents removes the checkpoints of one session.
-func (s *Checkpoints) DeleteSessionDependents(ctx context.Context, sessionID string) error {
-	if _, err := s.db.pool.Exec(ctx, `DELETE FROM checkpoint_record WHERE session_id = $1`, sessionID); err != nil {
+// deleteCheckpointDependents removes the checkpoints of one session
+// through q. The pool and transaction entries share it.
+func deleteCheckpointDependents(ctx context.Context, q executor, sessionID string) error {
+	if _, err := q.Exec(ctx, `DELETE FROM checkpoint_record WHERE session_id = $1`, sessionID); err != nil {
 		return fmt.Errorf("delete checkpoints of session %s: %w", sessionID, err)
 	}
 	return nil
+}
+
+// DeleteSessionDependents removes the checkpoints of one session on the
+// pool.
+func (s *Checkpoints) DeleteSessionDependents(ctx context.Context, sessionID string) error {
+	return deleteCheckpointDependents(ctx, poolConn{s.db.pool}, sessionID)
+}
+
+// deleteSessionDependentsTx removes the checkpoints of one session inside
+// the caller's transaction, so the session delete commits or rolls back
+// with them.
+func (s *Checkpoints) deleteSessionDependentsTx(ctx context.Context, tx pgx.Tx, sessionID string) error {
+	return deleteCheckpointDependents(ctx, txConn{tx}, sessionID)
 }
 
 // CopySessionDependents moves the checkpoints of one session to its copy.

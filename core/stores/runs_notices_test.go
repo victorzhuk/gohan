@@ -180,4 +180,35 @@ func TestNoticeReason(t *testing.T) {
 			t.Fatalf("notice = %+v, want cancelled/%s", n, types.StopCancelled)
 		}
 	})
+
+	t.Run("stores.finish-notice-recorded-reason", func(t *testing.T) {
+		for _, tc := range []struct {
+			reason types.StopReason
+			want   string
+		}{
+			{types.StopLimit, string(types.StopLimit)},
+			{types.StopHandedOff, string(types.StopHandedOff)},
+			{types.StopCompleted, string(types.StopCompleted)},
+		} {
+			s := newStore(t)
+			lease := start(t, s)
+			if err := s.FinishWithReason(context.Background(), lease, Finished, nil, "", tc.reason); err != nil {
+				t.Fatalf("FinishWithReason(%s) error = %v", tc.reason, err)
+			}
+			if n := claim(t, s); n.Kind != types.NoticeFinished || n.Reason != tc.want {
+				t.Fatalf("notice = %+v, want finished/%s", n, tc.want)
+			}
+		}
+	})
+
+	t.Run("stores.finish-notice-cancelled", func(t *testing.T) {
+		s := newStore(t)
+		lease := start(t, s)
+		if err := s.Finish(context.Background(), lease, Finished, nil, ""); err != nil {
+			t.Fatalf("Finish() error = %v", err)
+		}
+		if n := claim(t, s); n.Kind != types.NoticeFinished || n.Reason != string(types.StopCompleted) {
+			t.Fatalf("notice = %+v, want finished/completed", n)
+		}
+	})
 }

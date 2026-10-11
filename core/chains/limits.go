@@ -519,6 +519,14 @@ func (s *LimitsState) WallClockLeft(l types.RunLimits, now time.Time) (time.Dura
 	return remaining, nil
 }
 
+// ReplayReservation hands one already-admitted call identity a prepaid
+// slot without touching the tool total. Core reserves it only for a call
+// id a previous drive of the same run admitted, so a replayed call spends
+// no budget twice and the cumulative charge stays exact.
+func (s *LimitsState) ReplayReservation(ctx context.Context, n int) context.Context {
+	return context.WithValue(ctx, batchKey{}, &batchReservation{remaining: n})
+}
+
 type batchReservation struct {
 	mu        sync.Mutex
 	used      int

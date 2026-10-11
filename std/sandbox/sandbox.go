@@ -1,7 +1,11 @@
 // Package sandbox turns a governed sandbox into a model-facing tool set:
 // the model writes code and files inside a workspace and reads back
 // results, while effect, risk, timeout and egress come from one
-// SandboxPolicy.
+// SandboxPolicy. Tool output crosses one ordered boundary: sanitize for
+// injected secrets first, then cap at the tools-contract default
+// outputs.DefaultMaxOutput, then store; the stored document and the
+// inline excerpt both derive from the sanitized bytes, and a post-body
+// safety pass re-redacts returned blocks without counting again.
 package sandbox
 
 import (
@@ -15,6 +19,7 @@ import (
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std/outputs"
 )
 
 // ErrNilSandbox is returned by New when no Sandbox is supplied.
@@ -57,9 +62,9 @@ func WithMaxOutput(n int) Option {
 	}
 }
 
-func (c config) spiller(ctx context.Context) spiller {
+func (c config) spiller(ctx context.Context, sanitize outputs.SanitizeFunc) spiller {
 	ri, _ := types.RunInfoFrom(ctx)
-	return spiller{store: c.store, run: ri, max: c.maxOutput}
+	return spiller{store: c.store, run: ri, max: c.maxOutput, sanitize: sanitize}
 }
 
 // WithEffect declares the tool set's effect. The effect derives from the
@@ -108,8 +113,8 @@ func New(sb types.Sandbox, p types.SandboxPolicy, opts ...Option) (ToolSet, erro
 	}
 	runCode, err := gohan.NewTool("run_code", "Run shell code inside the sandbox and return its output.",
 		func(ctx context.Context, a runCodeArgs) ([]types.Block, error) {
-			return withWorkspace(ctx, sb, p, func(ctx context.Context, w types.Workspace) ([]types.Block, error) {
-				return runCode(ctx, w, cfg.spiller(ctx), a)
+			return withWorkspace(ctx, sb, p, func(ctx context.Context, w types.Workspace, sanitize outputs.SanitizeFunc) ([]types.Block, error) {
+				return runCode(ctx, w, cfg.spiller(ctx, sanitize), a)
 			})
 		},
 		gohan.WithEffect(cfg.effect),
@@ -120,7 +125,7 @@ func New(sb types.Sandbox, p types.SandboxPolicy, opts ...Option) (ToolSet, erro
 	}
 	writeFile, err := gohan.NewTool("write_file", "Write a file into the sandbox workspace.",
 		func(ctx context.Context, a writeFileArgs) ([]types.Block, error) {
-			return withWorkspace(ctx, sb, p, func(ctx context.Context, w types.Workspace) ([]types.Block, error) {
+			return withWorkspace(ctx, sb, p, func(ctx context.Context, w types.Workspace, _ outputs.SanitizeFunc) ([]types.Block, error) {
 				return writeFile(ctx, w, a)
 			})
 		},
@@ -132,8 +137,8 @@ func New(sb types.Sandbox, p types.SandboxPolicy, opts ...Option) (ToolSet, erro
 	}
 	readFile, err := gohan.NewTool("read_file", "Read a file from the sandbox workspace.",
 		func(ctx context.Context, a readFileArgs) ([]types.Block, error) {
-			return withWorkspace(ctx, sb, p, func(ctx context.Context, w types.Workspace) ([]types.Block, error) {
-				return readFile(ctx, w, cfg.spiller(ctx), a)
+			return withWorkspace(ctx, sb, p, func(ctx context.Context, w types.Workspace, sanitize outputs.SanitizeFunc) ([]types.Block, error) {
+				return readFile(ctx, w, cfg.spiller(ctx, sanitize), a)
 			})
 		},
 		gohan.WithEffect(cfg.effect),
@@ -144,7 +149,7 @@ func New(sb types.Sandbox, p types.SandboxPolicy, opts ...Option) (ToolSet, erro
 	}
 	listFiles, err := gohan.NewTool("list_files", "List the files in a sandbox workspace directory.",
 		func(ctx context.Context, a listFilesArgs) ([]types.Block, error) {
-			return withWorkspace(ctx, sb, p, func(ctx context.Context, w types.Workspace) ([]types.Block, error) {
+			return withWorkspace(ctx, sb, p, func(ctx context.Context, w types.Workspace, _ outputs.SanitizeFunc) ([]types.Block, error) {
 				return listFiles(ctx, w, a)
 			})
 		},

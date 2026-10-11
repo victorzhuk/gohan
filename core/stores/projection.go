@@ -22,7 +22,7 @@ type Projection interface {
 // a separate stage and the persisted-compaction work supplies the only
 // implementation.
 type Compactor interface {
-	Compact(ctx context.Context, h History, p types.ModelProfile) (History, error)
+	Compact(ctx context.Context, h History, p types.ModelProfile) (types.Compaction, error)
 }
 
 // ContextPolicy is the ordered projection list a flow applies before its

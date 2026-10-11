@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -49,7 +50,14 @@ func Migrations(t *testing.T, harness MigrationsHarness) {
 	}
 }
 
+// normalize compares constraint definitions semantically: a foreign key
+// reference is schema-qualified with the install's own scratch schema, so
+// the qualifier is stripped before the field-wise comparison. Constraint
+// shape, columns and cascade behaviour still drift the comparison.
+var schemaQualifier = regexp.MustCompile(`(REFERENCES\s+)[A-Za-z_][A-Za-z0-9_]*\.`)
+
 func normalize(def string) string {
+	def = schemaQualifier.ReplaceAllString(def, "$1")
 	fields := strings.Fields(def)
 	sort.Strings(fields)
 	return strings.Join(fields, " ")

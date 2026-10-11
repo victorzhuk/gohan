@@ -65,6 +65,9 @@ func noticeFor(state RunState, stop types.StopReason, suspend types.SuspendReaso
 		if stop == types.StopCancelled {
 			return types.NoticeCancelled, string(types.StopCancelled)
 		}
+		if stop != "" {
+			return types.NoticeFinished, string(stop)
+		}
 		return types.NoticeFinished, string(types.StopCompleted)
 	}
 }

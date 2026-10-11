@@ -34,6 +34,19 @@ type State struct {
 	Usage          types.Usage
 	Calibration    map[string]float64
 	Backend        []byte
+	Foreign        *ForeignProgress
+}
+
+// ForeignProgress is the durable foreign-admission accounting a core-owned
+// decorator carries on every State it returns. AdmittedTotal counts every
+// successful admission of the run, including completed, denied and parked
+// calls; ReplayCallIDs holds the distinct admitted call identities the
+// backend can replay. Membership never grants permission: Pending stays
+// the only approval-controlled queue.
+type ForeignProgress struct {
+	Version       int      `json:"version"`
+	AdmittedTotal int      `json:"admitted_total"`
+	ReplayCallIDs []string `json:"replay_call_ids"`
 }
 
 // Stepper advances a run one effect boundary at a time. The events Step

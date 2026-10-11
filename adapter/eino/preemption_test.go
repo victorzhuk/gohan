@@ -152,14 +152,24 @@ type preemptStream struct {
 func collectPreemptStream(seq iter.Seq2[types.Event, error]) <-chan preemptStream {
 	ch := make(chan preemptStream, 1)
 	go func() {
+		// The core relay delivers through the sink on the effect goroutine
+		// (sinkRelay.Emit), concurrently with the drive loop yielding step
+		// events, so the callback itself must serialize access to out. seq is
+		// called directly with a plain closure instead of range-over-func: the
+		// range form keeps compiler state that every yield touches outside any
+		// lock, which race detection flags even when the body is guarded.
+		var mu sync.Mutex
 		var out preemptStream
-		for ev, err := range seq {
+		seq(func(ev types.Event, err error) bool {
+			mu.Lock()
+			defer mu.Unlock()
 			if err != nil {
 				out.err = err
-				break
+				return false
 			}
 			out.evs = append(out.evs, ev)
-		}
+			return true
+		})
 		ch <- out
 	}()
 	return ch
@@ -464,6 +474,7 @@ func TestPreemption(t *testing.T) {
 		stack, conv := preemptStack(t, bm)
 		gctx, gcancel := context.WithTimeout(ctx, 50*time.Millisecond)
 		defer gcancel()
+		deadline, _ := gctx.Deadline()
 		res := make(chan preemptStream, 1)
 		go func() {
 			var out preemptStream
@@ -479,10 +490,11 @@ func TestPreemption(t *testing.T) {
 			res <- out
 		}()
 		<-bm.entered
-		start := time.Now()
 		out := <-res
-		if elapsed := time.Since(start); elapsed < 50*time.Millisecond {
-			t.Fatalf("send ended after %v, want the full grace bound", elapsed)
+		// 2ms slack covers timer granularity and scheduler wakeups under
+		// -race; earlier than that means the send was cut before its bound.
+		if end := time.Now(); end.Add(2 * time.Millisecond).Before(deadline) {
+			t.Fatalf("send ended %v before the grace deadline, want it held to the bound", deadline.Sub(end))
 		}
 		if out.err == nil {
 			t.Fatal("send completed, want the grace bound to end it")

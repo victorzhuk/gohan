@@ -150,9 +150,16 @@ func runDetachedReissue(t *testing.T) (*reissueCreds, detachedObs) {
 		t.Fatalf("detached send = %+v, want no events and no error", got)
 	}
 	<-rt.entered
+	// Capture the run id through ActiveRun while the run still holds a
+	// live lease, before the gate closes: reading the local map after
+	// the run untracked raced with the stream's end.
+	captured, aerr := conv.ActiveRun(principalCtx(context.Background()), "s1")
+	if aerr != nil {
+		t.Fatalf("active run before gate: %v", aerr)
+	}
 	close(rt.gate)
 	waitFor(t, "detached run finished", func() bool {
-		return lenEvents(t, conv, liveRunID(conv, "s1")) >= 1
+		return lenEvents(t, conv, captured) >= 1
 	})
 
 	calls, tok := src.issued()
@@ -171,6 +178,9 @@ func runDetachedReissue(t *testing.T) (*reissueCreds, detachedObs) {
 	}
 	if !obs.infoOK {
 		t.Fatal("detached run info missing")
+	}
+	if obs.info.RunID != captured {
+		t.Fatalf("run id not stable: captured %q, drive context carried %q", captured, obs.info.RunID)
 	}
 	return src, obs
 }
@@ -191,6 +201,22 @@ func TestIdentityDetach(t *testing.T) {
 	})
 
 	t.Run("identity.detached-reissues-credential", func(t *testing.T) {
+		runDetachedReissue(t)
+	})
+
+	// The detached fixture fails the test unless the credential source ran
+	// exactly once before the first step, the run id was captured through
+	// the handle before the gate closed, and the stale caller token never
+	// reached the run.
+	t.Run("identity.detached-reissue-before-first-effect", func(t *testing.T) {
+		runDetachedReissue(t)
+	})
+
+	t.Run("identity.detached-run-id-captured-before-gate", func(t *testing.T) {
+		runDetachedReissue(t)
+	})
+
+	t.Run("identity.detached-no-credential-reuse", func(t *testing.T) {
 		runDetachedReissue(t)
 	})
 }

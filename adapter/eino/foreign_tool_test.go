@@ -5,10 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+	gohan "github.com/victorzhuk/gohan/core"
+	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/runtime"
+	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 	"github.com/victorzhuk/gohan/testkit/conformance"
 	"github.com/victorzhuk/gohan/testkit/gohantest"
@@ -33,208 +38,198 @@ func (e *einoEcho) InvokableRun(_ context.Context, argumentsInJSON string, _ ...
 	return fmt.Sprintf(`{"text":%q}`, in.In), nil
 }
 
-// nativeForeignTool bridges the imported eino tool into the types.Tool
-// port the native runtime's governed batch consumes.
-type nativeForeignTool struct{ inner *einoEcho }
-
-func (t nativeForeignTool) Spec() types.ToolSpec {
-	return types.ToolSpec{Name: "echo"}
+// recorderDecider records the batch gate decision and returns a fixed
+// verdict, so the test observes when the gate ran relative to the chain.
+type recorderDecider struct {
+	obs     *conformance.Observations
+	verdict permission.Verdict
 }
 
-func (t nativeForeignTool) Call(ctx context.Context, args json.RawMessage) (types.ToolResult, error) {
-	out, err := t.inner.InvokableRun(ctx, string(args))
+func (d recorderDecider) Decide(_ context.Context, _ *permission.ToolInvocation) (types.Decision[permission.Verdict], error) {
+	d.obs.Steps = append(d.obs.Steps, conformance.StepGate)
+	return types.Decision[permission.Verdict]{Value: d.verdict, Confidence: 1}, nil
+}
+
+// noteMiddleware records one chain step around the tool call.
+func noteMiddleware(obs *conformance.Observations) types.ToolMiddleware {
+	return func(next types.ToolFunc) types.ToolFunc {
+		return func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+			obs.Steps = append(obs.Steps, "note")
+			return next(ctx, call)
+		}
+	}
+}
+
+func foreignTestStack(t *testing.T, model types.Model, bridged types.Tool, dec types.Decider[*permission.ToolInvocation, permission.Verdict], obs *conformance.Observations) (*gohan.Stack, gohan.Conversation) {
+	t.Helper()
+	runsStore := stores.NewMemoryRuns(stores.WithMemoryRunClock(time.Now), stores.WithMemoryRunInfo(types.RunInfoFrom))
+	stack, err := gohan.Build(
+		gohan.WithModels(model),
+		gohan.WithStores(stores.Stores{
+			SessionLog:  stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom)),
+			Runs:        runsStore,
+			Checkpoints: stores.NewMemoryCheckpoints(stores.WithMemoryCheckpointClock(time.Now), stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom)),
+		}),
+		gohan.WithNativeAgent(gohan.NativeSpec{
+			Request: gohan.FlowRequest{Name: "chat"},
+			Profile: conformanceProfile.Name,
+			Assemble: func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+				return types.ModelRequest{Messages: in.History}, nil
+			},
+			Tools:     []types.Tool{bridged},
+			ToolChain: chains.ToolChain{{Name: "note", Kind: chains.KindUser, Use: noteMiddleware(obs)}},
+			Decider:   dec,
+		}),
+	)
 	if err != nil {
-		return types.ToolResult{}, err
+		t.Fatalf("build: %v", err)
 	}
-	var res types.ToolResult
-	if err := json.Unmarshal([]byte(out), &res); err != nil {
-		return types.ToolResult{}, err
-	}
-	return res, nil
-}
-
-// nativeMixHarness drives the shipped native runtime over a scripted model
-// with the imported eino tool in its batch, so the mixing direction runs
-// the governed turn path with a foreign component inside it.
-type nativeMixHarness struct {
-	profile types.ModelProfile
-	model   types.Model
-	tool    nativeForeignTool
-
-	msgs []types.Message
-}
-
-func (h *nativeMixHarness) Run(ctx context.Context, input []types.Message) ([]types.Event, error) {
-	h.msgs = append([]types.Message(nil), input...)
-	ag := runtime.AgentRun{
-		Model: h.model,
-		Assemble: func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
-			return types.ModelRequest{Messages: in.History}, nil
-		},
-		ModelEffect: h.modelEffect,
-		BatchEffect: h.batchEffect,
-		Tools:       []types.Tool{h.tool},
-	}
-	rt := runtime.NewNative()
-	st, err := rt.Start(ctx, ag)
+	conv, err := gohan.NewNativeConversation(stack, "chat",
+		gohan.WithConversationRuns(runsStore),
+		gohan.WithConversationEventLog(stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))),
+		gohan.WithConversationApprovalPolicy(allowPolicy{}),
+	)
 	if err != nil {
-		return nil, err
+		t.Fatalf("new native conversation: %v", err)
 	}
+	return stack, conv
+}
+
+type allowPolicy struct{}
+
+func (allowPolicy) ApprovalPolicy(context.Context, types.RiskTier, string, bool) (permission.ApprovalPolicy, error) {
+	return permission.ApprovalPolicy{}, nil
+}
+
+func foreignPrincipalCtx(ctx context.Context) context.Context {
+	return types.WithPrincipal(ctx, types.Principal{Tenant: "t1", Subject: "u1"})
+}
+
+func sendCollect(t *testing.T, conv gohan.Conversation, ctx context.Context) []types.Event {
+	t.Helper()
 	var evs []types.Event
-	for {
-		var status runtime.Status
-		st, evs, status, err = rt.Step(ctx, st)
+	for ev, err := range conv.Send(ctx, "s1", types.Message{
+		Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: "go"}},
+	}) {
 		if err != nil {
-			return evs, err
+			t.Fatalf("Send: %v", err)
 		}
-		if status == runtime.DoneStatus {
-			return evs, nil
-		}
+		evs = append(evs, ev)
 	}
+	return evs
 }
 
-func (h *nativeMixHarness) modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
-	req, err := types.ModelRequest{Messages: h.msgs}, error(nil)
-	if err != nil {
-		return st, nil, runtime.Continue, err
-	}
-	var evs []types.Event
-	var text string
-	var pending []types.ToolUse
-	for chunk, cerr := range h.model.Generate(ctx, req) {
-		if cerr != nil {
-			return st, evs, runtime.Continue, cerr
-		}
-		if err := ctx.Err(); err != nil {
-			return st, evs, runtime.Continue, err
-		}
-		switch {
-		case chunk.ToolUse != nil:
-			pending = append(pending, *chunk.ToolUse)
-		case chunk.Kind == types.DeltaText:
-			text += chunk.Delta
+func toolResultBlocks(t *testing.T, evs []types.Event) []types.ToolResult {
+	t.Helper()
+	var out []types.ToolResult
+	for _, ev := range evs {
+		if f, ok := ev.(types.ToolFinished); ok {
+			out = append(out, f.Result)
 		}
 	}
-	if len(pending) == 0 {
-		msg := types.Message{ID: "assistant-1", Role: types.RoleAssistant, Blocks: []types.Block{types.Text{Text: text}}}
-		h.msgs = append(h.msgs, msg)
-		evs = append(evs, types.AssistantMessage{Message: msg}, types.Done{Reason: types.StopCompleted})
-		return st, evs, runtime.DoneStatus, nil
-	}
-	asst := types.Message{Role: types.RoleAssistant}
-	for i := range pending {
-		asst.Blocks = append(asst.Blocks, pending[i])
-	}
-	h.msgs = append(h.msgs, asst)
-	evs = append(evs, types.AssistantMessage{Message: asst})
-	return st, evs, runtime.Continue, nil
+	return out
 }
 
-func (h *nativeMixHarness) batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
-	asst := h.msgs[len(h.msgs)-1]
-	var uses []types.ToolUse
-	for _, b := range asst.Blocks {
-		if u, ok := b.(types.ToolUse); ok {
-			uses = append(uses, u)
-		}
-	}
-	if len(uses) == 0 {
-		return st, nil, runtime.Continue, nil
-	}
-	if err := ctx.Err(); err != nil {
-		return st, nil, runtime.Continue, err
-	}
-	var evs []types.Event
-	for _, call := range uses {
-		res, err := h.tool.Call(ctx, call.Args)
-		if err != nil {
-			return st, nil, runtime.Continue, err
-		}
-		msg := types.Message{
-			Role:   types.RoleAssistant,
-			Blocks: []types.Block{types.ToolResult{ID: call.ID, Content: res.Content}},
-		}
-		h.msgs = append(h.msgs, msg)
-		evs = append(evs, types.AssistantMessage{Message: msg})
-	}
-	return st, evs, runtime.Continue, nil
-}
-
-func (h *nativeMixHarness) Observed() conformance.Observations {
-	return conformance.Observations{}
-}
-
-func TestForeignToolUnderNative(t *testing.T) {
-	profile := types.ModelProfile{Name: "conformance", Version: "v1"}
-
-	t.Run("runtime.plain-answer", func(t *testing.T) {
-		echo := &einoEcho{}
-		h := &nativeMixHarness{
-			profile: profile,
-			model:   gohantest.NewScriptedModel(profile, gohantest.Text("done")),
-			tool:    nativeForeignTool{inner: echo},
-		}
-		evs, err := h.Run(context.Background(), harnessInput())
-		if err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-		assertMixDone(t, evs, "done")
-		if echo.called != 0 {
-			t.Fatalf("foreign tool calls = %d, want 0 on the plain answer", echo.called)
-		}
-	})
-
-	t.Run("runtime.tool-round-trip", func(t *testing.T) {
-		echo := &einoEcho{}
-		h := &nativeMixHarness{
-			profile: profile,
-			model: gohantest.NewScriptedModel(profile,
-				gohantest.ToolCall("echo", map[string]string{"in": "1"}),
-				gohantest.Text("done"),
-			),
-			tool: nativeForeignTool{inner: echo},
-		}
-		evs, err := h.Run(context.Background(), harnessInput())
-		if err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-		assertMixDone(t, evs, "done")
-		if echo.called != 1 {
-			t.Fatalf("foreign tool calls = %d, want 1", echo.called)
-		}
-		var sawUse, sawResult bool
-		for _, m := range h.msgs {
-			for _, b := range m.Blocks {
-				switch b.(type) {
-				case types.ToolUse:
-					sawUse = true
-				case types.ToolResult:
-					sawResult = true
-				}
-			}
-		}
-		if !sawUse || !sawResult {
-			t.Fatalf("round trip history incomplete: use=%v result=%v", sawUse, sawResult)
-		}
-	})
-}
-
-func assertMixDone(t *testing.T, evs []types.Event, want string) {
+func doneEvent(t *testing.T, evs []types.Event) types.Done {
 	t.Helper()
 	var done types.Done
-	var last types.AssistantMessage
 	for _, ev := range evs {
-		switch v := ev.(type) {
-		case types.Done:
-			done = v
-		case types.AssistantMessage:
-			last = v
+		if d, ok := ev.(types.Done); ok {
+			done = d
 		}
 	}
 	if done.Reason != types.StopCompleted {
 		t.Fatalf("done = %+v, want Done{StopCompleted}", done)
 	}
-	if textOf(last.Message.Blocks) != want {
-		t.Fatalf("assistant text = %q, want %q", textOf(last.Message.Blocks), want)
-	}
+	return done
+}
+
+// TestForeignToolUnderNative drives the exported bridge as a registered
+// NativeSpec tool through Build, NewNativeConversation and Send: the full
+// public path an imported eino tool takes under the governed native batch.
+func TestForeignToolUnderNative(t *testing.T) {
+	t.Run("runtime.foreign-tool-under-native", func(t *testing.T) {
+		echo := &einoEcho{}
+		bridged, err := NewForeignTool(context.Background(), echo, types.ToolSpec{Name: "echo", Effect: types.ReadOnly})
+		if err != nil {
+			t.Fatalf("NewForeignTool: %v", err)
+		}
+		obs := &conformance.Observations{}
+		_, conv := foreignTestStack(t,
+			gohantest.NewScriptedModel(conformanceProfile,
+				gohantest.ToolCall("echo", map[string]string{"in": "hi"}),
+				gohantest.Text("done"),
+			),
+			bridged,
+			recorderDecider{obs: obs, verdict: permission.Allow},
+			obs,
+		)
+		evs := sendCollect(t, conv, foreignPrincipalCtx(context.Background()))
+		doneEvent(t, evs)
+
+		results := toolResultBlocks(t, evs)
+		if len(results) != 1 {
+			t.Fatalf("tool results = %d, want 1", len(results))
+		}
+		if results[0].Outcome == types.Failed {
+			t.Fatalf("result = %+v, want the mapped call to succeed", results[0])
+		}
+		if len(results[0].Content) != 1 {
+			t.Fatalf("content blocks = %d, want the one verbatim Text block", len(results[0].Content))
+		}
+		text, ok := results[0].Content[0].(types.Text)
+		if !ok {
+			t.Fatalf("content[0] = %T, want types.Text", results[0].Content[0])
+		}
+		if text.Text != `{"text":"hi"}` {
+			t.Fatalf("mapped text = %q, want the upstream string verbatim", text.Text)
+		}
+		if echo.called != 1 {
+			t.Fatalf("foreign tool calls = %d, want 1", echo.called)
+		}
+		if len(obs.Steps) != 2 || obs.Steps[0] != conformance.StepGate || obs.Steps[1] != "note" {
+			t.Fatalf("steps %v, want [gate note]: the batch gate decided before the chain middleware ran", obs.Steps)
+		}
+	})
+
+	t.Run("denied_call_blocked", func(t *testing.T) {
+		echo := &einoEcho{}
+		bridged, err := NewForeignTool(context.Background(), echo, types.ToolSpec{Name: "echo", Effect: types.ReadOnly})
+		if err != nil {
+			t.Fatalf("NewForeignTool: %v", err)
+		}
+		obs := &conformance.Observations{}
+		_, conv := foreignTestStack(t,
+			gohantest.NewScriptedModel(conformanceProfile,
+				gohantest.ToolCall("echo", map[string]string{"in": "hi"}),
+				gohantest.Text("done"),
+			),
+			bridged,
+			recorderDecider{obs: obs, verdict: permission.DenyVerdict},
+			obs,
+		)
+		evs := sendCollect(t, conv, foreignPrincipalCtx(context.Background()))
+		doneEvent(t, evs)
+
+		results := toolResultBlocks(t, evs)
+		if len(results) != 1 {
+			t.Fatalf("tool results = %d, want 1", len(results))
+		}
+		res := results[0]
+		if res.Outcome != types.Failed {
+			t.Fatalf("outcome = %v, want Failed", res.Outcome)
+		}
+		if res.Error == nil || res.Error.Kind != types.Permanent {
+			t.Fatalf("error = %+v, want one permanent ToolError", res.Error)
+		}
+		if res.Error.Message != runtime.NotExecutedPrefix+"denied by policy" {
+			t.Fatalf("message = %q, want %q", res.Error.Message, runtime.NotExecutedPrefix+"denied by policy")
+		}
+		if echo.called != 0 {
+			t.Fatalf("foreign tool calls = %d, want 0 behind a denied call", echo.called)
+		}
+		if len(obs.Steps) != 1 || obs.Steps[0] != conformance.StepGate {
+			t.Fatalf("steps %v, want only [gate]: a denied call never enters the chain", obs.Steps)
+		}
+	})
 }

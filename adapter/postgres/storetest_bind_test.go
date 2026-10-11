@@ -485,6 +485,54 @@ func TestOutputs(t *testing.T) {
 	}
 }
 
+// TestOutputsForkCascade drives the fork claim inheritance through
+// SessionLog.Delete: a fork keeps its parent's ref after the parent is
+// deleted, and deleting the fork drops the last claim and the bytes.
+func TestOutputsForkCascade(t *testing.T) {
+	ctx := context.Background()
+	db := newDB(t, bindSchema("outfork"))
+	outputs := postgres.NewOutputs(db)
+	sessions := postgres.NewSessionLog(db,
+		postgres.WithSessionPrincipals(fixedPrincipal(bindPrincipal)),
+		postgres.WithSessionDependents(outputs),
+	)
+	parent := "of-parent"
+	fork := "of-fork"
+	if _, err := sessions.Append(ctx, parent, 0, types.Message{Blocks: []types.Block{types.Text{Text: "hi"}}}); err != nil {
+		t.Fatalf("append parent: %v", err)
+	}
+	if _, err := sessions.Append(ctx, fork, 0, types.Message{Blocks: []types.Block{types.Text{Text: "hi"}}}); err != nil {
+		t.Fatalf("append fork: %v", err)
+	}
+	ri := types.RunInfo{SessionID: parent, Principal: bindPrincipal}
+	ref, err := outputs.Put(ctx, ri, []types.Block{types.Text{Text: "fork-bytes"}})
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := outputs.CopySessionDependents(ctx, parent, fork); err != nil {
+		t.Fatalf("CopySessionDependents: %v", err)
+	}
+	if n := count(t, db, `SELECT count(*) FROM output_claim WHERE ref = $1`, ref); n != 2 {
+		t.Fatalf("claims after fork copy = %d, want 2", n)
+	}
+	if err := sessions.Delete(ctx, parent); err != nil {
+		t.Fatalf("Delete parent: %v", err)
+	}
+	got, err := outputs.Get(ctx, ref)
+	if err != nil {
+		t.Fatalf("Get after parent delete: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("Get returned empty bytes after parent delete")
+	}
+	if err := sessions.Delete(ctx, fork); err != nil {
+		t.Fatalf("Delete fork: %v", err)
+	}
+	if _, err := outputs.Get(ctx, ref); !errors.Is(err, stores.ErrOutputNotFound) {
+		t.Fatalf("Get after last claim deleted: err=%v, want ErrOutputNotFound", err)
+	}
+}
+
 func TestNotes(t *testing.T) {
 	ctx := context.Background()
 	db := newDB(t, bindSchema("notes"))

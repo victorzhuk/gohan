@@ -26,6 +26,10 @@ type approvalReceipt struct {
 	Tool       string            `json:"tool"`
 	Args       json.RawMessage   `json:"args"`
 	Approvers  []types.Principal `json:"approvers"`
+	// Scoped marks a receipt a scoped approval produced. A scoped receipt
+	// never grants through the receipt path: its authority lives in the
+	// grant store, keyed by the approving subject.
+	Scoped bool `json:"scoped,omitempty"`
 }
 
 func receiptDedupKey(rc approvalReceipt) string {
@@ -61,6 +65,9 @@ func rejectReservedMeta(msgs []types.Message) error {
 		if _, ok := msg.Meta[ApprovalReceiptKey]; ok {
 			return fmt.Errorf("%w: message carries the reserved %s metadata", types.ErrInputInvalid, ApprovalReceiptKey)
 		}
+		if _, ok := msg.Meta[foreignAdmissionKey]; ok {
+			return fmt.Errorf("%w: message carries the reserved %s metadata", types.ErrInputInvalid, foreignAdmissionKey)
+		}
 	}
 	return nil
 }
@@ -95,9 +102,11 @@ func decodeReceipt(value any) (approvalReceipt, error) {
 }
 
 // latestApprovedArgs returns the arguments of the latest valid approval
-// receipt for tool in the session history, or nil when none exists. It
-// decodes Meta through JSON so a persisted map and an in-memory struct
-// behave identically; a malformed reserved receipt is an error.
+// receipt for tool in the session history, or nil when none exists. A
+// scoped receipt never grants through this path: its authority lives in
+// the grant store. It decodes Meta through JSON so a persisted map and an
+// in-memory struct behave identically; a malformed reserved receipt is an
+// error.
 func latestApprovedArgs(h stores.History, tool string) (json.RawMessage, error) {
 	var latest approvalReceipt
 	found := false
@@ -110,7 +119,7 @@ func latestApprovedArgs(h stores.History, tool string) (json.RawMessage, error) 
 		if err != nil {
 			return nil, err
 		}
-		if rc.Tool != tool {
+		if rc.Scoped || rc.Tool != tool {
 			continue
 		}
 		latest = rc

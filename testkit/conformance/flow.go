@@ -130,29 +130,31 @@ type FlowFixture struct {
 	Checkpoints  *stores.MemoryCheckpoints
 
 	Store *flowRuns
+
+	stack *gohan.Stack
 }
 
-// flowRuns wraps the memory runs store for the fixture: it answers the
-// SessionRunFinder port Cancel uses for a run another pod started, and
-// closes CancelQueued once a cancel signal is in a run's mailbox, so a
-// test can order the cancel against the run it targets.
+// Peer builds a second conversation over the fixture's stores that holds
+// no live run of its own: its Cancel and Steer resolve a run another
+// conversation started through the shipped RunForSession.
+func (f *FlowFixture) Peer() (gohan.Conversation, error) {
+	return gohan.NewConversation(f.stack, "flow", f.Runtime,
+		gohan.WithConversationRuns(f.Store),
+		gohan.WithConversationEventLog(f.Events),
+		gohan.WithConversationCheckpoints(f.Checkpoints),
+		gohan.WithConversationApprovalPolicy(stdpermission.PolicySource{}),
+	)
+}
+
+// flowRuns wraps the memory runs store for the fixture: it closes
+// CancelQueued once a cancel signal is in a run's mailbox, so a test can
+// order the cancel against the run it targets. Cross-instance discovery
+// goes through the shipped MemoryRuns RunForSession.
 type flowRuns struct {
 	*stores.MemoryRuns
 
-	mu     sync.Mutex
-	onSess map[string]string
-
+	mu           sync.Mutex
 	cancelQueued chan struct{}
-}
-
-func (f *flowRuns) Start(ctx context.Context, r stores.Run, ttl time.Duration) (stores.Lease, error) {
-	lease, err := f.MemoryRuns.Start(ctx, r, ttl)
-	if err == nil {
-		f.mu.Lock()
-		f.onSess[r.SessionID] = r.RunID
-		f.mu.Unlock()
-	}
-	return lease, err
 }
 
 func (f *flowRuns) Signal(ctx context.Context, runID string, sig stores.Signal) error {
@@ -180,17 +182,6 @@ func (f *flowRuns) CancelQueued() <-chan struct{} {
 	return f.cancelQueued
 }
 
-// RunForSession implements stores.SessionRunFinder.
-func (f *flowRuns) RunForSession(_ context.Context, sessionID string) (stores.Run, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	runID, ok := f.onSess[sessionID]
-	if !ok {
-		return stores.Run{}, stores.ErrRunNotFound
-	}
-	return stores.Run{SessionID: sessionID, RunID: runID}, nil
-}
-
 // NewFlowFixture builds the fixture. suspendAt follows NewFlowRuntime; the
 // turns replay on the scripted model in call order.
 func NewFlowFixture(t *testing.T, suspendAt int, turns ...gohantest.Turn) *FlowFixture {
@@ -204,7 +195,6 @@ func NewFlowFixture(t *testing.T, suspendAt int, turns ...gohantest.Turn) *FlowF
 	)
 	runs := &flowRuns{
 		MemoryRuns:   memRuns,
-		onSess:       map[string]string{},
 		cancelQueued: make(chan struct{}),
 	}
 	events := stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))
@@ -234,6 +224,7 @@ func NewFlowFixture(t *testing.T, suspendAt int, turns ...gohantest.Turn) *FlowF
 		Events:       events,
 		Log:          log,
 		Checkpoints:  cps,
+		stack:        stack,
 	}
 }
 
@@ -311,6 +302,23 @@ func Flow(t *testing.T) {
 		if f.Runs.SessionLeaseActive(flowCtx(), "sess") {
 			t.Fatal("run still holds the lease after cancel")
 		}
+	})
+
+	t.Run("cross-instance cancel", func(t *testing.T) {
+		f := NewFlowFixture(t, 0, gohantest.Text("hello"))
+		peer, err := f.Peer()
+		if err != nil {
+			t.Fatalf("peer conversation: %v", err)
+		}
+		f.Runtime.Gate()
+		sent := make(chan []types.Event, 1)
+		go func() { sent <- flowStream(t, f.Conversation.Send(flowCtx(), "sess", FlowUserMessage("hi"))) }()
+		<-f.Runtime.Entered()
+		if err := peer.Cancel(flowCtx(), "sess"); err != nil {
+			t.Fatalf("cross-instance cancel: %v", err)
+		}
+		f.Runtime.Release()
+		assertDone(t, <-sent, types.StopCancelled)
 	})
 
 	t.Run("leak check", func(t *testing.T) {

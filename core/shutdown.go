@@ -79,18 +79,23 @@ func (s *Stack) shuttingDown() bool {
 
 // beginRun admits a run the stack will drive and returns
 // types.ErrShuttingDown once Shutdown has begun, before Runs.Start.
+// The refusal check and the registration hold both locks together, so a
+// run is either refused or registered atomically: Shutdown cannot arm
+// the preemption set between the check and the insert, and a run that
+// passes the check is never unregistered. The lock order is the shutdown
+// flag first, the registry second; Shutdown takes each in turn without
+// nesting, so no wait cycle exists.
 func (s *Stack) beginRun(runID string, pre *Preemptor) error {
 	st := s.getShutdownState()
+	f := s.inflightRuns()
 	st.mu.Lock()
-	down := st.shuttingDown
-	st.mu.Unlock()
-	if down {
+	defer st.mu.Unlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if st.shuttingDown {
 		return types.ErrShuttingDown
 	}
-	f := s.inflightRuns()
-	f.mu.Lock()
 	f.runs[runID] = pre
-	f.mu.Unlock()
 	return nil
 }
 

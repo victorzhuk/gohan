@@ -1,6 +1,25 @@
 // Package postgres implements the gohan store ports on Postgres. A tool
 // that needs its own row committed with a journal entry holds the pgx.Tx
 // itself and calls Journal.CompleteTx on it.
+//
+// SessionLog.Sessions lists a session index over a materialized snapshot.
+// The cursor it returns is opaque, scoped to the requesting owner and
+// frozen to the membership the first page materialized; it expires a fixed
+// stores.LeaseTTL after materialization and reading a page never extends
+// it. A malformed, missing, expired or filter-mismatched cursor is refused
+// with an error whose message begins "list sessions: invalid cursor", and
+// a cursor another owner submits is refused with
+// types.ErrSessionForbidden. The cursor lifetime is an adapter behaviour,
+// not a shared contract for every SessionIndex implementation.
+//
+// The session delete cascade is transactional for the concrete dependents:
+// Runs, Notes, Outputs and Checkpoints each supply a package-local
+// deleteSessionDependentsTx entry that SessionLog.removeSession calls on
+// the transaction it already holds, so Delete, Purge and EraseSessions
+// commit or roll back the session and every dependent row as one. The
+// guarantee is bounded to those four stores; a third-party
+// stores.SessionDependent that supplies no transaction entry is deleted on
+// the pool, outside the atomicity guarantee.
 package postgres
 
 import (

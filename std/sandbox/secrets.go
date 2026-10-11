@@ -6,10 +6,83 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std/outputs"
 )
+
+// markerRe matches the digest markers secretToken generates. Redaction
+// passes treat markers as opaque, so a value that only matches inside a
+// marker digest is neither replaced nor counted again.
+var markerRe = regexp.MustCompile(`<gohan:secret:[0-9a-f]{24}>`)
+
+// outsideMarkers applies fn to the parts of s outside generated markers
+// and reassembles the markers verbatim.
+func outsideMarkers(s string, fn func(string) string) string {
+	locs := markerRe.FindAllStringIndex(s, -1)
+	if len(locs) == 0 {
+		return fn(s)
+	}
+	var b strings.Builder
+	last := 0
+	for _, loc := range locs {
+		b.WriteString(fn(s[last:loc[0]]))
+		b.WriteString(s[loc[0]:loc[1]])
+		last = loc[1]
+	}
+	b.WriteString(fn(s[last:]))
+	return b.String()
+}
+
+// secretPairs renders value→marker pairs, skipping empty values, so an
+// empty resolution injects nothing and redacts nothing.
+func secretPairs(secrets map[string]string) []string {
+	pairs := make([]string, 0, 2*len(secrets))
+	for _, v := range secrets {
+		if v != "" {
+			pairs = append(pairs, v, secretToken(v))
+		}
+	}
+	return pairs
+}
+
+// boundarySanitizer builds the spiller's sanitize step from the resolved
+// values: it replaces every occurrence outside generated markers with the
+// value's digest token and returns the occurrence count once. It emits no
+// telemetry itself and alters nothing when the policy injected no value,
+// so a second pass over already-sanitized bytes reports zero.
+func boundarySanitizer(secrets map[string]string) outputs.SanitizeFunc {
+	return func(_ context.Context, _ string, data []byte) ([]byte, int, error) {
+		if len(secrets) == 0 {
+			return data, 0, nil
+		}
+		pairs := secretPairs(secrets)
+		if len(pairs) == 0 {
+			return data, 0, nil
+		}
+		repl := strings.NewReplacer(pairs...)
+		clean, leaks := redactText(repl, secrets, string(data))
+		return []byte(clean), leaks, nil
+	}
+}
+
+// redactText replaces each resolved value in the non-marker parts of s and
+// counts the occurrences it replaced. Generated markers stay untouched, so
+// the count and the replacement agree and the pass is idempotent.
+func redactText(repl *strings.Replacer, secrets map[string]string, s string) (string, int) {
+	var n int
+	out := outsideMarkers(s, func(seg string) string {
+		for _, v := range secrets {
+			if v != "" {
+				n += strings.Count(seg, v)
+			}
+		}
+		return repl.Replace(seg)
+	})
+	return out, n
+}
 
 // errNoSecretResolver marks a policy that names secrets while the build
 // wired no resolver: nothing may be injected, and the call must fail rather
@@ -51,53 +124,40 @@ func secretToken(v string) string {
 	return "<gohan:secret:" + hex.EncodeToString(sum[:12]) + ">"
 }
 
-// redactSecrets replaces every injected value in the tool's returned blocks
-// and error text with its marker and counts the hits on the leak counter.
-// It runs before the result leaves the tool, so a leak never reaches
-// history, journal or logs.
+// redactSecrets is the post-body safety pass over the tool's returned
+// blocks and error text: it replaces every injected value with its marker
+// and counts only the occurrences it actually replaces on the leak
+// counter. Generated markers are opaque, so a second pass over already
+// redacted content replaces nothing and counts nothing, keeping each
+// occurrence counted exactly once across the boundary and safety passes.
 func redactSecrets(ctx context.Context, secrets map[string]string, blocks []types.Block, err error) ([]types.Block, error) {
 	if len(secrets) == 0 {
 		return blocks, err
 	}
-	pairs := make([]string, 0, 2*len(secrets))
-	for _, v := range secrets {
-		if v != "" {
-			pairs = append(pairs, v, secretToken(v))
-		}
-	}
+	pairs := secretPairs(secrets)
 	if len(pairs) == 0 {
 		return blocks, err
 	}
 	repl := strings.NewReplacer(pairs...)
 	var hits int64
-	for _, v := range secrets {
-		if v == "" {
-			continue
-		}
-		for _, b := range blocks {
-			if t, ok := b.(types.Text); ok {
-				hits += int64(strings.Count(t.Text, v))
+	for i, b := range blocks {
+		if t, ok := b.(types.Text); ok {
+			clean, n := redactText(repl, secrets, t.Text)
+			hits += int64(n)
+			if n > 0 {
+				blocks[i] = types.Text{BlockBase: t.BlockBase, Text: clean}
 			}
 		}
-		if err != nil {
-			hits += int64(strings.Count(err.Error(), v))
+	}
+	if err != nil {
+		clean, n := redactText(repl, secrets, err.Error())
+		hits += int64(n)
+		if n > 0 {
+			err = errors.New(clean)
 		}
 	}
 	if hits == 0 {
 		return blocks, err
-	}
-	for i, b := range blocks {
-		if t, ok := b.(types.Text); ok {
-			blocks[i] = types.Text{BlockBase: t.BlockBase, Text: repl.Replace(t.Text)}
-		}
-	}
-	if err != nil {
-		for _, v := range secrets {
-			if v != "" && strings.Contains(err.Error(), v) {
-				err = errors.New(repl.Replace(err.Error()))
-				break
-			}
-		}
 	}
 	if tel := types.TelemetryFrom(ctx); tel != nil {
 		tel.Count(ctx, "gohan.sandbox.secret_leak", hits)

@@ -156,6 +156,26 @@ func approveQuorum(ap checkpointApproval, pol permission.ApprovalPolicy) int {
 	return 1
 }
 
+// validateScopeInput refuses a scoped resume before the token is
+// consumed: the scope rides only an approved HumanApproval verdict, the
+// TTL must be positive, and the conversation needs a grant store. Every
+// refusal leaves the token pending and applies no effect.
+func validateScopeInput(grants permission.GrantStore, cp stores.Checkpoint, r stores.ResumeInput) error {
+	if r.ScopeTTL == 0 {
+		return nil
+	}
+	if cp.Reason != types.HumanApproval || r.Verdict != stores.VerdictApprove {
+		return fmt.Errorf("%w: scope approval is valid only as a positive TTL on an approved HumanApproval resume", types.ErrInputInvalid)
+	}
+	if r.ScopeTTL < 0 {
+		return fmt.Errorf("%w: scope approval TTL must be positive", types.ErrInputInvalid)
+	}
+	if grants == nil {
+		return fmt.Errorf("%w: scoped approval without a grant store", types.ErrInputInvalid)
+	}
+	return nil
+}
+
 // approverRecorded reports whether the subject already appears among the
 // recorded approvers. Distinct subjects only: a duplicate vote is refused.
 func approverRecorded(ap checkpointApproval, p types.Principal) bool {
@@ -211,6 +231,10 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			return
 		}
 		if err := validateResumeInput(cp, r); err != nil {
+			yield(nil, err)
+			return
+		}
+		if err := validateScopeInput(c.approvalGrants, cp, r); err != nil {
 			yield(nil, err)
 			return
 		}
@@ -337,7 +361,6 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 		// checkpointed state, never in a reused runtime.
 		rt := c.rt
 		ag := runtime.AgentRun{}
-		runCtx := credCtx
 		// Replay honours the snapshot the first execution observed: a
 		// key the current provider no longer reports at its recorded
 		// value fails the replay before any model call.
@@ -361,16 +384,32 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			st.HistoryVersion = h.Version
 		}
 		if r.Verdict == stores.VerdictApprove && cp.Reason == types.HumanApproval {
-			if aerr := appendReceipts(credCtx, c.log, h, consumed.RunID, env, &st); aerr != nil {
+			if aerr := appendReceipts(credCtx, c.log, h, consumed.RunID, env, &st, r.ScopeTTL > 0); aerr != nil {
 				prepFail(aerr)
 				return
+			}
+			if r.ScopeTTL > 0 {
+				at := time.Now().UTC()
+				if aerr := storeScopedGrants(credCtx, c.approvalGrants, c.consolidationAudit, cp.SessionID, consumed.RunID, c.spec, cp.Originator, approver, env, r.ScopeTTL, at); aerr != nil {
+					prepFail(aerr)
+					return
+				}
 			}
 		}
 		if aerr := applyResume(credCtx, c.log, cp.SessionID, &st, r); aerr != nil {
 			prepFail(aerr)
 			return
 		}
-		runCtx = types.WithApproval(runCtx, types.Approval{Approver: approver, At: time.Now().UTC()})
+		credCtx = types.WithApproval(credCtx, types.Approval{Approver: approver, At: time.Now().UTC()})
+		if cp.Reason == types.HumanApproval && r.Verdict == stores.VerdictApprove {
+			credCtx = withApprovedCalls(credCtx, approvedCalls(env, approver))
+		}
+		// The approval lineage rides on every resumed drive, whichever
+		// context the driver derives from: the foreign and native resume
+		// builders descend from credCtx, and the plain conversation drives
+		// from runCtx. A drive that lost the approver would gate the
+		// approved replay as a fresh ask.
+		runCtx := credCtx
 		var ledger *chains.LimitsState
 		switch {
 		case c.foreignRun != nil:
@@ -386,6 +425,21 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 				if run, ferr := rf.ByID(ctx, consumed.RunID); ferr == nil {
 					seed = run.Cost
 				}
+			}
+			// The cumulative admission accounting the checkpoint carries
+			// seeds the resumed drive: recorded identities replay on
+			// prepaid slots, and the total restores once per fresh ledger.
+			if st.Foreign != nil {
+				credCtx = withForeignProgress(credCtx, st.Foreign)
+			}
+			// Admission records key on the run id: a resumed drive
+			// records and replays under the run it resumes.
+			if ri, ok := types.RunInfoFrom(credCtx); !ok || ri.RunID == "" {
+				if !ok {
+					ri = types.RunInfo{SessionID: cp.SessionID}
+				}
+				ri.RunID = consumed.RunID
+				credCtx = types.WithRunInfo(credCtx, ri)
 			}
 			rctx, nrt, nag, nled, berr := c.foreignRun(credCtx, cp.SessionID, hDrive, seed, nil)
 			if berr != nil {
@@ -551,7 +605,7 @@ func cloneCheckpoint(cp stores.Checkpoint) stores.Checkpoint {
 // appendReceipts records one trusted receipt per approval-controlled call
 // that reached its quorum, keyed by run, generation and call id. Recovery
 // must not append a second receipt for the same key.
-func appendReceipts(ctx context.Context, log stores.SessionLog, h stores.History, runID string, env checkpointEnvelope, st *runtime.State) error {
+func appendReceipts(ctx context.Context, log stores.SessionLog, h stores.History, runID string, env checkpointEnvelope, st *runtime.State, scoped bool) error {
 	if log == nil {
 		return nil
 	}
@@ -577,6 +631,7 @@ func appendReceipts(ctx context.Context, log stores.SessionLog, h stores.History
 			Tool:       ap.Call.Name,
 			Args:       slices.Clone(ap.Call.Args),
 			Approvers:  slices.Clone(ap.ApprovedBy),
+			Scoped:     scoped,
 		}
 		if seen[receiptDedupKey(rc)] {
 			continue
