@@ -53,6 +53,7 @@ func egressSharesPolicyType(t *testing.T, f Factory) {
 		}
 	})
 	t.Run("private-range-denied", func(t *testing.T) {
+		fx := networkFixture(t, f)
 		p := types.SandboxPolicy{Lifecycle: types.PerCall}
 		p.Egress.Allow = []string{"api.example.com"}
 		p.Egress.PrivateRanges = types.DenyPrivate
@@ -60,7 +61,7 @@ func egressSharesPolicyType(t *testing.T, f Factory) {
 		rec := f.Recorder()
 		rec.Reset()
 		before := rec.Denied()
-		res := exec(t, w, f.Probe().Dial("10.0.0.7", 9090))
+		res := exec(t, w, f.Probe().Dial(fx.PrivateHost, fx.PrivatePort))
 		if res.ExitCode == 0 {
 			t.Fatal("dial into a private range succeeded, want denial")
 		}

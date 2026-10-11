@@ -28,6 +28,7 @@ func egressDenied(t *testing.T, f Factory) {
 func egressAllowlisted(t *testing.T, f Factory) {
 	t.Helper()
 	t.Run("allowlisted_host", func(t *testing.T) {
+		networkFixture(t, f)
 		p := types.SandboxPolicy{Lifecycle: types.PerCall}
 		p.Egress.Allow = []string{"api.example.com"}
 		w := open(t, f.Sandbox(t), p)
@@ -47,6 +48,7 @@ func egressAllowlisted(t *testing.T, f Factory) {
 	})
 
 	t.Run("private-range", func(t *testing.T) {
+		fx := networkFixture(t, f)
 		t.Run("deny_private", func(t *testing.T) {
 			p := types.SandboxPolicy{Lifecycle: types.PerCall}
 			p.Egress.Allow = []string{"api.example.com"}
@@ -55,7 +57,7 @@ func egressAllowlisted(t *testing.T, f Factory) {
 			rec := f.Recorder()
 			rec.Reset()
 			before := rec.Denied()
-			res := exec(t, w, f.Probe().Dial("192.168.1.10", 8080))
+			res := exec(t, w, f.Probe().Dial(fx.PrivateHost, fx.PrivatePort))
 			if res.ExitCode == 0 {
 				t.Fatal("dial into a private range under DenyPrivate succeeded, want denial")
 			}
@@ -68,7 +70,7 @@ func egressAllowlisted(t *testing.T, f Factory) {
 			w := open(t, f.Sandbox(t), p)
 			rec := f.Recorder()
 			rec.Reset()
-			res := exec(t, w, f.Probe().Dial("192.168.1.10", 8080))
+			res := exec(t, w, f.Probe().Dial(fx.PrivateHost, fx.PrivatePort))
 			if res.ExitCode != 0 {
 				t.Fatalf("private dial under AllowPrivate exit = %d, want not refused by policy", res.ExitCode)
 			}

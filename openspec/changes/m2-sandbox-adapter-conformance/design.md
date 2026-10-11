@@ -73,6 +73,8 @@ type Recorder interface {
 
 The `Probe` and `Recorder` shapes are the suite's contract with an adapter. Their exact names are settled when the suite is written; the requirement is only that the suite reaches the in-workspace network and process behavior through them and never constructs a provider resource itself.
 
+D2 fixtures: the provider supplies controlled name resolution and live listeners through Factory and its NetworkFixtureProvider companion. The suite retains api.example.com and other.example.com without public DNS. These names resolve to distinct, non-private fixture destinations. A supplied live RFC1918 endpoint supports DenyPrivate and AllowPrivate controls. Missing or unreachable fixtures fail acceptance. Adapter binding calls and the four scenario owners remain unchanged.
+
 ### D3 — The four subtests are named exactly their normative ids
 
 Each subtest is `t.Run("<scenario id>", …)` so a coverage run matches it (`tools/spec_coverage.py --registry openspec/scenarios.json`). The assertions:

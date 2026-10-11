@@ -225,6 +225,14 @@ func (f *fakeFactory) Probe() Probe { return fakeProbe{} }
 
 func (f *fakeFactory) Recorder() Recorder { return f.rec }
 
+// NetworkFixture is the fake's companion implementation: the fake
+// enforces its policy from the dialed address, so a nominal RFC1918
+// endpoint suffices and no listener is provisioned. Fake success stays
+// suite-mechanics evidence, never provider evidence.
+func (f *fakeFactory) NetworkFixture(_ *testing.T) NetworkFixture {
+	return NetworkFixture{PrivateHost: "192.168.1.10", PrivatePort: 8080}
+}
+
 func TestFactorySeam(t *testing.T) {
 	f := newFakeFactory()
 	if f.Sandbox(t) == nil {

@@ -39,6 +39,42 @@ type Factory interface {
 	Recorder() Recorder
 }
 
+// NetworkFixture is the provider-owned endpoint set a network case runs
+// against. PrivateHost names a live RFC1918 endpoint the provider
+// controls; PrivatePort is its listening port. The shared private-range
+// controls dial exactly this endpoint under DenyPrivate and AllowPrivate.
+type NetworkFixture struct {
+	PrivateHost string
+	PrivatePort int
+}
+
+// NetworkFixtureProvider is the optional Factory companion an adapter
+// implements when it can provision controlled network fixtures
+// (docs/design/compatibility.md: interface growth by companion, never by
+// extending Factory). A suite run over network scenarios requires it:
+// the normative hostnames must resolve to provider-controlled listeners
+// without public DNS, and the private-range controls need a live
+// RFC1918 endpoint. An adapter without the companion fails construction
+// of those cases; the suite never falls back to public DNS and never
+// silently skips.
+type NetworkFixtureProvider interface {
+	// NetworkFixture returns the fixture bound to t's resources. The
+	// provider registers bounded cleanup through t.Cleanup.
+	NetworkFixture(t *testing.T) NetworkFixture
+}
+
+// networkFixture obtains the fixture a network case runs against. An
+// adapter without the companion fails here, at construction, rather
+// than at dial time.
+func networkFixture(t *testing.T, f Factory) NetworkFixture {
+	t.Helper()
+	p, ok := f.(NetworkFixtureProvider)
+	if !ok {
+		t.Fatal("gohan: sandbox network fixture is required")
+	}
+	return p.NetworkFixture(t)
+}
+
 // Probe is the provider-neutral command vocabulary. Each method returns
 // the argv for one command inside a workspace.
 type Probe interface {

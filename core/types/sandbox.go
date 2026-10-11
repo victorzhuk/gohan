@@ -89,3 +89,11 @@ type Workspace interface {
 type WorkspaceLister interface {
 	List(ctx context.Context, path string) ([]WorkspaceEntry, error)
 }
+
+// SandboxResources enumerates durable sandbox resources and closes one by
+// its resource identity, so a later pod can reclaim what a dead pod left.
+// It is reached by type assertion on the Sandbox value; the port does not grow.
+type SandboxResources interface {
+	Enumerate(ctx context.Context) ([]WorkspaceRef, error)
+	CloseByRef(ctx context.Context, ref WorkspaceRef) error
+}

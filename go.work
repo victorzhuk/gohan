@@ -3,6 +3,7 @@ go 1.27.1
 use (
 	.
 	./adapter/anthropic
+	./adapter/docker
 	./adapter/eino
 	./adapter/openai
 	./adapter/otel

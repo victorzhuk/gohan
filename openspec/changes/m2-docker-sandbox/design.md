@@ -69,6 +69,8 @@ The adapter configures the container so `Exec` can run the `Probe` vocabulary wi
 
 The denial is reported to the harness so the governed path can classify it: the adapter records the refusal through the shared observation seam and the harness appends `stores.AuditEgressDenied` (`core/tool_call.go`, ADR-0156). The denial-counter name (`gohan.sandbox.egress_denied` vs `gohan.egress.requests{decision=denied}`) is the suite's open item O1 and is not settled here; the adapter reports through the seam and asserts no metric name.
 
+D4 observation: the adapter observes packet-level policy refusals and classified in-workspace resolution refusals. A DNS refusal need not produce a DROP packet. The adapter records one refusal observation per affected Exec, without double-counting packet and classified evidence. Process failures and unrelated timeouts do not establish egress denial. Workspace.Exec preserves its result/error contract. Governed audit acceptance requires the ADR-0156 path, not a locally appended audit-kind constant.
+
 ### D5 — Snapshot is a committed, labelled image; survival, retention and missing-snapshot are defined
 
 `Workspace.Snapshot` calls `ContainerCommit` with `NoPause: true` and a deterministic reference derived from the workspace's session/run identity, producing a committed image tagged and labelled as a sandbox snapshot. The returned `types.WorkspaceRef` is that image reference. The Docker-leg answers to the R6 questions:
