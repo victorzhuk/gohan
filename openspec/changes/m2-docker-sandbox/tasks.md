@@ -64,14 +64,14 @@ The Docker daemon is live (server `29.8.2`, `linux`, verified this session). The
   - evidence: the observed run output naming the four ids; the daemon version/OS recorded
 - [x] 7.3 Confirm the adapter keeps no private copy of an owned id and the binding is one file: `adapter/docker` contains exactly one `_test.go` file that imports `testkit/sandboxtest`, and no `t.Run("<owned id>")` appears outside the suite. Verify `grep -c 'sandboxtest.Sandbox' adapter/docker/sandbox_conformance_test.go` is 1 and `grep -rn 'sandbox.egress-denied\|sandbox.egress-allowlisted\|sandbox.exec-timeout\|sandbox.egress-shares-policy-type' adapter/docker` matches no test name.
   - evidence: the grep output; `adapter/docker/sandbox_conformance_test.go`
-- [ ] 7.4 Record the Docker leg as unblocked for `m2-sandbox-adapter-conformance` task 5.3 and report the observed run as the provider evidence, without closing the E2B leg (task 5.4). Verify the lane report names the Docker leg observed green and the E2B leg still blocked.
+- [x] 7.4 Record the Docker leg as unblocked for `m2-sandbox-adapter-conformance` task 5.3 and report the observed run as the provider evidence, without closing the E2B leg (task 5.4). Verify the lane report names the Docker leg observed green and the E2B leg still blocked.
   - evidence: the lane acceptance report; `openspec/changes/m2-sandbox-adapter-conformance/tasks.md` tasks 5.3 and 5.4
 
 ## 8. Lane acceptance
 
-- [ ] 8.1 Run the touched-module checks: `timeout 600s task lint`, `timeout 300s go -C adapter/docker test -timeout 2m ./...` and `timeout 300s go build ./...`. Resolve every failure in the code this change touched. Verify all three exit zero.
+- [x] 8.1 Run the touched-module checks: `timeout 600s task lint`, `timeout 300s go -C adapter/docker test -timeout 2m ./...` and `timeout 300s go build ./...`. Resolve every failure in the code this change touched. Verify all three exit zero.
   - evidence: `task lint` 0 issues; the adapter module test run green; `go build ./...` clean
-- [ ] 8.2 Confirm the conformance run matches all four owned ids with a non-zero count and reject a query that matches zero tests: `timeout 600s go -C adapter/docker test -json -timeout 10m ./... -run TestSandboxConformance | python3 tools/spec_coverage.py --registry openspec/scenarios.json` lists the four ids as covered from the Docker leg. Verify the coverage output per owned id.
+- [x] 8.2 Confirm the conformance run matches all four owned ids with a non-zero count and reject a query that matches zero tests: `timeout 600s go -C adapter/docker test -json -timeout 10m ./... -run TestSandboxConformance | python3 tools/spec_coverage.py --registry openspec/scenarios.json` lists the four ids as covered from the Docker leg. Verify the coverage output per owned id.
   - evidence: the coverage output per owned id; the observed run
 - [ ] 8.3 Validate the change package. Verify `timeout 30s openspec validate m2-docker-sandbox --strict --no-interactive` reports `is valid`.
   - evidence: `timeout 30s openspec validate m2-docker-sandbox --strict --no-interactive`

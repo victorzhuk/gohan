@@ -54,16 +54,17 @@ func (s *Stack) Maintain(ctx context.Context) (MaintainReport, error)
 func (s Stores) ForkSession(ctx context.Context, from string, upTo string) (string, error)
 
 type Checkpoint struct {
-	SessionID      string
-	Flow           string
-	Backend        string
-	BackendVersion string
-	Reason         SuspendReason
-	Originator     Principal
-	Data           []byte
-	Child          ResumeToken
-	Workspace      WorkspaceRef
-	ExpiresAt      time.Time
+	SessionID           string
+	Flow                string
+	Backend             string
+	BackendVersion      string
+	Reason              SuspendReason
+	Originator          Principal
+	Data                []byte
+	Child               ResumeToken
+	Workspace           WorkspaceRef
+	WorkspaceGeneration int64
+	ExpiresAt           time.Time
 }
 
 var (
@@ -261,6 +262,29 @@ type SessionIndex interface {
 
 func (s *Stack) Sessions(ctx context.Context, q SessionQuery) ([]SessionMeta, string, error)
 func (s *Stack) UpdateSession(ctx context.Context, sessionID string, p SessionPatch) error
+
+// SessionWorkspaceMeta is the optional durable per-session workspace surface on
+// SessionLog (docs/design/compatibility.md; the core memory store and
+// adapter/postgres implement it). Generation is the sole compare-and-set token;
+// zero denotes absent metadata.
+type WorkspaceMeta struct {
+	Ref        WorkspaceRef
+	Generation int64
+	Owner      WorkspaceOwner
+}
+
+type SessionWorkspaceMeta interface {
+	WorkspaceMeta(ctx context.Context, sessionID string) (WorkspaceMeta, bool, error)
+	SetWorkspaceMeta(ctx context.Context, sessionID string, expectedGeneration int64, m WorkspaceMeta) (int64, error)
+}
+
+// SessionWorkspaceOwnerGuard validates a workspace-metadata write owner while
+// its own lock is held. The callback MUST NOT re-enter either store.
+type SessionWorkspaceOwnerGuard interface {
+	WithWorkspaceOwner(ctx context.Context, sessionID string, owner WorkspaceOwner, write func() error) error
+}
+
+func ImportWorkspaceMeta(ctx context.Context, sessionID string, owner WorkspaceOwner, legacy WorkspaceSnapshot) (WorkspaceSnapshot, error)
 
 type FeedbackStore interface {
 	PutFeedback(ctx context.Context, f Feedback) (int64, error)
@@ -528,6 +552,8 @@ ID: `stores.complete-without-reservation`
 
 ### Requirement: Optional interfaces
 
+An optional surface MUST be discovered by type assertion, and the spec that introduces it MUST state core's behaviour when the assertion fails. `SessionWorkspaceMeta` is such a surface on `SessionLog`: `WorkspaceMeta` reads the durable per-session workspace pointer and reports absence, `SetWorkspaceMeta` compares the expected generation and validates the current lease owner in one atomic write and returns `types.ErrVersionConflict` on a stale token or `types.ErrRunNotActive` on a stale owner, and `ImportWorkspaceMeta` writes one legacy generation-zero ref into absent metadata. A `SessionLog` that does not implement the surface keeps every other operation unchanged, and core MUST refuse a `PerSession` build that wires no durable workspace-metadata surface.
+
 #### Scenario: session index optional
 ID: `stores.session-index-optional`
 - WHEN a `SessionLog` implementation does not implement `SessionIndex`
@@ -695,7 +721,7 @@ ID: `stores.hash-chain`
 
 ### Requirement: Checkpoint versioning and quota pools
 
-A checkpoint carries the backend and backend version that wrote it. A resume under a different backend version MUST NOT assume compatibility: an agent runtime whose driver state decodes MUST proceed through `Replay`, and a graph checkpoint that cannot be decoded under the current backend MUST be refused with `ErrCheckpointIncompatible` and MUST leave the token unconsumed. A `QuotaPool` on a model profile MUST be enforced across every process sharing that pool, `Batch` admission MUST yield to `Interactive` admission while pool queue-wait is above the threshold, and pool spend MUST be bounded per window so a limit is a `Permanent` `*LimitExceededError` naming the limit.
+A checkpoint carries the backend and backend version that wrote it, and the additive `WorkspaceGeneration int64` field names the session workspace generation the checkpoint's ref was published at; a checkpoint written before this field reads it as zero, which restores only a session that holds no durable workspace metadata. A resume under a different backend version MUST NOT assume compatibility: an agent runtime whose driver state decodes MUST proceed through `Replay`, and a graph checkpoint that cannot be decoded under the current backend MUST be refused with `ErrCheckpointIncompatible` and MUST leave the token unconsumed. A `QuotaPool` on a model profile MUST be enforced across every process sharing that pool, `Batch` admission MUST yield to `Interactive` admission while pool queue-wait is above the threshold, and pool spend MUST be bounded per window so a limit is a `Permanent` `*LimitExceededError` naming the limit.
 
 #### Scenario: native checkpoint after adapter upgrade
 ID: `stores.native-checkpoint-after-adapter-upgrade`
@@ -725,7 +751,7 @@ ID: `stores.daily-pool-budget`
 
 ### Requirement: Postgres contract
 
-`adapter/postgres` MUST implement every store port the core declares in its own module `github.com/victorzhuk/gohan/adapter/postgres`: `SessionLog` (with `SessionIndex`), `Checkpoints` (with `CheckpointResumer` and `ResumeReadyLister`), `Journal` (with `CompleteTx` and `ModelCompleter`), `Runs` (with `PreemptedLister`, `SuspendReasonRecorder` and `FinishReasonRecorder`), `AuditLog`, `OutputStore`, `EventLog`, `NotesStore` and `RedactionMaps`. No port gains a method in core; the adapter-specific seams are methods on the concrete adapter types (ADR-0117). Every stored shape MUST be persisted in the `stores` record envelope and decoded through the schema registry on read.
+`adapter/postgres` MUST implement every store port the core declares in its own module `github.com/victorzhuk/gohan/adapter/postgres`: `SessionLog` (with `SessionIndex` and `SessionWorkspaceMeta`), `Checkpoints` (with `CheckpointResumer` and `ResumeReadyLister`), `Journal` (with `CompleteTx` and `ModelCompleter`), `Runs` (with `PreemptedLister`, `SuspendReasonRecorder` and `FinishReasonRecorder`), `AuditLog`, `OutputStore`, `EventLog`, `NotesStore` and `RedactionMaps`. No port gains a method in core; the adapter-specific seams are methods on the concrete adapter types (ADR-0117). `SessionWorkspaceMeta` MUST run one transaction that takes the session serialization lock, locks `session_record` and then the owning `run_record` last, applies the `stores` refusal precedence, writes `expectedGeneration+1` and commits without releasing the owner row lock; any operation that needs both rows uses the session-before-run order, and a run-only mutation keeps run-only locking. Every stored shape MUST be persisted in the `stores` record envelope and decoded through the schema registry on read.
 
 #### Scenario: schema owned by the adapter
 ID: `stores.pg-schema-owned`

@@ -212,7 +212,7 @@ func TestCrossPodRestore(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read restored file: %v", err)
 		}
-		rc.Close()
+		_ = rc.Close()
 		if string(body) != "a,b\n1,2\n" {
 			t.Fatalf("pod-b read %q, want pod-a's file body", body)
 		}

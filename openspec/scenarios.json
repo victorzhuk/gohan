@@ -3429,5 +3429,140 @@
     "capability": "context",
     "origin": "ADR-0163",
     "title": "compaction summary not refolded"
+  },
+  "sandbox.handle-owner-exclusive": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "handle reused by one owner"
+  },
+  "sandbox.handle-owner-fenced": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "stale lease generation fenced"
+  },
+  "sandbox.release-closes-acquired-handle": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "release closes the acquired handle"
+  },
+  "sandbox.cleanup-claim-excludes-live-use": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "cleanup claim excludes live use"
+  },
+  "sandbox.sweep-bounded-limit": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "sweep honours its limit"
+  },
+  "sandbox.recover-sweeps-without-stale-runs": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "recovery sweeps without stale runs"
+  },
+  "sandbox.close-failure-retains-snapshot": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "failed close retains the snapshot"
+  },
+  "sandbox.build-refuses-incapable-persession": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "build refuses an incapable per-session build"
+  },
+  "sandbox.ref-generation-fenced": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "generation fenced compare-and-set"
+  },
+  "sandbox.owner-cas-atomic": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "owner validated in the same atomic write"
+  },
+  "sandbox.owner-guard-required": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "absent owner guard refuses writes"
+  },
+  "sandbox.restore-keeps-newer-generation": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "restore keeps a later generation"
+  },
+  "sandbox.restore-skips-equal-metadata": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "equal metadata is not rewritten"
+  },
+  "sandbox.no-ref-session-migrates": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "session without a ref migrates"
+  },
+  "sandbox.legacy-ref-explicit-import": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "legacy ref requires explicit import"
+  },
+  "sandbox.import-writes-generation-one": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "import writes generation one"
+  },
+  "sandbox.import-refuses": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "import refuses without mutation"
+  },
+  "sandbox.partial-mutation-publishes": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "partial write still publishes"
+  },
+  "sandbox.nonzero-exit-publishes": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "nonzero exit still publishes"
+  },
+  "sandbox.mutation-published-before-complete": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "mutation published before completion"
+  },
+  "sandbox.publication-error-sanitized": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "publication error sanitized before persistence"
+  },
+  "sandbox.release-after-suspend-storage": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "release follows suspension storage"
+  },
+  "sandbox.suspend-publish-failure-aborts": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "failed suspension publish saves no checkpoint"
+  },
+  "sandbox.terminal-publish-before-complete": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "terminal release follows the terminal write"
+  },
+  "sandbox.signals-pending-keeps-handle": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "refused terminal write keeps the handle"
+  },
+  "sandbox.cross-pod-independent-coordinators": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "independent pod restores the snapshot"
+  },
+  "sandbox.restore-missing-snapshot-errors": {
+    "capability": "sandbox",
+    "origin": "m2-sandbox-lifecycle-resume",
+    "title": "missing snapshot returns an error"
   }
 }

@@ -172,35 +172,37 @@ func TestSuspendPublishFailures(t *testing.T) {
 		{"snapshot refused", errors.New("snapshot refused")},
 		{"compare-and-set refused", fmt.Errorf("publish: %w", types.ErrVersionConflict)},
 	}
-	for _, tc := range cases {
-		t.Run("sandbox.suspend-publish-failure-aborts/"+tc.name, func(t *testing.T) {
-			rec := &order{}
-			h := &wsHandles{rec: rec, pubErr: tc.err}
-			use := &types.WorkspaceUse{}
-			use.MarkAcquired()
-			rt := &lcRuntime{histVer: 1, script: []lcStep{{status: runtime.SuspendedStatus}}}
-			runs := &lcRuns{rec: rec}
-			lc := wsTestLifecycle(h, use, runs, rec)
-			saved := false
-			ag := runtime.AgentRun{Save: func(_ context.Context, _ stores.Checkpoint) (types.ResumeToken, error) {
-				saved = true
-				rec.mark("checkpoints.put")
-				return "tok-1", nil
-			}}
-			for _, derr := range DriveLifecycle(context.Background(), lc, rt, ag) {
-				if derr != nil && !errors.Is(derr, tc.err) {
-					t.Fatalf("drive: %v, want the publication failure", derr)
+	t.Run("sandbox.suspend-publish-failure-aborts", func(t *testing.T) {
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				rec := &order{}
+				h := &wsHandles{rec: rec, pubErr: tc.err}
+				use := &types.WorkspaceUse{}
+				use.MarkAcquired()
+				rt := &lcRuntime{histVer: 1, script: []lcStep{{status: runtime.SuspendedStatus}}}
+				runs := &lcRuns{rec: rec}
+				lc := wsTestLifecycle(h, use, runs, rec)
+				saved := false
+				ag := runtime.AgentRun{Save: func(_ context.Context, _ stores.Checkpoint) (types.ResumeToken, error) {
+					saved = true
+					rec.mark("checkpoints.put")
+					return "tok-1", nil
+				}}
+				for _, derr := range DriveLifecycle(context.Background(), lc, rt, ag) {
+					if derr != nil && !errors.Is(derr, tc.err) {
+						t.Fatalf("drive: %v, want the publication failure", derr)
+					}
 				}
-			}
-			if saved {
-				t.Fatal("checkpoint saved after the publish failure")
-			}
-			rec.want(t, "handles.publish")
-			if runs.suspended != "" {
-				t.Fatalf("suspension transition recorded with token %q", runs.suspended)
-			}
-		})
-	}
+				if saved {
+					t.Fatal("checkpoint saved after the publish failure")
+				}
+				rec.want(t, "handles.publish")
+				if runs.suspended != "" {
+					t.Fatalf("suspension transition recorded with token %q", runs.suspended)
+				}
+			})
+		}
+	})
 }
 
 func TestFinishRunPublishesWorkspace(t *testing.T) {

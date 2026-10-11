@@ -14,6 +14,8 @@ Normative process for `github.com/victorzhuk/gohan` and the `adapter/*` modules 
 Every exported interface is one of two kinds, recorded in `docs/design/types.md`:
 
 - **Port** — implemented by users or adapters (`Model`, `Tool`, `Decider`, `SessionLog`, `Runs`, `Checkpoints`, `Journal`, `AuditLog`, `EventLog`, `OutputStore`, `NotesStore`, `Sandbox`, `Workspace`, `Waker`, `CredentialSource`, `ContextProvider`, `Runtime`, `Stepper`, and the rest). From `v1` a port never gains, loses or changes a method. New capability arrives as a **new optional interface** discovered by type assertion, and the spec that introduces it states core's behaviour when the assertion fails. `storetest` and `conformance.*` exercise both paths. `PreemptedLister` (`stores`) and `MemoryStore` (`working-state`) are the first two.
+
+The sandbox lifecycle work (ADR-0168) adds no method to any port: `Sandbox` and `Workspace` keep their exact method sets, and the growth is the optional `types.SandboxHandles` coordinator port and the optional `stores.SessionWorkspaceMeta` surface (with its `SessionWorkspaceOwnerGuard` seam and `ImportWorkspaceMeta` operation), each discovered by type assertion with core's absent-assertion behaviour stated in its capability spec. `stores.Checkpoint` gains only the additive `WorkspaceGeneration` field, which its zero value preserves.
 - **Handle** — implemented by gohan only and called by users (`Conversation`, `Flow[In, Out]`). Handles may gain methods in a minor release. Users do not implement handles; `testkit/gohantest` ships the fakes.
 
 Before `v1` a port may still change, but every growth is expressed as an optional interface from the start so the pattern is real, not aspirational.

@@ -23,7 +23,29 @@ type Workspace interface {
 	Close(ctx context.Context) error
 }
 
+// SandboxHandles is the optional lifecycle coordinator beside the Sandbox port.
+// It owns one live Workspace per (session, owner) and never grows Sandbox or
+// Workspace. There is no Withdraw operation.
+type SandboxHandles interface {
+	Acquire(ctx context.Context, sessionID string, owner WorkspaceOwner) (Workspace, error)
+	Publish(ctx context.Context, sessionID string, owner WorkspaceOwner) (WorkspaceSnapshot, error)
+	Release(ctx context.Context, sessionID string, owner WorkspaceOwner) error
+	Sweep(ctx context.Context, limit int) error
+}
+
 type WorkspaceRef string
+
+// WorkspaceOwner fences a live handle to one run and one lease generation.
+type WorkspaceOwner struct {
+	RunID           string
+	LeaseGeneration uint64
+}
+
+// WorkspaceSnapshot is the durable outcome of one publication.
+type WorkspaceSnapshot struct {
+	Ref        WorkspaceRef
+	Generation int64
+}
 
 type Lifecycle int
 
@@ -68,11 +90,12 @@ type ExecResult struct {
 1. **Effect from policy.** `PerCall` + empty `Egress.Allow` → `ReadOnly`; `PerSession` + empty `Egress.Allow` → `Idempotent`; any `Egress.Allow` → `SideEffect`. `Egress` is the `EgressPolicy` of `tools`, enforced by the adapter at the network layer with the same private-range and hop rules. `WithEffect` may only tighten. Empty `Egress` means deny-all, including DNS.
 2. **Secrets.** `Secrets` are resolved by the harness through `CredentialSource` for the originator at `Open` and injected as environment inside the workspace. Secret values never appear in tool args, results, history, journal or spans; `read_file`/`run_code` output is scanned for injected values and redacted (`gohan.sandbox.secret_leak` increments).
 3. **Outputs.** `Stdout`/`Stderr` are capped by `ToolSpec.MaxOutput`; overflow and files the model asks to return go to `OutputStore` and come back as `File` blocks with `Ref`.
-4. **Lifecycle.** `PerCall`: `Open` → `Exec` → `Close` inside one tool call. `PerSession`: one workspace per session, kept open across turns, `WorkspaceRef` stored in session metadata; on any suspension and at the end of a detached run the harness calls `Snapshot` and stores the ref in `Checkpoint.Workspace`; `Resume` opens from that ref. `Close` is called by the reaper when the session's lease expires.
+4. **Lifecycle.** `PerCall`: `Open` → `Exec` → `Close` inside one tool call. `PerSession`: one workspace per session, kept open across turns through one live handle fenced by the run id and the store-minted lease generation; on suspension the harness calls `Snapshot` and stores the ref and its generation in `Checkpoint.Workspace` and `Checkpoint.WorkspaceGeneration` before the suspension is persisted; at the end of a detached run it publishes the ref as the session's durable workspace metadata and creates no checkpoint; `Resume` opens from that ref under the generation-and-owner restore rules; the live handle is released after the suspension or terminal write succeeds, and a failed close leaves a cleanup record the sweep retries.
 5. **Replay.** Exec results are journaled like any tool result; `Replay` replays them without re-executing and restores the workspace from the checkpoint ref, so a run resumed on another pod sees the same files.
 6. **Limits.** `RunLimits.MaxSandboxSeconds` bounds cumulative `ExecResult.Seconds` per tree; `Usage.SandboxSeconds` reports it; exceeding it is `*LimitExceededError`. `MaxExecTime` kills the process group inside the workspace; a kill on a `SideEffect` policy is `Outcome: Unknown`, otherwise `Failed`.
 7. **Guards.** Model-written code is `OriginModel`; `run_code` args pass the permission gate (`Ask` recommended for `SideEffect` policies); results pass `StageToolResult`.
 8. **Host runner.** `tool/exec` stays the no-isolation runner for fixed-argv commands. `Build` warns when it is registered without `AllowHostExec()`.
+9. **Placement.** The coordinator port `SandboxHandles` and its `WorkspaceOwner` and `WorkspaceSnapshot` value types live in `core/types`; the coordinator implementation lives in `std/sandbox` and is constructed there once and shared by the tool set and the lifecycle hooks; the optional durable surface `SessionWorkspaceMeta` lives in `core/stores`.
 
 Adapters: `adapter/docker` (dev, reference), `adapter/e2b`; a Kubernetes agent-sandbox adapter later. Conformance: `sandboxtest` exercises every rule against an adapter with a deny-all egress probe.
 
@@ -124,6 +147,8 @@ ID: `sandbox.secret-leak-redacted`
 ### Requirement: Lifecycle and resume
 
 The `PerCall` lifecycle MUST run `Open`, `Exec` and `Close` inside one tool call, and `Close` MUST be called exactly once per call, including when the call panics.
+
+The `PerSession` lifecycle MUST keep one workspace per session across turns through one live handle owned by the run: a later call in the same run MUST reuse that handle, and a call in a later run MUST open from the session's durable `WorkspaceRef` so files written in an earlier turn are visible without re-upload. The live handle MUST be bound to the owning run id and the store-minted lease generation, and a stale owner MUST be refused. On suspension the harness MUST snapshot the live handle through the fallible lifecycle path and MUST store the produced `WorkspaceRef` and its generation in `Checkpoint.Workspace` before the suspension is persisted. At the end of a detached run the harness MUST snapshot the live handle and MUST persist the produced ref as the session's durable workspace ref; a detached run creates no checkpoint. On resume the harness MUST open the workspace from `Checkpoint.Workspace` only when the checkpoint generation is not older than the session's stored generation, and a missing or expired snapshot MUST return an error instead of opening fresh. At the end of a non-detached run the harness MUST publish the durable session ref before the run's terminal write, and MUST close the live handle only after that terminal write succeeds.
 
 #### Scenario: per-session persistence
 ID: `sandbox.per-session-persists`
