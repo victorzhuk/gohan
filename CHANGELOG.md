@@ -4,6 +4,8 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-12
+
 ### Breaking
 
 - `stores.Lease` carries a `Generation` ownership token, and `Heartbeat`, `Finish`, `Suspend` and `Drain` refuse a stale generation with `ErrRunNotActive`: a driver that lost its lease can no longer mutate the run a reclaimer owns. Store implementations mint a new generation on `Start`, `Resuming` and `Reclaim`.
@@ -129,5 +131,6 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 - The wall-clock budget is measured in elapsed monotonic time, so neither a store timestamp nor a system clock jump can move it.
 - A repeated prefix build for the same request is allocation-free: the assembler memoises instead of allocating on every call.
 
-[unreleased]: https://github.com/victorzhuk/gohan/compare/v0.1.0...HEAD
+[unreleased]: https://github.com/victorzhuk/gohan/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/victorzhuk/gohan/releases/tag/v1.0.0
 [0.1.0]: https://github.com/victorzhuk/gohan/releases/tag/v0.1.0

@@ -28,15 +28,15 @@ Rows keep their §2 owners (`openspec/changes/m2/design.md` §2.1, §2.4, §2.6,
 
 ## 3. Bind the record in the milestone matrix
 
-- [ ] 3.1 Fill the `Evidence` cells of the rows the re-run proves in `openspec/changes/m2/design.md`: the five `runtime` rows and `flow.backend-swap` (§2.1, §2.4), `limits.limits-under-foreign-backend` (§2.6), `runtime.governed-components-in-eino-graph` (§2.1) and the two `stores` rows (§2.8). Each cell names the file and the subtest that carries the id; `Owner` and `Depends on` stay as §2 states them. Verify the cell text for each of the eleven ids names a subtest that appears in the §1–§2 run output.
+- [x] 3.1 Fill the `Evidence` cells of the rows the re-run proves in `openspec/changes/m2/design.md`: the five `runtime` rows and `flow.backend-swap` (§2.1, §2.4), `limits.limits-under-foreign-backend` (§2.6), `runtime.governed-components-in-eino-graph` (§2.1) and the two `stores` rows (§2.8). Each cell names the file and the subtest that carries the id; `Owner` and `Depends on` stay as §2 states them. Verify the cell text for each of the eleven ids names a subtest that appears in the §1–§2 run output.
   - evidence: `openspec/changes/m2/design.md` §2.1, §2.4, §2.6, §2.8 `Evidence` cells; `design.md` D2.
 - [x] 3.2 Move the §4 obligation row *S4 graph acceptance and `conformance.*` green on eino* off `missing` and record the adk-go leg as open: the §5 lane-status line names the S4 graph and conformance suites green on eino, and names the adk-go leg of `runtime.message-round-trip` (and the adk-go graph leg) M3-open. Do not mark `runtime.message-round-trip` closed. Verify the §4 row carries a non-empty `Evidence` cell naming the two suites and the §5 line names the adk-go leg open.
   - evidence: `openspec/changes/m2/design.md:148` (§4 row) and §5 lane status; `openspec/changes/m3/proposal.md:7` (the adk-go owner); `design.md` D4.
 
 ## 4. Gate and package validation
 
-- [ ] 4.1 Report the milestone gate: `timeout 1800s task spec:gate GATE=M2` reports `missing_in_scope=0`. Record the S4 half of the M2 exit as the two suites this change re-runs; `task api:check` and the `v1.0.0` tag stay `m2-api-freeze`'s. Verify the gate output names `missing_in_scope=0`.
-  - evidence: the `task spec:gate GATE=M2` output; `Taskfile.yml` (`spec:gate`); `docs/overview.md:110`; `design.md` D6.
+- [x] 4.1 Report the milestone gate: `timeout 1800s task spec:gate GATE=M2` reports `missing_in_scope=0`. Record the S4 half of the M2 exit as the two suites this change re-runs; `task api:check` and the `v1.0.0` tag stay `m2-api-freeze`'s. Verify the gate output names `missing_in_scope=0`.
+  - evidence: `timeout 1500s task spec:gate GATE=M2` → `summary registered=663 subtests=2286 covered=568 missing=95 missing_in_scope=0 unregistered=0`; the `task spec:gate GATE=M2` output; `Taskfile.yml` (`spec:gate`); `docs/overview.md:110`; `design.md` D6.
 - [x] 4.2 Validate the change package. Verify `timeout 60s openspec validate m2-s4-acceptance --strict --no-interactive` exits 0, and `.openspec.yaml` carries `skip_specs: true` because no requirement text changes.
   - evidence: `Change 'm2-s4-acceptance' is valid`.
 

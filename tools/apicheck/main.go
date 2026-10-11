@@ -213,6 +213,15 @@ func loadPackages(root string) (map[string]map[string]string, error) {
 			if name == "testdata" || strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") {
 				return filepath.SkipDir
 			}
+			// A nested directory that holds its own go.mod is a separate
+			// module: a run freezes exactly the module directory it is
+			// given, so a root run does not report examples/** or
+			// adapter/** symbols under the root module.
+			if d != root {
+				if _, statErr := os.Stat(filepath.Join(d, "go.mod")); statErr == nil {
+					return filepath.SkipDir
+				}
+			}
 			return nil
 		}
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
