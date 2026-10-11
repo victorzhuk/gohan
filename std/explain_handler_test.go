@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -32,6 +33,7 @@ func explainHandlerStack(t *testing.T, tools ...types.Tool) (*gohan.Stack, *goha
 	opts := append(preset.Options(),
 		gohan.WithModels(model),
 		gohan.WithLimits("interactive", types.InteractiveLimits),
+		gohan.WithEgressClient(func(types.EgressPolicy) *http.Client { return &http.Client{} }),
 		gohan.WithNativeAgent(gohan.NativeSpec{
 			Request:   gohan.FlowRequest{Name: "interactive"},
 			Profile:   "interactive",
@@ -203,6 +205,48 @@ func TestExplainHandler(t *testing.T) {
 		}
 		if verifyRan {
 			t.Fatal("explain ran the tool's verify function")
+		}
+	})
+
+	t.Run("tool-with-egress-renders-policy", func(t *testing.T) {
+		tool := explainVerifyTool{spec: types.ToolSpec{
+			Name:     "fetch_order",
+			Schema:   json.RawMessage(`{"type":"object"}`),
+			Executor: types.ByHarness,
+			Egress:   &types.EgressPolicy{Allow: []string{"api.example.com"}, Schemes: []string{"https"}},
+		}}
+		stack, _ := explainHandlerStack(t, tool)
+		srv := httptest.NewServer(std.ExplainHandler(stack))
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/explain?flow=interactive")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d, want 200: body=%s", resp.StatusCode, b)
+		}
+		var raw map[string]json.RawMessage
+		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		var infos []chains.ToolInfo
+		if err := json.Unmarshal(raw["Tools"], &infos); err != nil {
+			t.Fatalf("decode tools: %v", err)
+		}
+		if len(infos) != 1 || infos[0].Name != "fetch_order" {
+			t.Fatalf("explained tools = %+v, want fetch_order", infos)
+		}
+		if infos[0].Egress == nil {
+			t.Fatal("rendered egress = nil, want the declared policy")
+		}
+		if !reflect.DeepEqual(infos[0].Egress.Allow, []string{"api.example.com"}) {
+			t.Errorf("rendered egress allow = %v, want [api.example.com]", infos[0].Egress.Allow)
+		}
+		if !reflect.DeepEqual(infos[0].Egress.Schemes, []string{"https"}) {
+			t.Errorf("rendered egress schemes = %v, want [https]", infos[0].Egress.Schemes)
 		}
 	})
 }

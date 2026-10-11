@@ -5,6 +5,7 @@ import (
 	"context"
 	"iter"
 	"log/slog"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -120,6 +121,67 @@ func TestExplain(t *testing.T) {
 		}
 		if want := chains.PromptFields(prompts); !reflect.DeepEqual(ex.Prompts, want) {
 			t.Errorf("prompts = %v, want the resolved set %v", ex.Prompts, want)
+		}
+	})
+
+	t.Run("declared egress renders the policy shape", func(t *testing.T) {
+		tool := &fakeNativeTool{spec: types.ToolSpec{
+			Name:     "fetch",
+			Executor: types.ByHarness,
+			Egress: &types.EgressPolicy{
+				Allow:   []string{"api.example.com"},
+				Schemes: []string{"https"},
+			},
+		}}
+		spec := nativeSpec("agent", "primary")
+		spec.Tools = []types.Tool{tool, &fakeNativeTool{spec: types.ToolSpec{Name: "search", Executor: types.ByHarness}}}
+		s, err := Build(
+			WithModels(&explainModel{profile: profile("primary", true)}),
+			WithPrompts(prompts),
+			WithLimits("agent", types.InteractiveLimits),
+			WithEgressClient(func(types.EgressPolicy) *http.Client { return &http.Client{} }),
+			WithNativeAgent(spec),
+		)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		ex := s.Explain("agent")
+		var fetch, search *chains.ToolInfo
+		for i := range ex.Tools {
+			switch ex.Tools[i].Name {
+			case "fetch":
+				fetch = &ex.Tools[i]
+			case "search":
+				search = &ex.Tools[i]
+			}
+		}
+		if fetch == nil || search == nil {
+			t.Fatalf("tools = %+v, want fetch and search", ex.Tools)
+		}
+		if fetch.Egress == nil {
+			t.Fatal("fetch egress = nil, want the declared policy")
+		}
+		if !reflect.DeepEqual(fetch.Egress.Allow, []string{"api.example.com"}) {
+			t.Errorf("fetch egress allow = %v, want [api.example.com]", fetch.Egress.Allow)
+		}
+		if !reflect.DeepEqual(fetch.Egress.Schemes, []string{"https"}) {
+			t.Errorf("fetch egress schemes = %v, want [https]", fetch.Egress.Schemes)
+		}
+		if search.Egress != nil {
+			t.Errorf("search egress = %+v, want nil for an undeclared policy", search.Egress)
+		}
+		fetch.Egress.Allow[0] = "mutated.example.com"
+		fresh := s.Explain("agent")
+		for _, info := range fresh.Tools {
+			if info.Name != "fetch" {
+				continue
+			}
+			if !reflect.DeepEqual(info.Egress.Allow, []string{"api.example.com"}) {
+				t.Errorf("re-explained egress allow = %v, want the declared policy, not mutated storage", info.Egress.Allow)
+			}
+		}
+		if tool.spec.Egress.Allow[0] != "api.example.com" {
+			t.Errorf("spec egress allow = %q, want the registration policy untouched", tool.spec.Egress.Allow[0])
 		}
 	})
 

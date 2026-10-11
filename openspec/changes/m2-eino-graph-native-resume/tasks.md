@@ -23,12 +23,12 @@ No task proves a graph contract by echoing the builders back through a mock: eve
 
 ## 3. Integration
 
-- [ ] 3.1 Run the bound set and the M1 floor through the public path. Verify: `task lint` clean; `go -C adapter/eino test -short -timeout 2m ./...` green; `go test -short -timeout 2m ./core/...` green as the regression floor; `task spec:coverage` reports `runtime.governed-components-in-eino-graph`, `stores.native-checkpoint-after-adapter-upgrade` and `stores.graph-checkpoint-incompatible` covered, with no new `missing_in_scope`. Evidence: the four commands; `openspec/scenarios.json`.
-- [ ] 3.2 At apply time, register the delivered behavior with no registry change: `openspec/scenarios.json` gains no id (none is proposed), and `docs/design/types.md` is regenerated only if the package doc introduces a scanned identifier. Run `task spec:types` and confirm no unaccounted drift. Verify: `git diff --unified=0 -- openspec/scenarios.json` shows no addition for this change; `git diff --stat -- docs/design/types.md` is empty or lists only identifiers a concurrent change introduced. Evidence: `openspec/scenarios.json`, `docs/design/types.md`.
+- [x] 3.1 Run the bound set and the M1 floor through the public path. Verify: `task lint` clean; `go -C adapter/eino test -short -timeout 2m ./...` green; `go test -short -timeout 2m ./core/...` green as the regression floor; `task spec:coverage` reports `runtime.governed-components-in-eino-graph`, `stores.native-checkpoint-after-adapter-upgrade` and `stores.graph-checkpoint-incompatible` covered, with no new `missing_in_scope`. Evidence: the four commands; `openspec/scenarios.json`.
+- [x] 3.2 At apply time, register the delivered behavior with no registry change: `openspec/scenarios.json` gains no id (none is proposed), and `docs/design/types.md` is regenerated only if the package doc introduces a scanned identifier. Run `task spec:types` and confirm no unaccounted drift. Verify: `git diff --unified=0 -- openspec/scenarios.json` shows no addition for this change; `git diff --stat -- docs/design/types.md` is empty or lists only identifiers a concurrent change introduced. Evidence: `openspec/scenarios.json`, `docs/design/types.md`.
 
 ## 4. Validation
 
-- [ ] 4.1 Validate the change package. Verify: `openspec validate m2-eino-graph-native-resume --strict --no-interactive` exits 0, and `.openspec.yaml` carries `skip_specs: true` because no requirement text changes. Evidence: `Change 'm2-eino-graph-native-resume' is valid`.
+- [x] 4.1 Validate the change package. Verify: `openspec validate m2-eino-graph-native-resume --strict --no-interactive` exits 0, and `.openspec.yaml` carries `skip_specs: true` because no requirement text changes. Evidence: `Change 'm2-eino-graph-native-resume' is valid`.
 
 ## Workflow follow-up
 

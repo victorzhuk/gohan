@@ -1,11 +1,27 @@
 package sandboxtest
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"reflect"
 	"testing"
 
+	gohan "github.com/victorzhuk/gohan/core"
 	"github.com/victorzhuk/gohan/core/types"
 	"github.com/victorzhuk/gohan/std/sandbox"
+	"github.com/victorzhuk/gohan/testkit/gohantest"
 )
+
+// explainHarnessTool is the harness-side tool the rendered-policy case
+// explains beside the sandbox tool set.
+type explainHarnessTool struct{ spec types.ToolSpec }
+
+func (t explainHarnessTool) Spec() types.ToolSpec { return t.spec }
+
+func (t explainHarnessTool) Call(context.Context, json.RawMessage) (types.ToolResult, error) {
+	return types.ToolResult{}, nil
+}
 
 // The compile-time half of sandbox.egress-shares-policy-type: one
 // egress vocabulary, no second struct.
@@ -15,10 +31,9 @@ var (
 )
 
 // egressSharesPolicyType proves sandbox.egress-shares-policy-type: the
-// shared type at compile time and the private-range denial at the same
-// seam. The Explain policy-shape half of the scenario stays open (design
-// O2): chains.ToolInfo carries no egress field, so nothing renders a
-// policy shape yet and the suite asserts no private shape in its place.
+// shared type at compile time, the rendered policy shape through
+// Stack.Explain for both a sandbox tool set and a harness tool, and the
+// private-range denial at the same seam.
 func egressSharesPolicyType(t *testing.T, f Factory) {
 	t.Helper()
 	t.Run("shared-type", func(t *testing.T) {
@@ -50,5 +65,52 @@ func egressSharesPolicyType(t *testing.T, f Factory) {
 			t.Fatal("dial into a private range succeeded, want denial")
 		}
 		denyObserved(t, rec, before)
+	})
+	t.Run("rendered-policy", func(t *testing.T) {
+		p := types.SandboxPolicy{Lifecycle: types.PerCall}
+		p.Egress.Allow = []string{"api.example.com"}
+		p.Egress.Schemes = []string{"https"}
+		ts, err := sandbox.New(f.Sandbox(t), p)
+		if err != nil {
+			t.Fatalf("build sandbox tool set: %v", err)
+		}
+		harness := explainHarnessTool{spec: types.ToolSpec{
+			Name:   "web_fetch",
+			Egress: &types.EgressPolicy{Allow: []string{"api.example.com"}, Schemes: []string{"https"}},
+		}}
+		tools := append(ts.Tools(), harness)
+		model := gohantest.NewScriptedModel(types.ModelProfile{Name: "primary", Caps: types.Caps{Tools: true}})
+		stack, err := gohan.Build(
+			gohan.WithModels(model),
+			gohan.WithLimits("flow", types.InteractiveLimits),
+			gohan.WithEgressClient(func(types.EgressPolicy) *http.Client { return &http.Client{} }),
+			gohan.WithNativeAgent(gohan.NativeSpec{
+				Request: gohan.FlowRequest{Name: "flow"},
+				Profile: "primary",
+				Tools:   tools,
+			}),
+		)
+		if err != nil {
+			t.Fatalf("build stack: %v", err)
+		}
+		ex := stack.Explain("flow")
+		if len(ex.Tools) != len(tools) {
+			t.Fatalf("explained tools = %d, want %d", len(ex.Tools), len(tools))
+		}
+		for _, info := range ex.Tools {
+			if info.Egress == nil {
+				t.Fatalf("tool %s renders no egress policy, want the declared types.EgressPolicy", info.Name)
+			}
+			if !reflect.DeepEqual(info.Egress.Allow, []string{"api.example.com"}) {
+				t.Errorf("tool %s rendered egress allow = %v, want [api.example.com]", info.Name, info.Egress.Allow)
+			}
+			if !reflect.DeepEqual(info.Egress.Schemes, []string{"https"}) {
+				t.Errorf("tool %s rendered egress schemes = %v, want [https]", info.Name, info.Egress.Schemes)
+			}
+		}
+		if !reflect.DeepEqual(ex.Tools[0].Egress, ex.Tools[len(ex.Tools)-1].Egress) {
+			t.Errorf("sandbox tool set and harness tool render different shapes: %+v vs %+v",
+				ex.Tools[0].Egress, ex.Tools[len(ex.Tools)-1].Egress)
+		}
 	})
 }

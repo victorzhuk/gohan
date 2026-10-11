@@ -38,6 +38,9 @@ func PromptFields(set PromptSet) map[string]string {
 type ToolInfo struct {
 	Name     string
 	Executor types.Executor
+	// Egress renders the tool's declared network policy: nil is
+	// undeclared, non-nil zero is deny-all.
+	Egress *types.EgressPolicy
 }
 
 // Explanation describes a resolved flow: its chains step by step, every

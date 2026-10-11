@@ -3,6 +3,7 @@ package gohan
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/victorzhuk/gohan/core/chains"
@@ -84,7 +85,14 @@ func explainFlowName(f any) (string, bool) {
 func toolInfos(specs []types.ToolSpec) []chains.ToolInfo {
 	out := make([]chains.ToolInfo, 0, len(specs))
 	for _, spec := range specs {
-		out = append(out, chains.ToolInfo{Name: spec.Name, Executor: spec.Executor})
+		info := chains.ToolInfo{Name: spec.Name, Executor: spec.Executor}
+		if spec.Egress != nil {
+			info.Egress = &types.EgressPolicy{
+				Allow:   slices.Clone(spec.Egress.Allow),
+				Schemes: slices.Clone(spec.Egress.Schemes),
+			}
+		}
+		out = append(out, info)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
