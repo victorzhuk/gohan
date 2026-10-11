@@ -56,6 +56,10 @@ type turnConfig struct {
 	// compactionCount resolves the full-request token count the compaction
 	// trigger measures with; nil when the flow has no active compactor.
 	compactionCount func(ctx context.Context, req types.ModelRequest) (int, error)
+	// estimator is the declared token estimator, bound for every resolved
+	// flow independently of the compactor; calibration reads it and a flow
+	// with no declared estimator carries nil.
+	estimator types.TokenEstimator
 	// compactor is the policy's compaction hook; nil keeps the plain path.
 	compactor stores.Compactor
 	// contextGuard is the guard the compaction stage consults at
@@ -292,6 +296,57 @@ func assembleTurnRequest(ctx context.Context, env *turnEnv, version int64) (type
 	return req, nil
 }
 
+// modelOverflow reports whether err is a provider ModelError classified as
+// a context overflow.
+func modelOverflow(err error) (*types.ModelError, bool) {
+	var me *types.ModelError
+	if errors.As(err, &me) && me.Class == types.ClassContextOverflow {
+		return me, true
+	}
+	return nil, false
+}
+
+// setCalibration allocates the calibration map on the first write.
+func setCalibration(calib map[string]float64, profile string, v float64) map[string]float64 {
+	if calib == nil {
+		calib = map[string]float64{}
+	}
+	calib[profile] = v
+	return calib
+}
+
+// raiseCalibration raises an uncalibrated profile from 1.
+func raiseCalibration(calib map[string]float64, profile string) float64 {
+	v := calib[profile]
+	if v <= 0 {
+		v = 1
+	}
+	return clampCalibration(v * 1.25)
+}
+
+// calibrateFromUsage records the estimator calibration from the last
+// provider-reported usage: only a non-estimated usage with a positive
+// input count and a positive declared estimate for the request that was
+// sent calibrates. The factor is clamp(InputTokens/estimate, 0.5, 2.0)
+// and the observed deviation is recorded as an estimate-error sample.
+func calibrateFromUsage(ctx context.Context, st *runtime.State, c turnConfig, req types.ModelRequest, usage *types.Usage) {
+	if usage == nil || usage.Estimated || usage.InputTokens <= 0 || c.estimator == nil {
+		return
+	}
+	estimate := c.estimator.Estimate(req, c.profile.Caps)
+	if estimate <= 0 {
+		return
+	}
+	st.Calibration = setCalibration(st.Calibration, c.profile.Name, clampCalibration(float64(usage.InputTokens)/float64(estimate)))
+	if tel := telemetryFrom(ctx); tel != nil {
+		deviation := st.Calibration[c.profile.Name] - 1
+		if deviation < 0 {
+			deviation = -deviation
+		}
+		tel.Record(ctx, "gohan.context.estimate_error", deviation, types.String(types.KeyModelProfile, c.profile.Name))
+	}
+}
+
 func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
 	env := turnEnvFrom(ctx)
 	c := env.c
@@ -342,78 +397,132 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	if c.journal == nil || !c.modelJournal {
 		journalling = false
 	}
-	if journalling {
-		entry, created, rerr := c.journal.Reserve(ctx, k, "model", modelFingerprint(env.turn), nil)
-		if rerr != nil {
-			return st, nil, runtime.Continue, fmt.Errorf("reserve model step %s: %w", k.CallID, rerr)
-		}
-		if !created && entry.State == stores.Completed {
-			return replayModelStep(ctx, st, env, entry)
-		}
-	}
-
-	// Every actual provider invocation reconciles the durable compaction
-	// publications the loaded history carries, whatever the flow's policy;
-	// a validation or sink failure refuses the provider call.
-	if err := reconcileCompactionPublications(ctx, c, env.msgs); err != nil {
-		return st, nil, runtime.Continue, err
-	}
 
 	var sb strings.Builder
 	var reasoning strings.Builder
 	var calls []types.ToolUse
 	finish := types.FinishStop
+	var usage *types.Usage
 	hsink := &types.HedgeSink{}
-	mctx, endChat := startSpan(ctx, telemetryFrom(ctx), SpanChat)
-	mctx = types.WithHedgeSink(mctx, hsink)
-	for chunk, err := range c.model(mctx, req) {
-		if err != nil {
-			endChat(types.String(types.KeySuspendReason, "error"))
-			env.flushDeltas(ctx)
-			if ctx.Err() != nil {
-				// The run context was cancelled or preempted: this is a
-				// controlled stop, not an ordinary provider failure, so
-				// the partial turn appends nothing.
-				return st, nil, runtime.Continue, ctx.Err()
+
+	// The provider call is bounded at two attempts: a ClassContextOverflow
+	// for a request the budget accepted raises the calibration ratio,
+	// re-runs the compaction stage with the raised ratio and retries once;
+	// a second overflow ends the turn Permanent.
+	for attempt := 0; ; attempt++ {
+		hsink = &types.HedgeSink{}
+		mctx, endChat := startSpan(ctx, telemetryFrom(ctx), SpanChat)
+		mctx = types.WithHedgeSink(mctx, hsink)
+		if journalling {
+			entry, created, rerr := c.journal.Reserve(ctx, k, "model", modelFingerprint(env.turn), nil)
+			if rerr != nil {
+				return st, nil, runtime.Continue, fmt.Errorf("reserve model step %s: %w", k.CallID, rerr)
 			}
-			if aerr := appendFailedPartial(ctx, st, env, sb.String(), reasoning.String(), calls); aerr != nil {
-				err = aerr
+			if !created && entry.State == stores.Completed {
+				return replayModelStep(ctx, st, env, entry)
 			}
+		}
+
+		// Every actual provider invocation reconciles the durable compaction
+		// publications the loaded history carries, whatever the flow's policy;
+		// a validation or sink failure refuses the provider call.
+		if err := reconcileCompactionPublications(ctx, c, env.msgs); err != nil {
 			return st, nil, runtime.Continue, err
 		}
-		switch chunk.Kind {
-		case types.DeltaText:
-			sb.WriteString(chunk.Delta)
-			env.emitDelta(ctx, types.TextDelta{Turn: env.turn, Delta: chunk.Delta})
-		case types.DeltaReasoning:
-			reasoning.WriteString(chunk.Delta)
-			if c.reasoningVisible {
-				env.emitDelta(ctx, types.ReasoningDelta{Turn: env.turn, Delta: chunk.Delta})
-			}
-		case types.DeltaToolArgs:
-			if chunk.ToolUse != nil {
-				// A fragment preview carries the call identity and the
-				// fragment text; the complete block carries Args and
-				// never streams a fragment of its own.
-				if chunk.Delta != "" {
-					env.emitDelta(ctx, types.ToolArgsDelta{Turn: env.turn, CallID: chunk.ToolUse.ID, Name: chunk.ToolUse.Name, Delta: chunk.Delta})
+
+		retry := false
+		for chunk, err := range c.model(mctx, req) {
+			if err != nil {
+				endChat(types.String(types.KeySuspendReason, "error"))
+				env.flushDeltas(ctx)
+				if ctx.Err() != nil {
+					// The run context was cancelled or preempted: this is a
+					// controlled stop, not an ordinary provider failure, so
+					// the partial turn appends nothing.
+					return st, nil, runtime.Continue, ctx.Err()
 				}
-				// Only the complete block enters the batch: a fragment
-				// is a preview, never an argument set to execute.
-				if len(chunk.ToolUse.Args) > 0 {
-					calls = append(calls, *chunk.ToolUse)
+				if me, ok := modelOverflow(err); ok {
+					calibrateFromUsage(ctx, &st, c, req, usage)
+					if attempt >= 1 {
+						return st, nil, runtime.Continue, &types.ModelError{
+							Class:    types.ClassPermanent,
+							Provider: me.Provider,
+							Err:      fmt.Errorf("context overflow after one compaction retry: %w", err),
+						}
+					}
+					if tel := telemetryFrom(ctx); tel != nil {
+						tel.Count(ctx, "gohan.context.overflow_retry", 1, types.String(types.KeyModelProfile, c.profile.Name))
+					}
+					st.Calibration = setCalibration(st.Calibration, c.profile.Name, raiseCalibration(st.Calibration, c.profile.Name))
+					env.turn++
+					st.Turn = env.turn
+					k, _ = modelStepKey(ctx, env.turn)
+					req, err = assembleTurnRequest(ctx, env, st.HistoryVersion)
+					if err != nil {
+						return st, nil, runtime.Continue, err
+					}
+					var stageEvents []types.Event
+					req, stageEvents, err = runCompactionStage(ctx, &st, env, req)
+					if err != nil {
+						return st, nil, runtime.Continue, err
+					}
+					for _, ev := range stageEvents {
+						env.emitDelta(ctx, ev)
+					}
+					sb.Reset()
+					reasoning.Reset()
+					calls = nil
+					finish = types.FinishStop
+					retry = true
+					break
+				}
+				if aerr := appendFailedPartial(ctx, st, env, sb.String(), reasoning.String(), calls); aerr != nil {
+					err = aerr
+				}
+				return st, nil, runtime.Continue, err
+			}
+			if chunk.Usage != nil {
+				usage = chunk.Usage
+			}
+			switch chunk.Kind {
+			case types.DeltaText:
+				sb.WriteString(chunk.Delta)
+				env.emitDelta(ctx, types.TextDelta{Turn: env.turn, Delta: chunk.Delta})
+			case types.DeltaReasoning:
+				reasoning.WriteString(chunk.Delta)
+				if c.reasoningVisible {
+					env.emitDelta(ctx, types.ReasoningDelta{Turn: env.turn, Delta: chunk.Delta})
+				}
+			case types.DeltaToolArgs:
+				if chunk.ToolUse != nil {
+					// A fragment preview carries the call identity and the
+					// fragment text; the complete block carries Args and
+					// never streams a fragment of its own.
+					if chunk.Delta != "" {
+						env.emitDelta(ctx, types.ToolArgsDelta{Turn: env.turn, CallID: chunk.ToolUse.ID, Name: chunk.ToolUse.Name, Delta: chunk.Delta})
+					}
+					// Only the complete block enters the batch: a fragment
+					// is a preview, never an argument set to execute.
+					if len(chunk.ToolUse.Args) > 0 {
+						calls = append(calls, *chunk.ToolUse)
+					}
 				}
 			}
+			if chunk.ToolUse != nil && chunk.Kind != types.DeltaToolArgs && len(chunk.ToolUse.Args) > 0 {
+				calls = append(calls, *chunk.ToolUse)
+			}
+			if chunk.Finish != "" && chunk.Finish != types.FinishStop {
+				finish = chunk.Finish
+			}
 		}
-		if chunk.ToolUse != nil && chunk.Kind != types.DeltaToolArgs && len(chunk.ToolUse.Args) > 0 {
-			calls = append(calls, *chunk.ToolUse)
+		if retry {
+			continue
 		}
-		if chunk.Finish != "" && chunk.Finish != types.FinishStop {
-			finish = chunk.Finish
-		}
+		endChat()
+		recordFinish(ctx, finish)
+		break
 	}
-	endChat()
-	recordFinish(ctx, finish)
+	calibrateFromUsage(ctx, &st, c, req, usage)
 	if journalling {
 		if err := completeModelStep(ctx, c.journal, k, hsink, sb.String(), reasoning.String(), calls); err != nil {
 			env.flushDeltas(ctx)

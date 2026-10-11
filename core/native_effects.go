@@ -28,10 +28,11 @@ func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 		// Supervision wraps only the provider, so the chain steps and
 		// the middleware above it keep running on the caller's goroutine.
 		model:              recordRunCost(runModelChain(cfg.modelChain, deprecatedRoute(s.telemetry, cfg.profile, NewModelStream(cfg.model).Generate, s.successorModelFunc(cfg.profile)))),
-		assemble:           collapseBeforeProjections(withProjections(cfg.contextPolicy, cfg.profile, nativeAssemble(cfg.flow, s.prompts, cfg.assemble, cfg.redactor, cfg.redactionPolicy, s.stores.RedactionMaps, newBlobAssembly(cfg.profile.Name, cfg.model, s.stores)))),
+		assemble:           collapseBeforeProjections(cfg.profile, withProjections(cfg.contextPolicy, cfg.profile, nativeAssemble(cfg.flow, s.prompts, cfg.assemble, cfg.redactor, cfg.redactionPolicy, s.stores.RedactionMaps, newBlobAssembly(cfg.profile.Name, cfg.model, s.stores)))),
 		providerGate:       providerDeclarationGate(cfg),
 		compactionFallback: cfg.compactionFallback,
 		compactionCount:    cfg.compactionCount,
+		estimator:          cfg.estimator,
 		compactor:          cfg.contextPolicy.Compactor,
 		contextGuard:       cfg.contextGuard,
 		compactionAppend:   compactionAppendOf(s.stores.SessionLog),
@@ -320,10 +321,18 @@ func historyVersionFrom(ctx context.Context) int64 {
 // empty: the persisted block is already in history, so hiding needs no
 // store handle and no declared projection.
 func collapseBeforeProjections(
+	profile types.ModelProfile,
 	next func(context.Context, types.AssembleInput) (types.ModelRequest, error),
 ) func(context.Context, types.AssembleInput) (types.ModelRequest, error) {
 	return func(ctx context.Context, in types.AssembleInput) (types.ModelRequest, error) {
-		in.History = collapseCompactionHistory(in.History)
+		target := in.Profile.Name
+		if target == "" {
+			// A caller that assembles without naming its endpoint — the
+			// foreign backend runtime does — assembles for this flow's own
+			// endpoint, so the resolved profile is the target.
+			target = profile.Name
+		}
+		in.History = collapseCompactionHistory(in.History, target)
 		return next(ctx, in)
 	}
 }
@@ -334,7 +343,7 @@ func collapseBeforeProjections(
 // Compaction block and every message the selected block covers, and inserts
 // exactly one message carrying the selected summary at the head. A log with
 // no Compaction block returns the messages unchanged.
-func collapseCompactionHistory(messages []types.Message) []types.Message {
+func collapseCompactionHistory(messages []types.Message, target string) []types.Message {
 	selected := -1
 	var current types.Compaction
 	for i, msg := range messages {
@@ -347,6 +356,23 @@ func collapseCompactionHistory(messages []types.Message) []types.Message {
 	}
 	if selected < 0 {
 		return messages
+	}
+	if !opaqueCompactionKept(current, target) {
+		// The selected opaque block is bound to another endpoint: drop
+		// every compaction block, render no summary and leave the covered
+		// messages visible, so the request re-fits through the declared
+		// projections and the policy compactor.
+		out := make([]types.Message, 0, len(messages))
+		for _, msg := range messages {
+			if blocks, changed := dropCompactionBlocks(msg); changed {
+				if len(blocks) == 0 {
+					continue
+				}
+				msg.Blocks = blocks
+			}
+			out = append(out, msg)
+		}
+		return out
 	}
 	covers := int(current.CoversUpTo)
 	if covers > len(messages) {

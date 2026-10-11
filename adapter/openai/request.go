@@ -22,7 +22,10 @@ var governedKeys = types.GovernedModelOptionKeys()
 // state.
 func (p *Provider) assembleBody(req types.ModelRequest) (map[string]any, error) {
 	body := map[string]any{"model": p.profile.Version}
-	var messages []map[string]any
+	// messages stays untyped so the opaque compaction item can ride
+	// through as the provider sent it: json.RawMessage marshals
+	// byte-identically and is never pruned or rewritten.
+	var messages []any
 	if sys := systemText(req.System); sys != "" {
 		messages = append(messages, map[string]any{"role": "system", "content": sys})
 	}
@@ -101,6 +104,14 @@ func (p *Provider) assembleBody(req types.ModelRequest) (map[string]any, error) 
 							messages = append(messages, obj)
 						}
 					}
+				}
+			case types.Compaction:
+				flush()
+				if bl.Kind != types.CompactionOpaque || bl.Opaque.Provider != p.profile.Name {
+					continue
+				}
+				if raw, ok := bl.Opaque.Value.(json.RawMessage); ok && len(raw) > 0 {
+					messages = append(messages, raw)
 				}
 			}
 		}

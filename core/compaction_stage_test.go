@@ -112,7 +112,7 @@ func stageConfig(t *testing.T, ctx context.Context, msgs []types.Message, compac
 	events := stores.NewMemoryEventLog()
 	return turnConfig{
 		model:            stageDoneModel(),
-		assemble:         collapseBeforeProjections(turnAssemble(nil)),
+		assemble:         collapseBeforeProjections(types.ModelProfile{Name: "stage-test"}, turnAssemble(nil)),
 		history:          msgs,
 		maxTurns:         3,
 		profile:          types.ModelProfile{Name: "stage-test", ContextWindow: 6},

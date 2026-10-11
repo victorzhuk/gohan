@@ -54,6 +54,13 @@ func ProjectFidelity(msgs []types.Message, target string, caps types.Caps) ([]ty
 	return out, drops
 }
 
+// opaqueCompactionKept is the one binding rule for persisted compaction
+// blocks: an opaque block survives only for the endpoint it was created
+// for, and a text block is not model-bound and survives everywhere.
+func opaqueCompactionKept(c types.Compaction, target string) bool {
+	return c.Kind != types.CompactionOpaque || c.Model == target
+}
+
 func keepBlock(b types.Block, target string, caps types.Caps) bool {
 	switch r := b.(type) {
 	case types.Reasoning:
@@ -73,12 +80,7 @@ func keepBlock(b types.Block, target string, caps types.Caps) bool {
 	case types.Raw:
 		return caps.Fidelity[types.KindRaw] != types.Dropped
 	case types.Compaction:
-		// An opaque compaction is bound to the model that produced
-		// it; another endpoint re-fits without it.
-		if r.Kind == types.CompactionOpaque {
-			return r.Model == target
-		}
-		return true
+		return opaqueCompactionKept(r, target)
 	default:
 		return true
 	}

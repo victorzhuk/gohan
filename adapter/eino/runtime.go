@@ -13,6 +13,7 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/victorzhuk/gohan/core/runtime"
+	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -63,6 +64,15 @@ func New(ctx context.Context, agent *adk.ChatModelAgent, opts ...Option) (*Runti
 }
 
 func (r *Runtime) Name() string { return "eino" }
+
+// BackendVersion reports the checkpoint envelope version this runtime
+// writes into State.Backend, so the harness resume plan compares it
+// against a stored checkpoint's BackendVersion.
+func (r *Runtime) BackendVersion() string { return backendCheckpointVersion }
+
+// FlowKind declares the agent-flow resume kind: an eino agent flow
+// replays from the journal across an adapter upgrade.
+func (r *Runtime) FlowKind() stores.FlowKind { return stores.FlowAgent }
 
 // holdSuspend parks the governed signal a component returned until the
 // event stream reports the backend's stateful interrupt for it.

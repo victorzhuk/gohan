@@ -24,6 +24,36 @@ var errResumeCheckpointsRequired = errors.New("gohan: conversation needs a check
 // heartbeat refresh.
 const resumeLeaseTTL = 30 * time.Second
 
+// flowKindReporter and backendVersionReporter are optional runtime
+// interfaces, not port members: a foreign runtime declares the flow kind
+// its checkpoints resume as and the backend version it writes, so the
+// runtime port method set stays frozen. The flow kind is declared at
+// registration, never stored and never defaulted from prose.
+type flowKindReporter interface{ FlowKind() stores.FlowKind }
+
+type backendVersionReporter interface{ BackendVersion() string }
+
+// resumeFlowKind resolves the checkpoint's flow kind from the runtime
+// registration that owns the resume. A runtime that declares no kind is a
+// native or agent flow: its checkpoints replay from the journal, so the
+// agent kind is the safe resolution.
+func resumeFlowKind(rt runtime.Runtime) stores.FlowKind {
+	if k, ok := rt.(flowKindReporter); ok {
+		return k.FlowKind()
+	}
+	return stores.FlowAgent
+}
+
+// resumeBackendVersion resolves the running adapter's checkpoint version.
+// A runtime that declares none writes no backend bytes, and the stored
+// version compares empty against empty.
+func resumeBackendVersion(rt runtime.Runtime) string {
+	if v, ok := rt.(backendVersionReporter); ok {
+		return v.BackendVersion()
+	}
+	return ""
+}
+
 // WithConversationCheckpoints binds the checkpoints store Resume consumes
 // single-use tokens through.
 func WithConversationCheckpoints(c stores.Checkpoints) ConversationOption {
@@ -216,6 +246,15 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			yield(nil, err)
 			return
 		}
+		// The Native resume decision runs before anything spends the
+		// token: the plan reads the stored BackendVersion against the
+		// running adapter's, so a refused plan leaves the token pending
+		// and a later resume under a matching version still works.
+		plan, perr := stores.PlanResume(cp, resumeFlowKind(c.rt), resumeBackendVersion(c.rt))
+		if perr != nil {
+			yield(nil, perr)
+			return
+		}
 		decodeRT := c.rt
 		if c.newResumeRun != nil {
 			decodeRT = runtime.NewNative()
@@ -224,6 +263,17 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 		if err != nil {
 			yield(nil, err)
 			return
+		}
+		if plan == stores.ResumeReplay {
+			if tel := telemetryFrom(ctx); tel != nil {
+				tel.Count(ctx, "gohan.resume.fallback_replay", 1)
+			} else if c.telemetry != nil {
+				c.telemetry.Count(ctx, "gohan.resume.fallback_replay", 1)
+			}
+			// The adapter changed under the run: the backend bytes no
+			// longer describe this runtime, so the drive replays from the
+			// journal instead of decoding them.
+			st.Backend = nil
 		}
 		h, err := authorizeResume(ctx, c.log, cp.SessionID, approver)
 		if err != nil {

@@ -260,6 +260,31 @@ func reconcileCompactionPublications(ctx context.Context, c turnConfig, loaded [
 	return nil
 }
 
+// budgetRatio returns the ratio the compaction decision passes to
+// types.ContextBudget: the reciprocal of the profile's calibration, so a
+// profile whose real usage exceeds its estimate gets a smaller ceiling and
+// compacts sooner. The reciprocal is clamped to the calibration band; no
+// calibration keeps the frozen zero ratio.
+func budgetRatio(profile string, calib map[string]float64) float64 {
+	v, ok := calib[profile]
+	if !ok || v <= 0 {
+		return 0
+	}
+	return clampCalibration(1 / v)
+}
+
+// clampCalibration clamps a calibration factor to the band the requirement
+// fixes: a factor below 0.5 or above 2.0 is capped at the band edge.
+func clampCalibration(v float64) float64 {
+	if v < 0.5 {
+		return 0.5
+	}
+	if v > 2.0 {
+		return 2.0
+	}
+	return v
+}
+
 // runCompactionStage runs the persisted compaction for one model
 // invocation. It decides the trigger over the full assembled request,
 // selects the safe prefix, folds it through the policy compactor, guards
@@ -279,7 +304,7 @@ func runCompactionStage(ctx context.Context, st *runtime.State, env *turnEnv, re
 	if err != nil {
 		return types.ModelRequest{}, nil, fmt.Errorf("gohan: compaction count: %w", err)
 	}
-	budget := types.ContextBudget(c.profile, req, nil, 0)
+	budget := types.ContextBudget(c.profile, req, nil, budgetRatio(c.profile.Name, st.Calibration))
 	if before <= budget.Limit {
 		return req, nil, nil
 	}
@@ -438,7 +463,7 @@ func compactWithFallback(ctx context.Context, st *runtime.State, env *turnEnv) (
 		if err != nil {
 			return types.ModelRequest{}, nil, fmt.Errorf("gohan: compaction count: %w", err)
 		}
-		if n > types.ContextBudget(c.profile, req2, nil, 0).Limit {
+		if n > types.ContextBudget(c.profile, req2, nil, budgetRatio(c.profile.Name, st.Calibration)).Limit {
 			return types.ModelRequest{}, nil, errCompactionOversized
 		}
 	}

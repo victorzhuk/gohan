@@ -33,6 +33,14 @@ func textMessage(marker string) types.Message {
 	return types.Message{ID: "m" + marker, Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: marker}}}
 }
 
+// opaqueCompactionMessage builds one assistant message carrying one
+// CompactionOpaque block bound to the named endpoint.
+func opaqueCompactionMessage(covers int64, model string) types.Message {
+	return types.Message{ID: "mopaque", Role: types.RoleAssistant, Blocks: []types.Block{
+		types.Compaction{Kind: types.CompactionOpaque, CoversUpTo: covers, Model: model, Opaque: types.Raw{Provider: model, Value: "item"}},
+	}}
+}
+
 func findText(messages []types.Message, marker string) bool {
 	for _, msg := range messages {
 		for _, b := range msg.Blocks {
@@ -65,7 +73,7 @@ func TestCollapseCompactionHistory(t *testing.T) {
 			textMessage("u3"),
 			compactionMessage(3, "new"),
 		}
-		out := collapseCompactionHistory(messages)
+		out := collapseCompactionHistory(messages, "p")
 		if len(out) != 2 {
 			t.Fatalf("len(out) = %d, want the head summary and u3", len(out))
 		}
@@ -94,7 +102,7 @@ func TestCollapseCompactionHistory(t *testing.T) {
 			compactionMessage(2, "new"),
 			textMessage("u3"),
 		}
-		out := collapseCompactionHistory(messages)
+		out := collapseCompactionHistory(messages, "p")
 		if findText(out, "u1") {
 			t.Fatal("covered raw message survived the collapse")
 		}
@@ -117,7 +125,7 @@ func TestCollapseCompactionHistory(t *testing.T) {
 			compactionMessage(1, "only", types.Text{Text: "beside"}),
 			retained,
 		}
-		out := collapseCompactionHistory(messages)
+		out := collapseCompactionHistory(messages, "p")
 		if len(out) != 3 {
 			t.Fatalf("len(out) = %d, want the head summary, the beside message and the retained message", len(out))
 		}
@@ -136,7 +144,7 @@ func TestCollapseCompactionHistory(t *testing.T) {
 
 	t.Run("no-compaction-block-returns-unchanged", func(t *testing.T) {
 		messages := []types.Message{textMessage("u1"), textMessage("u2")}
-		out := collapseCompactionHistory(messages)
+		out := collapseCompactionHistory(messages, "p")
 		if len(out) != 2 || out[0].ID != "mu1" {
 			t.Fatal("plain log changed by the collapse")
 		}
@@ -151,10 +159,64 @@ func TestCollapseCompactionHistory(t *testing.T) {
 			compactionMessage(1, "new"),
 			pending,
 		}
-		out := collapseCompactionHistory(messages)
+		out := collapseCompactionHistory(messages, "p")
 		if len(out) != 2 || out[1].ID != "mpending" {
 			t.Fatal("pending call after the boundary did not survive")
 		}
+	})
+
+	t.Run("context.opaque-bound-to-model", func(t *testing.T) {
+		t.Run("opaque-bound-elsewhere-drops-and-refits", func(t *testing.T) {
+			messages := []types.Message{
+				textMessage("u1"),
+				opaqueCompactionMessage(1, "a"),
+				textMessage("u2"),
+			}
+			out := collapseCompactionHistory(messages, "b")
+			if len(out) != 2 {
+				t.Fatalf("len(out) = %d, want the covered messages visible with no head summary", len(out))
+			}
+			if out[0].Role == types.RoleSystem {
+				t.Fatal("a foreign opaque block rendered a summary head")
+			}
+			if !findText(out, "u1") || !findText(out, "u2") {
+				t.Fatal("covered messages did not stay visible for the re-fit")
+			}
+			for _, msg := range out {
+				for _, b := range msg.Blocks {
+					if _, ok := b.(types.Compaction); ok {
+						t.Fatal("a compaction block survived the foreign-endpoint drop")
+					}
+				}
+			}
+		})
+
+		t.Run("opaque-bound-to-target-collapses", func(t *testing.T) {
+			messages := []types.Message{
+				textMessage("u1"),
+				opaqueCompactionMessage(1, "a"),
+				textMessage("u2"),
+			}
+			out := collapseCompactionHistory(messages, "a")
+			if len(out) != 2 {
+				t.Fatalf("len(out) = %d, want the head and u2 for the block's own endpoint", len(out))
+			}
+			if findText(out, "u1") {
+				t.Fatal("covered message survived the block's own endpoint collapse")
+			}
+		})
+
+		t.Run("text-compaction-keeps-collapse", func(t *testing.T) {
+			messages := []types.Message{
+				textMessage("u1"),
+				compactionMessage(1, "new"),
+				textMessage("u2"),
+			}
+			out := collapseCompactionHistory(messages, "other-endpoint")
+			if len(out) != 2 || countSummary(out, "new") != 1 {
+				t.Fatal("a text block is not model-bound: it must collapse for any target")
+			}
+		})
 	})
 }
 
@@ -173,7 +235,7 @@ func (a *collapseAssembler) assemble(_ context.Context, in types.AssembleInput) 
 func TestCollapseCompositionWithoutProjections(t *testing.T) {
 	t.Run("context.compaction-collapse-without-projections", func(t *testing.T) {
 		var inner collapseAssembler
-		composed := collapseBeforeProjections(withProjections(stores.ContextPolicy{}, types.ModelProfile{Name: "p"}, inner.assemble))
+		composed := collapseBeforeProjections(types.ModelProfile{Name: "p"}, withProjections(stores.ContextPolicy{}, types.ModelProfile{Name: "p"}, inner.assemble))
 		in := types.AssembleInput{History: []types.Message{
 			textMessage("u1"),
 			compactionMessage(1, "new"),
@@ -202,7 +264,7 @@ func TestCollapseCompositionWithoutProjections(t *testing.T) {
 		}}
 		policy := stores.ContextPolicy{Projections: []stores.Projection{proj}}
 		var inner collapseAssembler
-		composed := collapseBeforeProjections(withProjections(policy, types.ModelProfile{Name: "p"}, inner.assemble))
+		composed := collapseBeforeProjections(types.ModelProfile{Name: "p"}, withProjections(policy, types.ModelProfile{Name: "p"}, inner.assemble))
 		in := types.AssembleInput{History: []types.Message{
 			textMessage("covered"),
 			compactionMessage(1, "new"),
@@ -212,6 +274,48 @@ func TestCollapseCompositionWithoutProjections(t *testing.T) {
 		}
 		if !marker["clean"] {
 			t.Fatal("projection saw a message the collapse should have hidden")
+		}
+	})
+}
+
+// TestCollapseTargetsAssemblingProfile pins the D4 contract: the collapse
+// target is the endpoint that assembles the request. An explicit profile
+// wins; a caller that omits it — the foreign backend runtime does —
+// assembles for the flow's own endpoint, so the resolved profile is the
+// target.
+func TestCollapseTargetsAssemblingProfile(t *testing.T) {
+	foreignOpaqueLog := func() []types.Message {
+		return []types.Message{
+			textMessage("u1"),
+			opaqueCompactionMessage(1, "a"),
+			textMessage("u2"),
+		}
+	}
+
+	t.Run("explicit-profile-is-the-target", func(t *testing.T) {
+		var inner collapseAssembler
+		composed := collapseBeforeProjections(types.ModelProfile{Name: "b"}, inner.assemble)
+		in := types.AssembleInput{Profile: types.ModelProfile{Name: "a"}, History: foreignOpaqueLog()}
+		if _, err := composed(context.Background(), in); err != nil {
+			t.Fatalf("composed assembly: %v", err)
+		}
+		if len(inner.history) != 2 {
+			t.Fatalf("history len = %d, want the block's own endpoint to collapse", len(inner.history))
+		}
+	})
+
+	t.Run("omitted-profile-falls-back-to-the-flow-endpoint", func(t *testing.T) {
+		var inner collapseAssembler
+		composed := collapseBeforeProjections(types.ModelProfile{Name: "b"}, inner.assemble)
+		in := types.AssembleInput{History: foreignOpaqueLog()}
+		if _, err := composed(context.Background(), in); err != nil {
+			t.Fatalf("composed assembly: %v", err)
+		}
+		if len(inner.history) != 2 {
+			t.Fatalf("history len = %d, want the flow endpoint to drop the foreign block", len(inner.history))
+		}
+		if countSummary(inner.history, "") != 0 && inner.history[0].Role == types.RoleSystem {
+			t.Fatal("a foreign opaque block rendered a summary head")
 		}
 	})
 }

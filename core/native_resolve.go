@@ -48,6 +48,11 @@ type resolvedNativeConfig struct {
 	// StageContext before a summary is persisted; a flow whose policy
 	// carries a compactor requires one at Build.
 	contextGuard guards.Guard
+
+	// estimator is the declared token estimator of the stack, bound for
+	// every resolved flow independently of the compactor; calibration
+	// reads it.
+	estimator types.TokenEstimator
 }
 
 // resolvedNative returns the resolved configuration Build computed for the
@@ -240,6 +245,7 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			compactionFallback: fallback,
 			compactionCount:    count,
 			contextGuard:       guard,
+			estimator:          s.estimator,
 		}
 	}
 
