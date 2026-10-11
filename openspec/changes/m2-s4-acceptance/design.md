@@ -16,7 +16,7 @@ The obligation is a record, not a feature: re-run the S4 graph acceptance suite 
 | `TestLimits/limits.limits-under-foreign-backend` | `adapter/eino/limits_test.go:122` | ships |
 | `TestMessageBridge/runtime.message-round-trip` | `adapter/eino/message_bridge_test.go:58` | ships — the eino leg only |
 | adk-go bridge and graph leg | — | **missing** — M3 (`openspec/changes/m3/proposal.md:7`) |
-| `Evidence` cells, §4 obligation row | `openspec/changes/m2/design.md` §2.1, §2.4, §2.6, §4 | **empty / `missing`** — this change |
+| `Evidence` cells, §4 obligation row | `openspec/changes/m2/design.md` §2.1, §2.4, §2.6, §2.8, §4 | **empty / `missing`** — this change |
 | S4 graph acceptance **record** | — | **missing** — this change |
 
 `openspec/specs/flow/spec.md:285` (`flow.backend-swap`) states the S4 graph acceptance in the spec's own words: the acceptance suite runs against the S1 native flow and the S4 eino graph flow with the same scripted model, and both pass without changes to test code. See `proposal.md` — Why for motivation.
@@ -42,13 +42,15 @@ The obligation is a record, not a feature: re-run the S4 graph acceptance suite 
 
 ### D1 — This change is an aggregation record; it adds no behavior and no test
 
+This change records acceptance evidence and repairs the milestone gate's PostgreSQL test selection. The only permitted tooling edit replaces the existing PostgreSQL command in `Taskfile.yml` `spec:gate` with `go -C adapter/postgres test -json -timeout 10m -short -tags full ./...`. No Go source, test, fixture, port, stored shape, requirement, or registry entry changes.
+
 The M2 exit criterion is *`conformance.*` green on eino; S4 (graph) green* (`docs/overview.md:110`), and the §4 row is *S4 graph acceptance and `conformance.*` green on eino*. Both name a state of the shipped suites, not new work. The eino graph suite and the `conformance.Runtime` binding already pass (graph lane 12/12; archived `2026-10-07-m2-eino-runtime`). So this change runs the suites, binds their evidence, and authors nothing else. A task in this package that would add a test, a fixture or a code path is out of scope by construction: if the re-run needed new behavior, that behavior belongs to the change that owns the row, not to the acceptance record.
 
 *Alternative considered:* fold the record into `m2-api-freeze` — rejected: the freeze is a compatibility check against the frozen ports (`task api:check`), a different artifact and a different failure mode; the m2 plan keeps them as separate items (`openspec/changes/m2/tasks.md:45`).
 
-### D2 — Evidence rows keep their §2 owners; this change writes only the `Evidence` cell
+### D2 - Restore the missing stores rows without changing behavior ownership
 
-`openspec/changes/m2/design.md` §2.1 assigns `runtime.governed-components-in-eino-graph` to `m2-eino-graph-native-resume`, the five conformance runtime rows and `flow.backend-swap` and `limits.limits-under-foreign-backend` to `m2-eino-runtime`, and the two `stores` rows to `m2-eino-graph-native-resume`. The milestone definition of done requires each row's evidence to name the subtest that carries its id. So the re-run writes the `Evidence` cell of each row it proves — the file and the subtest name — and leaves the `Owner` and `Depends on` columns untouched. An owner change is a matrix edit this change is not admitted to make.
+The runtime, flow, and limits rows retain their existing owners and dependencies. Add §2.8 for `stores.native-checkpoint-after-adapter-upgrade` and `stores.graph-checkpoint-incompatible`, owned by `m2-eino-graph-native-resume`. Both depend on `m2-eino-runtime`, core Resume, and checkpoint stores. This repairs the omitted matrix entries. It adds no registry id or requirement. `m2-s4-acceptance` records the carrying subtests and accepted public-path evidence without taking ownership.
 
 ### D3 — The re-run is the whole `adapter/eino` module, not an ad-hoc `-run` list
 
@@ -62,9 +64,9 @@ A `-run` pattern that matches no test exits 0, so a narrow pattern read as accep
 
 The behavior is normative in the `runtime`, `flow`, `limits` and `stores` capability specs; this change re-runs it and binds ids that already exist. Adding a requirement would restate normative text and would need a scenario id this change is not permitted to invent, so `skip_specs: true` — the pattern the archived first-wave packages and `m2-sandbox-adapter-conformance` use.
 
-### D6 — The M2 gate is the milestone gate, reported on its own
+### D6 - The M2 gate includes the PostgreSQL full-tag leg
 
-`task spec:gate GATE=M2` sweeps every module through `tools/spec_coverage.py --gate M2` and reports `missing_in_scope`. The S4 half of the M2 exit is the graph and conformance suites this change re-runs; the gate is the milestone check that the whole matrix is covered at M2 rank, and this change records its S4 contribution. A green gate is the milestone's evidence, not a per-lane gate (`m2-sandbox-adapter-conformance` design D7 draws the same line).
+`task spec:gate GATE=M2` aggregates every module's test JSON into `tools/spec_coverage.py --gate M2`. The gate checks all registry ids at or below M2 rank, not only the rows selected for the milestone matrix. The PostgreSQL leg uses `-short -tags full -timeout 10m`. The `full` tag includes the PostgreSQL integration tests. Short mode retains reduced workloads without excluding their scenario subtests. Docker must be available for the PostgreSQL test container. Separate PostgreSQL evidence supports diagnosis but does not replace the combined gate result. Task 4.1 requires exit 0, `missing_in_scope=0`, and `unregistered=0`. The adk-go bridge and graph legs remain M3-open.
 
 ## Risks / Trade-offs
 
@@ -73,6 +75,7 @@ The behavior is normative in the `runtime`, `flow`, `limits` and `stores` capabi
 - [The re-run silently claims an owner's row] → D2: only the `Evidence` cell is written; `Owner` and `Depends on` stay as §2 states them.
 - [The evidence cell drifts from the test name] → each cell is written from the observed `-v` output, so the subtest name in the cell is the one the run printed, not a guess.
 - [The record is taken for new behavior] → D1 and the proposal's *No implementation and no new test* bullet: no file under `core`, `std`, `adapter` or `examples` changes; a diff outside `openspec/changes/` is out of scope.
+- [The record expands into implementation work] → Only acceptance artifacts and the PostgreSQL `spec:gate` command may change. No runtime implementation or test changes are admitted.
 
 ## Migration Plan
 

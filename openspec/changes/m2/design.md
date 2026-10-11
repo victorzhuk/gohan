@@ -14,20 +14,20 @@ Boundaries the first M2 changes must not cross: no second runtime loop beside th
 
 ## 2. Acceptance matrix
 
-61 rows: every registry id in `runtime`, `context` and `sandbox`, plus the four M2-deferred ids in `flow`, `guards`, `limits` and `identity`. 36 of them carry `deferred_to: M2` in the registry; the other 25 runtime rows are inherited acceptance checks the eino backend must also satisfy, not a claim that core behaviour is missing. Owner names name the change that will carry the work; no child package is authored yet.
+63 rows: every registry id in `runtime`, `context` and `sandbox`, the four M2-deferred ids in `flow`, `guards`, `limits` and `identity`, and two inherited `stores` checkpoint-versioning ids proved on the eino flows. 36 rows carry `deferred_to: M2`; 27 are inherited checks: 25 runtime rows and two stores rows. Owners identify the changes responsible for the behavior. `m2-s4-acceptance` records the re-run evidence without taking ownership. The milestone gate checks all registry ids at or below M2 rank, including the PostgreSQL repair ids outside this selected matrix.
 
 ### 2.1 runtime (27: 2 M2-deferred, 25 inherited)
 
 | ID | Owner | Depends on | Status | Evidence |
 |---|---|---|---|---|
-| `runtime.plain-answer` | `m2-eino-runtime` | core runtime and governed components | missing | |
-| `runtime.tool-round-trip` | `m2-eino-runtime` | core runtime and governed components | missing | |
-| `runtime.parallel-calls-ordering` | `m2-eino-runtime` | core runtime and governed components | missing | |
-| `runtime.max-turns` | `m2-eino-runtime` | core Drive limits | missing | |
-| `runtime.cancellation` | `m2-eino-runtime` | core Drive cancellation | missing | |
+| `runtime.plain-answer` | `m2-eino-runtime` | core runtime and governed components | missing | `TestConformance/runtime.plain-answer` (`adapter/eino/conformance_test.go:9`, suite `testkit/conformance/runtime.go:53`) |
+| `runtime.tool-round-trip` | `m2-eino-runtime` | core runtime and governed components | missing | `TestConformance/runtime.tool-round-trip` (`adapter/eino/conformance_test.go:9`, suite `testkit/conformance/runtime.go:53`) |
+| `runtime.parallel-calls-ordering` | `m2-eino-runtime` | core runtime and governed components | missing | `TestConformance/runtime.parallel-calls-ordering` (`adapter/eino/conformance_test.go:9`, suite `testkit/conformance/runtime.go:53`) |
+| `runtime.max-turns` | `m2-eino-runtime` | core Drive limits | missing | `TestConformance/runtime.max-turns` (`adapter/eino/conformance_test.go:9`, suite `testkit/conformance/runtime.go:53`) |
+| `runtime.cancellation` | `m2-eino-runtime` | core Drive cancellation | missing | `TestConformance/runtime.cancellation` (`adapter/eino/conformance_test.go:9`, suite `testkit/conformance/runtime.go:53`) |
 | `runtime.foreign-tool-under-native` | `m2-eino-bridges` | governed tool chain | missing | |
-| `runtime.governed-components-in-eino-graph` | `m2-eino-graph-native-resume` | `m2-eino-runtime`, `m2-eino-bridges` | missing | |
-| `runtime.message-round-trip` | `m2-eino-bridges` | message fidelity contract | missing | the adk-go leg is M3's — §3 conflict 3 governs where this row's first owner differed |
+| `runtime.governed-components-in-eino-graph` | `m2-eino-graph-native-resume` | `m2-eino-runtime`, `m2-eino-bridges` | missing | `TestGraphFlow/runtime.governed-components-in-eino-graph` (`adapter/eino/einoflow/graph_test.go:141`) |
+| `runtime.message-round-trip` | `m2-eino-bridges` | message fidelity contract | missing | eino leg `TestMessageBridge/runtime.message-round-trip` (`adapter/eino/message_bridge_test.go:59`); the adk-go leg is M3's and stays open — §3 conflict 3 governs where this row's first owner differed |
 | `runtime.suspend-order` | `m2-eino-runtime` | core Drive and checkpoint stores | missing | |
 | `runtime.append-before-tool` | `m2-eino-runtime` | core Drive and journal | missing | |
 | `runtime.done-after-finish` | `m2-eino-runtime` | core Drive and Runs | missing | |
@@ -98,7 +98,7 @@ The port and its governance land before adapter conformance and the persisted wo
 
 | ID | Owner | Depends on | Status | Evidence |
 |---|---|---|---|---|
-| `flow.backend-swap` | `m2-eino-runtime` | runtime registration and the common Flow contract | missing | |
+| `flow.backend-swap` | `m2-eino-runtime` | runtime registration and the common Flow contract | missing | `TestBackendSwap/flow.backend-swap` (`adapter/eino/backend_swap_test.go:10`, suite `testkit/conformance/backend_swap.go:9`) |
 
 ### 2.5 guards (1, deferred to M2)
 
@@ -112,7 +112,7 @@ Message conversion preserves provenance before the graph and the runtime accepta
 
 | ID | Owner | Depends on | Status | Evidence |
 |---|---|---|---|---|
-| `limits.limits-under-foreign-backend` | `m2-eino-runtime` | core Drive and governed limit chains | missing | |
+| `limits.limits-under-foreign-backend` | `m2-eino-runtime` | core Drive and governed limit chains | missing | `TestLimits/limits.limits-under-foreign-backend` (`adapter/eino/limits_test.go:122`) |
 
 Limits stay in the harness; there is no second limit loop in an adapter.
 
@@ -123,6 +123,15 @@ Limits stay in the harness; there is no second limit loop in an adapter.
 | `identity.credential-not-in-sandbox` | `m2-sandbox-governance` | CredentialSource, sandbox secret resolution, output scanning | missing | |
 
 Harness credentials and explicitly authorised `SecretRef` injection are separate paths: the sandbox secret contract permits the latter and forbids arbitrary credential export.
+
+### 2.8 stores (2 inherited checkpoint-versioning checks)
+
+| ID | Owner | Depends on | Status | Evidence |
+|---|---|---|---|---|
+| `stores.native-checkpoint-after-adapter-upgrade` | `m2-eino-graph-native-resume` | `m2-eino-runtime`, core Resume and checkpoint stores | missing | `TestNativeResume/stores.native-checkpoint-after-adapter-upgrade` (`adapter/eino/einoflow/resume_test.go:63`; eino agent version-mismatch decision) |
+| `stores.graph-checkpoint-incompatible` | `m2-eino-graph-native-resume` | `m2-eino-runtime`, core Resume and checkpoint stores | missing | `TestNativeResume/stores.graph-checkpoint-incompatible` (`adapter/eino/einoflow/resume_test.go:78`; eino graph version-mismatch decision) |
+
+These are existing R5n ids, not new scenarios or deferrals. The archived graph change owns the behavior. `m2-s4-acceptance` binds the re-run evidence. Mark a row `done` only after its evidence includes the accepted public-path proof. Decision-level eino subtests alone do not establish Replay telemetry or token preservation.
 
 ## 3. Milestone conflicts
 
@@ -145,7 +154,7 @@ Three conflicts are recorded here rather than resolved silently.
 | `ProviderCompact` implementation and capability declarations | `m2-provider-compaction` | missing | |
 | research-report example | `m2-research-report-example` | missing | |
 | data-analyst example | `m2-data-analyst-example` | missing | |
-| S4 graph acceptance and conformance.* green on eino | `m2-s4-acceptance` | missing | |
+| S4 graph acceptance and conformance.* green on eino | `m2-s4-acceptance` | partial (eino green; adk-go legs M3-open) | eino suites re-run green: `adapter/eino/einoflow` `TestGraphFlow`, `TestGraphFlowGoverning`, `TestFromRunnableGuards`, `TestNativeResume` and `adapter/eino` `TestConformance` → `conformance.Runtime`, `TestBackendSwap/flow.backend-swap`, `TestLimits/limits.limits-under-foreign-backend`, `TestMessageBridge/runtime.message-round-trip`; `task spec:gate GATE=M2` still reports `missing_in_scope=19`, all of them the `stores.pg-*` ids of the archived `repair-postgres-store-contracts` whose tests sit behind `//go:build full`; all 19 pass under `go -C adapter/postgres test -tags full -run 'TestJournalReserveAtomic|TestSessions|TestRunsRemediation|TestOutputClaimsLedger|TestNoticesRemediation|TestSessionCascadeRemediation'`, so the `-short` sweep in `Taskfile.yml` `spec:gate` is blind to them and the gate cannot report 0 without a `-tags full` leg; the adk-go graph leg and the adk-go bridge leg stay M3-open (`openspec/changes/m3/proposal.md:7`) |
 | port-method-set compatibility check before the v1 freeze | `m2-api-freeze` | missing | |
 | `v1.0.0` at the M2 exit | `m2-api-freeze` | missing | |
 
@@ -153,4 +162,4 @@ The examples accept composed public paths after their features exist; their prec
 
 ## 5. Lane status
 
-The first-wave packages are archived. m2-eino-bridges and m2-context-persisted-compaction are archived (2026-10-11 batch). m2-eino-graph-native-resume stands at 12/12, m2-provider-compaction at 13/13, m2-context-calibration-overflow at 13/13; m2-sandbox-adapter-conformance at 15/17 with the Docker/E2B legs open (O2 closed: `chains.ToolInfo.Egress` renders the declared policy); m2-sandbox-lifecycle-resume is unstarted at 0/37 with R6 parked. Every second-wave package is authored: m2-eino-graph-native-resume, m2-provider-compaction, m2-context-calibration-overflow, m2-sandbox-adapter-conformance and m2-sandbox-lifecycle-resume. m2-sandbox-adapter-conformance carries no spec delta (it verifies behavior the `sandbox` capability already states) and its Docker and E2B acceptance legs stay blocked until `m2-docker-sandbox` and `m2-e2b-sandbox` land with provider evidence; m2-sandbox-lifecycle-resume stays blocked by R6. Author each remaining third-wave package (`m2-docker-sandbox`, `m2-e2b-sandbox`, `m2-research-report-example`, `m2-data-analyst-example`, `m2-s4-acceptance`, `m2-api-freeze`) after its dependencies and shared contracts settle. Record public-path evidence before marking an acceptance row done.
+The first-wave packages are archived. m2-eino-bridges and m2-context-persisted-compaction are archived (2026-10-11 batch). m2-eino-graph-native-resume stands at 12/12, m2-provider-compaction at 13/13, m2-context-calibration-overflow at 13/13; m2-sandbox-adapter-conformance at 15/17 with the Docker/E2B legs open (O2 closed: `chains.ToolInfo.Egress` renders the declared policy); m2-sandbox-lifecycle-resume is unstarted at 0/37 with R6 parked. Every second-wave package is authored: m2-eino-graph-native-resume, m2-provider-compaction, m2-context-calibration-overflow, m2-sandbox-adapter-conformance and m2-sandbox-lifecycle-resume. m2-sandbox-adapter-conformance carries no spec delta (it verifies behavior the `sandbox` capability already states) and its Docker and E2B acceptance legs stay blocked until `m2-docker-sandbox` and `m2-e2b-sandbox` land with provider evidence; m2-sandbox-lifecycle-resume stays blocked by R6. Author each remaining third-wave package (`m2-docker-sandbox`, `m2-e2b-sandbox`, `m2-research-report-example`, `m2-data-analyst-example`, `m2-s4-acceptance`, `m2-api-freeze`) after its dependencies and shared contracts settle. `m2-s4-acceptance` records nine ids in the existing §2 subsections and the two checkpoint-versioning stores ids in §2.8. The eino `TestNativeResume` subtests provide decision-level evidence. Row closure requires the accepted public-path evidence. The adk-go bridge and graph legs remain M3-open.

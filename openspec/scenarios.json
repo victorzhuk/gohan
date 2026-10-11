@@ -2642,6 +2642,12 @@
     "title": "migrate serialised",
     "deferred_to": "M3"
   },
+  "stores.pg-migration-down-up-down": {
+    "capability": "stores",
+    "origin": "m2-postgres-migration-cycle-contract",
+    "title": "migration down-up-down",
+    "deferred_to": "M2"
+  },
   "stores.pg-schema-too-old": {
     "capability": "stores",
     "origin": "R51",

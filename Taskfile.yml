@@ -39,7 +39,7 @@ tasks:
           go -C adapter/anthropic test -json -timeout 2m -short ./...;
           go -C adapter/eino test -json -timeout 2m -short ./...;
           go -C adapter/docker test -json -timeout 2m -short ./...;
-          go -C adapter/postgres test -json -timeout 2m -short ./...;
+          go -C adapter/postgres test -json -timeout 10m -short -tags full ./...;
           go -C examples test -json -timeout 2m -short ./...; } |
           python3 tools/spec_coverage.py --gate '{{.GATE}}'
 
