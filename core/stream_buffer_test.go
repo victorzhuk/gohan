@@ -35,6 +35,10 @@ func (b *burstProvider) Generate(_ context.Context, _ types.ModelRequest) iter.S
 	}
 }
 
+// streamBuffer is the chunk capacity the std presets recommend; the tests
+// pin it explicitly because core declares no capacity of its own.
+const streamBuffer = 64
+
 func TestStreamBuffer(t *testing.T) {
 	req := types.ModelRequest{}
 
@@ -48,7 +52,7 @@ func TestStreamBuffer(t *testing.T) {
 					Timeout:      types.ModelTimeout{FirstChunk: time.Second, Idle: time.Second},
 				},
 			}
-			s := NewModelStream(p)
+			s := newModelStream(p, WithChunkBuffer(streamBuffer))
 			var got []types.ModelChunk
 			for c, err := range s.Generate(context.Background(), req) {
 				if err != nil {
@@ -82,7 +86,7 @@ func TestStreamBuffer(t *testing.T) {
 			want := errors.New("boom")
 			events = append(events, streamEvent{err: want})
 			p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Minute, Idle: time.Minute}, events...)
-			s := NewModelStream(p)
+			s := newModelStream(p, WithChunkBuffer(streamBuffer))
 			next, stop := iter.Pull2(s.Generate(context.Background(), types.ModelRequest{}))
 			defer stop()
 
@@ -100,7 +104,7 @@ func TestStreamBuffer(t *testing.T) {
 
 	t.Run("streams.stream-buffer-bound", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			n := DefaultStreamBuffer + 20
+			n := streamBuffer + 20
 			p := &burstProvider{
 				n: n,
 				profile: types.ModelProfile{
@@ -109,12 +113,12 @@ func TestStreamBuffer(t *testing.T) {
 					Timeout:      types.ModelTimeout{FirstChunk: time.Minute, Idle: time.Minute},
 				},
 			}
-			s := NewModelStream(p)
+			s := newModelStream(p, WithChunkBuffer(streamBuffer))
 			next, stop := iter.Pull2(s.Generate(context.Background(), req))
 			defer stop()
 
 			// Take the first chunk, then stall: the buffer fills and the
-			// provider read blocks on DefaultStreamBuffer + 1.
+			// provider read blocks on streamBuffer + 1.
 			if _, err, ok := next(); err != nil || !ok {
 				t.Fatalf("first next = (%v, %v), want a chunk", err, ok)
 			}

@@ -27,7 +27,7 @@ func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 	tc := turnConfig{
 		// Supervision wraps only the provider, so the chain steps and
 		// the middleware above it keep running on the caller's goroutine.
-		model:              recordRunCost(runModelChain(cfg.modelChain, deprecatedRoute(s.telemetry, cfg.profile, NewModelStream(cfg.model).Generate, s.successorModelFunc(cfg.profile)))),
+		model:              recordRunCost(runModelChain(cfg.modelChain, deprecatedRoute(s.telemetry, cfg.profile, newModelStream(cfg.model, WithStreamTimeouts(s.latencyTimeouts), WithChunkBuffer(s.streamBuffer)).Generate, s.successorModelFunc(cfg.profile)))),
 		assemble:           collapseBeforeProjections(cfg.profile, withProjections(cfg.contextPolicy, cfg.profile, nativeAssemble(cfg.flow, s.prompts, cfg.assemble, cfg.redactor, cfg.redactionPolicy, s.stores.RedactionMaps, newBlobAssembly(cfg.profile.Name, cfg.model, s.stores)))),
 		providerGate:       providerDeclarationGate(cfg),
 		compactionFallback: cfg.compactionFallback,

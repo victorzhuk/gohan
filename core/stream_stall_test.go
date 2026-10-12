@@ -118,7 +118,7 @@ func stallConversation(t *testing.T, rt runtime.Runtime, opts ...ConversationOpt
 	runs := &stallRuns{MemoryRuns: stores.NewMemoryRuns()}
 	events := stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))
 	log := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
-	stack := &Stack{stores: stores.Stores{SessionLog: log}}
+	stack := &Stack{stores: stores.Stores{SessionLog: log}, streamBuffer: streamBuffer}
 	conv, err := NewConversation(stack, "chat", rt,
 		append([]ConversationOption{
 			WithConversationRuns(runs),
@@ -137,7 +137,7 @@ func TestStreamStall(t *testing.T) {
 			p := &countedStallProvider{fakeProvider: newFakeProvider(
 				types.ModelTimeout{FirstChunk: time.Hour, Idle: time.Hour},
 				textChunk("a"), textChunk("b"), finishChunk())}
-			s := NewModelStream(p)
+			s := newModelStream(p, WithChunkBuffer(streamBuffer))
 			n := 0
 			for _, err := range s.Generate(context.Background(), types.ModelRequest{}) {
 				if err != nil {
@@ -471,7 +471,7 @@ func TestStreamStall(t *testing.T) {
 	})
 
 	t.Run("streams.stream-buffer-bound", func(t *testing.T) {
-		const backlog = DefaultStreamBuffer + 10
+		const backlog = streamBuffer + 10
 		taken := make(chan struct{}, backlog)
 		rt := &stallTestRT{}
 		next := 0
@@ -481,7 +481,7 @@ func TestStreamStall(t *testing.T) {
 			}
 			i := next
 			next++
-			if i >= DefaultStreamBuffer {
+			if i >= streamBuffer {
 				// The handoff is full: the worker must block until
 				// the consumer takes one tuple, never drop or
 				// overwrite.

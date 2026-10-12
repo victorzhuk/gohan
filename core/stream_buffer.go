@@ -2,9 +2,11 @@ package gohan
 
 import "sync/atomic"
 
-// DefaultStreamBuffer is the per-call chunk capacity: a provider that
-// produces more than this while the consumer stalls blocks on its next
-// read instead of racing ahead (streams, *Slow consumers* rule 2).
+// DefaultStreamBuffer is the compatibility mirror of the std policy value
+// std.StreamBuffer: the per-call chunk capacity NewStreamBuffer falls back
+// to for a non-positive capacity, so an un-optioned caller keeps the
+// packaged hand-off depth. It must not be changed independently of
+// std.StreamBuffer.
 const DefaultStreamBuffer = 64
 
 // MetricStreamBufferFull names the counter a transport reads to report a
@@ -21,8 +23,9 @@ type StreamBuffer struct {
 	onFull func()
 }
 
-// NewStreamBuffer builds a buffer of capacity chunks; a non-positive
-// capacity falls back to DefaultStreamBuffer.
+// NewStreamBuffer builds a buffer of capacity chunks (streams, *Slow
+// consumers* rule 2). A non-positive capacity falls back to
+// DefaultStreamBuffer, so an un-optioned caller keeps the packaged depth.
 func NewStreamBuffer(capacity int) *StreamBuffer {
 	if capacity <= 0 {
 		capacity = DefaultStreamBuffer

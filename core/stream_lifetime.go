@@ -230,7 +230,11 @@ func (c *conversation) runPrepared(ctx context.Context, lease stores.Lease, lc *
 	}
 	guard := NewStallGuard(limit, c.stallAction, pre.Preempt)
 	rt = pre.Runtime(rt)
-	q := newStreamHandoff()
+	capacity := DefaultStreamBuffer
+	if c.stack != nil && c.stack.streamBuffer > 0 {
+		capacity = c.stack.streamBuffer
+	}
+	q := newStreamHandoff(capacity)
 	onBreak := func() {
 		if c.stallAction == StallPreempt {
 			pre.Preempt()
@@ -307,7 +311,7 @@ type streamHandoff struct {
 	space *sync.Cond
 	taken *sync.Cond
 
-	buf  [DefaultStreamBuffer]runTuple
+	buf  []runTuple
 	n    int
 	head int
 
@@ -318,8 +322,12 @@ type streamHandoff struct {
 	broken bool
 }
 
-func newStreamHandoff() *streamHandoff {
-	q := &streamHandoff{}
+func newStreamHandoff(capacity int) *streamHandoff {
+	if capacity < 1 {
+		// One ordinary slot minimum: the terminal tuple owns its own.
+		capacity = 1
+	}
+	q := &streamHandoff{buf: make([]runTuple, capacity)}
 	q.space = sync.NewCond(&q.mu)
 	q.taken = sync.NewCond(&q.mu)
 	return q
@@ -344,13 +352,13 @@ func (q *streamHandoff) push(ev Event, err error) bool {
 		q.taken.Signal()
 		return true
 	}
-	for q.n == DefaultStreamBuffer && !q.broken && !q.closed {
+	for q.n == len(q.buf) && !q.broken && !q.closed {
 		q.space.Wait()
 	}
 	if q.broken || q.closed {
 		return !q.closed
 	}
-	q.buf[(q.head+q.n)%DefaultStreamBuffer] = runTuple{ev, err}
+	q.buf[(q.head+q.n)%len(q.buf)] = runTuple{ev, err}
 	q.n++
 	q.taken.Signal()
 	return true
@@ -404,7 +412,7 @@ func (q *streamHandoff) seq(onBreak func()) iter.Seq2[Event, error] {
 			if q.n > 0 {
 				t = q.buf[q.head]
 				q.buf[q.head] = runTuple{}
-				q.head = (q.head + 1) % DefaultStreamBuffer
+				q.head = (q.head + 1) % len(q.buf)
 				q.n--
 				q.space.Signal()
 			} else {

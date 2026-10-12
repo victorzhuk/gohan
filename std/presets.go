@@ -98,14 +98,30 @@ func (p Preset) LimitsMiddleware() (types.ModelMiddleware, bool) {
 	return nil, false
 }
 
+// Defaults returns the recommended policy values of this package as Build
+// options: the sunset notice window, the gate control wait, the stream
+// buffer depth and the latency timeout table. A later option of the same
+// name overrides each.
+func Defaults() []gohan.Option {
+	return []gohan.Option{
+		gohan.WithSunsetNoticeWindow(SunsetNoticeWindow),
+		gohan.WithControlWait(ControlWait),
+		gohan.WithStreamBuffer(StreamBuffer),
+		gohan.WithLatencyTimeouts(LatencyTimeouts),
+	}
+}
+
 // Options presents the preset as driver Build options, per the build
-// spec's "std presets are Options too". The prompt set crosses as
+// spec's "std presets are Options too". It carries the recommended policy
+// defaults of this package: the sunset notice window, the gate control
+// wait, the stream buffer depth and the latency timeout table; a later
+// option of the same name overrides each. The prompt set crosses as
 // WithPrompts, so a later WithPrompts replaces the complete set, and the
 // limit step as model middleware; the tool-chain steps cross as chain
 // data a service composes itself. Options never constructs a Build
 // itself; the caller composes it.
 func (p Preset) Options() []gohan.Option {
-	opts := []gohan.Option{gohan.WithPrompts(p.Prompts)}
+	opts := append(Defaults(), gohan.WithPrompts(p.Prompts))
 	if mw, ok := p.LimitsMiddleware(); ok {
 		opts = append(opts, gohan.WithModelMiddleware(mw))
 	}

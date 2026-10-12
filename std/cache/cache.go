@@ -14,6 +14,7 @@ import (
 
 	jsonv2 "encoding/json/v2"
 
+	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -98,4 +99,29 @@ func normalize(r types.ModelRequest) (string, error) {
 		return "", fmt.Errorf("cache: normalize request: %w", err)
 	}
 	return string(b), nil
+}
+
+// The four symbols below are compatibility re-exports of the canonical
+// definitions in core/chains. The core package owns them so a host that never
+// enables a cache pays nothing; this path keeps the historical names so
+// existing importers compile and behave unchanged.
+
+// ExtraKey is the Options.Extra key under which the assembler marks a served
+// or written prefix. It is a compatibility re-export of chains.ExtraKey.
+const ExtraKey = chains.ExtraKey
+
+// Outcome reports one consult of the store, a hit served or a repopulating
+// miss written. It is a compatibility re-export of chains.Outcome.
+type Outcome = chains.Outcome
+
+// Mark returns req with the outcome recorded in Options.Extra. It is a
+// compatibility re-export of chains.Mark.
+func Mark(req types.ModelRequest, o Outcome) types.ModelRequest {
+	return chains.Mark(req, o)
+}
+
+// OutcomeOf reports the marked outcome of an assembled request. It is a
+// compatibility re-export of chains.OutcomeOf.
+func OutcomeOf(req types.ModelRequest) (Outcome, bool) {
+	return chains.OutcomeOf(req)
 }

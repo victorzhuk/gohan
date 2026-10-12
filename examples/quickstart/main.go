@@ -13,6 +13,7 @@ import (
 	gohan "github.com/victorzhuk/gohan/core"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std"
 )
 
 // scriptedModel replays a fixed chunk sequence; the request it received
@@ -55,7 +56,7 @@ func Run(ctx context.Context, input string) ([]types.Event, error) {
 		{Kind: types.DeltaText, Delta: "quickstart!"},
 	}}
 	sessions := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
-	stack, err := gohan.Build(
+	stack, err := gohan.Build(append(std.Defaults(),
 		gohan.WithStores(stores.Stores{SessionLog: sessions}),
 		gohan.WithModels(model),
 		gohan.WithNativeAgent(gohan.NativeSpec{
@@ -63,7 +64,7 @@ func Run(ctx context.Context, input string) ([]types.Event, error) {
 			Profile:  "scripted",
 			Assemble: assemble,
 		}),
-	)
+	)...)
 	if err != nil {
 		return nil, err
 	}

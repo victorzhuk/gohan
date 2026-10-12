@@ -71,11 +71,40 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	breaks = applyExceptions(breaks)
 	if len(breaks) == 0 {
 		fmt.Printf("api:check: %s: exported API compatible with %s\n", mod, *tag)
 		return nil
 	}
 	return reportBreaks(mod, *tag, breaks)
+}
+
+// apiExceptions maps a diff string exactly as diffTrees renders it to the
+// reason the change survives source compatibility despite the textual
+// difference. A checker-level exception is the last resort: the entry must
+// name one symbol and carry a reason a reader can verify. An applied
+// exception is always printed, never silent.
+var apiExceptions = map[string]string{
+	"std/cache: type Outcome: changed from struct{Hit bool;Tokens int} to chains.Outcome": "type alias to a struct of identical shape: every literal, switch and field access compiles unchanged, and a duplicated struct would break the Extra type-assertion across the mark/read seam",
+}
+
+// applyExceptions drops the breaks named by apiExceptions, printing each
+// applied exception with its reason, and returns the breaks that stay
+// incompatible.
+func applyExceptions(breaks []breakage) []breakage {
+	if len(breaks) == 0 {
+		return breaks
+	}
+	kept := breaks[:0]
+	for _, b := range breaks {
+		reason, ok := apiExceptions[string(b)]
+		if !ok {
+			kept = append(kept, b)
+			continue
+		}
+		fmt.Printf("api:check: exception applied: %s\napi:check:           reason: %s\n", b, reason)
+	}
+	return kept
 }
 
 // Pre-v1 modules report incompatible changes without failing: breaking

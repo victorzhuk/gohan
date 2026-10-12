@@ -19,13 +19,18 @@ import (
 // driver never imports std, so the caller passes the std policy value.
 type Option func(*config) error
 
-// DefaultSunsetNoticeWindow is the notice window Build applies when no
-// option narrows or widens it.
+// DefaultSunsetNoticeWindow is the compatibility mirror of the std policy
+// value std.SunsetNoticeWindow: Build applies it when no
+// WithSunsetNoticeWindow option is given, so an un-optioned caller keeps
+// the packaged notice window. It must not be changed independently of
+// std.SunsetNoticeWindow.
 const DefaultSunsetNoticeWindow = 30 * 24 * time.Hour
 
 // WithSunsetNoticeWindow sets how long before ModelProfile.Sunset a
 // pinned profile must still be at Build. A profile inside the window
-// fails the build unless WithSunsetWarnOnly is set.
+// fails the build unless WithSunsetWarnOnly is set. Core declares no
+// window of its own: without this option no sunset gate runs, and std
+// supplies the recommended window.
 func WithSunsetNoticeWindow(d time.Duration) Option {
 	return func(c *config) error {
 		if d <= 0 {
@@ -41,6 +46,39 @@ func WithSunsetNoticeWindow(d time.Duration) Option {
 func WithSunsetWarnOnly() Option {
 	return func(c *config) error {
 		c.sunsetWarnOnly = true
+		return nil
+	}
+}
+
+// WithControlWait sets how long the permission gate holds an
+// AwaitingControl suspension before the pending call is denied and the run
+// continues. Core declares no wait of its own: without this option the wake
+// is armed at once, and std supplies the recommended wait.
+func WithControlWait(d time.Duration) Option {
+	return func(c *config) error {
+		c.controlWait = d
+		return nil
+	}
+}
+
+// WithStreamBuffer sets the per-call chunk capacity and the conversation
+// hand-off depth. Core declares no capacity of its own: without this option
+// a call hands one chunk over at a time, and std supplies the recommended
+// capacity.
+func WithStreamBuffer(capacity int) Option {
+	return func(c *config) error {
+		c.streamBuffer = capacity
+		return nil
+	}
+}
+
+// WithLatencyTimeouts sets the per-class connect / first-chunk / idle table
+// a profile's zero ModelTimeout falls back to. Core declares no table of its
+// own: without this option a zero timeout stays a timeout of none, and std
+// supplies the recommended table.
+func WithLatencyTimeouts(t map[types.LatencyClass][3]time.Duration) Option {
+	return func(c *config) error {
+		c.latencyTimeouts = t
 		return nil
 	}
 }
@@ -66,6 +104,9 @@ func WithSandboxRegistration(reg SandboxRegistration) Option {
 type config struct {
 	flags              types.Flags
 	frozen             map[string]any
+	controlWait        time.Duration
+	streamBuffer       int
+	latencyTimeouts    map[types.LatencyClass][3]time.Duration
 	foreign            []ForeignSpec
 	models             []types.Model
 	middleware         []types.ModelMiddleware

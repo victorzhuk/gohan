@@ -98,7 +98,7 @@ func TestModelStream(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Minute, Idle: time.Minute},
 				textChunk("a"), textChunk("b"))
-			s := NewModelStream(p)
+			s := newModelStream(p, WithChunkBuffer(streamBuffer))
 			n := 0
 			for _, err := range s.Generate(context.Background(), req) {
 				if err != nil {
@@ -129,7 +129,7 @@ func TestModelStream(t *testing.T) {
 	t.Run("model.cancel-returns-promptly", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Minute, Idle: time.Minute})
-			s := NewModelStream(p)
+			s := newModelStream(p, WithChunkBuffer(streamBuffer))
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan error, 1)
 			go func() {
@@ -152,7 +152,7 @@ func TestModelStream(t *testing.T) {
 	t.Run("model.first-chunk-timeout-transient", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Minute, Idle: time.Minute})
-			s := NewModelStream(p)
+			s := newModelStream(p, WithChunkBuffer(streamBuffer))
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			_, err := collect(t, s, ctx, req)
@@ -170,7 +170,7 @@ func TestModelStream(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Minute, Idle: time.Minute},
 				textChunk("a"))
-			s := NewModelStream(p)
+			s := newModelStream(p, WithChunkBuffer(streamBuffer))
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			_, err := collect(t, s, ctx, req)
@@ -187,7 +187,7 @@ func TestModelStream(t *testing.T) {
 	t.Run("normal drain", func(t *testing.T) {
 		p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Minute, Idle: time.Minute},
 			textChunk("a"), textChunk("b"), finishChunk())
-		s := NewModelStream(p)
+		s := newModelStream(p, WithChunkBuffer(streamBuffer))
 		chunks, err := collect(t, s, context.Background(), req)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -201,7 +201,7 @@ func TestModelStream(t *testing.T) {
 		want := &types.ModelError{Class: types.ClassRateLimited, Provider: "fake", Err: errors.New("boom")}
 		p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Minute, Idle: time.Minute},
 			textChunk("a"), streamEvent{err: want})
-		s := NewModelStream(p)
+		s := newModelStream(p, WithChunkBuffer(streamBuffer))
 		_, err := collect(t, s, context.Background(), req)
 		me, ok := errors.AsType[*types.ModelError](err)
 		if !ok {
@@ -260,23 +260,23 @@ func TestModelStreamClosedBufferPreservesTerminalError(t *testing.T) {
 			events = append(events, streamEvent{err: failErr})
 			p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Minute, Idle: time.Minute},
 				events...)
-			return NewModelStream(p), context.Background(), func() {}
+			return newModelStream(p, WithChunkBuffer(streamBuffer)), context.Background(), func() {}
 		},
 		"first-chunk-expiry": func() (*ModelStream, context.Context, context.CancelFunc) {
 			p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Millisecond, Idle: time.Minute})
-			return NewModelStream(p), context.Background(), func() {}
+			return newModelStream(p, WithChunkBuffer(streamBuffer)), context.Background(), func() {}
 		},
 		"idle-expiry": func() (*ModelStream, context.Context, context.CancelFunc) {
 			p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Minute, Idle: time.Millisecond},
 				textChunk("a"))
-			return NewModelStream(p), context.Background(), func() {}
+			return newModelStream(p, WithChunkBuffer(streamBuffer)), context.Background(), func() {}
 		},
 		"cancellation": func() (*ModelStream, context.Context, context.CancelFunc) {
 			p := newFakeProvider(types.ModelTimeout{FirstChunk: time.Minute, Idle: time.Minute},
 				textChunk("a"))
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
-			return NewModelStream(p), ctx, cancel
+			return newModelStream(p, WithChunkBuffer(streamBuffer)), ctx, cancel
 		},
 	}
 

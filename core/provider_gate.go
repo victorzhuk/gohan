@@ -26,6 +26,7 @@ func providerDeclarationGate(cfg *resolvedNativeConfig) func(context.Context, ty
 			permission.WithRunInfo(func(context.Context) types.RunInfo { return run }),
 			permission.WithTaintHook(cfg.taintPolicy),
 			permission.WithLiveControl(cfg.liveControl),
+			permission.WithControlWait(cfg.controlWait),
 		}
 		var declared []types.ToolSpec
 		for _, spec := range req.Tools {

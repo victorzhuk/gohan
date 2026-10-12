@@ -36,7 +36,10 @@ func TestBuildSunset(t *testing.T) {
 	inside := time.Now().Add(20 * 24 * time.Hour)
 
 	t.Run("lifecycle.sunset-inside-notice-window", func(t *testing.T) {
-		_, err := Build(WithModels(fakeModel{profile: sunsetProfile("old", inside)}))
+		_, err := Build(
+			WithSunsetNoticeWindow(30*24*time.Hour),
+			WithModels(fakeModel{profile: sunsetProfile("old", inside)}),
+		)
 		if err == nil {
 			t.Fatal("Build accepted a profile inside the notice window")
 		}
@@ -50,6 +53,7 @@ func TestBuildSunset(t *testing.T) {
 	t.Run("buildSunsetWarnOnly", func(t *testing.T) {
 		sink := &sunsetSink{}
 		s, err := Build(
+			WithSunsetNoticeWindow(30*24*time.Hour),
 			WithModels(fakeModel{profile: sunsetProfile("old", inside)}),
 			WithTelemetry(sink),
 			WithSunsetWarnOnly(),

@@ -103,8 +103,10 @@ func WithLiveControl(check func(ctx context.Context, inv *ToolInvocation) (types
 // to suspend the pending call with AwaitingControl instead of asking.
 const ControlWaitReason = "awaiting-control"
 
-// DefaultControlWait bounds the AwaitingControl suspension when no option
-// narrows it.
+// DefaultControlWait is the compatibility mirror of the std policy value
+// std.ControlWait: the gate bounds an AwaitingControl suspension by it when
+// no WithControlWait option is given. It must not be changed independently
+// of std.ControlWait.
 const DefaultControlWait = 5 * time.Minute
 
 // WithControlWait sets how long the gate holds an AwaitingControl

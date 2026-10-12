@@ -9,6 +9,7 @@ import (
 
 	gohan "github.com/victorzhuk/gohan/core"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std"
 	"github.com/victorzhuk/gohan/std/sandbox"
 	"github.com/victorzhuk/gohan/testkit/gohantest"
 )
@@ -81,7 +82,7 @@ func egressSharesPolicyType(t *testing.T, f Factory) {
 		}}
 		tools := append(ts.Tools(), harness)
 		model := gohantest.NewScriptedModel(types.ModelProfile{Name: "primary", Caps: types.Caps{Tools: true}})
-		stack, err := gohan.Build(
+		stack, err := gohan.Build(append(std.Defaults(),
 			gohan.WithModels(model),
 			gohan.WithLimits("flow", types.InteractiveLimits),
 			gohan.WithEgressClient(func(types.EgressPolicy) *http.Client { return &http.Client{} }),
@@ -90,7 +91,7 @@ func egressSharesPolicyType(t *testing.T, f Factory) {
 				Profile: "primary",
 				Tools:   tools,
 			}),
-		)
+		)...)
 		if err != nil {
 			t.Fatalf("build stack: %v", err)
 		}

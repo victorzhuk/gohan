@@ -297,8 +297,10 @@ func TestPresetOptions(t *testing.T) {
 			t.Fatalf("WithoutLimits still returned a middleware %v", mw)
 		}
 		opts := p.Options()
-		if len(opts) != 1 {
-			t.Fatalf("WithoutLimits yields %d options, want only WithPrompts", len(opts))
+		// The four policy defaults cross with every preset; only the
+		// limits middleware drops.
+		if len(opts) != 5 {
+			t.Fatalf("WithoutLimits yields %d options, want the policy defaults plus WithPrompts", len(opts))
 		}
 	})
 }

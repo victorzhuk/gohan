@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/guards"
@@ -31,6 +32,7 @@ type resolvedNativeConfig struct {
 	decider         types.Decider[*permission.ToolInvocation, permission.Verdict]
 	taintPolicy     types.TaintHook
 	liveControl     func(context.Context, *permission.ToolInvocation) (types.TaintAction, string)
+	controlWait     time.Duration
 	verifier        types.Verifier
 	redactor        types.Redactor
 	redactionPolicy types.RedactionPolicy
@@ -237,6 +239,7 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 			decider:            spec.Decider,
 			taintPolicy:        spec.TaintPolicy,
 			liveControl:        spec.LiveControl,
+			controlWait:        s.controlWait,
 			verifier:           verifier,
 			redactor:           redactor,
 			redactionPolicy:    redactionPolicy,

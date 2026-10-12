@@ -21,6 +21,7 @@ import (
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std"
 )
 
 // flowName is the session and flow the booking runs under.
@@ -113,7 +114,7 @@ func (bookingApproval) ApprovalPolicy(context.Context, types.RiskTier, string, b
 // stores. Everything start builds lives in process memory only: a crash
 // drops it, and the next start rebuilds it from the same stores.
 func (t *Trip) start() error {
-	stack, err := gohan.Build(
+	stack, err := gohan.Build(append(std.Defaults(),
 		gohan.WithStores(stores.Stores{
 			SessionLog:  t.sessions,
 			Runs:        t.runs,
@@ -134,7 +135,7 @@ func (t *Trip) start() error {
 				"book_flight":    {Value: permission.Ask, Confidence: 1},
 			},
 		}),
-	)
+	)...)
 	if err != nil {
 		return err
 	}

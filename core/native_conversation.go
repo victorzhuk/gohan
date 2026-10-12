@@ -163,7 +163,7 @@ func nativeBatchGate(cfg *resolvedNativeConfig, hist stores.History, grants ...p
 			}
 			return false
 		}
-		opts := []permission.Option{permission.WithGrantCheck(granted)}
+		opts := []permission.Option{permission.WithGrantCheck(granted), permission.WithControlWait(cfg.controlWait)}
 		if cfg.taintPolicy != nil {
 			opts = append(opts, permission.WithTaintHook(cfg.taintPolicy))
 		}

@@ -17,6 +17,7 @@ import (
 	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std"
 )
 
 // flow drives one job from fetch to verdict. The test fields shape the
@@ -103,7 +104,7 @@ func (f *flow) conversationFor() (gohan.Conversation, error) {
 	if f.conv != nil {
 		return f.conv, nil
 	}
-	stack, err := gohan.Build(
+	stack, err := gohan.Build(append(std.Defaults(),
 		gohan.WithStores(stores.Stores{
 			SessionLog:  f.sessions,
 			Runs:        f.runs,
@@ -120,7 +121,7 @@ func (f *flow) conversationFor() (gohan.Conversation, error) {
 			},
 			Decider: deciderFunc(f.decide),
 		}),
-	)
+	)...)
 	if err != nil {
 		return nil, err
 	}

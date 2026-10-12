@@ -15,6 +15,7 @@ import (
 	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std"
 )
 
 // Trip is what one excursion run produced: the streamed events, the
@@ -34,7 +35,7 @@ type Trip struct {
 func Plan(ctx context.Context, input string) (Trip, error) {
 	tools := fixtureTools()
 	sessions := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
-	stack, err := gohan.Build(
+	stack, err := gohan.Build(append(std.Defaults(),
 		gohan.WithStores(stores.Stores{SessionLog: sessions}),
 		gohan.WithModels(fixtureModel()),
 		gohan.WithNativeAgent(gohan.NativeSpec{
@@ -49,7 +50,7 @@ func Plan(ctx context.Context, input string) (Trip, error) {
 				"book_cabin":    permission.DenyVerdict,
 			},
 		}),
-	)
+	)...)
 	if err != nil {
 		return Trip{}, err
 	}

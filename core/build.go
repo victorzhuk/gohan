@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/guards"
@@ -106,6 +107,9 @@ type Stack struct {
 	flags              types.Flags
 	frozen             map[string]any
 	titleProfile       string
+	controlWait        time.Duration
+	streamBuffer       int
+	latencyTimeouts    map[types.LatencyClass][3]time.Duration
 }
 
 // TitleProfile returns the profile the title recipe runs on: the option's
@@ -151,7 +155,13 @@ func (s *Stack) Manifest() ReleaseManifest { return s.manifest }
 // first call: option bounds, and the strategy resolution each configured
 // flow resolves to. Flows validate further in their constructors.
 func Build(opts ...Option) (*Stack, error) {
-	cfg := config{logger: slog.New(slog.DiscardHandler), sunsetWindow: DefaultSunsetNoticeWindow}
+	cfg := config{
+		logger:          slog.New(slog.DiscardHandler),
+		sunsetWindow:    DefaultSunsetNoticeWindow,
+		controlWait:     permission.DefaultControlWait,
+		streamBuffer:    DefaultStreamBuffer,
+		latencyTimeouts: defaultTimeouts,
+	}
 	for _, opt := range opts {
 		if err := opt(&cfg); err != nil {
 			return nil, err
@@ -207,6 +217,9 @@ func Build(opts ...Option) (*Stack, error) {
 		flags:              cfg.flags,
 		frozen:             cfg.frozen,
 		titleProfile:       titleProfile,
+		controlWait:        cfg.controlWait,
+		streamBuffer:       cfg.streamBuffer,
+		latencyTimeouts:    cfg.latencyTimeouts,
 		sandboxHandles:     cfg.sandboxReg.Handles,
 		sandboxPolicy:      cfg.sandboxReg.Policy,
 	}

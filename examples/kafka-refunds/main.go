@@ -60,7 +60,7 @@ func newConsumer(do refundTool, kill func() bool) (*consumer, error) {
 		audit:    stores.NewMemoryAuditLog(),
 	}
 	dec := liveKillDecider{audit: c.audit, kill: kill, ev: func() RefundEvent { return c.current }}
-	stack, err := gohan.Build(
+	stack, err := gohan.Build(append(std.Defaults(),
 		gohan.WithStores(stores.Stores{SessionLog: c.sessions, Journal: c.journal}),
 		gohan.WithModels(&refundScript{}),
 		gohan.WithNativeAgent(gohan.NativeSpec{
@@ -80,7 +80,7 @@ func newConsumer(do refundTool, kill func() bool) (*consumer, error) {
 			}},
 			Decider: dec,
 		}),
-	)
+	)...)
 	if err != nil {
 		return nil, err
 	}

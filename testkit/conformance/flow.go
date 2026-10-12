@@ -15,6 +15,7 @@ import (
 	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std"
 	stdpermission "github.com/victorzhuk/gohan/std/permission"
 	"github.com/victorzhuk/gohan/testkit/gohantest"
 )
@@ -202,7 +203,8 @@ func NewFlowFixture(t *testing.T, suspendAt int, turns ...gohantest.Turn) *FlowF
 		stores.WithMemoryCheckpointClock(time.Now),
 		stores.WithMemoryCheckpointRunInfo(runInfoFromCtx),
 	)
-	stack, err := gohan.Build(gohan.WithStores(stores.Stores{SessionLog: log}))
+	stack, err := gohan.Build(append(std.Defaults(),
+		gohan.WithStores(stores.Stores{SessionLog: log}))...)
 	if err != nil {
 		t.Fatalf("build stack: %v", err)
 	}

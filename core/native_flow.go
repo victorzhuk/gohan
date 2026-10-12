@@ -41,7 +41,7 @@ func (s *Stack) successorModelFunc(profile types.ModelProfile) types.ModelFunc {
 	if !ok {
 		return nil
 	}
-	return NewModelStream(m).Generate
+	return newModelStream(m, WithStreamTimeouts(s.latencyTimeouts), WithChunkBuffer(s.streamBuffer)).Generate
 }
 
 // RequirePrompts refuses a declared prompt consumer when one of its
