@@ -67,7 +67,7 @@ func Runtime(t *testing.T, newHarness func(Scenario) Harness) {
 	t.Run("runtime.cancellation", func(t *testing.T) {
 		runRuntimeCancellation(testingTB{t}, newHarness(ScenarioPlainAnswer))
 	})
-	t.Run("run leaves no goroutine behind", func(t *testing.T) {
+	t.Run("runtime.no-goroutine-leak", func(t *testing.T) {
 		runRuntimeLeakCheck(testingTB{t}, newHarness)
 	})
 }

@@ -101,7 +101,7 @@ Two properties a conversation handle owes its caller: how a run leaves, and how 
 | `adapter/jev` | – | – | – | – | ✓ |
 | `testkit/gohantest` | – | – | scripted, record/replay | fakes | fixed |
 
-`↔` = import (foreign → gohan, for mixing) and export (governed gohan → foreign, for execution).
+`↔` = import (foreign → gohan, for mixing) and export (governed gohan → foreign, for execution). `adapter/adkgo` (M3) and `adapter/jev` (M4) are scheduled roles: no module exists for either yet (§5).
 
 
 ## 5. Repository layout and modules
@@ -132,29 +132,32 @@ github.com/victorzhuk/gohan                 ← module A: core + std + testkit
     gohantest/   scripted model, record/replay, fakes, fault injection, leak checks
     conformance/ runtime, chain, flow, model suites
     storetest/   SessionLog, Checkpoints, Journal, Runs, EventLog, AuditLog suites
+    sandboxtest/ sandbox conformance suite (policy, egress, timeout)
   adapter/                                    ← each directory is its OWN module with its own version
-    eino/        runtime, graph flows, Model/Tool bridges         github.com/cloudwego/eino
-    adkgo/       runtime, workflow flows, Model/Tool bridges      google.golang.org/adk
-    openai/      Model + Decider (OpenAI, vLLM, OpenAI-compatible gateways)
-    anthropic/   Model + Decider
-    jev/         Decider
-    cel/         ExprLang (default)                                    cel-go
-    lispico/     definition front-end, ExprLang where declared          go-lispico
-    postgres/    SessionLog, Checkpoints, Journal, Runs, AuditLog, OutputStore; CompleteTx   pgx, sqlc, goose
-    redis/       Limiter with quota pools + admission control, EventLog                     go-redis
-    mcp/         client + server (2026-07-28)                                              official go-sdk
-    agui/        AG-UI server transport (SSE, WebSocket)
-    httpapi/     REST + SSE transport generated from api/gohan.yaml                         ogen
-    docker/      Sandbox (dev)                                                             docker client
-    e2b/         Sandbox
-    langfuse/    PromptSource, SkillSource, telemetry convention                           OTLP
-    openfeature/ Flags                                                                    openfeature go-sdk
+    anthropic/   Model + Decider                                               ON DISK
+    docker/      Sandbox (dev)                                                ON DISK     docker client
+    eino/        runtime, graph flows, Model/Tool bridges         ON DISK     github.com/cloudwego/eino
+    openai/      Model + Decider (OpenAI, vLLM, OpenAI-compatible gateways)   ON DISK
+    otel/        telemetry export (GenAI spans)                    ON DISK
+    postgres/    SessionLog, Checkpoints, Journal, Runs, AuditLog, OutputStore; CompleteTx   ON DISK  pgx, sqlc, goose
+    adkgo/       runtime, workflow flows, Model/Tool bridges      M3          google.golang.org/adk
+    mcp/         client + server (2026-07-28)                      M3          official go-sdk
+    redis/       Limiter with quota pools + admission control, EventLog       M3     go-redis
+    jev/         Decider                                           M4
+    langfuse/    PromptSource, SkillSource, telemetry convention   M4          OTLP
+    openfeature/ Flags                                            M4          openfeature go-sdk
+    agui/        AG-UI server transport (SSE, WebSocket)           M4
+    httpapi/     REST + SSE transport generated from api/gohan.yaml  M4       ogen
+    cel/         ExprLang (default)                                M4          cel-go
+    lispico/     definition front-end, ExprLang where declared      M4         go-lispico
+    e2b/         Sandbox                                           blocked (no E2B credential)
   examples/                                   ONE module depending on all adapters; each example is a runnable
                                               service with fixtures, cassettes, acceptance tests, depguard config
-    quickstart/  excursions/  support-triage/  invoice-extraction/  research-report/
-    ops-agent/   pr-review/   data-analyst/
+    quickstart/  excursions/  kafka-refunds/  temporal-travel/  camunda-invoice/
   docs/
 ```
+
+`ON DISK` marks a module that exists in this repository today; a bare milestone mark marks one the milestone table in `docs/overview.md` §12 schedules and the tree does not hold yet. `adapter/e2b` is blocked: no E2B credential, API URL or sandbox domain exists in the repository or the environment, so `m2-e2b-sandbox` is 0/28 with every live task blocked.
 
 Release rules for the multi-module repository:
 

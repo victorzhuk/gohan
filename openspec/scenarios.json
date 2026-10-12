@@ -650,6 +650,11 @@
     "origin": "R2",
     "title": "cancellation"
   },
+  "runtime.no-goroutine-leak": {
+    "capability": "runtime",
+    "origin": "R2",
+    "title": "run leaves no goroutine behind"
+  },
   "runtime.foreign-tool-under-native": {
     "capability": "runtime",
     "origin": "R13",

@@ -47,7 +47,7 @@ The design target is evolution without rewrites: a service starts as a small, cl
 | Path | Holds |
 |---|---|
 | `openspec/specs/<capability>/spec.md` | Normative contract and requirements per capability (below) |
-| `docs/adr/` | 154 architecture decision records, numbered 0001–0154 (D1–D89 from the monolith, 0090+ from later grill rounds) |
+| `docs/adr/` | 169 architecture decision records, numbered 0001–0169 (D1–D89 from the monolith, 0090+ from later grill rounds) |
 | `docs/design/types.md` | generated index of every normative type, function and sentinel error with its defining capability |
 | `docs/design/` | Architecture, module layout, Go baseline, compatibility policy (normative), adapter mappings, inference layer, reference scenarios, testing, evidence, risks |
 | `openspec/changes/` | Change proposals with task lists and design notes; `m0-core` is fully tasked, `m1`–`m4` are scope stubs |
@@ -58,45 +58,49 @@ The design target is evolution without rewrites: a service starts as a small, cl
 
 | Capability | Title | Scenarios |
 |---|---|---|
-| `flow` | Flow and Conversation | 25 |
+| `flow` | Flow and Conversation | 29 |
 | `messages` | Messages and blocks | 15 |
 | `suspension` | Suspension and resume | 7 |
-| `identity` | Identity, approval and run trees | 23 |
-| `model` | Model and profiles | 30 |
-| `tools` | Tools | 41 |
+| `identity` | Identity, approval and run trees | 26 |
+| `model` | Model and profiles | 32 |
+| `tools` | Tools | 50 |
 | `decider` | Decider | 4 |
 | `chains` | Chains, prompts and Explain | 17 |
 | `cache` | Cache contract | 3 |
 | `flags` | Feature flags | 5 |
 | `redaction` | Redaction, erasure and residency | 9 |
 | `guards` | Guards and provenance | 10 |
-| `permission` | Permission gate and approvals | 15 |
+| `permission` | Permission gate and approvals | 19 |
 | `assembly` | Context assembly | 3 |
-| `context` | Context management: projections and compaction | 15 |
+| `context` | Context management: projections and compaction | 43 |
 | `subflows` | Sub-flows: isolation, effects, nested suspension, limits | 16 |
 | `interop` | MCP client and server (2026-07-28), `AwaitingInput` | 16 |
-| `sandbox` | Sandboxed execution: port, policy, workspace lifecycle | 15 |
+| `sandbox` | Sandboxed execution: port, policy, workspace lifecycle | 48 |
 | `skills` | Skills: SKILL.md progressive disclosure under tool controls | 12 |
 | `agui` | Client transport (AG-UI): message ids, reasoning deltas, shared state | 14 |
 | `release` | Release safety: shadow runs, release identity, evals | 15 |
 | `taint` | Information-flow control: taint, trifecta check, quarantine | 14 |
 
 Capability freeze: no new capability specs until M0 ships; candidates go to `docs/backlog.md` (ADR-0098).
-| `build` | Strategies and Build | 6 |
-| `stores` | Store ports | 60 |
+| `build` | Strategies and Build | 8 |
+| `stores` | Store ports | 86 |
 | `recovery` | Crash recovery | 6 |
 | `limits` | Run limits and uncertainty | 7 |
-| `runtime` | Runtimes and stepper | 27 |
-| `streams` | Events, cancellation and streams | 21 |
+| `runtime` | Runtimes and stepper | 51 |
+| `streams` | Events, cancellation and streams | 29 |
 | `working-state` | Durable working state | 15 |
 | `telemetry` | Telemetry and prompt sources | 11 |
 | `structured-output` | Structured output | 9 |
 | `engines` | External engines, dedup and run states | 11 |
 | `languages` | Embedded languages and definitions | 8 |
 | `lifecycle` | Retirement, schema evolution and cost | 7 |
+| `routing` | Endpoint-ordering policies of the router | 5 |
 | `performance` | Harness performance budgets | 3 |
+| `smoke` | No spec dir: send through each constructor | 1 |
 
-Total: 515 scenarios, each with a stable ID that is the name of the subtest covering it. `task spec:coverage` reports scenarios without tests and tests without scenarios.
+Total: 664 scenarios in `openspec/scenarios.json` (counted 2026-10-12), each with a stable ID that is the name of the subtest covering it. `task spec:coverage` reports scenarios without tests and tests without scenarios.
+
+Eight registered IDs have no `openspec/specs/<capability>/spec.md` requirement block: the six `context.compaction-*` fallbacks and `stores.run-for-session-expired` added by later changes without a spec edit, `smoke.send-through-each-constructor` (a constructor smoke check, never specified), and `runtime.no-goroutine-leak` (the conformance leak check, bound to the runtime spec's leak requirement rather than to a `Scenario:` block).
 
 Each scenario also carries an `origin` label: a requirement heading of the archived v0.13 monolith (`R1`–`R14`, `R5a`–`R5y` — the archive is the only place those are written down) or the ADR that added the scenario (`ADR-NNNN`). Labels from later review rounds (`R35`–`R60`, `R52`, `RPERF`) name no written requirement list and are provenance only. Acceptance is `deferred_to` plus `task spec:coverage`; never the label.
 

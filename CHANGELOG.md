@@ -4,6 +4,15 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ## [Unreleased]
 
+### Changed
+
+- The recommended policy values `Build` applies moved to `std`, which owns them as `std.SunsetNoticeWindow`, `std.LatencyTimeouts`, `std.ControlWait` and `std.StreamBuffer`. Each value is unchanged and `core` keeps a mirrored default with the same value, so no caller has to pass an option; a parity test fails the moment one side drifts.
+- The cache outcome seam is canonical in `core/chains` (`chains.ExtraKey`, `chains.Outcome`, `chains.Mark`, `chains.OutcomeOf`). `std/cache` re-exports the four names, so existing importers compile and behave unchanged.
+
+### Fixed
+
+- `core` no longer imports `std`: the cache key seam it used now lives in `core/chains`, and the depguard rules that were meant to hold the line match the real import paths (the `std/**` prefix never matched, and the shared root allow admitted `adapter/*`).
+
 ## [1.0.0] - 2026-10-12
 
 ### Breaking
