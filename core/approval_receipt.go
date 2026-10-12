@@ -101,6 +101,43 @@ func decodeReceipt(value any) (approvalReceipt, error) {
 	return rc, nil
 }
 
+// appendReceiptMessages records rcpts that the session history does not
+// already carry, keyed by run, generation and call id, and returns the
+// version the append landed at. Both the resume and the recovery path
+// record receipts through it, so a recovered drive never appends a second
+// receipt for a key the resume already wrote. The history comes in loaded
+// so the caller's version stays the expected append version.
+func appendReceiptMessages(ctx context.Context, log stores.SessionLog, sessionID string, h stores.History, rcpts []approvalReceipt) (int64, error) {
+	if len(rcpts) == 0 {
+		return h.Version, nil
+	}
+	seen := map[string]bool{}
+	for _, msg := range h.Messages {
+		if raw, ok := msg.Meta[ApprovalReceiptKey]; ok {
+			rc, err := decodeReceipt(raw)
+			if err != nil {
+				return 0, err
+			}
+			seen[receiptDedupKey(rc)] = true
+		}
+	}
+	var msgs []types.Message
+	for _, rc := range rcpts {
+		if seen[receiptDedupKey(rc)] {
+			continue
+		}
+		msg, err := approvalReceiptMessage(rc)
+		if err != nil {
+			return 0, err
+		}
+		msgs = append(msgs, msg)
+	}
+	if len(msgs) == 0 {
+		return h.Version, nil
+	}
+	return log.Append(ctx, sessionID, h.Version, msgs...)
+}
+
 // latestApprovedArgs returns the arguments of the latest valid approval
 // receipt for tool in the session history, or nil when none exists. A
 // scoped receipt never grants through this path: its authority lives in

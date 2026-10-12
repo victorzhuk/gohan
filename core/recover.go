@@ -399,7 +399,10 @@ type runFinder interface {
 // consume, and a crash in that interval leaves the gate with no grant to
 // consult. A HumanApproval envelope carries the approval-controlled calls
 // with their recorded votes; a batch ask carries them as the state's
-// pending calls, and the delivered approver is the vote.
+// pending calls, and the delivered approver is the vote. Recovery carries
+// no scope context, so every receipt it records is explicitly unscoped:
+// the resume Send owns the scoped receipt, and a scoped approval's
+// authority lives in the grant store rather than in the receipt.
 func (s *Stack) recoveryReceipts(ctx context.Context, cp *stores.Checkpoint, in stores.ResumeInput, run stores.Run, st *runtime.State) error {
 	if s.stores.SessionLog == nil || len(cp.Data) == 0 {
 		return nil
@@ -429,6 +432,7 @@ func (s *Stack) recoveryReceipts(ctx context.Context, cp *stores.Checkpoint, in 
 				Tool:       ap.Call.Name,
 				Args:       slices.Clone(ap.Call.Args),
 				Approvers:  slices.Clone(ap.ApprovedBy),
+				Scoped:     false,
 			})
 		}
 	case cp.Reason == types.AwaitingBatch:
@@ -444,6 +448,7 @@ func (s *Stack) recoveryReceipts(ctx context.Context, cp *stores.Checkpoint, in 
 				Tool:       call.Name,
 				Args:       slices.Clone(call.Args),
 				Approvers:  slices.Clone(apps),
+				Scoped:     false,
 			})
 		}
 	default:
@@ -456,35 +461,13 @@ func (s *Stack) recoveryReceipts(ctx context.Context, cp *stores.Checkpoint, in 
 	if err != nil {
 		return fmt.Errorf("recover run %s: %w", run.RunID, err)
 	}
-	var msgs []types.Message
-	seen := map[string]bool{}
-	for _, msg := range h.Messages {
-		if raw, ok := msg.Meta[ApprovalReceiptKey]; ok {
-			rc, derr := decodeReceipt(raw)
-			if derr != nil {
-				return derr
-			}
-			seen[receiptDedupKey(rc)] = true
-		}
-	}
-	for _, rc := range rcpts {
-		if seen[receiptDedupKey(rc)] {
-			continue
-		}
-		msg, merr := approvalReceiptMessage(rc)
-		if merr != nil {
-			return merr
-		}
-		msgs = append(msgs, msg)
-	}
-	if len(msgs) == 0 {
-		return nil
-	}
-	ver, err := s.stores.SessionLog.Append(ctx, cp.SessionID, h.Version, msgs...)
+	ver, err := appendReceiptMessages(ctx, s.stores.SessionLog, cp.SessionID, h, rcpts)
 	if err != nil {
 		return fmt.Errorf("recover run %s: %w", run.RunID, err)
 	}
-	st.HistoryVersion = ver
+	if ver != h.Version {
+		st.HistoryVersion = ver
+	}
 	return nil
 }
 

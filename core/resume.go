@@ -661,28 +661,19 @@ func cloneCheckpoint(cp stores.Checkpoint) stores.Checkpoint {
 }
 
 // appendReceipts records one trusted receipt per approval-controlled call
-// that reached its quorum, keyed by run, generation and call id. Recovery
-// must not append a second receipt for the same key.
+// that reached its quorum, keyed by run, generation and call id. A scoped
+// approval carries its scope onto the receipt; the resume path is the only
+// one that holds scope context.
 func appendReceipts(ctx context.Context, log stores.SessionLog, h stores.History, runID string, env checkpointEnvelope, st *runtime.State, scoped bool) error {
 	if log == nil {
 		return nil
 	}
-	seen := map[string]bool{}
-	for _, msg := range h.Messages {
-		if raw, ok := msg.Meta[ApprovalReceiptKey]; ok {
-			rc, err := decodeReceipt(raw)
-			if err != nil {
-				return err
-			}
-			seen[receiptDedupKey(rc)] = true
-		}
-	}
-	var msgs []types.Message
+	var rcpts []approvalReceipt
 	for _, ap := range env.Approvals {
 		if len(ap.ApprovedBy) == 0 {
 			continue
 		}
-		rc := approvalReceipt{
+		rcpts = append(rcpts, approvalReceipt{
 			RunID:      runID,
 			Generation: env.Generation,
 			CallID:     ap.Call.ID,
@@ -690,24 +681,15 @@ func appendReceipts(ctx context.Context, log stores.SessionLog, h stores.History
 			Args:       slices.Clone(ap.Call.Args),
 			Approvers:  slices.Clone(ap.ApprovedBy),
 			Scoped:     scoped,
-		}
-		if seen[receiptDedupKey(rc)] {
-			continue
-		}
-		msg, err := approvalReceiptMessage(rc)
-		if err != nil {
-			return err
-		}
-		msgs = append(msgs, msg)
+		})
 	}
-	if len(msgs) == 0 {
-		return nil
-	}
-	ver, err := log.Append(ctx, env.Run.SessionID, h.Version, msgs...)
+	ver, err := appendReceiptMessages(ctx, log, env.Run.SessionID, h, rcpts)
 	if err != nil {
 		return err
 	}
-	st.HistoryVersion = ver
+	if ver != h.Version {
+		st.HistoryVersion = ver
+	}
 	return nil
 }
 
