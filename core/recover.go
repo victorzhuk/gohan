@@ -2,7 +2,6 @@ package gohan
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 
@@ -176,26 +175,8 @@ func reconcileJournalUnknowns(ctx context.Context, sessionID string, j stores.Jo
 	if err != nil {
 		return nil, fmt.Errorf("enumerate unknown journal entries: %w", err)
 	}
-	var uncertain []types.CallKey
-	for _, e := range entries {
-		key := types.CallKey{SessionID: sessionID, CallID: e.Key}
-		res, settled, rerr := v.Reconcile(ctx, e.Tool, e.Args, types.CallKey{SessionID: sessionID, CallID: e.Key + "/verify"}, e.Result)
-		if rerr != nil {
-			if errors.Is(rerr, types.ErrVerifyAuditUnbound) {
-				return uncertain, fmt.Errorf("reconcile %s: %w", e.Key, rerr)
-			}
-			uncertain = append(uncertain, key)
-			continue
-		}
-		if !settled {
-			uncertain = append(uncertain, key)
-			continue
-		}
-		if aerr := applySettledResult(st, res); aerr != nil {
-			return uncertain, aerr
-		}
-	}
-	return uncertain, nil
+	_, uncertain, err := reconcileEntries(ctx, sessionID, v, entries, st)
+	return uncertain, err
 }
 
 // driveRecovered re-drives one recovered run through the shared lifecycle:

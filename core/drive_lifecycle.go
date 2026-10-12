@@ -955,26 +955,24 @@ func (lc *Lifecycle) reconcileUnknown(ctx context.Context, st runtime.State) (ru
 	for _, k := range keys {
 		wanted[k.CallID] = true
 	}
-	settled := false
+	// An errored or absent Verify leaves the entry uncertain with the
+	// outcome the effect recorded; only the keys this drive holds are
+	// reconciled.
+	pending := make([]stores.Entry, 0, len(entries))
 	for _, e := range entries {
-		key := types.CallKey{SessionID: lc.sessionID, CallID: e.Key}
-		if !wanted[key.CallID] {
-			continue
+		if wanted[e.Key] {
+			pending = append(pending, e)
 		}
-		res, ok, rerr := lc.verify.Reconcile(ctx, e.Tool, e.Args, types.CallKey{SessionID: lc.sessionID, CallID: e.Key + "/verify"}, e.Result)
-		if rerr != nil || !ok {
-			// An errored or absent Verify leaves the entry uncertain
-			// with the outcome the effect recorded.
-			continue
-		}
-		wanted[key.CallID] = false
-		if aerr := applySettledResult(&st, res); aerr != nil {
-			return st, keys, aerr
-		}
-		settled = true
 	}
-	if !settled {
+	settledKeys, _, err := reconcileEntries(ctx, lc.sessionID, lc.verify, pending, &st)
+	if err != nil {
+		return st, keys, err
+	}
+	if len(settledKeys) == 0 {
 		return st, keys, nil
+	}
+	for _, k := range settledKeys {
+		wanted[k.CallID] = false
 	}
 	rest := make([]types.CallKey, 0, len(keys))
 	for _, k := range keys {

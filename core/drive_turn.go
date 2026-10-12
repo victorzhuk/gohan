@@ -1270,6 +1270,36 @@ func settleNativePending(st *runtime.State, res types.ToolResult) error {
 	return nil
 }
 
+// reconcileEntries reconciles each Unknown journal entry it is handed: one
+// Reconcile call per entry, with the arguments and result the journal
+// reserved. A settled entry's result is written into the state's durable
+// batch record and its key reported in settled; an entry Verify cannot
+// settle keeps its key in uncertain. An unbound audit log returns fatal
+// with the entry left Unknown; every other Reconcile error leaves the
+// entry Unknown and only its key uncertain.
+func reconcileEntries(ctx context.Context, sessionID string, v types.Verifier, entries []stores.Entry, st *runtime.State) (settled, uncertain []types.CallKey, err error) {
+	for _, e := range entries {
+		key := types.CallKey{SessionID: sessionID, CallID: e.Key}
+		res, ok, rerr := v.Reconcile(ctx, e.Tool, e.Args, types.CallKey{SessionID: sessionID, CallID: e.Key + "/verify"}, e.Result)
+		if rerr != nil {
+			if errors.Is(rerr, types.ErrVerifyAuditUnbound) {
+				return settled, uncertain, fmt.Errorf("reconcile %s: %w", e.Key, rerr)
+			}
+			uncertain = append(uncertain, key)
+			continue
+		}
+		if !ok {
+			uncertain = append(uncertain, key)
+			continue
+		}
+		if aerr := applySettledResult(st, res); aerr != nil {
+			return settled, uncertain, aerr
+		}
+		settled = append(settled, key)
+	}
+	return settled, uncertain, nil
+}
+
 // applySettledResult writes a reconciled result into the durable batch
 // record's slot for its call, so the settled outcome replays from the
 // state instead of the Unknown the crash left there. A call the record
