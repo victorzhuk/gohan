@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/types"
 	"github.com/victorzhuk/gohan/std/cache"
 )
@@ -73,7 +74,7 @@ func marshalReq(t *testing.T, req types.ModelRequest) string {
 	wire := req
 	extra := make(map[string]any, len(req.Options.Extra))
 	for k, v := range req.Options.Extra {
-		if k == cache.ExtraKey {
+		if k == chains.ExtraKey {
 			continue
 		}
 		extra[k] = v
@@ -159,11 +160,11 @@ func TestPrefixCache(t *testing.T) {
 		if err != nil {
 			t.Fatalf("repeat assemble: %v", err)
 		}
-		o, ok := cache.OutcomeOf(repeat)
+		o, ok := chains.OutcomeOf(repeat)
 		if !ok || !o.Hit {
 			t.Fatalf("outcome = %+v ok=%v, want a hit mark", o, ok)
 		}
-		mark, ok := cache.OutcomeOf(first)
+		mark, ok := chains.OutcomeOf(first)
 		if !ok || mark.Hit {
 			t.Fatalf("first outcome = %+v ok=%v, want a write mark", mark, ok)
 		}
@@ -183,7 +184,7 @@ func TestPrefixCache(t *testing.T) {
 		if err != nil {
 			t.Fatalf("assemble: %v", err)
 		}
-		o, ok := cache.OutcomeOf(miss)
+		o, ok := chains.OutcomeOf(miss)
 		if !ok || o.Hit || o.Tokens <= 0 {
 			t.Fatalf("miss outcome = %+v ok=%v, want a write mark with tokens", o, ok)
 		}
@@ -195,7 +196,7 @@ func TestPrefixCache(t *testing.T) {
 		if err != nil {
 			t.Fatalf("repeat assemble: %v", err)
 		}
-		o, ok = cache.OutcomeOf(hit)
+		o, ok = chains.OutcomeOf(hit)
 		if !ok || !o.Hit || o.Tokens <= 0 {
 			t.Fatalf("hit outcome = %+v ok=%v, want a hit mark with tokens", o, ok)
 		}

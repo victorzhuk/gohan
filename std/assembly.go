@@ -13,6 +13,7 @@ import (
 	"unsafe"
 
 	gohan "github.com/victorzhuk/gohan/core"
+	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/types"
 	"github.com/victorzhuk/gohan/std/cache"
 	"github.com/victorzhuk/gohan/std/tokens"
@@ -216,9 +217,9 @@ func (p StablePrefix) Assemble(ctx context.Context, in AssembleInput) (types.Mod
 // the charge site reads. Tokens come from the deterministic estimator, so
 // a served prefix always reports the same count.
 func (p StablePrefix) serve(ctx context.Context, in AssembleInput, req types.ModelRequest, hit bool) types.ModelRequest {
-	o := cache.Outcome{Hit: hit, Tokens: tokens.Heuristic.Estimate(req, in.Profile.Caps)}
+	o := chains.Outcome{Hit: hit, Tokens: tokens.Heuristic.Estimate(req, in.Profile.Caps)}
 	countCache(ctx, hit)
-	return cache.Mark(req, o)
+	return chains.Mark(req, o)
 }
 
 // lookup builds the contract key over the freshly built request and

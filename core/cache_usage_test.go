@@ -8,7 +8,6 @@ import (
 
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/types"
-	"github.com/victorzhuk/gohan/std/cache"
 )
 
 func TestCacheUsageReported(t *testing.T) {
@@ -20,7 +19,7 @@ func TestCacheUsageReported(t *testing.T) {
 	}
 	mark := func(hit bool) types.ModelRequest {
 		req := types.ModelRequest{Messages: []types.Message{{Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: "hi"}}}}}
-		return cache.Mark(req, cache.Outcome{Hit: hit, Tokens: 40})
+		return chains.Mark(req, chains.Outcome{Hit: hit, Tokens: 40})
 	}
 
 	t.Run("hit fills cached input and leaves the write at zero", func(t *testing.T) {
@@ -71,7 +70,7 @@ func TestCacheWriteSocialized(t *testing.T) {
 	}
 	mark := func(hit bool) types.ModelRequest {
 		req := types.ModelRequest{Messages: []types.Message{{Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: "hi"}}}}}
-		return cache.Mark(req, cache.Outcome{Hit: hit, Tokens: 40})
+		return chains.Mark(req, chains.Outcome{Hit: hit, Tokens: 40})
 	}
 	run := func(t *testing.T, p types.Pricing) float64 {
 		st := chains.NewLimitsState()

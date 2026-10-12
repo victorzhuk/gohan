@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/victorzhuk/gohan/core/types"
-	"github.com/victorzhuk/gohan/std/cache"
 )
 
 const metricCostPerRun = "gohan.cost.per_run"
@@ -425,7 +424,7 @@ func (s *LimitsState) Charge(u types.Usage, p types.Pricing) float64 {
 // repopulating miss as CacheWriteTokens. A field the provider already
 // reported is left alone, and an unmarked request changes nothing.
 func ApplyCacheUsage(u types.Usage, req types.ModelRequest) types.Usage {
-	o, ok := cache.OutcomeOf(req)
+	o, ok := OutcomeOf(req)
 	if !ok || o.Tokens <= 0 {
 		return u
 	}

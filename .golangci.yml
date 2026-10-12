@@ -7,17 +7,30 @@ linters:
   settings:
     depguard:
       rules:
-        # desc: core and std carry no dependency — only $gostd and this module's own packages are permitted.
-        core-std-no-deps:
+        # desc: core carries no dependency — only $gostd and this module's own packages, never std or adapter.
+        core-no-std-or-adapter:
           files:
             - "**/core/**"
-            - "**/std/**"
+            - "!$test"
           allow:
             - "$gostd"
             - "github.com/victorzhuk/gohan"
           deny:
-            - pkg: "github.com/victorzhuk/gohan/std/**"
+            - pkg: "github.com/victorzhuk/gohan/std"
               desc: core never imports std
+            - pkg: "github.com/victorzhuk/gohan/adapter"
+              desc: core never imports adapter
+        # desc: std carries no dependency on adapters.
+        std-no-adapter:
+          files:
+            - "**/std/**"
+            - "!$test"
+          allow:
+            - "$gostd"
+            - "github.com/victorzhuk/gohan"
+          deny:
+            - pkg: "github.com/victorzhuk/gohan/adapter"
+              desc: std never imports adapter
         # desc: a leaf package under core must not import the driver package (core) or core/runtime.
         core-leaf-no-driver-or-runtime:
           files:
@@ -29,8 +42,9 @@ linters:
             - "**/core/suspension/**"
             - "**/core/streams/**"
             - "**/core/flowdef/**"
+            - "!$test"
           deny:
-            - pkg: "github.com/victorzhuk/gohan/core"
+            - pkg: "github.com/victorzhuk/gohan/core$"
               desc: leaf packages never import the driver package
             - pkg: "github.com/victorzhuk/gohan/core/runtime"
               desc: leaf packages never import core/runtime
