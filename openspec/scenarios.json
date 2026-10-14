@@ -4,6 +4,7 @@
     "origin": "R1",
     "title": "plain invoke"
   },
+  "context.research-report-compaction": { "capability": "context", "origin": "ADR-0090", "title": "research report compaction composition" },
   "flow.not-suspendable": {
     "capability": "flow",
     "origin": "R1",
