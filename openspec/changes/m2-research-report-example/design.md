@@ -64,6 +64,8 @@ Alternative rejected: one new id per composed capability (`tools.research-report
 | `streams.detached-requires-log` | `streams` | core conversation lifetime | `core/stream_lifetime_test.go:229` | the example builds the detached conversation with an `EventLog`; a log-less build is refused by `errDetachedNoLog` |
 | `limits.cost-accumulates` | `limits` | core chains | `core/chains/limits_test.go:88` | per-source child costs accumulate into the parent's run total and cross the declared ceiling |
 
+Each row's reaching path is fixed by the design section that composes it: the five `context.*` rows by D3 (activation, compaction and notes are one composed run), the four `tools.*` rows by D2 (exactly 40 deferred source tools and the shipped filter), `working-state.notes-survive-compaction` by D3, the two `streams.*` rows by D5 (detached execution with an event log), and `limits.cost-accumulates` by D4 (the numeric tree budget spent per child and accumulated into the parent).
+
 New id added by this change: `context.research-report-compaction` — the one composed guarantee above, under `context`.
 
 ### D7 — Recipe lanes are named as prerequisites, and the example never claims them
