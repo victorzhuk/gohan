@@ -86,19 +86,20 @@ func fixtureTools(pair *notes.Notes) []types.Tool {
 }
 
 // archiveResult is the archived lookup payload: the asserted summary line
-// followed by enough retrieved context to look like a real retrieval, small
-// enough that post-compaction requests stay under the fixture window. The
-// pre-run backlog drives the compaction instead, so the folded prefix is
-// store-canonical history.
+// followed by retrieved context sized so the turn that settles the archive
+// and note pair still fits the fixture window, while the discovery turn
+// after it crosses the window and publishes the compaction. By then the
+// take_notes pair is settled history, so the fold covers the note.
 func archiveResult() string {
-	return "2 notes found: windowed joins, exactly-once sinks. " + strings.Repeat("archived retrieval context ", 20)
+	return "2 notes found: windowed joins, exactly-once sinks. " + strings.Repeat("archived retrieval context ", 150)
 }
 
-// backlogResult is the pre-run archive backlog: enough seeded history to
-// push the first assembled request over the fixture window, so compaction
-// folds the store-minted prefix instead of run-local messages.
+// backlogResult is the pre-run archive backlog: seeded store-canonical
+// history small enough that the first assembled request stays under the
+// fixture window, so the compaction never folds before the run writes its
+// note.
 func backlogResult() string {
-	return "archived backlog: prior retrieval sessions. " + strings.Repeat("archived backlog digest ", 900)
+	return "archived backlog: prior retrieval sessions. " + strings.Repeat("archived backlog digest ", 20)
 }
 
 // sourceTools materializes fake tools for the named catalog entries, so
@@ -180,9 +181,13 @@ func deferredRegistry() []types.ToolSpec {
 	return deferredCatalog
 }
 
-// fixtureModel scripts a discovery run: the always-loaded batch, the
-// search_tools query, two calls to the discovered corpus sources, then the
-// final report text.
+// fixtureModel scripts a discovery run across two sends: the first send
+// takes the always-loaded batch, runs the search_tools discovery, and
+// closes with an interim digest sized to stay under the fixture window;
+// the second send reloads the persisted history, so its first assembly
+// crosses the window and publishes the compaction before the discovered
+// corpus sources run and the final report lands. The fold lands on the
+// reloaded store-canonical history, never on run-local messages.
 func fixtureModel() types.Model {
 	calls := append(fixtureBatch(),
 		types.ToolUse{ID: "call_search_tools", Name: toolsearch.SearchToolsName, Args: jsontextArgs(`{"query":"corpus"}`)},
@@ -192,9 +197,18 @@ func fixtureModel() types.Model {
 	return &scriptedTurns{turns: [][]types.ModelChunk{
 		{{ToolUse: &calls[0]}, {ToolUse: &calls[1]}, {Finish: types.FinishToolUse, Usage: turnUsage(160, 40)}},
 		{{ToolUse: &calls[2]}, {Finish: types.FinishToolUse, Usage: turnUsage(140, 30)}},
+		{{Kind: types.DeltaText, Delta: interimDigest()}, {Finish: types.FinishStop, Usage: turnUsage(180, 45)}},
 		{{ToolUse: &calls[3]}, {ToolUse: &calls[4]}, {Finish: types.FinishToolUse, Usage: turnUsage(180, 45)}},
 		{{Kind: types.DeltaText, Delta: "Report: windowed joins and exactly-once sinks are the two archived threads; noted the batch-vs-stream comparison."}, {Finish: types.FinishStop, Usage: turnUsage(210, 70)}},
 	}}
+}
+
+// interimDigest is the first send's closing assistant text: small enough
+// that the discovery turn that precedes it stays under the fixture
+// window, large enough that the reloaded send that follows crosses the
+// window and folds the covered prefix past the settled note pair.
+func interimDigest() string {
+	return "Interim digest: the archived threads compare batch against stream. " + strings.Repeat("interim findings paragraph ", 221)
 }
 
 func turnUsage(in, out int) *types.Usage {

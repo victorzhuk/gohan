@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"math"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	gohan "github.com/victorzhuk/gohan/core"
+	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -80,6 +85,17 @@ func requestHasText(req types.ModelRequest, want string) bool {
 	for _, m := range req.Messages {
 		for _, b := range m.Blocks {
 			if tx, ok := b.(types.Text); ok && strings.Contains(tx.Text, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func requestHasCompactionSummary(req types.ModelRequest) bool {
+	for _, m := range req.Messages {
+		for _, b := range m.Blocks {
+			if tx, ok := b.(types.Text); ok && strings.Contains(tx.Text, "Research so far on") {
 				return true
 			}
 		}
@@ -169,6 +185,35 @@ func TestResearchReportOffline(t *testing.T) {
 		if len(rep.Requests) == 0 {
 			t.Fatal("the report carries no requests")
 		}
+		noteIdx, compactionIdx := -1, -1
+		for i, m := range rep.History {
+			for _, b := range m.Blocks {
+				if u, ok := b.(types.ToolUse); ok && u.Name == "take_notes" && noteIdx < 0 {
+					noteIdx = i
+				}
+				if _, ok := b.(types.Compaction); ok && compactionIdx < 0 {
+					compactionIdx = i
+				}
+			}
+		}
+		if noteIdx < 0 {
+			t.Fatal("the run never wrote a progress note through take_notes")
+		}
+		if compactionIdx < 0 {
+			t.Fatal("the run never published a compaction")
+		}
+		if noteIdx > compactionIdx {
+			t.Fatalf("the compaction folded the prefix before the note write (note at message %d, compaction at %d): the survival invariant binds only a note written before the fold", noteIdx, compactionIdx)
+		}
+		post := false
+		for _, req := range rep.Requests {
+			if requestHasCompactionSummary(req) && requestHasText(req, "compare batch vs stream") {
+				post = true
+			}
+		}
+		if !post {
+			t.Fatal("no request assembled after the compaction carries the session note text block: the SlotSession provider did not inject the stored note after the fold")
+		}
 		last := rep.Requests[len(rep.Requests)-1]
 		if !requestHasText(last, "compare batch vs stream") {
 			t.Fatal("the request after the compaction carries no session note text block: the SlotSession provider did not inject the stored note")
@@ -209,6 +254,75 @@ func TestResearchReportOffline(t *testing.T) {
 		}
 		if !requestHasText(last, "compare batch vs stream") {
 			t.Fatal("the final assembled request carries no progress note")
+		}
+	})
+
+	t.Run("context.projection-preserves-version", func(t *testing.T) {
+		topic := "windowed joins and exactly-once sinks"
+		var requests []types.ModelRequest
+		stack, storeStack, _, err := buildStack(topic, &requests)
+		if err != nil {
+			t.Fatalf("buildStack: %v", err)
+		}
+		sessions := storeStack.SessionLog
+		conv, err := gohan.NewNativeConversation(stack, "research_report",
+			gohan.WithConversationRuns(stores.NewMemoryRuns()),
+			gohan.WithConversationEventLog(stores.NewMemoryEventLog()),
+		)
+		if err != nil {
+			t.Fatalf("NewNativeConversation: %v", err)
+		}
+		ctx := types.WithPrincipal(context.Background(), reportPrincipal())
+		if _, err := sessions.Append(ctx, "research", 0, types.Message{
+			Role:   types.RoleUser,
+			Blocks: []types.Block{types.Text{Text: backlogResult()}},
+		}); err != nil {
+			t.Fatalf("seed backlog: %v", err)
+		}
+		for _, err := range conv.Send(ctx, "research", types.Message{
+			Role:   types.RoleUser,
+			Blocks: []types.Block{types.Text{Text: topic}},
+		}) {
+			if err != nil {
+				t.Fatalf("send: %v", err)
+			}
+		}
+		before, err := sessions.Load(ctx, "research")
+		if err != nil {
+			t.Fatalf("load before projection: %v", err)
+		}
+		pol, ok := stack.ContextPolicy("research_report")
+		if !ok {
+			t.Fatal("ContextPolicy: the research_report flow declares no policy")
+		}
+		if len(pol.Projections) == 0 {
+			t.Fatal("the flow declares no projection")
+		}
+		projected, err := pol.Projections[0].Project(ctx, before, fixtureModel().Profile())
+		if err != nil {
+			t.Fatalf("project: %v", err)
+		}
+		cleared := false
+		for _, m := range projected.Messages {
+			for _, b := range m.Blocks {
+				if r, ok := b.(types.ToolResult); ok {
+					for _, cb := range r.Content {
+						if tx, ok := cb.(types.Text); ok && strings.Contains(tx.Text, "[tool result cleared]") {
+							cleared = true
+						}
+					}
+				}
+			}
+		}
+		if !cleared {
+			t.Fatal("the projection cleared nothing over the persisted history: the version check would be vacuous")
+		}
+		after, err := sessions.Load(ctx, "research")
+		if err != nil {
+			t.Fatalf("load after projection: %v", err)
+		}
+		if after.Version != before.Version {
+			t.Fatalf("history version changed across an assembly-time projection of the same persisted history: %d -> %d", before.Version, after.Version)
 		}
 	})
 
@@ -258,6 +372,104 @@ func TestResearchReportOffline(t *testing.T) {
 		}
 		if !historyHasResultText(rep.History, "2 notes found: windowed joins, exactly-once sinks") {
 			t.Fatal("SessionLog.Load no longer returns the original retrieved payload the projection cleared")
+		}
+	})
+
+	t.Run("limits.ceiling-refuses-wider-fanout", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("ComposeWiderFanout is not implemented: %v", r)
+			}
+		}()
+		fr, err := ComposeWiderFanout(context.Background(), "windowed joins and exactly-once sinks")
+		if err != nil {
+			t.Fatalf("ComposeWiderFanout: %v", err)
+		}
+		if len(fr.ChildCosts) == 0 {
+			t.Fatal("the wider fan-out reported no per-source child costs")
+		}
+		var sum float64
+		for _, c := range fr.ChildCosts {
+			sum += c
+		}
+		if math.Abs(fr.ParentCost-sum) > 1e-9 {
+			t.Fatalf("parent total %v does not equal the accumulated per-source child costs %v", fr.ParentCost, sum)
+		}
+		if !fr.Refused {
+			t.Fatal("the wider fan-out crossed the declared cost ceiling but the run completed instead of refusing it")
+		}
+		if !strings.Contains(strings.ToLower(fr.Reason), "cost") {
+			t.Fatalf("refusal reason %q does not name the cost ceiling", fr.Reason)
+		}
+	})
+
+	t.Run("streams.detached-reattach", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("ComposeDetached is not implemented: %v", r)
+			}
+		}()
+		rep, err := ComposeDetached(context.Background(), "windowed joins and exactly-once sinks")
+		if err != nil {
+			t.Fatalf("ComposeDetached: %v", err)
+		}
+		if rep.RunID == "" {
+			t.Fatal("the detached composition reported no run id")
+		}
+		if rep.Cursor <= 0 {
+			t.Fatalf("detached client cursor = %d: the client must consume a prefix of the logged events and drop at a known Seq", rep.Cursor)
+		}
+		for i := 1; i < len(rep.Logged); i++ {
+			if rep.Logged[i].Meta.Seq != rep.Logged[i-1].Meta.Seq+1 {
+				t.Fatalf("logged events are not gapless: Seq %d follows Seq %d", rep.Logged[i].Meta.Seq, rep.Logged[i-1].Meta.Seq)
+			}
+		}
+		var want []stores.Event
+		for _, e := range rep.Logged {
+			if e.Meta.Seq > rep.Cursor {
+				want = append(want, e)
+			}
+		}
+		if len(want) == 0 {
+			t.Fatalf("cursor %d already sits at the logged tail: reattachment proves nothing without at least one event after it", rep.Cursor)
+		}
+		if len(rep.Reattached) != len(want) {
+			t.Fatalf("reattach delivered %d events: want exactly the %d logged events after the cursor %d, with no gap and no duplicate", len(rep.Reattached), len(want), rep.Cursor)
+		}
+		for i := range want {
+			if !reflect.DeepEqual(rep.Reattached[i], want[i].Payload) {
+				t.Fatalf("reattach event %d is not the logged payload at Seq %d: delivery diverged from the event log", i, want[i].Meta.Seq)
+			}
+		}
+		if len(rep.ResumedRequests) == 0 {
+			t.Fatal("the resumed run assembled no request")
+		}
+		post := -1
+		for i := range rep.Requests {
+			if requestHasCompactionSummary(rep.Requests[i]) {
+				post = i
+			}
+		}
+		if post < 0 {
+			t.Fatal("no request the original run assembled carries the compaction summary: the compaction never reached an assembled request")
+		}
+		wantBytes, err := json.Marshal(rep.Requests[post])
+		if err != nil {
+			t.Fatalf("marshal original request: %v", err)
+		}
+		gotBytes, err := json.Marshal(rep.ResumedRequests[0])
+		if err != nil {
+			t.Fatalf("marshal resumed request: %v", err)
+		}
+		if !bytes.Equal(wantBytes, gotBytes) {
+			t.Fatalf("the resumed run assembled different request bytes than the original assembled after compaction:\nwant %s\ngot  %s", wantBytes, gotBytes)
+		}
+		resumedLast := rep.ResumedRequests[len(rep.ResumedRequests)-1]
+		if !requestHasSourceTool(resumedLast) {
+			t.Fatal("the resumed request carries no discovered source definitions: the recomputed activation did not survive the resume")
+		}
+		if !requestHasText(resumedLast, "compare batch vs stream") {
+			t.Fatal("the resumed request carries no session note text block")
 		}
 	})
 }
