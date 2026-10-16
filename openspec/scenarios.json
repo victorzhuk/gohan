@@ -4,8 +4,6 @@
     "origin": "R1",
     "title": "plain invoke"
   },
-  "context.research-report-compaction": { "capability": "context", "origin": "ADR-0090", "title": "research report compaction composition" },
-  "sandbox.data-analyst-resume-and-page": { "capability": "sandbox", "origin": "m2-data-analyst-example", "title": "data analyst resumes and pages" },
   "flow.not-suspendable": {
     "capability": "flow",
     "origin": "R1",
