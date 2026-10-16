@@ -124,7 +124,7 @@ tasks:
   examples:run:
     desc: Run each shipped example main offline
     vars:
-      DIRS: quickstart excursions kafka-refunds temporal-travel camunda-invoice data-analyst
+      DIRS: quickstart excursions kafka-refunds temporal-travel camunda-invoice data-analyst research-report
     cmds:
       - |
         set -euo pipefail

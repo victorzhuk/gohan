@@ -983,6 +983,14 @@
     "title": "replay after compaction",
     "deferred_to": "M2"
   },
+  "context.research-report-compaction": {
+    "capability": "context",
+    "origin": "ADR-0090",
+    "title": "research report compacts and stays coherent across reattachment",
+    "owner": "m2-research-report-example",
+    "example": "examples/research-report",
+    "deferred_to": "M2"
+  },
   "context.pending-call-survives": {
     "capability": "context",
     "origin": "ADR-0090",

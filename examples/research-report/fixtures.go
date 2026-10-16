@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/json/jsontext"
 	"errors"
 	"iter"
+	"strings"
 
+	gohan "github.com/victorzhuk/gohan/core"
 	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std/notes"
 	"github.com/victorzhuk/gohan/std/toolsearch"
 	"github.com/victorzhuk/gohan/testkit/gohantest"
 )
@@ -38,9 +42,10 @@ func jsontextArgs(s string) (v jsontext.Value) {
 
 // fixtureTools builds the offline tool doubles: the two always-loaded
 // sources the scripted batch uses plus the search_tools meta-tool over
-// the deferred catalog below. Every result is fixed here, so a run never
-// touches a network or a filesystem.
-func fixtureTools() []types.Tool {
+// the deferred catalog below. take_notes stores through the session notes
+// pair, so the SlotSession provider reads the note back. Every result is
+// fixed here, so a run never touches a network or a filesystem.
+func fixtureTools(pair *notes.Notes) []types.Tool {
 	search := gohantest.NewFakeTool("search_archive",
 		gohantest.WithToolSpec(func(s *types.ToolSpec) {
 			s.Description = "Look up archived research notes on a topic."
@@ -48,26 +53,78 @@ func fixtureTools() []types.Tool {
 		}),
 		gohantest.WithToolResult(types.ToolResult{
 			Outcome: types.Succeeded,
-			Content: []types.Block{types.Text{Text: "2 notes found: windowed joins, exactly-once sinks"}},
+			Content: []types.Block{types.Text{Text: archiveResult()}},
 		}),
 	)
-	notes := gohantest.NewFakeTool("take_notes",
-		gohantest.WithToolSpec(func(s *types.ToolSpec) {
-			s.Description = "Append a research note."
-			s.Effect = types.SideEffect
-			s.Risk = types.RiskLow
-		}),
-		gohantest.WithToolResult(types.ToolResult{
-			Outcome: types.Succeeded,
-			Content: []types.Block{types.Text{Text: "note stored"}},
-		}),
+	notesTool, err := gohan.NewTool("take_notes",
+		"Append a research note.",
+		func(ctx context.Context, args struct {
+			Note string `json:"note"`
+		}) (string, error) {
+			raw, err := json.Marshal(map[string]string{"notes": args.Note})
+			if err != nil {
+				return "", err
+			}
+			if _, err := pair.Call(ctx, raw); err != nil {
+				return "", err
+			}
+			return "note stored", nil
+		},
+		gohan.WithEffect(types.SideEffect),
 	)
+	if err != nil {
+		// Unreachable: the name and the argument schema are always valid.
+		panic(err)
+	}
 	meta, err := toolsearch.NewSearchTools(deferredRegistry)
 	if err != nil {
 		// Unreachable: the reserved search_tools name is always valid.
 		panic(err)
 	}
-	return []types.Tool{search, notes, meta}
+	corpus := sourceTools(deferredCatalog, "source_corpus_batch", "source_corpus_stream")
+	return []types.Tool{search, notesTool, meta, corpus[0], corpus[1]}
+}
+
+// archiveResult is the archived lookup payload: the asserted summary line
+// followed by enough retrieved context to look like a real retrieval, small
+// enough that post-compaction requests stay under the fixture window. The
+// pre-run backlog drives the compaction instead, so the folded prefix is
+// store-canonical history.
+func archiveResult() string {
+	return "2 notes found: windowed joins, exactly-once sinks. " + strings.Repeat("archived retrieval context ", 20)
+}
+
+// backlogResult is the pre-run archive backlog: enough seeded history to
+// push the first assembled request over the fixture window, so compaction
+// folds the store-minted prefix instead of run-local messages.
+func backlogResult() string {
+	return "archived backlog: prior retrieval sessions. " + strings.Repeat("archived backlog digest ", 900)
+}
+
+// sourceTools materializes fake tools for the named catalog entries, so
+// the discovered definitions carry executable bodies over the same specs
+// the registry reports.
+func sourceTools(catalog []types.ToolSpec, names ...string) []types.Tool {
+	out := make([]types.Tool, 0, len(names))
+	for _, name := range names {
+		var spec types.ToolSpec
+		for _, s := range catalog {
+			if s.Name == name {
+				spec = s
+				break
+			}
+		}
+		out = append(out, gohantest.NewFakeTool(name,
+			gohantest.WithToolSpec(func(s *types.ToolSpec) {
+				*s = spec
+			}),
+			gohantest.WithToolResult(types.ToolResult{
+				Outcome: types.Succeeded,
+				Content: []types.Block{types.Text{Text: name + " digest: corpus retrieved"}},
+			}),
+		))
+	}
+	return out
 }
 
 // deferredCatalog is the deterministic table of deferred source tools the
@@ -123,14 +180,98 @@ func deferredRegistry() []types.ToolSpec {
 	return deferredCatalog
 }
 
-// fixtureModel scripts one multi-call tool turn followed by the final
-// report text; both batch calls arrive in a single model turn.
+// fixtureModel scripts a discovery run: the always-loaded batch, the
+// search_tools query, two calls to the discovered corpus sources, then the
+// final report text.
 func fixtureModel() types.Model {
-	calls := fixtureBatch()
+	calls := append(fixtureBatch(),
+		types.ToolUse{ID: "call_search_tools", Name: toolsearch.SearchToolsName, Args: jsontextArgs(`{"query":"corpus"}`)},
+		types.ToolUse{ID: "call_source_corpus_batch", Name: "source_corpus_batch", Args: jsontextArgs(`{"kind":"batch"}`)},
+		types.ToolUse{ID: "call_source_corpus_stream", Name: "source_corpus_stream", Args: jsontextArgs(`{"kind":"stream"}`)},
+	)
 	return &scriptedTurns{turns: [][]types.ModelChunk{
-		{{ToolUse: &calls[0]}, {ToolUse: &calls[1]}, {Finish: types.FinishToolUse}},
-		{{Kind: types.DeltaText, Delta: "Report: windowed joins and exactly-once sinks are the two archived threads; noted the batch-vs-stream comparison."}, {Finish: types.FinishStop}},
+		{{ToolUse: &calls[0]}, {ToolUse: &calls[1]}, {Finish: types.FinishToolUse, Usage: turnUsage(160, 40)}},
+		{{ToolUse: &calls[2]}, {Finish: types.FinishToolUse, Usage: turnUsage(140, 30)}},
+		{{ToolUse: &calls[3]}, {ToolUse: &calls[4]}, {Finish: types.FinishToolUse, Usage: turnUsage(180, 45)}},
+		{{Kind: types.DeltaText, Delta: "Report: windowed joins and exactly-once sinks are the two archived threads; noted the batch-vs-stream comparison."}, {Finish: types.FinishStop, Usage: turnUsage(210, 70)}},
 	}}
+}
+
+func turnUsage(in, out int) *types.Usage {
+	return &types.Usage{InputTokens: in, OutputTokens: out}
+}
+
+// discoveredSources recomputes the active deferred set from the persisted
+// discovery: every search_tools use in history re-runs its query against
+// the catalog, so the selection is a pure function of what the session
+// log holds.
+func discoveredSources(history []types.Message) []string {
+	var queries []string
+	for _, m := range history {
+		for _, b := range m.Blocks {
+			u, ok := b.(types.ToolUse)
+			if !ok || u.Name != toolsearch.SearchToolsName {
+				continue
+			}
+			var args struct {
+				Query string `json:"query"`
+			}
+			if err := json.Unmarshal([]byte(u.Args), &args); err != nil {
+				continue
+			}
+			queries = append(queries, args.Query)
+		}
+	}
+	var active []string
+	for _, spec := range deferredCatalog {
+		found := false
+		for _, q := range queries {
+			if matchesQuery(spec, q) {
+				found = true
+				break
+			}
+		}
+		if !found && historyNamesSource(history, spec.Name) {
+			found = true
+		}
+		if found {
+			active = toolsearch.Activate(active, spec.Name)
+		}
+	}
+	return active
+}
+
+// historyNamesSource reports whether the persisted text carries the source
+// name: the summarized coverage names every source the covered prefix
+// discovered, so activation survives a compaction fold of the discovery.
+func historyNamesSource(history []types.Message, name string) bool {
+	for _, m := range history {
+		for _, b := range m.Blocks {
+			var blocks []types.Block
+			switch v := b.(type) {
+			case types.Text:
+				blocks = []types.Block{v}
+			case types.Compaction:
+				blocks = v.Summary
+			default:
+				continue
+			}
+			for _, sb := range blocks {
+				if tx, ok := sb.(types.Text); ok && strings.Contains(tx.Text, name) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func matchesQuery(spec types.ToolSpec, query string) bool {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(spec.Name+" "+spec.Description), q)
 }
 
 // scriptedTurns replays fixed chunk sequences, one per model call. It is
@@ -141,7 +282,7 @@ type scriptedTurns struct {
 }
 
 func (m *scriptedTurns) Profile() types.ModelProfile {
-	return types.ModelProfile{Name: "scripted", ContextWindow: 4096}
+	return types.ModelProfile{Name: "scripted", ContextWindow: 2000}
 }
 
 func (m *scriptedTurns) Generate(_ context.Context, _ types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
