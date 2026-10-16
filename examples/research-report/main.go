@@ -17,15 +17,18 @@ import (
 	"github.com/victorzhuk/gohan/core/types"
 	"github.com/victorzhuk/gohan/std"
 	stdcontext "github.com/victorzhuk/gohan/std/context"
+	stdguard "github.com/victorzhuk/gohan/std/guard"
+	stdtokens "github.com/victorzhuk/gohan/std/tokens"
 )
 
 // Report is what one research-report run produced: the streamed events,
-// the fixture tools the batch drew on, and the history the governed
-// conversation persisted.
+// the fixture tools the batch drew on, the history the governed
+// conversation persisted, and the assembled requests it recorded.
 type Report struct {
-	Events  []types.Event
-	Tools   []types.Tool
-	History []types.Message
+	Events   []types.Event
+	Tools    []types.Tool
+	History  []types.Message
+	Requests []types.ModelRequest
 }
 
 // Compose builds a stack with the scripted research flow registered as a
@@ -33,11 +36,15 @@ type Report struct {
 // streams one send. The context policy projects spent tool results away
 // and summarizes the covered prefix; the example persists nothing by hand.
 func Compose(ctx context.Context, topic string) (Report, error) {
+	var requests []types.ModelRequest
 	tools := fixtureTools()
 	sessions := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
 	stack, err := gohan.Build(append(std.Defaults(),
-		gohan.WithStores(stores.Stores{SessionLog: sessions}),
+		gohan.WithStores(stores.Stores{SessionLog: sessions, Audit: stores.NewMemoryAuditLog(), EventLog: stores.NewMemoryEventLog()}),
 		gohan.WithModels(fixtureModel()),
+		gohan.WithEstimator(stdtokens.Heuristic),
+		gohan.WithCompactionGuard(stdguard.NewContextGuard()),
+		gohan.WithCompactionFallback(stdcontext.NewTruncate(stdcontext.WithTruncateEstimator(stdtokens.Heuristic))),
 		gohan.WithNativeAgent(gohan.NativeSpec{
 			Request: gohan.FlowRequest{Name: "research_report"},
 			Profile: "scripted",
@@ -50,7 +57,9 @@ func Compose(ctx context.Context, topic string) (Report, error) {
 				),
 			},
 			Assemble: func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
-				return types.ModelRequest{Messages: slices.Clone(in.History)}, nil
+				req := types.ModelRequest{Messages: slices.Clone(in.History), Tools: in.Tools}
+				requests = append(requests, req)
+				return req, nil
 			},
 			Tools: tools,
 			Decider: policyDecider{
@@ -86,6 +95,7 @@ func Compose(ctx context.Context, topic string) (Report, error) {
 	}
 	report.Tools = tools
 	report.History = loaded.Messages
+	report.Requests = requests
 	return report, nil
 }
 
