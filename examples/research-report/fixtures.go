@@ -140,7 +140,9 @@ type scriptedTurns struct {
 	i     int
 }
 
-func (m *scriptedTurns) Profile() types.ModelProfile { return types.ModelProfile{Name: "scripted", ContextWindow: 4096} }
+func (m *scriptedTurns) Profile() types.ModelProfile {
+	return types.ModelProfile{Name: "scripted", ContextWindow: 4096}
+}
 
 func (m *scriptedTurns) Generate(_ context.Context, _ types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
 	return func(yield func(types.ModelChunk, error) bool) {
