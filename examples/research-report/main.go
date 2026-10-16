@@ -232,11 +232,11 @@ type DetachedReport struct {
 	History         []types.Message
 }
 
-// ComposeDetached runs the research composition detached: Send starts the
-// run and returns without streaming, a client consumes a prefix of the
-// logged events, drops at a known Seq, reattaches through Attach with that
-// cursor, and the run resumes through Replay and reassembles from the
-// compacted history.
+// ComposeDetached runs the research composition detached: gohan.Detached()
+// mints the run, Send starts it and returns without streaming, a client
+// consumes a prefix of the logged events, drops at a known Seq, and
+// reattaches through Attach with that cursor. The original run then
+// continues through Continue and reassembles from the compacted history.
 // detachedModel scripts the detached composition across three sends: the
 // detached send takes the always-loaded batch, runs the search_tools
 // discovery, and closes with an interim digest; the original continue
