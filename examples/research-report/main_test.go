@@ -120,6 +120,24 @@ func requestHasClearedResult(req types.ModelRequest) bool {
 	return false
 }
 
+// canonicalRequest projects a ModelRequest onto the fields the assembly
+// equality assertion compares: tool specs carry a Verify function that has no
+// JSON form, so tools travel as their ordered name list and every other field
+// keeps its exact value.
+func canonicalRequest(req types.ModelRequest) ([]byte, error) {
+	toolNames := make([]string, len(req.Tools))
+	for i, t := range req.Tools {
+		toolNames[i] = t.Name
+	}
+	return json.Marshal(struct {
+		System   []types.Block
+		Tools    []string
+		Messages []types.Message
+		Options  types.ModelOptions
+		Metadata types.RequestMetadata
+	}{req.System, toolNames, req.Messages, req.Options, req.Metadata})
+}
+
 func TestResearchReportOffline(t *testing.T) {
 	t.Run("tools.activation-persists-across-resume", func(t *testing.T) {
 		t.Skip("unmet prerequisite: no shipped native resume path restores a per-run deferred-tool selection; the checkpoint envelope carries no activation payload and runtime.State.ActiveTools has no production reader (design D3)")
@@ -453,11 +471,11 @@ func TestResearchReportOffline(t *testing.T) {
 		if post < 0 {
 			t.Fatal("no request the original run assembled carries the compaction summary: the compaction never reached an assembled request")
 		}
-		wantBytes, err := json.Marshal(rep.Requests[post])
+		wantBytes, err := canonicalRequest(rep.Requests[post])
 		if err != nil {
 			t.Fatalf("marshal original request: %v", err)
 		}
-		gotBytes, err := json.Marshal(rep.ResumedRequests[0])
+		gotBytes, err := canonicalRequest(rep.ResumedRequests[0])
 		if err != nil {
 			t.Fatalf("marshal resumed request: %v", err)
 		}

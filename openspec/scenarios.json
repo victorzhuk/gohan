@@ -988,8 +988,7 @@
     "origin": "ADR-0090",
     "title": "research report compacts and stays coherent across reattachment",
     "owner": "m2-research-report-example",
-    "example": "examples/research-report",
-    "deferred_to": "M2"
+    "example": "examples/research-report"
   },
   "context.pending-call-survives": {
     "capability": "context",
