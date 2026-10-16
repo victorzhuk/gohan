@@ -14,7 +14,11 @@ The example writes only its fixture backlog by hand: one
 then folds. Every run message and the compaction itself are persisted by
 the harness, not by the example. It computes no projection, compaction or
 accounting logic of its own: it composes `gohan.Build`, one
-`gohan.NativeSpec`, one `conv.Send` and one `Load`.
+`gohan.NativeSpec`, one `conv.Send`, one `conv.Continue` and one `Load`.
+Three compositions share that stack — the plain `Compose` run, the
+detached `ComposeDetached` run with its `Seq`-cursor reattach and
+continued run, and `ComposeWiderFanout`, which declares a cost ceiling and
+observes its typed refusal.
 
 Nothing reaches the network. No credential, no API key, no daemon and no
 container is involved: every model turn, every tool result and every store
@@ -42,13 +46,16 @@ subtest turns into a failing citation rather than a stale claim.
 
 | Requirement | Scenario id | Owning subtest | Example reaches it |
 |---|---|---|---|
-| context spec — deferred discovery over a fixed catalog, composed | `context.research-report-compaction` | `TestResearchReportOffline/context.research-report-compaction` (this package; registry entry in `openspec/scenarios.json`, requirement in `openspec/changes/m2-research-report-example/specs/context/spec.md`) | implemented: discovery through `search_tools`, the two-source fan-out, the persisted compaction and the discovered source definitions plus the progress note in the final assembled request. Not implemented: the detached run, the suspended `Replay` resume, the client reattach from a `Seq` cursor, the resumed assembly byte-equality and the gap-free event delivery the delta also names |
+| context spec — deferred discovery over a fixed catalog, composed | `context.research-report-compaction` | `TestResearchReportOffline/context.research-report-compaction` (this package; registry entry in `openspec/scenarios.json`, requirement in `openspec/changes/m2-research-report-example/specs/context/spec.md`) | implemented: discovery through `search_tools`, the two-source fan-out, the persisted compaction and the discovered source definitions plus the progress note in the final assembled request; the detached composition in `ComposeDetached` builds with `gohan.Detached()`, reattaches from a `Seq` cursor and resumes through `Continue`. Not asserted: the suspended `Replay` resume — the resumed leg reconstructs the persisted history in a fresh session log instead of resuming a suspended run. The gap-free, duplicate-free event delivery the delta names is asserted by `TestResearchReportOffline/streams.detached-reattach`, which compares the reattached tail against the logged events after the cursor |
 | context spec — projections never write | `context.projection-does-not-write` | `TestResearchReportOffline/context.projection-does-not-write`; upstream `TestProjectionPublicPath/context.projection-does-not-write` (`core/projection_scenarios_test.go`) | an assembled request carries a `[tool result cleared]` replacement while `SessionLog.Load` still returns the original retrieved payload |
 | context spec — compaction is appended to the log | `context.compaction-persisted` | `TestResearchReportOffline/context.compaction-persisted`; upstream `TestCompactionPublicPath/context.compaction-persisted` (`core/compaction_public_path_test.go:195`) | the seeded backlog pushes the working history over the fixture window and the run's compaction comes back through `Load` |
-| working-state spec — notes survive compaction | `working-state.notes-survive-compaction` | `TestResearchReportOffline/working-state.notes-survive-compaction`; upstream `TestTruncateKeepsNotes` (`std/context/truncate_notes_test.go:24`) | the progress note is still in the next assembled request, delivered by the `SlotSession` provider rather than by history. Weak leg: the subtest reads only the final request and the fixture's single compaction precedes the note write, so it does not yet prove survival across a compaction that follows the note |
-| limits spec — tree cost accumulates | `limits.cost-accumulates` | `TestResearchReportOffline/limits.cost-accumulates`; upstream `TestChainLimits/limits.cost-accumulates` (`core/chains/limits_test.go:88`) | `Done.Cost` is positive at the end of the composed run. Weak leg: the scripted model spends usage on every turn, so the assertion does not yet isolate the per-source fan-out costs summing into the parent total, and no `types.RunLimits` ceiling is declared or refused in this example |
+| working-state spec — notes survive compaction | `working-state.notes-survive-compaction` | `TestResearchReportOffline/working-state.notes-survive-compaction`; upstream `TestTruncateKeepsNotes` (`std/context/truncate_notes_test.go:24`) | the progress note is written before the fold and is still in the first request assembled after it, delivered by the `SlotSession` provider rather than by history. The subtest checks both ends: the note turn sits inside the folded prefix and the post-compaction request carries the note text |
+| limits spec — tree cost accumulates | `limits.cost-accumulates` | `TestResearchReportOffline/limits.cost-accumulates`; upstream `TestChainLimits/limits.cost-accumulates` (`core/chains/limits_test.go:88`) | `Done.Cost` is positive at the end of the composed run. Weak leg: the scripted model spends usage on every turn, so the assertion does not yet isolate the per-source fan-out costs summing into the parent total. The ceiling and its typed refusal are covered separately by `limits.ceiling-refuses-wider-fanout`; weak leg there: the parent total and the child costs both come from the fixture's local attribution, so a harness-side accumulation gap is not yet caught |
 | tools spec — a deferred tool is not assembled until discovered | `tools.not-assembled-until-discovered` | `TestResearchReportOffline/tools.not-assembled-until-discovered`; upstream `TestDeferredTools` (`std/toolsearch/search_test.go:68`) | the first request carries the always-loaded fixtures plus `search_tools` only; `std.NarrowTools` with `toolsearch.DeferredFilter` widens the set on the next turn |
 | composition shape and fixture determinism | (no id of its own) | `TestResearchReportOffline/composition` | the run produces tools, events and assembled requests, calls `search_tools`, and the deferred catalog reports exactly 40 entries |
+| limits spec — a declared cost ceiling refuses an over-budget run | (no id of its own) | `TestResearchReportOffline/limits.ceiling-refuses-wider-fanout` | `ComposeWiderFanout` declares `types.RunLimits` with a cost ceiling over the wider five-call retrieval fan-out (a `search_tools` query plus four source calls over two source names, on top of the always-loaded batch) and the run ends in a `*types.LimitExceededError` whose reason names the cost ceiling |
+| projection leaves the history version untouched | (no id of its own) | `TestResearchReportOffline/context.projection-preserves-version` | the assembled request carries the projection's replacements while the history version is unchanged around the assembly |
+| streams spec — a detached run reattaches from a cursor | (no id of its own) | `TestResearchReportOffline/streams.detached-reattach` | `ComposeDetached` builds with `gohan.Detached()`, drops at a known `Seq` and consumes the tail through `Attach`; `TestStreamLifetime/streams.detached-reconnect` stays the scenario id's owner |
 
 ### D6 rows this package does not claim
 
@@ -61,11 +68,11 @@ example proves.
 | `tools.activation-persists-across-resume` | `TestDeferredTools` (`std/toolsearch/search_test.go:107`) | skipped by the acceptance test with a named reason: no shipped native resume path restores a per-run deferred-tool selection. `toolsearch.Save` replaces `stores.Checkpoint.Data` wholesale (`std/toolsearch/activation.go:38-46`), while native suspension persists a versioned checkpoint envelope whose decoder refuses an activation-only payload (`core/lifecycle_suspend.go:60-70`, `core/checkpoint_envelope.go:200-220`); `runtime.State.ActiveTools` (`core/runtime/runtime.go:32`) has no production reader |
 | `tools.governed-while-deferred` | `TestDeferredToolsGoverned` (`std/toolsearch/activation_test.go:14`) | skipped by the acceptance test with a named reason: this example installs no visibility-scoped permission bridge. `AssembleInput.Filter` is unset on the native path (`core/native_effects.go:249-263`), so governed execution resolves over the full registered set (`core/native_effects.go:25-55`, `core/permission/gate.go:126-130`); the only scope-scoped gate lookup in the repository is the upstream test itself (`std/toolsearch/activation_test.go:32-36`) |
 | `streams.detached-reconnect` | `TestStreamLifetime/streams.detached-reconnect` (`core/stream_lifetime_test.go:144`) | reached by the example's own reattachment assertions in `TestResearchReportOffline/streams.detached-reattach`: the composed run builds with `gohan.Detached()` and reattaches from the last `Seq`, while the upstream lifetime suite stays the row's owner |
-| `streams.detached-requires-log` | `TestStreamLifetime/streams.detached-requires-log` (`core/stream_lifetime_test.go:229`) | not reached: the example builds no detached conversation, so `errDetachedNoLog` is never reached from here |
-| `context.projection-deterministic` | `TestProjectionPublicPath/context.projection-deterministic` (`core/projection_scenarios_test.go`) | not reached as a subtest: the example assembles its requests once per turn through its own `Assemble` callback and neither asserts byte-equality across two assemblies of the same persisted history nor compares the history version around an assembly |
+| `streams.detached-requires-log` | `TestStreamLifetime/streams.detached-requires-log` (`core/stream_lifetime_test.go:229`) | not reached: `ComposeDetached` always installs a session log, so `errDetachedNoLog` is never reached from here |
+| `context.projection-deterministic` | `TestProjectionPublicPath/context.projection-deterministic` (`core/projection_scenarios_test.go`) | not reached as a subtest: the example assembles its requests once per turn through its own `Assemble` callback and does not assert byte-equality across two assemblies of the same persisted history. `TestResearchReportOffline/context.projection-preserves-version` covers the history-version half only |
 | `context.notes-excluded` | `TestProjectionPublicPath/context.notes-excluded`; unit `TestClearToolResults/context.notes-excluded` (`std/context/clear_tool_results_test.go`) | not reached as a subtest: the example asserts the note survives compaction, not that a cleared window excludes `notes_*` results |
-| `context.replay-after-compaction` | `TestCompactionPublicPathReconciled/context.replay-after-compaction` (`core/compaction_public_path_test.go:1305`) | not reached as a subtest: `Compose` streams one `Send` to completion and calls no `Replay`, so the example records no resumed turn; the composition id's row above carries the same unbuilt lifecycle legs and claims none of them |
-| `tools.notes-survive-reset` | `TestNotesSurviveReset` (`std/notes/reset_test.go:97`) | not reached: the example runs a single send and never resets the session notes slot |
+| `context.replay-after-compaction` | `TestCompactionPublicPathReconciled/context.replay-after-compaction` (`core/compaction_public_path_test.go:1305`) | not reached as a subtest: neither composition suspends or calls `Replay`. `ComposeDetached` resumes by reloading the persisted history into a fresh session log and calling `Continue`, so the example records no replayed turn; the composition id's row above carries the same gap and claims none of it |
+| `tools.notes-survive-reset` | `TestNotesSurviveReset` (`std/notes/reset_test.go:97`) | not reached: the example writes its note once and never resets the session notes slot |
 
 ## Public paths the example calls
 
@@ -73,23 +80,27 @@ example proves.
 |---|---|
 | `gohan.Build`, `gohan.Defaults` via `std.Defaults()` | the stack: memory stores, scripted model, estimator, compaction guard and fallback, limits middleware |
 | `gohan.NativeSpec` (`Request`, `Profile`, `ContextPolicy`, `Assemble`, `Tools`, `Decider`) | the single `research_report` native definition |
-| `gohan.NewNativeConversation` with `WithConversationRuns` and `WithConversationEventLog` | the governed conversation over the `research` session |
-| `conv.Send` | one send, ranged for its events |
-| `stores.SessionLog.Append` / `stores.SessionLog.Load` | the seeded pre-run backlog and the persisted history read back at the end |
+| `gohan.NewNativeConversation` with `WithConversationRuns`, `WithConversationEventLog` and `gohan.Detached()` | the governed conversation over the `research` session; `ComposeDetached` builds it detached so a client can drop and reattach |
+| `conv.Send` | the opening send of both compositions, ranged for its events (`ComposeDetached` reads only the minted run id from it) |
+| `conv.Continue` | the second half of both runs: it reloads the persisted history, publishes the compaction and finishes the report (`ComposeDetached` calls it on the original conversation, then on the resumed one) |
+| `conv.Attach` | the dropped client's reattach from a `Seq` cursor in `ComposeDetached` |
+| `stores.SessionLog.Append` / `stores.SessionLog.Load` | the seeded pre-run backlog, the persisted history read back at the end, and the re-seeded log the resumed composition assembles from |
 | `stores.ContextPolicy` with `std/context.ClearToolResults` and `std/context.NewSummarize` | the per-flow projection and compactor |
-| `std/context.NewTruncate` | the compaction fallback behind `stdguard.NewContextGuard()` |
+| `std/context.NewTruncate` | the compaction fallback installed beside `stdguard.NewContextGuard()`, the compaction guard |
 | `std.NarrowTools` + `toolsearch.DeferredFilter` + `toolsearch.NewSearchTools` | deferred discovery and the per-turn assembled set |
-| `std/notes` `New` and `Provide` | the `notes_write` tool pair and the `SlotSession` provider |
+| `std/notes` `New`, `Call` and `Provide` | the `take_notes` tool, whose body calls the pair's `Call`, and the `SlotSession` provider behind `Provide` |
 | `gohan.NewTool`, `permission.Allow` | the fixture decider over the five allowed tool names |
 | `testkit/gohantest.NewFakeTool` | the fixture tool bodies |
 | `std.ExplainHandler` contract | the `explain` subcommand, JSON on a non-TTY stdout |
-| `limit.Limits` with `types.RunLimits` | the stack's limit middleware, installed by `std.Defaults()`. The example declares no ceiling of its own and asserts no refusal, so it claims no `RunLimits` behaviour beyond the positive run total |
+| `limit.Limits` with `types.RunLimits` | the stack's limit middleware, installed by `std.Defaults()`. `ComposeWiderFanout` adds a `types.RunLimits` cost ceiling over the wider fan-out and observes the typed `*types.LimitExceededError` refusal; the composed run declares no ceiling and claims nothing beyond its positive run total |
 
 ## Fixtures
 
 | Fixture | Content |
 |---|---|
-| scripted model (`scriptedTurns`) | four fixed turns: the always-loaded batch (`search_archive`, `take_notes`), the `search_tools` query `{"query":"corpus"}`, the two discovered corpus sources (`source_corpus_batch`, `source_corpus_stream`), then the report text |
+| scripted model (`scriptedTurns`) | four fixed turns for the composed run: the always-loaded batch (`search_archive`, `take_notes`), the `search_tools` query `{"query":"corpus"}`, the two discovered corpus sources (`source_corpus_batch`, `source_corpus_stream`), then the report text |
+| detached model (`detachedModel`) | three sends' worth of turns for `ComposeDetached`: discovery and an interim digest, the compaction-publishing continue, then the discovered sources and the report turn on the resumed log |
+| wide-fanout model (`fanoutModel`) | seven turns for `ComposeWiderFanout` over the wider five-call retrieval fan-out, attributing each turn's charge to the source it serves |
 | `deferredCatalog` | exactly 40 `types.ToolSpec` entries, every one `ReadOnly` and `Deferred`, generated from one table; the deferred count is asserted so the catalog cannot silently shrink |
 | always-loaded tools | `search_archive` (archived retrieval notes), `take_notes` (the notes pair), `search_tools` (the reserved meta-tool over the registry closure) |
 | discovered source bodies | `sourceTools` materializes the named catalog entries as fake tools, so a discovered definition carries an executable body over the same spec the registry reports |
@@ -130,7 +141,8 @@ These are prerequisites the example records and never claims as evidence.
 | `subflows.collect-partials` | M3 (registry `deferred_to: "M3"`, `openspec/scenarios.json`) | partial collection is recorded as a prerequisite, never as evidence |
 | native resume that restores a per-run deferred-tool selection | no milestone owns it | unmet: `core/drive.go:92-100`, `core/drive_turn.go:776-795`, `core/resume.go:511-522`; `runtime.State.ActiveTools` has no production reader |
 | permission lookup scoped to the assembled set | no milestone owns it | unmet: `core/native_effects.go:25-55`, `:249-263`, `core/permission/gate.go:126-130` |
-| detached run with a suspended `Replay` resume and a client reattach from a `Seq` cursor | `m2-research-report-example` | unbuilt: `Compose` opens one attached conversation, streams a single `Send` and calls no `Detached`, `Replay` or reattach, so the composed scenario row above names these legs as unimplemented |
+| detached run with a suspended `Replay` resume | `m2-research-report-example` | partial: `ComposeDetached` builds with `gohan.Detached()` and the client reattaches from a `Seq` cursor, but the resumed leg reloads the persisted history into a fresh session log and calls `Continue` instead of resuming a suspended run through `Replay`, so no replayed turn is recorded |
+| harness-side accumulation of the per-source child costs into the parent total | `m2-research-report-example` | partial: `ComposeWiderFanout` attributes each turn's charge locally, so the tree-cost assertion compares locally computed values; the ceiling refusal itself is observed as a typed `*types.LimitExceededError` |
 
 Until those land, the requirement rows above cannot be read as claims the
 harness backs: the two activation ids stay skipped with their named
