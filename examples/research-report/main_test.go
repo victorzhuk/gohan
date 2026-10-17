@@ -121,21 +121,143 @@ func requestHasClearedResult(req types.ModelRequest) bool {
 }
 
 // canonicalRequest projects a ModelRequest onto the fields the assembly
-// equality assertion compares: tool specs carry a Verify function that has no
-// JSON form, so tools travel as their ordered name list and every other field
-// keeps its exact value.
+// equality assertion compares: tool specs carry a Verify function that has
+// no JSON form, so Verify travels niled and every other model-visible
+// serializable definition field — name, description, schema, effect,
+// scopes, timeout, readback, output limit, deferral, trust, risk,
+// capabilities, network, executor, egress and fingerprint fields — keeps
+// its exact value.
 func canonicalRequest(req types.ModelRequest) ([]byte, error) {
-	toolNames := make([]string, len(req.Tools))
+	tools := make([]canonicalToolSpec, len(req.Tools))
 	for i, t := range req.Tools {
-		toolNames[i] = t.Name
+		tools[i] = canonicalToolSpec{
+			Name:              t.Name,
+			Description:       t.Description,
+			Schema:            t.Schema,
+			Effect:            t.Effect,
+			RequiredScopes:    t.RequiredScopes,
+			Timeout:           t.Timeout,
+			ReadBack:          t.ReadBack,
+			MaxOutput:         t.MaxOutput,
+			Deferred:          t.Deferred,
+			Trust:             t.Trust,
+			Risk:              t.Risk,
+			Capabilities:      t.Capabilities,
+			Network:           t.Network,
+			Executor:          t.Executor,
+			Egress:            t.Egress,
+			FingerprintFields: t.FingerprintFields,
+		}
 	}
 	return json.Marshal(struct {
 		System   []types.Block
-		Tools    []string
+		Tools    []canonicalToolSpec
 		Messages []types.Message
 		Options  types.ModelOptions
 		Metadata types.RequestMetadata
-	}{req.System, toolNames, req.Messages, req.Options, req.Metadata})
+	}{req.System, tools, req.Messages, req.Options, req.Metadata})
+}
+
+// canonicalToolSpec mirrors every model-visible serializable ToolSpec field
+// except the Verify callback, which has no JSON form: changed schemas,
+// descriptions, effects or risk must fail the byte-equality check.
+type canonicalToolSpec struct {
+	Name              string
+	Description       string
+	Schema            json.RawMessage
+	Effect            types.Effect
+	RequiredScopes    []string
+	Timeout           time.Duration
+	ReadBack          string
+	MaxOutput         int
+	Deferred          bool
+	Trust             types.Trust
+	Risk              types.RiskTier
+	Capabilities      types.Capabilities
+	Network           bool
+	Executor          types.Executor
+	Egress            *types.EgressPolicy
+	FingerprintFields []string
+}
+
+// assertDetachedResumeEvidence binds the registered composition to genuine
+// suspension and resume: a real Suspended terminal from the distinct
+// Continue run, a durable compaction before Resume, four original provider
+// captures equal to the first resumed capture, the discovered sources and
+// injected note in that resumed request, a contiguous resumed log suffix
+// ending in StopCompleted, and a consumed resume token.
+func assertDetachedResumeEvidence(t *testing.T, rep DetachedReport) {
+	t.Helper()
+	sus, ok := rep.Suspension.Payload.(types.Suspended)
+	if !ok {
+		t.Fatalf("the detached run's recorded terminal is %T: no genuine types.Suspended record from the Continue run", rep.Suspension.Payload)
+	}
+	if sus.Reason != types.AwaitingControl {
+		t.Fatalf("suspension reason = %q: want AwaitingControl", sus.Reason)
+	}
+	if sus.Token == "" {
+		t.Fatal("the suspension carries an empty resume token")
+	}
+	if rep.Suspension.Meta.RunID == rep.RunID {
+		t.Fatalf("the suspension record belongs to the opening Send run %s: it must come from the distinct Continue run", rep.RunID)
+	}
+	if !historyHasCompaction(rep.History) {
+		t.Fatal("the session history carries no durable compaction before the Resume: the fold never published durably")
+	}
+	if len(rep.Requests) != 4 {
+		t.Fatalf("the original run recorded %d provider captures: want the four pre-suspension entries", len(rep.Requests))
+	}
+	if len(rep.ResumedRequests) != 2 {
+		t.Fatalf("the resumed run recorded %d provider captures: want the two post-resume entries", len(rep.ResumedRequests))
+	}
+	wantBytes, err := canonicalRequest(rep.Requests[3])
+	if err != nil {
+		t.Fatalf("marshal original provider entry 3: %v", err)
+	}
+	gotBytes, err := canonicalRequest(rep.ResumedRequests[0])
+	if err != nil {
+		t.Fatalf("marshal first resumed provider entry: %v", err)
+	}
+	if !bytes.Equal(wantBytes, gotBytes) {
+		t.Fatalf("the first resumed provider request differs from original entry 3:\nwant %s\ngot  %s", wantBytes, gotBytes)
+	}
+	if !requestHasSourceTool(rep.ResumedRequests[0]) {
+		t.Fatal("the first resumed provider request carries no discovered source definitions")
+	}
+	if !requestHasText(rep.ResumedRequests[0], "compare batch vs stream") {
+		t.Fatal("the first resumed provider request carries no injected session note text")
+	}
+	if len(rep.ResumeEvents) == 0 {
+		t.Fatal("the resumed run left no durable event suffix after the suspension")
+	}
+	prev := rep.Suspension.Meta.Seq
+	dones := 0
+	for i, e := range rep.ResumeEvents {
+		if e.Meta.Seq != prev+int64(i)+1 {
+			t.Fatalf("resumed event %d has Seq %d: the durable suffix must be contiguous after the suspension Seq %d", i, e.Meta.Seq, prev)
+		}
+		if e.Meta.RunID != rep.Suspension.Meta.RunID {
+			t.Fatalf("resumed event %d belongs to run %s: want the suspended run %s", i, e.Meta.RunID, rep.Suspension.Meta.RunID)
+		}
+		if _, ok := e.Payload.(types.Suspended); ok {
+			t.Fatalf("resumed event %d is another suspension: the resume must complete", i)
+		}
+		if d, ok := e.Payload.(types.Done); ok {
+			dones++
+			if d.Reason != types.StopCompleted {
+				t.Fatalf("resumed Done carries reason %q: want StopCompleted", d.Reason)
+			}
+		}
+	}
+	if dones != 1 {
+		t.Fatalf("the resumed suffix holds %d Done events: want exactly one completing terminal", dones)
+	}
+	if _, ok := rep.ResumeEvents[len(rep.ResumeEvents)-1].Payload.(types.Done); !ok {
+		t.Fatalf("the resumed log suffix ends in %T: it must end in the completing Done", rep.ResumeEvents[len(rep.ResumeEvents)-1].Payload)
+	}
+	if !rep.TokenConsumed {
+		t.Fatal("the resume token was not consumed: post-resume Peek did not report a consumed token")
+	}
 }
 
 func TestResearchReportOffline(t *testing.T) {
@@ -204,13 +326,15 @@ func TestResearchReportOffline(t *testing.T) {
 			t.Fatal("the report carries no requests")
 		}
 		noteIdx, compactionIdx := -1, -1
+		var covers int64 = -1
 		for i, m := range rep.History {
 			for _, b := range m.Blocks {
 				if u, ok := b.(types.ToolUse); ok && u.Name == "take_notes" && noteIdx < 0 {
 					noteIdx = i
 				}
-				if _, ok := b.(types.Compaction); ok && compactionIdx < 0 {
+				if c, ok := b.(types.Compaction); ok && compactionIdx < 0 {
 					compactionIdx = i
+					covers = c.CoversUpTo
 				}
 			}
 		}
@@ -236,22 +360,63 @@ func TestResearchReportOffline(t *testing.T) {
 		if !requestHasText(last, "compare batch vs stream") {
 			t.Fatal("the request after the compaction carries no session note text block: the SlotSession provider did not inject the stored note")
 		}
+		if int64(noteIdx) >= covers {
+			t.Fatalf("the compaction's covered prefix ends at %d but the note-writing turn sits at history message %d: the fold does not cover the take_notes turn", covers, noteIdx)
+		}
+		firstPost := -1
+		for i, req := range rep.Requests {
+			if requestHasCompactionSummary(req) {
+				firstPost = i
+				break
+			}
+		}
+		if firstPost < 0 {
+			t.Fatal("no assembled request carries the compaction summary")
+		}
+		first := rep.Requests[firstPost]
+		for _, m := range first.Messages {
+			for _, b := range m.Blocks {
+				if u, ok := b.(types.ToolUse); ok && u.Name == "take_notes" {
+					t.Fatalf("the first request assembled after the fold still carries the take_notes ToolUse written at history message %d: the covered prefix was not hidden", noteIdx)
+				}
+				if r, ok := b.(types.ToolResult); ok {
+					for _, cb := range r.Content {
+						if tx, ok := cb.(types.Text); ok && strings.Contains(tx.Text, "2 notes found: windowed joins, exactly-once sinks") {
+							t.Fatal("the first request assembled after the fold still carries the take_notes result payload: the covered prefix was not hidden")
+						}
+					}
+				}
+			}
+		}
+		if !requestHasText(first, "compare batch vs stream") {
+			t.Fatal("the first request assembled after the fold carries no session note text block: the stored note did not survive the fold")
+		}
 	})
 
 	t.Run("limits.cost-accumulates", func(t *testing.T) {
 		rep := composeReport(t)
-		var done *types.Done
+		var dones []types.Done
 		for _, ev := range rep.Events {
 			if d, ok := ev.(types.Done); ok {
-				d := d
-				done = &d
+				dones = append(dones, d)
 			}
 		}
-		if done == nil {
-			t.Fatal("the composed run emitted no Done event")
+		if len(dones) != 2 {
+			t.Fatalf("the composed run emitted %d Done events: want exactly one per model run", len(dones))
 		}
-		if done.Cost <= 0 {
-			t.Fatalf("run Done.Cost = %v: want the per-source fan-out spends accumulated into a positive parent total", done.Cost)
+		for i, d := range dones {
+			if d.Reason != types.StopCompleted {
+				t.Fatalf("Done %d carries reason %q: want StopCompleted", i, d.Reason)
+			}
+		}
+		want := []float64{0.71, 0.62}
+		for i, w := range want {
+			if !(math.Abs(dones[i].Cost-w) <= 1e-9) {
+				t.Fatalf("Done %d cost = %v: want %v from the independently observed harness ledger", i, dones[i].Cost, w)
+			}
+		}
+		if !(math.Abs(dones[0].Cost+dones[1].Cost-1.33) <= 1e-9) {
+			t.Fatalf("run costs %v + %v do not sum to the independently observed 1.33", dones[0].Cost, dones[1].Cost)
 		}
 	})
 
@@ -273,9 +438,14 @@ func TestResearchReportOffline(t *testing.T) {
 		if !requestHasText(last, "compare batch vs stream") {
 			t.Fatal("the final assembled request carries no progress note")
 		}
+		drep, err := ComposeDetached(context.Background(), "windowed joins and exactly-once sinks")
+		if err != nil {
+			t.Fatalf("ComposeDetached: %v", err)
+		}
+		assertDetachedResumeEvidence(t, drep)
 	})
 
-	t.Run("context.projection-preserves-version", func(t *testing.T) {
+	t.Run("context-projection-preserves-version", func(t *testing.T) {
 		topic := "windowed joins and exactly-once sinks"
 		var requests []types.ModelRequest
 		stack, storeStack, _, err := buildStack(topic, &requests)
@@ -393,7 +563,7 @@ func TestResearchReportOffline(t *testing.T) {
 		}
 	})
 
-	t.Run("limits.ceiling-refuses-wider-fanout", func(t *testing.T) {
+	t.Run("limits-ceiling-refuses-wider-fanout", func(t *testing.T) {
 		defer func() {
 			if r := recover(); r != nil {
 				t.Fatalf("ComposeWiderFanout is not implemented: %v", r)
@@ -403,25 +573,21 @@ func TestResearchReportOffline(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ComposeWiderFanout: %v", err)
 		}
-		if len(fr.ChildCosts) == 0 {
-			t.Fatal("the wider fan-out reported no per-source child costs")
-		}
-		var sum float64
-		for _, c := range fr.ChildCosts {
-			sum += c
-		}
-		if math.Abs(fr.ParentCost-sum) > 1e-9 {
-			t.Fatalf("parent total %v does not equal the accumulated per-source child costs %v", fr.ParentCost, sum)
-		}
 		if !fr.Refused {
 			t.Fatal("the wider fan-out crossed the declared cost ceiling but the run completed instead of refusing it")
 		}
-		if !strings.Contains(strings.ToLower(fr.Reason), "cost") {
-			t.Fatalf("refusal reason %q does not name the cost ceiling", fr.Reason)
+		if !(math.Abs(fr.ParentCost-1.08) <= 1e-9) {
+			t.Fatalf("harness parent total = %v: want 1.08 from the independently observed charged sequence 0.24+0.20+0.32+0.32", fr.ParentCost)
+		}
+		if !(fr.ParentCost > 1.0) {
+			t.Fatalf("harness parent total %v does not exceed the declared 1.0 ceiling", fr.ParentCost)
+		}
+		if !strings.Contains(strings.ToLower(fr.Reason), "maxcost") {
+			t.Fatalf("refusal reason %q does not identify the MaxCost limit", fr.Reason)
 		}
 	})
 
-	t.Run("streams.detached-reattach", func(t *testing.T) {
+	t.Run("streams-detached-reattach", func(t *testing.T) {
 		defer func() {
 			if r := recover(); r != nil {
 				t.Fatalf("ComposeDetached is not implemented: %v", r)
@@ -459,35 +625,6 @@ func TestResearchReportOffline(t *testing.T) {
 				t.Fatalf("reattach event %d is not the logged payload at Seq %d: delivery diverged from the event log", i, want[i].Meta.Seq)
 			}
 		}
-		if len(rep.ResumedRequests) == 0 {
-			t.Fatal("the resumed run assembled no request")
-		}
-		post := -1
-		for i := range rep.Requests {
-			if requestHasCompactionSummary(rep.Requests[i]) {
-				post = i
-			}
-		}
-		if post < 0 {
-			t.Fatal("no request the original run assembled carries the compaction summary: the compaction never reached an assembled request")
-		}
-		wantBytes, err := canonicalRequest(rep.Requests[post])
-		if err != nil {
-			t.Fatalf("marshal original request: %v", err)
-		}
-		gotBytes, err := canonicalRequest(rep.ResumedRequests[0])
-		if err != nil {
-			t.Fatalf("marshal resumed request: %v", err)
-		}
-		if !bytes.Equal(wantBytes, gotBytes) {
-			t.Fatalf("the resumed run assembled different request bytes than the original assembled after compaction:\nwant %s\ngot  %s", wantBytes, gotBytes)
-		}
-		resumedLast := rep.ResumedRequests[len(rep.ResumedRequests)-1]
-		if !requestHasSourceTool(resumedLast) {
-			t.Fatal("the resumed request carries no discovered source definitions: the recomputed activation did not survive the resume")
-		}
-		if !requestHasText(resumedLast, "compare batch vs stream") {
-			t.Fatal("the resumed request carries no session note text block")
-		}
+		assertDetachedResumeEvidence(t, rep)
 	})
 }

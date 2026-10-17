@@ -314,6 +314,38 @@ func (m *scriptedTurns) Generate(_ context.Context, _ types.ModelRequest) iter.S
 	}
 }
 
+// suspendingModel wraps the scripted fixture and records every
+// provider-entry request: on the fourth entry it suspends the run before
+// the embedded model produces anything, so the checkpoint captures the
+// turn boundary and Resume replays the same scripted turns.
+type suspendingModel struct {
+	types.Model
+	requests []types.ModelRequest
+}
+
+// detachedModel scripts the detached composition: the opening send replays
+// the batch, discovery and digest turns of the plain fixture, Continue
+// suspends on its fourth provider entry, and Resume consumes the two turns
+// the suspension held back.
+func detachedModel() *suspendingModel {
+	return &suspendingModel{Model: fixtureModel()}
+}
+
+func (m *suspendingModel) Generate(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+	return func(yield func(types.ModelChunk, error) bool) {
+		m.requests = append(m.requests, req)
+		if len(m.requests) == 4 {
+			yield(types.ModelChunk{}, &types.SuspendError{Reason: types.AwaitingControl})
+			return
+		}
+		for c, err := range m.Model.Generate(ctx, req) {
+			if !yield(c, err) {
+				return
+			}
+		}
+	}
+}
+
 // policyDecider is the fixture permission policy of the demo: archive
 // lookups and note writes pass, so the run stays offline and every tool
 // result is the fixed fixture payload.

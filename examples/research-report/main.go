@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"iter"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -65,7 +64,6 @@ type stackCfg struct {
 	model      types.Model
 	maxCost    float64
 	notesStore stores.NotesStore
-	sessionLog stores.SessionLog
 }
 
 func withModel(m types.Model) stackOption { return func(c *stackCfg) { c.model = m } }
@@ -76,21 +74,12 @@ func withNotesStore(ns stores.NotesStore) stackOption {
 	return func(c *stackCfg) { c.notesStore = ns }
 }
 
-// withSessionLog points the stack at a pre-seeded session log, so a
-// resumed composition loads the durable history a previous run left.
-func withSessionLog(sessions stores.SessionLog) stackOption {
-	return func(c *stackCfg) { c.sessionLog = sessions }
-}
-
 func buildStack(topic string, requests *[]types.ModelRequest, opts ...stackOption) (*gohan.Stack, stores.Stores, []types.Tool, error) {
 	cfg := stackCfg{model: fixtureModel(), maxCost: 1000, notesStore: stores.NewMemoryNotes()}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	sessions := cfg.sessionLog
-	if sessions == nil {
-		sessions = stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
-	}
+	sessions := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
 	pair, err := stdnotes.New(cfg.notesStore)
 	if err != nil {
 		return nil, stores.Stores{}, nil, err
@@ -230,34 +219,31 @@ type DetachedReport struct {
 	Requests        []types.ModelRequest
 	ResumedRequests []types.ModelRequest
 	History         []types.Message
+	Suspension      stores.Event
+	ResumeEvents    []stores.Event
+	TokenConsumed   bool
+}
+
+// hasDurableCompaction reports whether the history holds a published
+// compaction message.
+func hasDurableCompaction(history []types.Message) bool {
+	for _, m := range history {
+		for _, b := range m.Blocks {
+			if _, ok := b.(types.Compaction); ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ComposeDetached runs the research composition detached: gohan.Detached()
 // mints the run, Send starts it and returns without streaming, a client
 // consumes a prefix of the logged events, drops at a known Seq, and
-// reattaches through Attach with that cursor. The original run then
-// continues through Continue and reassembles from the compacted history.
-// detachedModel scripts the detached composition across three sends: the
-// detached send takes the always-loaded batch, runs the search_tools
-// discovery, and closes with an interim digest; the original continue
-// send reassembles from the reloaded history, publishes the compaction,
-// and closes with a short ack; the resumed continue send consumes the
-// discovered corpus sources and the final report turn.
-func detachedModel() types.Model {
-	calls := append(fixtureBatch(),
-		types.ToolUse{ID: "call_search_tools", Name: toolsearch.SearchToolsName, Args: jsontextArgs(`{"query":"corpus"}`)},
-		types.ToolUse{ID: "call_source_corpus_batch", Name: "source_corpus_batch", Args: jsontextArgs(`{"kind":"batch"}`)},
-		types.ToolUse{ID: "call_source_corpus_stream", Name: "source_corpus_stream", Args: jsontextArgs(`{"kind":"stream"}`)},
-	)
-	return &scriptedTurns{turns: [][]types.ModelChunk{
-		{{ToolUse: &calls[0]}, {ToolUse: &calls[1]}, {Finish: types.FinishToolUse, Usage: turnUsage(160, 40)}},
-		{{ToolUse: &calls[2]}, {Finish: types.FinishToolUse, Usage: turnUsage(140, 30)}},
-		{{Kind: types.DeltaText, Delta: interimDigest()}, {Finish: types.FinishStop, Usage: turnUsage(180, 45)}},
-		{{Kind: types.DeltaText, Delta: "Interim acknowledged."}, {Finish: types.FinishStop, Usage: turnUsage(180, 10)}},
-		{{ToolUse: &calls[3]}, {ToolUse: &calls[4]}, {Finish: types.FinishToolUse, Usage: turnUsage(180, 45)}},
-		{{Kind: types.DeltaText, Delta: "Resumed report: the batch and stream threads still compare as recorded."}, {Finish: types.FinishStop, Usage: turnUsage(210, 70)}},
-	}}
-}
+// reattaches through Attach with that cursor. Continue then reloads the
+// durable history, publishes the compaction, and suspends on its fourth
+// provider entry; Resume consumes the single-use token and completes the
+// run from the same conversation.
 
 // capturingRuns wraps the runs store so the example learns the run id the
 // detached Send minted: a detached Send returns without streaming, so the
@@ -322,9 +308,11 @@ func ComposeDetached(ctx context.Context, topic string) (DetachedReport, error) 
 	sessions := storeStack.SessionLog
 	log := stores.NewMemoryEventLog()
 	runs := &capturingRuns{Runs: stores.NewMemoryRuns()}
+	checkpoints := stores.NewMemoryCheckpoints()
 	conv, err := gohan.NewNativeConversation(stack, "research_report",
 		gohan.WithConversationRuns(runs),
 		gohan.WithConversationEventLog(log),
+		gohan.WithConversationCheckpoints(checkpoints),
 		gohan.Detached(),
 	)
 	if err != nil {
@@ -359,6 +347,14 @@ func ComposeDetached(ctx context.Context, topic string) (DetachedReport, error) 
 	var rep DetachedReport
 	rep.RunID = runID
 	rep.Logged = logged
+	if len(logged) < 2 {
+		return rep, fmt.Errorf("run %s logged %d events: need at least two to drop before the tail", runID, len(logged))
+	}
+	final := logged[len(logged)-1]
+	done, ok := final.Payload.(types.Done)
+	if !ok || done.Reason != types.StopCompleted {
+		return rep, fmt.Errorf("run %s ended in %T: want a completed Done", runID, final.Payload)
+	}
 	// The client consumes a prefix of the logged events and drops at a
 	// known Seq before the logged tail.
 	rep.Cursor = logged[len(logged)-2].Meta.Seq
@@ -368,205 +364,199 @@ func ComposeDetached(ctx context.Context, topic string) (DetachedReport, error) 
 		}
 		rep.Reattached = append(rep.Reattached, ev)
 	}
-	// The original run continues on the reloaded history: its first
-	// assembly crosses the fixture window and publishes the compaction
-	// over store-canonical messages, and the short ack turn that follows
-	// closes the run so the log holds exactly one message past the
-	// compacted history the resumed run replays.
-	for _, err := range conv.Continue(ctx, "research") {
+	// Continue reloads the durable history, publishes the compaction over
+	// store-canonical messages, and suspends the run on its fourth provider
+	// entry: the fixture model suspends there before producing a response.
+	var continueEvents []types.Event
+	for ev, err := range conv.Continue(ctx, "research") {
+		if err != nil {
+			return rep, fmt.Errorf("continue: %w", err)
+		}
+		continueEvents = append(continueEvents, ev)
+	}
+	var suspension types.Suspended
+	suspensions := 0
+	for _, ev := range continueEvents {
+		if e, ok := ev.(types.Suspended); ok {
+			suspension = e
+			suspensions++
+			continue
+		}
+		if _, ok := ev.(types.Done); ok {
+			return rep, errors.New("the continue run completed: no suspension occurred")
+		}
+	}
+	if suspensions != 1 {
+		return rep, fmt.Errorf("the continue run recorded %d suspensions: want exactly one", suspensions)
+	}
+	if suspension.Reason != types.AwaitingControl {
+		return rep, fmt.Errorf("suspension reason %q: want %q", suspension.Reason, types.AwaitingControl)
+	}
+	if suspension.Token == "" {
+		return rep, errors.New("the suspension carries an empty resume token")
+	}
+	continueRunID := runs.captured()
+	if continueRunID == "" {
+		return rep, errors.New("the continue run minted no run id")
+	}
+	if continueRunID == runID {
+		return rep, fmt.Errorf("continue reused the send run id %s: it must mint a distinct run", runID)
+	}
+	var continueLogged []stores.Event
+	for ev, err := range log.Read(ctx, continueRunID, 0) {
 		if err != nil {
 			return rep, err
 		}
+		continueLogged = append(continueLogged, ev)
 	}
+	for _, e := range continueLogged {
+		if s, ok := e.Payload.(types.Suspended); ok && s.Token == suspension.Token {
+			rep.Suspension = e
+			break
+		}
+	}
+	if rep.Suspension.Payload == nil {
+		return rep, fmt.Errorf("run %s logged no suspension record for token %s", continueRunID, suspension.Token)
+	}
+	cp, err := checkpoints.Peek(ctx, suspension.Token)
+	if err != nil {
+		return rep, fmt.Errorf("peek resume token: %w", err)
+	}
+	if cp.RunID != continueRunID {
+		return rep, fmt.Errorf("checkpoint names run %s: want the suspended run %s", cp.RunID, continueRunID)
+	}
+	if cp.SessionID != "research" {
+		return rep, fmt.Errorf("checkpoint names session %q: want research", cp.SessionID)
+	}
+	if cp.Flow != "research_report" {
+		return rep, fmt.Errorf("checkpoint names flow %q: want research_report", cp.Flow)
+	}
+	if cp.Reason != types.AwaitingControl {
+		return rep, fmt.Errorf("checkpoint reason %q: want %q", cp.Reason, types.AwaitingControl)
+	}
+	// The durable history the Resume rebuilds from is frozen here: the
+	// compaction the Continue run published is part of it.
 	loaded, err := sessions.Load(ctx, "research")
 	if err != nil {
 		return rep, err
 	}
 	rep.History = loaded.Messages
-	rep.Requests = slices.Clone(requests)
-	// The resumed run reassembles from the compacted history the log
-	// already holds: the persisted messages as they stood at the last
-	// assembly, with the store-canonical ids, minus the terminal assistant
-	// response the finished run appended after its last request. The
-	// cloned history lands in a fresh session log under the same session
-	// name, so the compaction publication the history carries still names
-	// the session that loads it, and the resumed run shares the fixture
-	// notes store and the scripted model, whose next turn it consumes.
-	resumedLog := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
-	resumed := slices.Clone(loaded.Messages)
-	if len(resumed) > 0 {
-		resumed = resumed[:len(resumed)-1]
+	if !hasDurableCompaction(rep.History) {
+		return rep, errors.New("the session history carries no durable compaction before the Resume")
 	}
-	// The durable compaction message keeps its predetermined publication
-	// identity only through AppendCompaction; a plain append would remint
-	// its id and the resumed run would refuse the payload.
-	head := 0
-	ver := int64(0)
-	slot := 0
-	// appendOriginal replays a plain history span while keeping the stored
-	// bytes the original log committed: Append remints message ids, so the
-	// payload is captured first and re-seeded into the slot Append filled.
-	appendOriginal := func(msgs []types.Message) error {
-		payloads := make([]json.RawMessage, len(msgs))
-		for j := range msgs {
-			b, err := json.Marshal(msgs[j])
-			if err != nil {
-				return fmt.Errorf("marshal replay message: %w", err)
-			}
-			payloads[j] = b
-		}
-		next, err := resumedLog.Append(ctx, "research", ver, msgs...)
+	// The four provider entries the suspension covers are the opening
+	// send's three turns plus the suspended Continue assembly.
+	if len(model.requests) != 4 {
+		return rep, fmt.Errorf("the fixture recorded %d provider captures before the suspension: want four", len(model.requests))
+	}
+	rep.Requests = slices.Clone(model.requests)
+	var delivered []types.Event
+	for ev, err := range conv.Resume(ctx, suspension.Token, stores.ResumeInput{
+		Verdict: stores.VerdictApprove,
+	}) {
 		if err != nil {
-			return err
+			return rep, fmt.Errorf("resume: %w", err)
 		}
-		for j, b := range payloads {
-			identity := fmt.Sprintf("session/research/message/%d", slot+j)
-			if err := resumedLog.SeedRecord(ctx, identity, stores.RecordEnvelope{
-				Shape:         "Message",
-				SchemaVersion: int(stores.CurrentSchemaVersion),
-				Payload:       b,
-			}); err != nil {
-				return err
-			}
-		}
-		slot += len(msgs)
-		ver = next
-		return nil
+		delivered = append(delivered, ev)
 	}
-	for i, m := range resumed {
-		isPublication := false
-		for _, b := range m.Blocks {
-			if _, ok := b.(types.Compaction); ok {
-				isPublication = true
-			}
-		}
-		if !isPublication {
-			continue
-		}
-		if head < i {
-			if err := appendOriginal(resumed[head:i]); err != nil {
+	if len(model.requests) != 6 {
+		return rep, fmt.Errorf("the fixture recorded %d provider captures after the resume: want six", len(model.requests))
+	}
+	rep.ResumedRequests = slices.Clone(model.requests[4:])
+	// The resumed run's durable suffix starts strictly after the
+	// suspension record and must mirror what the Resume iterator
+	// delivered. The terminal flush can land just after the iterator
+	// returns, so poll the log within the same bound waitLogged uses.
+	deadline := time.Now().Add(10 * time.Second)
+	var suffix []stores.Event
+	for {
+		suffix = nil
+		for ev, err := range log.Read(ctx, continueRunID, 0) {
+			if err != nil {
 				return rep, err
 			}
+			if ev.Meta.Seq > rep.Suspension.Meta.Seq {
+				suffix = append(suffix, ev)
+			}
 		}
-		next, err := resumedLog.AppendCompaction(ctx, "research", ver, m)
-		if err != nil {
-			return rep, err
+		if len(suffix) > 0 {
+			if _, ok := suffix[len(suffix)-1].Payload.(types.Done); ok {
+				break
+			}
 		}
-		slot++
-		ver = next
-		head = i + 1
+		if time.Now().After(deadline) {
+			return rep, fmt.Errorf("run %s logged no completing suffix after the suspension Seq %d within 10s", continueRunID, rep.Suspension.Meta.Seq)
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
-	if head < len(resumed) {
-		if err := appendOriginal(resumed[head:]); err != nil {
-			return rep, err
+	if len(suffix) != len(delivered) {
+		return rep, fmt.Errorf("the resumed suffix holds %d events: the resume delivered %d", len(suffix), len(delivered))
+	}
+	dones := 0
+	for i, e := range suffix {
+		rep.ResumeEvents = append(rep.ResumeEvents, e)
+		loggedPayload, merr := json.Marshal(e.Payload)
+		deliveredPayload, derr := json.Marshal(delivered[i])
+		if merr != nil || derr != nil {
+			return rep, fmt.Errorf("marshal resumed event %d: %v %v", i, merr, derr)
+		}
+		if !bytes.Equal(loggedPayload, deliveredPayload) {
+			return rep, fmt.Errorf("resumed event %d logged %s: the resume delivered %s", i, loggedPayload, deliveredPayload)
+		}
+		if e.Meta.RunID != continueRunID {
+			return rep, fmt.Errorf("resumed event %d belongs to run %s: want the suspended run %s", i, e.Meta.RunID, continueRunID)
+		}
+		if s, ok := e.Payload.(types.Suspended); ok {
+			return rep, fmt.Errorf("resumed event %d suspends again with reason %q: the resume must complete", i, s.Reason)
+		}
+		if d, ok := e.Payload.(types.Done); ok {
+			dones++
+			if d.Reason != types.StopCompleted {
+				return rep, fmt.Errorf("resumed Done carries reason %q: want StopCompleted", d.Reason)
+			}
 		}
 	}
-	resumedStack, _, _, err := buildStack(topic, &requests, withModel(model), withNotesStore(notesStore), withSessionLog(resumedLog))
-	if err != nil {
-		return rep, err
+	if dones != 1 {
+		return rep, fmt.Errorf("the resumed suffix holds %d Done events: want exactly one completing terminal", dones)
 	}
-	resumedConv, err := gohan.NewNativeConversation(resumedStack, "research_report",
-		gohan.WithConversationRuns(stores.NewMemoryRuns()),
-		gohan.WithConversationEventLog(stores.NewMemoryEventLog()),
-	)
-	if err != nil {
-		return rep, err
+	if _, ok := suffix[len(suffix)-1].Payload.(types.Done); !ok {
+		return rep, fmt.Errorf("the resumed log suffix ends in %T: it must end in the completing Done", suffix[len(suffix)-1].Payload)
 	}
-	n := len(requests)
-	for _, err := range resumedConv.Continue(ctx, "research") {
-		if err != nil {
-			return rep, err
-		}
+	_, err = checkpoints.Peek(ctx, suspension.Token)
+	rep.TokenConsumed = errors.Is(err, types.ErrTokenConsumed)
+	if !rep.TokenConsumed {
+		return rep, fmt.Errorf("post-resume peek returned %v: want a consumed token", err)
 	}
-	rep.ResumedRequests = slices.Clone(requests[n:])
 	return rep, nil
 }
 
 // FanoutReport reports a wider retrieval fan-out against the declared cost
-// ceiling: whether the run refused the fan-out, the refusal reason, the
-// parent's accumulated total, and the per-source child costs it accumulated.
+// ceiling: whether the run refused the fan-out, the refusal reason, and the
+// parent's accumulated total.
 type FanoutReport struct {
 	Refused    bool
 	Reason     string
 	ParentCost float64
-	ChildCosts []float64
 }
 
 // ComposeWiderFanout composes the same research flow with a retrieval
 // fan-out wider than the declared ceiling admits and reports the refusal.
-// fanoutModel wraps the scripted wider fan-out and attributes each model
-// call's charge, at the fixture pricing, to the source that turn serves.
-type fanoutModel struct {
-	turns *scriptedTurns
-	order []string
-
-	mu    sync.Mutex
-	costs map[string]float64
-}
-
-func (m *fanoutModel) Profile() types.ModelProfile { return m.turns.Profile() }
-
-func (m *fanoutModel) Generate(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
-	return func(yield func(types.ModelChunk, error) bool) {
-		src := ""
-		if m.turns.i < len(m.order) {
-			src = m.order[m.turns.i]
-		}
-		for chunk, err := range m.turns.Generate(ctx, req) {
-			if chunk.Usage != nil && src != "" {
-				m.mu.Lock()
-				m.costs[src] += float64(chunk.Usage.InputTokens)*0.001 + float64(chunk.Usage.OutputTokens)*0.002
-				m.mu.Unlock()
-			}
-			if !yield(chunk, err) {
-				return
-			}
-			if err != nil {
-				return
-			}
-		}
-	}
-}
-
-func (m *fanoutModel) sources() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var names []string
-	seen := map[string]bool{}
-	for _, n := range m.order {
-		if n == "" || seen[n] {
-			continue
-		}
-		seen[n] = true
-		names = append(names, n)
-	}
-	return names
-}
-
-func (m *fanoutModel) costOf(src string) float64 {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.costs[src]
-}
-
+// The parent cost is the run's own accounting at the moment the MaxCost
+// limit refused the next model call.
 func ComposeWiderFanout(ctx context.Context, topic string) (FanoutReport, error) {
 	batch := types.ToolUse{ID: "call_wide_batch", Name: "source_corpus_batch", Args: jsontextArgs(`{"kind":"batch"}`)}
 	stream := types.ToolUse{ID: "call_wide_stream", Name: "source_corpus_stream", Args: jsontextArgs(`{"kind":"stream"}`)}
 	search := types.ToolUse{ID: "call_wide_search_tools", Name: toolsearch.SearchToolsName, Args: jsontextArgs(`{"query":"corpus"}`)}
 	calls := append(fixtureBatch(), search, batch, stream, batch, stream)
-	m := &fanoutModel{
-		turns: &scriptedTurns{turns: [][]types.ModelChunk{
-			{{ToolUse: &calls[0]}, {ToolUse: &calls[1]}, {Finish: types.FinishToolUse, Usage: turnUsage(160, 40)}},
-			{{ToolUse: &calls[2]}, {Finish: types.FinishToolUse, Usage: turnUsage(140, 30)}},
-			{{ToolUse: &calls[3]}, {Finish: types.FinishToolUse, Usage: turnUsage(200, 60)}},
-			{{ToolUse: &calls[4]}, {Finish: types.FinishToolUse, Usage: turnUsage(200, 60)}},
-			{{ToolUse: &calls[5]}, {Finish: types.FinishToolUse, Usage: turnUsage(200, 60)}},
-			{{ToolUse: &calls[6]}, {Finish: types.FinishToolUse, Usage: turnUsage(200, 60)}},
-			{{Kind: types.DeltaText, Delta: "Wide report."}, {Finish: types.FinishStop, Usage: turnUsage(210, 70)}},
-		}},
-		order: []string{"search_archive", "", "source_corpus_batch", "source_corpus_stream", "source_corpus_batch", "source_corpus_stream", ""},
-		costs: map[string]float64{},
-	}
+	m := &scriptedTurns{turns: [][]types.ModelChunk{
+		{{ToolUse: &calls[0]}, {ToolUse: &calls[1]}, {Finish: types.FinishToolUse, Usage: turnUsage(160, 40)}},
+		{{ToolUse: &calls[2]}, {Finish: types.FinishToolUse, Usage: turnUsage(140, 30)}},
+		{{ToolUse: &calls[3]}, {Finish: types.FinishToolUse, Usage: turnUsage(200, 60)}},
+		{{ToolUse: &calls[4]}, {Finish: types.FinishToolUse, Usage: turnUsage(200, 60)}},
+		{{ToolUse: &calls[5]}, {Finish: types.FinishToolUse, Usage: turnUsage(200, 60)}},
+		{{ToolUse: &calls[6]}, {Finish: types.FinishToolUse, Usage: turnUsage(200, 60)}},
+		{{Kind: types.DeltaText, Delta: "Wide report."}, {Finish: types.FinishStop, Usage: turnUsage(210, 70)}},
+	}}
 	var requests []types.ModelRequest
 	stack, _, _, err := buildStack(topic, &requests, withModel(m), withMaxCost(1.0))
 	if err != nil {
@@ -580,29 +570,29 @@ func ComposeWiderFanout(ctx context.Context, topic string) (FanoutReport, error)
 		return FanoutReport{}, err
 	}
 	ctx = types.WithPrincipal(ctx, reportPrincipal())
+	var rep FanoutReport
 	var refusal error
-	for _, err := range conv.Send(ctx, "research", types.Message{
+	for ev, err := range conv.Send(ctx, "research", types.Message{
 		Role:   types.RoleUser,
 		Blocks: []types.Block{types.Text{Text: topic}},
 	}) {
 		if err != nil {
 			refusal = err
+			continue
 		}
-	}
-	var rep FanoutReport
-	for _, src := range m.sources() {
-		c := m.costOf(src)
-		rep.ChildCosts = append(rep.ChildCosts, c)
-		rep.ParentCost += c
+		if done, ok := ev.(types.Done); ok {
+			rep.ParentCost = done.Cost
+		}
 	}
 	var exceeded *types.LimitExceededError
 	if refusal != nil {
-		if errors.As(refusal, &exceeded) {
+		if errors.As(refusal, &exceeded) && exceeded.Limit == "MaxCost" {
 			rep.Refused = true
 			rep.Reason = refusal.Error()
-		} else {
-			return rep, refusal
+			rep.ParentCost = exceeded.Value
+			return rep, nil
 		}
+		return rep, refusal
 	}
 	return rep, nil
 }
