@@ -117,7 +117,8 @@ func TestDriveDeliversEventsWhileEffectRuns(t *testing.T) {
 func TestDriveStopsEffectWorkWhenConsumerStops(t *testing.T) {
 	rt := &emitRT{observeCancel: true}
 	consumed := 0
-	for range Drive(context.Background(), rt, runtime.AgentRun{}) {
+	for _, err := range Drive(context.Background(), rt, runtime.AgentRun{}) {
+		_ = err
 		consumed++
 		if consumed == 1 {
 			break

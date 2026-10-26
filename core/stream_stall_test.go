@@ -534,7 +534,8 @@ func TestStreamStall(t *testing.T) {
 		go func() {
 			defer close(streamDone)
 			n := 0
-			for range conv.Send(ctx, "sess-1", userMsg("hi")) {
+			for _, err := range conv.Send(ctx, "sess-1", userMsg("hi")) {
+				_ = err
 				n++
 				if n == 1 {
 					// The consumer walks away: retention stops, the run
@@ -721,7 +722,8 @@ func TestStreamStall(t *testing.T) {
 		go func() {
 			defer close(streamDone)
 			n := 0
-			for range conv.Send(ctx, "sess-1", userMsg("hi")) {
+			for _, err := range conv.Send(ctx, "sess-1", userMsg("hi")) {
+				_ = err
 				n++
 				if n == 1 {
 					return
