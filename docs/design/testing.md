@@ -8,7 +8,7 @@
 - Scenario tests for S1–S4 in `examples/excursions` are the acceptance suite of the spec.
 - Real-provider integration tests behind a build tag; load test for S3 in a separate pipeline.
 - Scenario binding: each scenario ID in `openspec/scenarios.json` is the exact name of the subtest that covers it (`t.Run("flow.plain-invoke", …)`). `task spec:coverage` reports IDs with no matching subtest and subtests named like IDs that are not in the registry. It reads concatenated `go test -json` streams from all three modules (root, `adapter/otel`, `examples`). `task spec:gate` gates the same matching at milestone `M0.5` by default (`GATE=` overrides). No comments or tags carry IDs.
-- `t.Parallel()` and `t.Cleanup()` throughout; `synctest` for harness-time tests (budgets, timeouts, heartbeats) and `memory.WithNow` or short TTLs against testcontainers for store-time tests (`stores` *Two clocks*); goroutine-leak profile in conformance; hand-written fakes in `gohantest`, no mock generators.
+- `t.Parallel()` and `t.Cleanup()` throughout; `synctest` for harness-time tests (budgets, timeouts, heartbeats). For memory store-time tests, use `stores.WithMemoryRunClock` and `stores.WithMemoryCheckpointClock`; `postgres.WithClock` overrides the default PostgreSQL `clock_timestamp()` store clock for tests. Store-time tests are separate from harness-time tests (`stores` *Two clocks*); goroutine-leak profile in conformance; hand-written fakes in `gohantest`, no mock generators.
 
 
 ## Testkit shapes (illustrative tier — testkit is not a capability; names may change in task 29)

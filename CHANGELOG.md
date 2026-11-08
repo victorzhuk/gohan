@@ -11,6 +11,9 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ### Fixed
 
+- Recovery discovery excludes obsolete or expired checkpoints and non-preempted suspensions before applying limits; memory checkpoint discovery requires a bound run store.
+- Session lease acquisition refuses competing live runs, and reclaim accepts only expired running or resuming runs. Checkpoint TTL is configured independently of the lease, with explicit expiry preserved.
+- PostgreSQL uses database time for lease, checkpoint, recovery discovery, workspace-owner and notice-claim operations instead of the process clock.
 - Ordinary approval receipts authorize only their recorded call and complete arguments, not later calls in the same session.
 - Resume revalidates current approval policy and recorded quorum votes before execution, leaving the token pending when a decision is refused.
 - Approval and journal fingerprints use exact numeric canonicalization and the `exact-v1:` format; legacy rounded scoped grants require renewal, and legacy unresolved journal entries require exact full-argument proof before reuse.
