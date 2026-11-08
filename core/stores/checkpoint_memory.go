@@ -335,40 +335,48 @@ func (s *MemoryCheckpoints) UpdatePending(ctx context.Context, t types.ResumeTok
 // after conditional consumption and a failed lease left the recorded
 // decision recoverable exactly once. Current-token, consumed-state, expiry
 // and suspended-run filters all run before the limit, so an older
-// ineligible record cannot shadow a newer eligible one. The run store is
-// consulted only after the checkpoint-local filters pass, and the lock
-// order stays checkpoint then run: no run path calls back into this store.
+// ineligible record cannot shadow a newer eligible one. Candidate records
+// are snapshotted under the store lock and the run store is consulted only
+// after the lock is released, so an injected CheckpointRuns port may
+// re-enter this store without a mutex cycle. A suspension that moves
+// between the snapshot and the lease stays fenced at ResumingCheckpoint.
 func (s *MemoryCheckpoints) ResumeReady(ctx context.Context, limit int) ([]Checkpoint, error) {
 	if s.cruns == nil {
 		return nil, fmt.Errorf("gohan: recovery discovery unbound: %w", types.ErrCheckpointIncompatible)
 	}
+	type candidate struct {
+		runID string
+		token types.ResumeToken
+		raw   []byte
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := s.now()
-	out := make([]Checkpoint, 0)
-	for t, rec := range s.toks {
-		if limit > 0 && len(out) >= limit {
-			break
-		}
-		if !rec.consumed {
+	var cands []candidate
+	for runID, t := range s.byRun {
+		rec, ok := s.toks[t]
+		if !ok || !rec.consumed {
 			continue
 		}
 		if !rec.cp.ExpiresAt.IsZero() && !now.Before(rec.cp.ExpiresAt) {
 			continue
 		}
-		runID := rec.cp.RunID
-		if s.byRun[runID] != t {
+		cands = append(cands, candidate{runID: runID, token: t, raw: append([]byte(nil), rec.raw...)})
+	}
+	s.mu.Unlock()
+
+	out := make([]Checkpoint, 0)
+	for _, c := range cands {
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+		if cur, err := s.cruns.SuspensionToken(ctx, c.runID); err != nil || cur != c.token {
 			continue
 		}
-		if cur, err := s.cruns.SuspensionToken(ctx, runID); err != nil || cur != t {
-			continue
-		}
-		cp, err := s.decode(ctx, rec)
+		cp, err := s.decode(ctx, &checkpointRecord{raw: c.raw})
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, cp)
 	}
 	return out, nil
-
 }

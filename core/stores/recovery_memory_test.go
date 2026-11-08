@@ -2,6 +2,7 @@ package stores
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -295,6 +296,94 @@ func TestRecoveryDiscovery(t *testing.T) {
 			t.Fatalf("preempted run state = %v, want Suspended", got[0].State)
 		}
 	})
+
+	t.Run("stores.resume-ready-reentrant-run-port", func(t *testing.T) {
+		t.Parallel()
+		now := time.Unix(1700000000, 0)
+		clock := func() time.Time { return now }
+		port := &reentrantRunPort{}
+		cps := NewMemoryCheckpoints(WithMemoryCheckpointClock(clock), WithMemoryCheckpointRuns(port))
+		port.cps = cps
+		ctx := context.Background()
+
+		decoy, err := cps.Put(ctx, Checkpoint{})
+		if err != nil {
+			t.Fatalf("put decoy checkpoint: %v", err)
+		}
+		port.peek = decoy
+		tok, err := cps.Put(ctx, Checkpoint{RunID: "run-r", SessionID: "s1"})
+		if err != nil {
+			t.Fatalf("put run-r checkpoint: %v", err)
+		}
+		port.token = tok
+		if _, err := cps.Consume(ctx, tok, ResumeInput{}); err != nil {
+			t.Fatalf("consume run-r checkpoint: %v", err)
+		}
+
+		type consult struct {
+			got []Checkpoint
+			err error
+		}
+		done := make(chan consult, 1)
+		go func() {
+			got, err := cps.ResumeReady(ctx, 1)
+			done <- consult{got, err}
+		}()
+		select {
+		case r := <-done:
+			if r.err != nil {
+				t.Fatalf("ResumeReady: %v", r.err)
+			}
+			if len(r.got) != 1 || r.got[0].RunID != "run-r" {
+				t.Fatalf("ResumeReady = %+v, want run-r's consumed checkpoint", r.got)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("ResumeReady deadlocked: the run port re-entered the checkpoint store while its mutex was held")
+		}
+	})
+
+	t.Run("stores.preempted-rank-before-decode", func(t *testing.T) {
+		t.Parallel()
+		now := time.Unix(1700000000, 0)
+		s := NewMemoryRuns(WithMemoryRunClock(func() time.Time { return now }))
+		ctx := context.Background()
+
+		start := func(t *testing.T, id, session string) {
+			t.Helper()
+			l, err := s.Start(ctx, Run{RunID: id, SessionID: session}, time.Minute)
+			if err != nil {
+				t.Fatalf("start %s: %v", id, err)
+			}
+			if err := s.SuspendWithReason(ctx, l, types.ResumeToken("tok-"+id), types.Preempted); err != nil {
+				t.Fatalf("suspend %s: %v", id, err)
+			}
+		}
+		start(t, "run-old", "s1")
+		now = now.Add(time.Minute)
+		start(t, "run-z", "s2")
+		start(t, "run-a", "s3")
+		now = now.Add(time.Minute)
+		start(t, "run-worst", "s4")
+
+		if err := s.SeedRecord(ctx, "run/run-worst", RecordEnvelope{
+			Shape:         "Run",
+			SchemaVersion: 1,
+			Payload:       json.RawMessage(`{"RunID":"run-worst","Heartbeat":"not-a-time"}`),
+		}); err != nil {
+			t.Fatalf("seed corrupt run-worst bytes: %v", err)
+		}
+
+		got, err := s.Preempted(ctx, 3)
+		if err != nil {
+			t.Fatalf("Preempted under limit three decoded a non-winning record: %v", err)
+		}
+		if len(got) != 3 || got[0].RunID != "run-old" || got[1].RunID != "run-a" || got[2].RunID != "run-z" {
+			t.Fatalf("Preempted = %+v, want oldest first with ties broken by run id", got)
+		}
+		if _, err := s.Preempted(ctx, 4); err == nil {
+			t.Fatal("Preempted accepted a corrupt record once its limit covers it")
+		}
+	})
 }
 
 func TestCheckpointLifetimePolicy(t *testing.T) {
@@ -351,4 +440,25 @@ func TestCheckpointLifetimePolicy(t *testing.T) {
 			t.Fatal("negative ttl accepted, want refusal before any write")
 		}
 	})
+}
+
+// reentrantRunPort consults the checkpoint store inside SuspensionToken, so
+// discovery that holds the checkpoint mutex across the consult
+// self-deadlocks instead of completing. The peeked decoy token stays
+// unconsumed because Peek refuses consumed tokens.
+type reentrantRunPort struct {
+	cps   *MemoryCheckpoints
+	peek  types.ResumeToken
+	token types.ResumeToken
+}
+
+func (p *reentrantRunPort) SuspensionToken(ctx context.Context, _ string) (types.ResumeToken, error) {
+	if _, err := p.cps.Peek(ctx, p.peek); err != nil {
+		return "", err
+	}
+	return p.token, nil
+}
+
+func (p *reentrantRunPort) ResumingCheckpoint(context.Context, string, types.ResumeToken, time.Duration) (Lease, error) {
+	return Lease{}, types.ErrRunNotActive
 }
