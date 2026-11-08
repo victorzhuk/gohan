@@ -123,10 +123,12 @@ tasks:
 
   examples:run:
     desc: Run each shipped example main offline
+    vars:
+      DIRS: quickstart excursions kafka-refunds temporal-travel camunda-invoice data-analyst
     cmds:
       - |
         set -euo pipefail
-        for dir in quickstart excursions kafka-refunds temporal-travel camunda-invoice; do
+        for dir in {{.DIRS}}; do
           echo "examples:run: $dir"
           timeout 2m go -C examples run ./"$dir"
         done
