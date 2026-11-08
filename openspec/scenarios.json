@@ -3812,5 +3812,45 @@
     "capability": "tools",
     "origin": "repair-runtime-safety-contracts",
     "title": "HTTPS uses a pinned address with the original authority"
+  },
+  "stores.reclaim-oldest-first-exclusive": {
+    "capability": "stores",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "the oldest expired run is reclaimed first"
+  },
+  "stores.start-refused-reclaimed-lease": {
+    "capability": "stores",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "start is refused against a reclaimed live lease"
+  },
+  "stores.resume-older-owner-blocks-start": {
+    "capability": "stores",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a resumed older owner blocks a later start"
+  },
+  "stores.resume-ready-reentrant-run-port": {
+    "capability": "stores",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "discovery re-enters the run port without deadlocking"
+  },
+  "stores.preempted-rank-before-decode": {
+    "capability": "stores",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "preempted discovery ranks winners before decoding records"
+  },
+  "recovery.consumed-token-fenced": {
+    "capability": "recovery",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "recovery fences on the discovered token"
+  },
+  "recovery.eventlog-bound-outlives-drive": {
+    "capability": "recovery",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a drive spanning multiple write bounds keeps its tail"
+  },
+  "recovery.redaction-tenant-continuity": {
+    "capability": "recovery",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "recovered redaction continues the session tenant map"
   }
 }

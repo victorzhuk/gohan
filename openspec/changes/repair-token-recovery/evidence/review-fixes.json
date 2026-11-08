@@ -1,0 +1,139 @@
+{
+ "task": "post-review fix wave (3.1/3.2 evidence)",
+ "reviewed_range": "47910f3..9b39189",
+ "lenses": [
+  "z-review-general",
+  "z-review-arch",
+  "z-review-quality",
+  "z-review-qa",
+  "z-review-perf"
+ ],
+ "findings_and_fixes": [
+  {
+   "id": "F1",
+   "severity": "critical",
+   "title": "postgres session ownership inspected only newest row",
+   "fixed_by": "f60be93",
+   "red_evidence": "demonstrated: FixPG pre-fix run 4/4 FAIL (second reclaim nil, Start nil, resume+Start nil, Preempted(1)=run-p)"
+  },
+  {
+   "id": "F2",
+   "severity": "high",
+   "title": "consumed recovery fenced the freshly-read current token instead of the discovered one",
+   "fixed_by": "9e8be61",
+   "red_evidence": "structural: TestRecoveryContract/recovery.consumed-token-fenced green post-fix; pre-fix copy compile-blocked (checkpointRunPort undefined) \u2014 construction argument recorded"
+  },
+  {
+   "id": "F3",
+   "severity": "high",
+   "title": "single 30s completion context spanned the whole recovered drive; terminal write error discarded",
+   "fixed_by": "9e8be61",
+   "red_evidence": "structural: TestRecoveryEventBound/recovery.eventlog-bound-outlives-drive green post-fix; pre-fix copy compile-blocked (cannot assign to recoveredEventBound const)"
+  },
+  {
+   "id": "F4",
+   "severity": "medium",
+   "title": "legacy reasonless preempted rows dropped by suspend_reason filter",
+   "fixed_by": "f60be93",
+   "red_evidence": "demonstrated in FixPG red run (Preempted(1) returned the approval row)"
+  },
+  {
+   "id": "F5",
+   "severity": "medium",
+   "title": "memory ResumeReady consulted injected port under the checkpoint mutex",
+   "fixed_by": "c5b6582",
+   "red_evidence": "demonstrated: stores.resume-ready-reentrant-run-port deadlock fatal pre-fix (recovery_memory_test.go:341, red-capture worktree at 9b39189)"
+  },
+  {
+   "id": "F6",
+   "severity": "medium",
+   "title": "adapter tests asserted the unpublished root interface",
+   "fixed_by": "f60be93",
+   "red_evidence": "structural: adapter-local checkpointRunPort; grep confirms no stores.CheckpointRuns assertion remains"
+  },
+  {
+   "id": "Q1",
+   "severity": "medium",
+   "title": "db-time scenario could not discriminate process vs server clock",
+   "fixed_by": "f60be93",
+   "red_evidence": "mitigated by construction: expiry/staleness computed inside SQL (clockExpr), Stale assertion added; same-kernel skew remains unprovable \u2014 residual"
+  },
+  {
+   "id": "Q2",
+   "severity": "low",
+   "title": "crash-recovery leg tolerated nil Recover error",
+   "fixed_by": "9e8be61",
+   "red_evidence": "strict assert landed (ErrBatchOverrun/LimitExceededError wrap required)"
+  },
+  {
+   "id": "Q3",
+   "severity": "medium",
+   "title": "recovered tail redaction keyed tenant ''",
+   "fixed_by": "9e8be61",
+   "red_evidence": "premise stale: recoveryContext already carried Principal at HEAD; regression passed pre-fix; belt-and-braces WithPrincipal added"
+  },
+  {
+   "id": "P3",
+   "severity": "medium",
+   "title": "separate SELECT clock_timestamp() round-trip on hot paths",
+   "fixed_by": "f60be93",
+   "red_evidence": "statement-folded (FOR UPDATE reads, RETURNING, INSERT VALUES); journal Reserve keeps pre-insert Go instant by documented payload-encoding necessity"
+  },
+  {
+   "id": "P4",
+   "severity": "medium",
+   "title": "driveRecovered read the full event log per run for the tail",
+   "fixed_by": "9e8be61",
+   "red_evidence": "O(log n) monotone-cursor probe without port change; true O(1) tail needs an EventLog port method \u2014 residual"
+  },
+  {
+   "id": "P5",
+   "severity": "low",
+   "title": "memory Preempted decoded all matches before limit",
+   "fixed_by": "c5b6582",
+   "red_evidence": "bounded ranking before decode; corrupt-record-in-window still errors (limit-4 pinned)"
+  },
+  {
+   "id": "P6",
+   "severity": "low",
+   "title": "memory ResumeReady walked every token under mutex",
+   "fixed_by": "c5b6582",
+   "red_evidence": "candidate set from byRun, snapshot then release"
+  },
+  {
+   "id": "S1",
+   "severity": "shared-suite gap",
+   "title": "storetest.Checkpoint dropped discovery Token",
+   "fixed_by": "uncommitted (RedEvidence)",
+   "red_evidence": "shared RecoveryDiscovery leg asserts non-zero Token == current token; pg + core bindings green"
+  }
+ ],
+ "out_of_scope_residuals": [
+  "P1/P2: partial indexes for ResumeReady join/created_at and Preempted reason filter require a DDL migration \u2014 prohibited by this change's boundaries; follow-up capability change needed",
+  "GOWORK=off independent adapter build needs root release carrying testkit/storetest additions + go.sum refresh \u2014 release child owns it",
+  "same-kernel testcontainers cannot prove clock-skew attribution end-to-end; statement-folded SQL makes process clocks structurally irrelevant for ownership decisions"
+ ],
+ "floor": {
+  "task_lint": "0 issues exit 0 at e4a1ace (after QF1008 selector patch)",
+  "root_module": "task spec:types + go test -short ./... exit 0 (final-root)",
+  "core_race": "go test -race -short ./core ./core/stores exit 0 at 9e8be61",
+  "postgres_full": "go -C adapter/postgres test -tags full exit 0 (final-pg) incl. shared-suite Token wiring",
+  "spec_gate": "M0.5 exit 0, docker leg excluded (sandbox DNS; stock wrapper pipefail aborts downstream legs); final rerun: registered=719 subtests=2339 covered=605 missing=114 missing_in_scope=19 unregistered=0 \u2014 all 17 change rows plus 8 registered defensive rows covered",
+  "gate_rows_17of17": "all repair-token-recovery scenario IDs covered"
+ },
+ "red_capture_matrix": {
+  "demonstrated_red_pre_fix": [
+   "F1 (4/4 FixPG pre-fix FAIL)",
+   "F4 (Preempted(1) returned approval row)",
+   "F5 (reentrant deadlock fatal at 9b39189 worktree)"
+  ],
+  "green_post_fix_structural_limit": [
+   "F2 (pre-fix copy: undefined checkpointRunPort)",
+   "F3 (pre-fix copy: cannot assign recoveredEventBound)",
+   "Q1 (statement-folded by construction; same-kernel skew unprovable)"
+  ],
+  "premise_corrected": [
+   "Q3 (recoveryContext already carried Principal at HEAD; regression passed pre-fix)"
+  ]
+ }
+}

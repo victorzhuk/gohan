@@ -1,0 +1,124 @@
+{
+ "task": "0.1",
+ "revision": "47910f32d23a84ee68965cc483aa731b00051fa9",
+ "stores": {
+  "entries": [
+   {
+    "scenario": "stores.resume-session-exclusive",
+    "status": "absent",
+    "command": "timeout 180s go test -json -short -timeout 120s -p 2 -parallel 2 ./core/stores -run '^TestMemoryRunsAcquisition$/^stores[.]resume-session-exclusive$'",
+    "observed": "\"testing: warning: no tests to run\" / \"ok  \\tgithub.com/victorzhuk/gohan/core/stores\\t0.001s [no tests to run]\""
+   },
+   {
+    "scenario": "stores.reclaim-session-exclusive",
+    "status": "absent",
+    "command": "timeout 180s go test -json -short -timeout 120s -p 2 -parallel 2 ./core/stores -run '^TestMemoryRunsAcquisition$/^stores[.]reclaim-session-exclusive$'",
+    "observed": "\"testing: warning: no tests to run\" / \"ok  \\tgithub.com/victorzhuk/gohan/core/stores\\t0.001s [no tests to run]\""
+   },
+   {
+    "scenario": "stores.reclaim-state-refused",
+    "status": "absent",
+    "command": "timeout 180s go test -json -short -timeout 120s -p 2 -parallel 2 ./core/stores -run '^TestMemoryRunsAcquisition$/^stores[.]reclaim-state-refused$'",
+    "observed": "\"testing: warning: no tests to run\" / \"ok  \\tgithub.com/victorzhuk/gohan/core/stores\\t0.001s [no tests to run]\""
+   },
+   {
+    "scenario": "stores.optional-checkpoint-resume-port",
+    "status": "absent",
+    "command": "timeout 180s go test -json -short -timeout 120s -p 2 -parallel 2 ./core/stores -run '^TestCheckpointRuns$/^stores[.]optional-checkpoint-resume-port$'",
+    "observed": "\"testing: warning: no tests to run\" / \"ok  \\tgithub.com/victorzhuk/gohan/core/stores\\t0.001s [no tests to run]\""
+   },
+   {
+    "scenario": "stores.resume-current-token-fenced",
+    "status": "absent",
+    "command": "timeout 180s go test -json -short -timeout 120s -p 2 -parallel 2 ./core/stores -run '^TestCheckpointRuns$/^stores[.]resume-current-token-fenced$'",
+    "observed": "\"testing: warning: no tests to run\" / \"ok  \\tgithub.com/victorzhuk/gohan/core/stores\\t0.001s [no tests to run]\""
+   },
+   {
+    "scenario": "stores.checkpoint-lifetime-independent",
+    "status": "absent",
+    "command": "timeout 180s go test -json -short -timeout 120s -p 2 -parallel 2 ./core -run '^TestCheckpointLifetimeConversation$/^stores[.]checkpoint-lifetime-independent$'",
+    "observed": "\"testing: warning: no tests to run\" / \"ok  \\tgithub.com/victorzhuk/gohan/core\\t0.006s [no tests to run]\""
+   },
+   {
+    "scenario": "stores.postgres-ownership-database-time",
+    "status": "absent",
+    "command": "timeout 1200s go -C adapter/postgres test -json -timeout 600s -tags full -p 2 -parallel 2 . -run '^TestPostgresOwnershipDatabaseTime$/^stores[.]postgres-ownership-database-time$'",
+    "observed": "\"testing: warning: no tests to run\" / \"ok  \\tgithub.com/victorzhuk/gohan/adapter/postgres\\t0.019s [no tests to run]\""
+   },
+   {
+    "scenario": "stores.checkpoint-lifetime-policy",
+    "status": "absent",
+    "command": "timeout 1200s go -C adapter/postgres test -json -timeout 600s -tags full -p 2 -parallel 2 . -run '^TestPostgresCheckpointTTLPolicy$/^stores[.]checkpoint-lifetime-policy$'",
+    "observed": "\"testing: warning: no tests to run\" / \"ok  \\tgithub.com/victorzhuk/gohan/adapter/postgres\\t0.016s [no tests to run]\""
+   },
+   {
+    "scenario": "stores.resume-ready-filter-before-limit",
+    "status": "absent",
+    "command": "timeout 1200s go -C adapter/postgres test -json -timeout 600s -tags full -p 2 -parallel 2 . -run '^TestPostgresDiscoveryEligibility$/^stores[.]resume-ready-filter-before-limit$'",
+    "observed": "\"testing: warning: no tests to run\" / \"ok  \\tgithub.com/victorzhuk/gohan/adapter/postgres\\t0.012s [no tests to run]\""
+   },
+   {
+    "scenario": "stores.preempted-filter-before-limit",
+    "status": "absent",
+    "command": "timeout 1200s go -C adapter/postgres test -json -timeout 600s -tags full -p 2 -parallel 2 . -run '^TestPostgresDiscoveryEligibility$/^stores[.]preempted-filter-before-limit$'",
+    "observed": "\"testing: warning: no tests to run\" / \"ok  \\tgithub.com/victorzhuk/gohan/adapter/postgres\\t0.012s [no tests to run]\""
+   }
+  ],
+  "revision": "47910f32d23a84ee68965cc483aa731b00051fa9",
+  "infra_notes": "Grep for all ten scenario IDs across the whole repo matched only openspec documents (scenarios.json, spec.md, tasks.md, design.md, outcome.json) and zero .go files, so no scenario subtest exists yet; every entry is absent, none fails. Existing parent test names in core/stores are TestRunsLeases, TestRunsMailbox, TestRunsNotices, TestNoticeReason, TestRunForSession, TestRunActive, TestRunsState (from `go test -list '.*' ./core/stores`); the planned containers TestMemoryRunsAcquisition, TestCheckpointRuns, TestCheckpointLifetimeConversation, TestPostgresOwnershipDatabaseTime, TestPostgresCheckpointTTLPolicy, TestPostgresDiscoveryEligibility do not exist in the tree. Docker is available (`docker info` OK) and the full-tag testcontainers harness is proven working: `timeout 1200s go -C adapter/postgres test -json -timeout 600s -tags full -p 2 -parallel 2 . -run '^TestStores$/^stores[.]pg-schema-owned$'` produced {\"Action\":\"pass\",\"Test\":\"TestStores/stores.pg-schema-owned\"} in 3.83s, so the four PostgreSQL entries are genuinely absent rather than infra-invalid. Every package compiled and ran (no compile errors, exit 0). Toolchain go1.27.3-X:nodwarf5, GOCACHE=/home/zhuk/.cache/go-build, GOTMPDIR=/var/tmp/go-tmp (no /tmp usage). Commands taken verbatim from the repair-token-recovery plan appendix check fields in openspec/changes/repair-token-recovery/design.md:133."
+ },
+ "recovery_runtime": {
+  "entries": [
+   {
+    "scenario": "recovery.preemption-token-consumed",
+    "command": "timeout 180s go test -short -timeout 120s -p 2 -parallel 2 ./core -run '^TestRecoveryContract$/^recovery[.]preemption-token-consumed$'",
+    "status": "absent",
+    "observed": "\"ok  \\tgithub.com/victorzhuk/gohan/core\\t0.001s [no tests to run]\""
+   },
+   {
+    "scenario": "recovery.human-approval-not-preempted",
+    "command": "timeout 180s go test -short -timeout 120s -p 2 -parallel 2 ./core -run '^TestRecoveryContract$/^recovery[.]human-approval-not-preempted$'",
+    "status": "absent",
+    "observed": "\"ok  \\tgithub.com/victorzhuk/gohan/core\\t0.001s [no tests to run]\""
+   },
+   {
+    "scenario": "recovery.empty-continue-consumed",
+    "command": "timeout 180s go test -short -timeout 120s -p 2 -parallel 2 ./core -run '^TestRecoveryContract$/^recovery[.]empty-continue-consumed$'",
+    "status": "absent",
+    "observed": "\"ok  \\tgithub.com/victorzhuk/gohan/core\\t0.001s [no tests to run]\""
+   },
+   {
+    "scenario": "recovery.eventlog-tail-durable",
+    "command": "timeout 180s go test -short -timeout 120s -p 2 -parallel 2 ./core -run '^TestRecoveryTail$/^recovery[.]eventlog-tail-durable$'",
+    "status": "absent",
+    "observed": "\"ok  \\tgithub.com/victorzhuk/gohan/core\\t0.001s [no tests to run]\""
+   },
+   {
+    "scenario": "recovery.optional-token-surface-absent",
+    "command": "timeout 180s go test -short -timeout 120s -p 2 -parallel 2 ./core -run '^TestResumeTokenWindow$/^recovery[.]optional-token-surface-absent$'",
+    "status": "absent",
+    "observed": "\"ok  \\tgithub.com/victorzhuk/gohan/core\\t0.005s [no tests to run]\""
+   },
+   {
+    "scenario": "runtime.finish-error-no-done",
+    "command": "timeout 180s go test -short -timeout 120s -p 2 -parallel 2 ./core -run '^TestTerminalBeforeDone$/^runtime[.]finish-error-no-done$'",
+    "status": "absent",
+    "observed": "\"ok  \\tgithub.com/victorzhuk/gohan/core\\t0.001s [no tests to run]\""
+   },
+   {
+    "scenario": "runtime.resume-tool-budget-cumulative",
+    "command": "timeout 180s go test -short -timeout 120s -p 2 -parallel 2 ./core -run '^TestNativeBudgetRecovery$/^runtime[.]resume-tool-budget-cumulative$'",
+    "status": "absent",
+    "observed": "\"ok  \\tgithub.com/victorzhuk/gohan/core\\t0.001s [no tests to run]\""
+   }
+  ],
+  "revision": "47910f32d23a84ee68965cc483aa731b00051fa9",
+  "infra_notes": "Toolchain valid: ./core compiles and runs, exit 0 for every command. Positive control proves the -run '^TestX$/^scenario$' filter selects real subtests when present: `go test -short -timeout 120s -p 2 -parallel 2 ./core -run '^TestRecoverPreemptedFirst$/^recovery[.]consumed-preempted-is-recoverable$' -v` produced \"=== RUN   TestRecoverPreemptedFirst/recovery.consumed-preempted-is-recoverable\" and \"--- PASS: TestRecoverPreemptedFirst (0.00s)\". Therefore every [no tests to run] above is a genuine absence, not an infra failure. Repo-wide grep for the 7 scenario IDs matches only openspec/ artifacts (openspec/scenarios.json, openspec/changes/repair-token-recovery/{design.md,tasks.md,specs/*}, openspec/changes/repair-runtime-safety-contracts/*) and zero *_test.go files. The five intended test symbols TestRecoveryContract, TestRecoveryTail, TestResumeTokenWindow, TestNativeBudgetRecovery, TestTerminalBeforeDone appear nowhere in the repo except openspec/changes/repair-token-recovery/design.md. Planned-but-missing files listed in design.md admission.generated: core/recovery_baseline_test.go and adapter/postgres/recovery_baseline_test.go (both absent on disk). Existing nearest coverage lives in core/recover_preempted_test.go (recovery.consumed-preempted-is-recoverable), core/recover_test.go, core/native_recovery_contract_test.go, core/lifecycle_terminal_handoff_test.go and core/preemption_resume_test.go, but none carries the required scenario IDs. GOCACHE=/home/zhuk/.cache/go-build and GOTMPDIR=/var/tmp/go-tmp (no /tmp use). No source edits, no evidence files written."
+ },
+ "residual_risks": [
+  "P1/P2 (perf review): ResumeReady join/ORDER BY and Preempted reason filter need partial indexes; adding a DDL migration is prohibited by this change's boundaries -> follow-up capability change.",
+  "Release child: adapter/postgres independent build (GOWORK=off) still needs a root release carrying testkit/storetest RunsWithCheckpoints/RecoveryDiscovery shapes + go.sum refresh (published v0.1.0 lacks them).",
+  "storetest.Checkpoint previously dropped the discovery Token; shared-suite assertion added in the red-capture wave.",
+  "journal Reserve intentionally embeds a pre-insert Go instant in the encoded payload; all other pg clock reads are statement-folded."
+ ]
+}

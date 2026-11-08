@@ -21,14 +21,14 @@ Use the existing-service-strict contract and limits in `design.md`.
 
 ## 2. Public recovery and terminal delivery
 
-- [ ] 2.1 Require token-aware external resume before consumption. Acquire with the expected token. Verify `recovery.optional-token-surface-absent`, pre-consumption token preservation and recovery after post-consumption lease failure. Parent 5.1.
-- [ ] 2.2 Consume current preemption tokens conditionally. Remove input-based consumption inference. Verify `recovery.preemption-token-consumed`, `recovery.human-approval-not-preempted` and `recovery.empty-continue-consumed` through public recovery. Parent 5.2.
-- [ ] 2.3 Share redacted record-before-delivery behavior across live, resumed and recovered execution. Verify `recovery.eventlog-tail-durable` with another conversation attaching and a bounded completion context. Parent 5.3.
-- [ ] 2.4 Check terminal store errors before carried completion events. Verify `runtime.finish-error-no-done`, one terminal boundary and existing steer/limit/handoff behavior. Parent 5.4.
-- [ ] 2.5 Persist and restore cumulative admissions once. Preserve prepaid pending calls. Verify `runtime.resume-tool-budget-cumulative` through Send, approval Resume and crash recovery. Parent 5.5.
-- [ ] 2.6 Update lifecycle/testing docs and changelog. Verify expiry, optional-store fallback and reconnect instructions against public regressions. Parent 5.6.
+- [x] 2.1 Require token-aware external resume before consumption. Acquire with the expected token. Verify `recovery.optional-token-surface-absent`, pre-consumption token preservation and recovery after post-consumption lease failure. Parent 5.1.
+- [x] 2.2 Consume current preemption tokens conditionally. Remove input-based consumption inference. Verify `recovery.preemption-token-consumed`, `recovery.human-approval-not-preempted` and `recovery.empty-continue-consumed` through public recovery. Parent 5.2.
+- [x] 2.3 Share redacted record-before-delivery behavior across live, resumed and recovered execution. Verify `recovery.eventlog-tail-durable` with another conversation attaching and a bounded completion context. Parent 5.3.
+- [x] 2.4 Check terminal store errors before carried completion events. Verify `runtime.finish-error-no-done`, one terminal boundary and existing steer/limit/handoff behavior. Parent 5.4.
+- [x] 2.5 Persist and restore cumulative admissions once. Preserve prepaid pending calls. Verify `runtime.resume-tool-budget-cumulative` through Send, approval Resume and crash recovery. Parent 5.5.
+- [x] 2.6 Update lifecycle/testing docs and changelog. Verify expiry, optional-store fallback and reconnect instructions against public regressions. Parent 5.6.
 
 ## 3. Child acceptance
 
-- [ ] 3.1 Run assigned scenarios and real PostgreSQL/store conformance within the design bounds. Record eligible discovery, token fencing, failure-window and lock-order assertions.
-- [ ] 3.2 Supply native/store race evidence for parent integration. Preserve frozen ports, baseline scenario ownership and the independent research-report edits.
+- [x] 3.1 Run assigned scenarios and real PostgreSQL/store conformance within the design bounds. Record eligible discovery, token fencing, failure-window and lock-order assertions.
+- [x] 3.2 Supply native/store race evidence for parent integration. Preserve frozen ports, baseline scenario ownership and the independent research-report edits.
