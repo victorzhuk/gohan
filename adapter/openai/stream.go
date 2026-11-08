@@ -204,7 +204,7 @@ func (r *streamRun) consume(chunk wireChunk) bool {
 	for _, choice := range chunk.Choices {
 		if choice.Delta.Content != "" {
 			if r.canceled() {
-				return false
+				return r.reportCancel()
 			}
 			r.streamed.WriteString(choice.Delta.Content)
 			if !r.yield(types.ModelChunk{Kind: types.DeltaText, Delta: choice.Delta.Content}, nil) {
@@ -219,7 +219,7 @@ func (r *streamRun) consume(chunk wireChunk) bool {
 		}
 		if reasoning != "" {
 			if r.canceled() {
-				return false
+				return r.reportCancel()
 			}
 			r.streamed.WriteString(reasoning)
 			if !r.yield(types.ModelChunk{Kind: types.DeltaReasoning, Delta: reasoning}, nil) {
@@ -241,7 +241,7 @@ func (r *streamRun) consume(chunk wireChunk) bool {
 // nothing: its payload surfaces as text.
 func (r *streamRun) preview(delta wireToolCallDelta) bool {
 	if r.canceled() {
-		return false
+		return r.reportCancel()
 	}
 	acc := r.call(delta.Index)
 	if delta.ID != "" {
@@ -287,7 +287,7 @@ func (r *streamRun) completeBatch() bool {
 	if r.forced {
 		for i := range calls {
 			if r.canceled() {
-				return false
+				return r.reportCancel()
 			}
 			r.streamed.WriteString(string(calls[i].Args))
 			if !r.yield(types.ModelChunk{Kind: types.DeltaText, Delta: string(calls[i].Args)}, nil) {
@@ -305,7 +305,7 @@ func (r *streamRun) completeBatch() bool {
 	}
 	for i := range calls {
 		if r.canceled() {
-			return false
+			return r.reportCancel()
 		}
 		r.completed = append(r.completed, calls[i])
 		if !r.yield(types.ModelChunk{ToolUse: &calls[i]}, nil) {
