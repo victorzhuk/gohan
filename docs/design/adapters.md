@@ -20,6 +20,8 @@ Verified against eino v0.9.x (`adk`, `compose`, `components/tool`) and adk-go v1
 
 `turnModel.call` and `einoflow`'s `turnOutput.fold` exclude identity-only `DeltaToolArgs` previews from executable calls. Legacy non-preview calls with nil `Args` remain calls. Pending calls replay before the next model invocation under their recorded identity; the checkpoint format and `replayCall` identity are unchanged.
 
+Governed tool batches run sequentially (`ToolsNodeConfig.ExecuteSequentially`): each call's durable admission appends under an expected session version, so parallel execution of one assistant message's calls collides on that version and can drop the loser before the permission gate. Model-order execution keeps every call's identity visible to admission, permission and journal.
+
 ### 7.2 adk-go (v2)
 
 Target: `google.golang.org/adk/v2` (Go 1.25+). v1 is backport-only.
