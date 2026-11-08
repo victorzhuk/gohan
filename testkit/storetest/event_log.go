@@ -370,7 +370,10 @@ func EventLog(t *testing.T, newLog EventLogFactory) {
 			t.Fatalf("Append(run-b): %v", err)
 		}
 
-		for range log.Read(ctx, "run-c", 0) {
+		for _, err := range log.Read(ctx, "run-c", 0) {
+			if err != nil {
+				t.Fatalf("Read(run-c): %v", err)
+			}
 			t.Fatal("Read of an unknown run delivered an event")
 		}
 

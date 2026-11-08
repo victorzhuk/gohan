@@ -90,7 +90,10 @@ func runModel(tb conformanceTB, newModel func(Fixture) types.Model, fixtures Fix
 		gohantest.LeakCheck(leakTB{tb}, func() {
 			m := newModel(probe())
 			n := 0
-			for range m.Generate(context.Background(), probeRequest()) {
+			for _, err := range m.Generate(context.Background(), probeRequest()) {
+				if err != nil {
+					tb.Errorf("Generate: %v", err)
+				}
 				n++
 				break
 			}

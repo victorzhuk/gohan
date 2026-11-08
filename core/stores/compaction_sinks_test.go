@@ -153,7 +153,10 @@ func TestMemoryCompactionSinkAppend(t *testing.T) {
 			t.Fatalf("inserted = %d, want 1", inserted)
 		}
 		var count int
-		for range audit.Read(ctx, "s-1") {
+		for _, err := range audit.Read(ctx, "s-1") {
+			if err != nil {
+				t.Fatalf("Read: %v", err)
+			}
 			count++
 		}
 		if count != 1 {
@@ -174,7 +177,10 @@ func TestMemoryCompactionSinkAppend(t *testing.T) {
 			t.Fatalf("empty publication = (%v, %v), want (false, errCompactionPayload)", inserted, err)
 		}
 		var count int
-		for range audit.Read(ctx, "s-1") {
+		for _, err := range audit.Read(ctx, "s-1") {
+			if err != nil {
+				t.Fatalf("Read: %v", err)
+			}
 			count++
 		}
 		if count != 0 {
@@ -263,7 +269,10 @@ func TestMemoryCompactionSinkAppend(t *testing.T) {
 			t.Fatalf("conflict = (%v, %v), want (false, errCompactionConflict)", inserted, err)
 		}
 		var count int
-		for range events.Read(ctx, "r-1", 0) {
+		for _, err := range events.Read(ctx, "r-1", 0) {
+			if err != nil {
+				t.Fatalf("Read: %v", err)
+			}
 			count++
 		}
 		if count != 1 {
@@ -353,7 +362,10 @@ func TestMemoryCompactionSinkAppend(t *testing.T) {
 			t.Fatalf("inserted = %d, want 1", inserted)
 		}
 		var count int
-		for range events.Read(ctx, "r-1", 0) {
+		for _, err := range events.Read(ctx, "r-1", 0) {
+			if err != nil {
+				t.Fatalf("Read: %v", err)
+			}
 			count++
 		}
 		if count != 1 {
@@ -376,7 +388,10 @@ func TestMemoryCompactionSinkAppend(t *testing.T) {
 			t.Fatalf("mismatched publication = (%v, %v), want (false, errCompactionPayload)", inserted, err)
 		}
 		var count int
-		for range events.Read(ctx, "r-1", 0) {
+		for _, err := range events.Read(ctx, "r-1", 0) {
+			if err != nil {
+				t.Fatalf("Read: %v", err)
+			}
 			count++
 		}
 		if count != 0 {

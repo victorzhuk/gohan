@@ -189,7 +189,10 @@ func TestScriptedModel(t *testing.T) {
 	t.Run("consumer-may-stop-reading", func(t *testing.T) {
 		m := NewScriptedModel(scriptProfile(), Text("a"), Text("b"))
 		n := 0
-		for range m.Generate(context.Background(), types.ModelRequest{}) {
+		for _, err := range m.Generate(context.Background(), types.ModelRequest{}) {
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
 			n++
 			break
 		}

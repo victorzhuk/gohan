@@ -313,7 +313,10 @@ func TestPromptMiddleware(t *testing.T) {
 		got = req
 		return func(yield func(types.ModelChunk, error) bool) {}
 	})
-	for range call(context.Background(), types.ModelRequest{}) {
+	for _, err := range call(context.Background(), types.ModelRequest{}) {
+		if err != nil {
+			t.Fatalf("PromptMiddleware iterator: %v", err)
+		}
 	}
 	if len(got.System) != 1 {
 		t.Fatalf("request carries %d system blocks, want 1", len(got.System))
