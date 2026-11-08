@@ -6,11 +6,15 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ### Changed
 
+- External `Resume` requires the optional `stores.CheckpointRuns` run-store surface; custom stores without it return `ErrCheckpointIncompatible` without consuming the token.
 - The recommended policy values `Build` applies moved to `std`, which owns them as `std.SunsetNoticeWindow`, `std.LatencyTimeouts`, `std.ControlWait` and `std.StreamBuffer`. Each value is unchanged and `core` keeps a mirrored default with the same value, so no caller has to pass an option; a parity test fails the moment one side drifts.
 - The cache outcome seam is canonical in `core/chains` (`chains.ExtraKey`, `chains.Outcome`, `chains.Mark`, `chains.OutcomeOf`). `std/cache` re-exports the four names, so existing importers compile and behave unchanged.
 
 ### Fixed
 
+- Recovered runs record their redacted event tail for `Attach`, including the terminal boundary.
+- A failed terminal store write surfaces an error instead of emitting `Done`.
+- Admitted tool calls retain their cumulative budget across resume and recovery; prepaid pending calls are not charged twice.
 - Recovery discovery excludes obsolete or expired checkpoints and non-preempted suspensions before applying limits; memory checkpoint discovery requires a bound run store.
 - Session lease acquisition refuses competing live runs, and reclaim accepts only expired running or resuming runs. Checkpoint TTL is configured independently of the lease, with explicit expiry preserved.
 - PostgreSQL uses database time for lease, checkpoint, recovery discovery, workspace-owner and notice-claim operations instead of the process clock.

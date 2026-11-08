@@ -83,6 +83,8 @@ The executable policy lives in `std/limit` and reads that ledger from the contex
 
 The two ceilings behave differently on purpose. Reaching `MaxTurns` or `MaxToolCalls` **stops** the run: those are budgeting counters, the step only records itself, and the run ends with `types.Done{Reason: types.StopLimit}` at its effect boundary. A cost overrun or an expired wall clock **aborts** the run: those are the hard checks, and they fire before or right after the call that crossed them. A batch whose reservation exceeds `MaxToolCalls` is refused whole with `types.ErrBatchOverrun` — nothing executes and the reservation is refunded.
 
+The native driver persists the cumulative admitted tool-call total in its continuation. Resume and recovery restore that total once into the fresh ledger; already admitted pending calls use prepaid slots, while later batches consume the remaining budget.
+
 ### 4.2c Conversation lifecycle
 
 Two properties a conversation handle owes its caller: how a run leaves, and how a client finds the run that is still going.
@@ -98,6 +100,12 @@ Checkpoint lifetime is store policy, independent of the run lease. The driver do
 PostgreSQL uses `clock_timestamp()` for lease, checkpoint, discovery, workspace-owner and notice-claim times. Lease and workspace-owner checks read store time after acquiring the relevant ownership locks; notice claimability is checked in the selection statement and claims are stamped after row selection. `postgres.WithClock` replaces the server clock for tests.
 
 `ResumeReady` filters for consumed, unexpired checkpoints whose token is current on a suspended run before applying its limit. Memory discovery requires `WithMemoryCheckpointRuns`; without it, `ResumeReady` returns `types.ErrCheckpointIncompatible`. `Preempted` filters suspended runs by their stored preemption reason before applying its limit.
+
+External `Resume` requires the run store's optional `stores.CheckpointRuns` surface. Without it, `Resume` returns `types.ErrCheckpointIncompatible` before consuming the token. Custom run stores must implement this surface to support resume; new `Send` calls and stale-run recovery do not require it. Automatic preempted and consumed-checkpoint recovery skip their token-fenced paths without it.
+
+`Stack.Recover` handles preempted runs before stale runs. For a current `Preempted` checkpoint, it conditionally consumes the checkpoint with `ConsumeIf` before acquiring a token-fenced resume lease. It does not decide pending human approvals or other suspension reasons. A stale token cannot replace a newer suspension. Consumption is recorded separately from the resume input, so a consumed empty `Continue()` can be recovered once if the client fails before acquiring the lease.
+
+With an event log configured, recovered execution records its redacted event tail before delivery. Completion writes use a bounded context independent of reaper cancellation. Another conversation sharing the log can `Attach` from its last sequence and reads through the next `Done`, `Suspended` or `TerminalError` boundary. A failed terminal store write surfaces an error instead of delivering `Done`.
 
 ### 4.3 Adapter roles
 
