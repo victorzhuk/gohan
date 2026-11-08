@@ -79,14 +79,6 @@ func (s *fakeSandbox) scriptExec(results ...types.ExecResult) {
 	}
 }
 
-// putFile preloads file bytes every workspace opened afterwards starts
-// with, before any run touches the sandbox.
-func (s *fakeSandbox) putFile(path string, data []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.seed[path] = append([]byte(nil), data...)
-}
-
 func (s *fakeSandbox) Open(_ context.Context, ref types.WorkspaceRef, _ types.SandboxPolicy) (types.Workspace, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -426,9 +418,6 @@ func newGuardChain(red *redact.Redactor) chains.ToolChain {
 type redactingOutputs struct {
 	inner stores.OutputStore
 	red   *redact.Redactor
-
-	mu     sync.Mutex
-	stored []string
 }
 
 var _ stores.OutputStore = (*redactingOutputs)(nil)
@@ -442,23 +431,9 @@ func (s *redactingOutputs) Put(ctx context.Context, ri types.RunInfo, content []
 	if err != nil {
 		return "", fmt.Errorf("redact output: %w", err)
 	}
-	ref, err := s.inner.Put(ctx, ri, masked)
-	if err != nil {
-		return "", err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.stored = append(s.stored, ref)
-	return ref, nil
+	return s.inner.Put(ctx, ri, masked)
 }
 
 func (s *redactingOutputs) Get(ctx context.Context, ref string) ([]byte, error) {
 	return s.inner.Get(ctx, ref)
-}
-
-// refs reports the refs the wrapper stored, in call order, as a copy.
-func (s *redactingOutputs) refs() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.stored...)
 }
