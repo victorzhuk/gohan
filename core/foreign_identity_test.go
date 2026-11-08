@@ -106,7 +106,7 @@ func foreignIdentityStack(t *testing.T, rt runtime.Runtime, tools ...types.Tool)
 		WithStores(stores.Stores{
 			SessionLog:  stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom)),
 			Runs:        runs,
-			Checkpoints: stores.NewMemoryCheckpoints(stores.WithMemoryCheckpointClock(clock), stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom)),
+			Checkpoints: stores.NewMemoryCheckpoints(stores.WithMemoryCheckpointClock(clock), stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom), stores.WithMemoryCheckpointRuns(runs)),
 		}),
 		WithApprovalPolicySource(&roundtripPolicy{}),
 		WithCredentialSource(&authCreds{}),

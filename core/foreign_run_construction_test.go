@@ -85,12 +85,13 @@ func foreignConstructionStack(t *testing.T, rt *constructionRT, extra ...Option)
 	now := time.Unix(0, 0)
 	clock := func() time.Time { return now }
 	age := func() { now = now.Add(2 * stores.LeaseTTL) }
+	runs := stores.NewMemoryRuns(stores.WithMemoryRunClock(clock), stores.WithMemoryRunInfo(types.RunInfoFrom))
 	opts := append([]Option{
 		WithModels(foreignFlowModel{}),
 		WithStores(stores.Stores{
 			SessionLog:  stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom)),
-			Runs:        stores.NewMemoryRuns(stores.WithMemoryRunClock(clock), stores.WithMemoryRunInfo(types.RunInfoFrom)),
-			Checkpoints: stores.NewMemoryCheckpoints(stores.WithMemoryCheckpointClock(clock), stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom)),
+			Runs:        runs,
+			Checkpoints: stores.NewMemoryCheckpoints(stores.WithMemoryCheckpointClock(clock), stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom), stores.WithMemoryCheckpointRuns(runs)),
 		}),
 		WithApprovalPolicySource(&roundtripPolicy{}),
 		WithCredentialSource(&authCreds{}),

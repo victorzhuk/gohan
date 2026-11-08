@@ -323,7 +323,7 @@ func foreignAccountBuild(
 		gohan.WithStores(stores.Stores{
 			SessionLog:  log,
 			Runs:        runs,
-			Checkpoints: stores.NewMemoryCheckpoints(stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom)),
+			Checkpoints: stores.NewMemoryCheckpoints(stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom), stores.WithMemoryCheckpointRuns(runs)),
 			Journal:     jr,
 			Audit:       stores.NewMemoryAuditLog(),
 		}),

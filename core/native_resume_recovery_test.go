@@ -191,11 +191,18 @@ func nrrStack(t *testing.T, model types.Model, book *bookTool, note *nrrNoteTool
 			}),
 		)
 	}
+	cpOpts := []stores.MemoryCheckpointOption{
+		stores.WithMemoryCheckpointClock(time.Now),
+		stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom),
+	}
+	if cr, ok := runs.(stores.CheckpointRuns); ok {
+		cpOpts = append(cpOpts, stores.WithMemoryCheckpointRuns(cr))
+	}
 	opts := []Option{
 		WithStores(stores.Stores{
 			SessionLog:  stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom)),
 			Runs:        runs,
-			Checkpoints: stores.NewMemoryCheckpoints(stores.WithMemoryCheckpointClock(time.Now), stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom)),
+			Checkpoints: stores.NewMemoryCheckpoints(cpOpts...),
 		}),
 		WithModels(model),
 		WithNativeAgent(NativeSpec{
