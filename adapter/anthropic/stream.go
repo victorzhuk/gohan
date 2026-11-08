@@ -46,6 +46,11 @@ type streamState struct {
 	// finishEmitted records that the stream already reported its finish,
 	// so the terminal never reports a second one.
 	finishEmitted bool
+	// truncated records that an open tool index was pending when the
+	// pending bytes got flushed. The flush marks those blocks emitted,
+	// so the per-event recomputation loses the signal: the flag keeps
+	// the truncation terminal owed at clean EOF.
+	truncated bool
 }
 
 func (m *Model) decode(ctx context.Context, r io.Reader, state *assembled, yield func(types.ModelChunk, error) bool) {
@@ -102,13 +107,12 @@ func (m *Model) dispatch(st *streamState, event sseEvent, yield func(types.Model
 }
 
 func (m *Model) finish(st *streamState, yield func(types.ModelChunk, error) bool) {
-	// The truncation is decided before the flush: the flush marks the open
-	// blocks emitted, so afterwards no index looks unfinished any more.
-	truncated := len(openBlocks(st)) > 0
+	// The truncation signal is sticky: an earlier flush already marked the
+	// open blocks emitted, so the per-event recomputation would lose it.
 	if !flushOpenBlocks(st, yield) {
 		return
 	}
-	if truncated && !st.finishEmitted {
+	if st.truncated && !st.finishEmitted {
 		st.finishEmitted = true
 		if !yield(types.ModelChunk{Finish: types.FinishMaxTokens}, nil) {
 			return
@@ -327,6 +331,11 @@ func messageDelta(st *streamState, data []byte, yield func(types.ModelChunk, err
 // identity-only previews with empty Args, so truncation by max_tokens,
 // message end or EOF never completes a call.
 func flushOpenBlocks(st *streamState, yield func(types.ModelChunk, error) bool) bool {
+	// The truncation signal is sticky: the flush below marks the open blocks
+	// emitted, so a later recomputation over the same blocks would lose it.
+	if len(openBlocks(st)) > 0 {
+		st.truncated = true
+	}
 	for _, b := range openBlocks(st) {
 		args := b.args.String()
 		if args == "" {
