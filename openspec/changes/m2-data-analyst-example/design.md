@@ -106,6 +106,16 @@ One row is added to `openspec/scenarios.json`. The entry's `README.md` maps ever
 
 `sandbox.egress-denied`'s network-layer half stays open under `m2-sandbox-adapter-conformance` and, past M2, under `m2-e2b-sandbox`. This package ticks neither it nor the five catalog-scope rows. The lane report names them as excluded by scope, not as passed, and no `evidence:` line in `tasks.md` claims a fixture observation for any of them.
 
+### D9 — The durable publication presents the generation the row will carry
+
+Composing the entry exposed a defect in shipped code, not in the new package. `std/sandbox/handles.go` publishes with `Generation: expected` - the CURRENT generation - together with the fresh ref that `Snapshot` minted, and both stores refuse exactly that shape: `core/stores/session_memory.go` and `adapter/postgres/session_workspace.go` return `types.ErrVersionConflict` when the presented generation equals the stored generation while the ref differs. The second publication of a per-session workspace therefore always fails, so any per-session run that mutates the workspace and then suspends fails with `gohan: append with a stale version`.
+
+The repair is one expression: the publication presents `expected + 1`, the generation the row will carry. That is what the shipped requirement already says - `openspec/specs/sandbox/spec.md:310`, "A publication MUST write the expected generation plus one" - and what the archived design said when this path was written: `openspec/changes/archive/2026-10-12-m2-sandbox-lifecycle-resume/design.md:113,129`, "A new publication at `expectedGeneration + 1` may carry a different ref". The compare-and-set token stays `expected`, so the race fence and both store implementations keep their current semantics, and no port signature, no store implementation and no capability contract changes.
+
+Why the shipped suite never caught it: every test publishes at most once per session through `Handles`, and the store-level tests that write a changed ref leave the presented generation at zero, so the refusal does not fire. The per-session scenario rows are proved against `metaFake`, which ignores the presented generation. The regression test therefore runs the REAL `MemorySessionLog` with a real owner lease and publishes twice.
+
+The fix lands in this change rather than in a separate repair package because it is a restoration of published behaviour, it is one expression, and this change is the only consumer that exercises a second publication. The lane owns the fix, its regression test and the composed evidence together.
+
 ## Admission
 
 - **One prerequisite blocks full admission** and is stated, not papered over: the adapter leg of `sandbox.egress-denied` and every real-execution promise in the boundary table need a live sandbox provider. `m2-e2b-sandbox` is deferred past M2 (no credential, endpoint or dependency exists in the repository or the environment), and `m2-sandbox-lifecycle-resume` task 6.5 records the matching unmet durable-enumeration case. The composed public-path ordering this package owns is reachable without either, so this package proceeds; the runtime-enforcement claims stay open and are reported as such.

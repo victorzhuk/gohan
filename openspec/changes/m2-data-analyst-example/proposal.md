@@ -15,6 +15,7 @@ Without that entry the composition stays untested at the level a user actually t
 - Page a stored result back through `read_output(ref, range)` and assert the requested slice, reusing the `working-state.output-paging` row rather than restating it.
 - State the offline-vs-real boundary in the package and in the entry README: the deterministic sandbox fixture proves public-path composition only. Real pandas execution, router `Cascade`, provider failover, shared quota, batch yielding and `ClassContextOverflow` backstop behavior are **not** proven by fixture replay. Each of those needs either a named prerequisite owner or an explicit catalog-scope exclusion, and this package names them rather than claiming them.
 - Reuse ten existing scenario ids without renaming them, and add one composition id, `sandbox.data-analyst-resume-and-page`, whose requirement block makes the composed ordering observable for the first time. No `Sandbox` or `Workspace` port method is added, and no capability contract changes owner.
+- Repair the durable publication path the composed path depends on: `std/sandbox/handles.go` presents the CURRENT generation together with a fresh snapshot ref, and both stores refuse that shape with `types.ErrVersionConflict`, so every per-session run that mutates the workspace and then suspends fails. The publication presents the generation the row will carry, which restores the shipped requirement `openspec/specs/sandbox/spec.md:310` ("A publication MUST write the expected generation plus one") and the archived design `openspec/changes/archive/2026-10-12-m2-sandbox-lifecycle-resume/design.md:113,129`. The compare-and-set token, both store implementations, every port signature and every capability contract stay unchanged.
 
 ## Capabilities
 
@@ -28,9 +29,9 @@ None.
 
 ## Impact
 
-Affected code: `examples/data-analyst` only (new `main.go`, `main_test.go`, `README.md`, and offline fixtures). Added registry row: `sandbox.data-analyst-resume-and-page` in `openspec/scenarios.json`, with `origin` `m2-data-analyst-example`.
+Affected code: `examples/data-analyst` only (new `main.go`, `main_test.go`, `README.md`, and offline fixtures), plus one expression in `std/sandbox/handles.go` and its regression test in `std/sandbox/handles_test.go`. Added registry row: `sandbox.data-analyst-resume-and-page` in `openspec/scenarios.json`, with `origin` `m2-data-analyst-example`.
 
-No file under `core`, `std` or `adapter` changes. The `Sandbox` and `Workspace` method sets are untouched, and the durable-enumeration contract stays where `m2-docker-sandbox` put it: the optional `types.SandboxResources` interface with `Enumerate` and `CloseByRef` (`core/types/sandbox.go:97-102`), reached by type assertion, never grown into the port. The frozen port comparison in `m2-api-freeze` is unaffected.
+No file under `core` or `adapter` changes, and the single `std` change restores the published publication semantics instead of moving them. The `Sandbox` and `Workspace` method sets are untouched, and the durable-enumeration contract stays where `m2-docker-sandbox` put it: the optional `types.SandboxResources` interface with `Enumerate` and `CloseByRef` (`core/types/sandbox.go:97-102`), reached by type assertion, never grown into the port. The frozen port comparison in `m2-api-freeze` is unaffected.
 
 Verification is offline and deterministic: `go -C examples test -json -short -timeout 2m ./data-analyst/... -run '^TestDataAnalystOffline$'` and `timeout 2m go -C examples run ./data-analyst`. Neither reaches a network, a container runtime or an API key.
 ## Context
