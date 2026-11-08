@@ -171,8 +171,17 @@ func (r *Runtime) Step(ctx context.Context, st runtime.State) (runtime.State, []
 		Model:    turnModel{rt: r},
 		Handlers: []adk.ChatModelAgentMiddleware{NewToolCallIDHandler()},
 		ToolsConfig: adk.ToolsConfig{
-			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: r.einoTools()},
-			ReturnDirectly:  r.returnDirectly(),
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools: r.einoTools(),
+				// The governed path admits one call at a time: every
+				// call appends its own durable admission record under an
+				// expected session version and consumes one ledger slot.
+				// Concurrent calls collide on that version and the loser
+				// never reaches the gate, so the batch runs in model
+				// order instead.
+				ExecuteSequentially: true,
+			},
+			ReturnDirectly: r.returnDirectly(),
 		},
 	})
 	if err != nil {
