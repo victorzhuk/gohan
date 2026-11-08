@@ -36,6 +36,7 @@ type runner struct {
 	cmd          Cmd
 	timeout      time.Duration
 	effect       types.Effect
+	effectSet    bool
 	store        stores.OutputStore
 	tel          types.Telemetry
 	acknowledged bool
@@ -50,11 +51,12 @@ func AllowHostExec() Option {
 	return func(r *runner) { r.acknowledged = true }
 }
 
-// WithEffect overrides the spec's effect. An unset Effect means SideEffect,
-// so a ReadOnly or Idempotent runner must declare it here to get the
-// retryable timeout semantics those effects carry.
+// WithEffect overrides the spec's declared effect. The option wins over the
+// declaration and the resolved value is advertised through Spec, so
+// permission, journal, shielding, scheduling and timeout behavior consume
+// one effect.
 func WithEffect(e types.Effect) Option {
-	return func(r *runner) { r.effect = e }
+	return func(r *runner) { r.effect, r.effectSet = e, true }
 }
 
 // WithOutputStore stores output larger than the spec's MaxOutput cap whole
@@ -74,17 +76,29 @@ func WithTimeout(d time.Duration) Option {
 	}
 }
 
-// New builds a host runner tool. An unset Effect is SideEffect: a timeout
-// maps to Outcome Unknown unless WithEffect declared the tool ReadOnly or
-// Idempotent, whose timeouts are Failed(Retryable).
+// New builds a host runner tool. The resolved effect is one value across
+// execution and the advertised spec: WithEffect wins over the supplied
+// declaration, an unset declaration is SideEffect, and a timeout maps by
+// that effect: Unknown for SideEffect, Failed(Retryable) for ReadOnly or
+// Idempotent.
 func New(spec types.ToolSpec, cmd Cmd, opts ...Option) types.Tool {
-	r := &runner{spec: spec, cmd: cmd, timeout: spec.Timeout, effect: types.SideEffect}
+	r := &runner{spec: spec, cmd: cmd, timeout: spec.Timeout}
 	if r.timeout <= 0 {
 		r.timeout = defaultTimeout
 	}
 	for _, opt := range opts {
 		opt(r)
 	}
+	if !r.effectSet {
+		// Effect declares ReadOnly at int zero; an unset declaration still
+		// acts on the world, so it defaults to SideEffect.
+		if spec.Effect == types.ReadOnly {
+			r.effect = types.SideEffect
+		} else {
+			r.effect = spec.Effect
+		}
+	}
+	r.spec.Effect = r.effect
 	if !r.acknowledged {
 		slog.Warn("tool/exec runs on the host without isolation; register with AllowHostExec to acknowledge",
 			"tool", r.spec.Name)

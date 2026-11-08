@@ -191,6 +191,50 @@ func TestExecHostRunner(t *testing.T) {
 		}
 	})
 
+	t.Run("tools.host-effect-default-consistent", func(t *testing.T) {
+		needSh(t)
+		tool := New(types.ToolSpec{Name: "mutate"}, Cmd{
+			Argv: func(json.RawMessage) ([]string, error) {
+				return shArgv("sleep 60"), nil
+			},
+		}, WithTimeout(300*time.Millisecond), AllowHostExec())
+		if got := tool.Spec().Effect; got != types.SideEffect {
+			t.Fatalf("Spec().Effect = %v, want the SideEffect default", got)
+		}
+		res, err := call(t, tool)
+		if err != nil {
+			t.Fatalf("Call: %v", err)
+		}
+		if res.Outcome != types.Unknown {
+			t.Errorf("Outcome = %v, want Unknown for the governed default timeout", res.Outcome)
+		}
+		if res.Error == nil || res.Error.Kind != types.OutcomeUnknown {
+			t.Errorf("Error = %+v, want Kind OutcomeUnknown", res.Error)
+		}
+	})
+
+	t.Run("tools.host-effect-option-consistent", func(t *testing.T) {
+		needSh(t)
+		tool := New(types.ToolSpec{Name: "probe", Effect: types.Idempotent}, Cmd{
+			Argv: func(json.RawMessage) ([]string, error) {
+				return shArgv("sleep 60"), nil
+			},
+		}, WithTimeout(300*time.Millisecond), WithEffect(types.ReadOnly), AllowHostExec())
+		if got := tool.Spec().Effect; got != types.ReadOnly {
+			t.Fatalf("Spec().Effect = %v, want the WithEffect override", got)
+		}
+		res, err := call(t, tool)
+		if err != nil {
+			t.Fatalf("Call: %v", err)
+		}
+		if res.Outcome != types.Failed {
+			t.Errorf("Outcome = %v, want Failed for the governed retryable timeout", res.Outcome)
+		}
+		if res.Error == nil || res.Error.Kind != types.Retryable {
+			t.Errorf("Error = %+v, want Kind Retryable", res.Error)
+		}
+	})
+
 	t.Run("default timeout", func(t *testing.T) {
 		r := New(types.ToolSpec{Name: "timed"}, Cmd{Argv: staticArgv("true")}).(*runner)
 		if r.timeout != defaultTimeout {

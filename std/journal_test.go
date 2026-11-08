@@ -164,6 +164,59 @@ func TestJournalIntent(t *testing.T) {
 		}
 	})
 
+	t.Run("tools.initial-and-replay-key-stable", func(t *testing.T) {
+		fc := newFailComplete()
+		ctx := context.Background()
+		calls := 0
+		keys := map[string]string{}
+		had := map[string]bool{}
+		tool := chains.ToolFunc(func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+			calls++
+			keys[call.ID], had[call.ID] = gohan.IdempotencyKey(ctx)
+			return types.ToolResult{Outcome: types.Succeeded}, nil
+		})
+		step := Journal(fc, WithJournalSpecs(lookupOf(bookingSpecs())))(tool)
+		first, err := step(ctx, toolCall("create_booking", "c1", `{"room":7}`))
+		if err != nil {
+			t.Fatalf("initial call: %v", err)
+		}
+		if first.Outcome != types.Unknown {
+			t.Fatalf("initial outcome = %v, want Unknown with the completion lost", first.Outcome)
+		}
+		recovery := Journal(fc.Journal, WithJournalSpecs(lookupOf(bookingSpecs())))(tool)
+		second, err := recovery(ctx, toolCall("create_booking", "c2", `{"room":7}`))
+		if err != nil {
+			t.Fatalf("replay: %v", err)
+		}
+		if second.Outcome != types.Succeeded {
+			t.Fatalf("replay outcome = %v, want Succeeded", second.Outcome)
+		}
+		if !had["c1"] || keys["c1"] == "" {
+			t.Fatalf("initial call reached the downstream boundary with key %q (present=%v), want the reserved key", keys["c1"], had["c1"])
+		}
+		if !had["c2"] || keys["c2"] == "" {
+			t.Fatalf("replay reached the downstream boundary with key %q (present=%v), want the reserved key", keys["c2"], had["c2"])
+		}
+		if keys["c2"] != keys["c1"] {
+			t.Fatalf("replay key = %q, want the initial key %q", keys["c2"], keys["c1"])
+		}
+		fp := CanonicalFingerprint("create_booking", json.RawMessage(`{"room":7}`))
+		entries, _ := fc.ByFingerprint(ctx, "", fp)
+		if len(entries) != 1 || entries[0].Key != keys["c1"] || entries[0].State != stores.Completed {
+			t.Fatalf("entries = %+v, want one %q Completed", entries, keys["c1"])
+		}
+		third, err := recovery(ctx, toolCall("create_booking", "c3", `{"room":7}`))
+		if err != nil {
+			t.Fatalf("new call: %v", err)
+		}
+		if third.Outcome != types.Succeeded {
+			t.Fatalf("new call outcome = %v, want Succeeded", third.Outcome)
+		}
+		if calls != 3 {
+			t.Fatalf("tool calls = %d, want 3 (a completed intent must not suppress a genuinely new call)", calls)
+		}
+	})
+
 	t.Run("reserve fingerprint mismatch fails the call", func(t *testing.T) {
 		calls := 0
 		tool := chains.ToolFunc(func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {

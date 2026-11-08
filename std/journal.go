@@ -179,9 +179,9 @@ func Journal(j stores.Journal, opts ...JournalOption) chains.ToolMiddleware {
 			if !created && entry.State == stores.Completed && entry.Result.Outcome != types.Unknown {
 				return entry.Result, nil
 			}
-			if !created {
-				ctx = gohan.WithIdempotencyKey(ctx, entry.Key)
-			}
+			// Initial execution and replay run under the same reserved key,
+			// so the downstream boundary sees one identity per intent.
+			ctx = gohan.WithIdempotencyKey(ctx, entry.Key)
 			res, err := next(ctx, call)
 			if err != nil {
 				return res, err
