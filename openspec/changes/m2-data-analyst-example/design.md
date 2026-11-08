@@ -53,7 +53,7 @@ Ten ids are reused with their names, requirement blocks and owners unchanged. Ea
 | `sandbox.replay-no-reexec` | `m2-sandbox-lifecycle-resume` | `TestDataAnalystOffline/sandbox.replay-no-reexec` | replay of a run that executed before suspending does not grow the fake's `Exec` count |
 | `sandbox.output-to-store` | `m2-sandbox-governance` | `TestDataAnalystOffline/sandbox.output-to-store` | stdout above `MaxOutput` yields a head excerpt plus a `Ref`, and the fake output store holds the full body |
 | `sandbox.output-stored-redacted` | `protect-tool-output-storage` | `TestDataAnalystOffline/sandbox.output-stored-redacted` | the stored block and the `Ref`-bearing head excerpt carry no unmasked identifier and no injected secret |
-| `working-state.output-paging` | `working-state` capability | `TestDataAnalystOffline/working-state.output-paging` | `read_output(ref, range)` returns exactly the requested slice and an out-of-range window is refused |
+| `working-state.output-paging` | `working-state` capability | `TestDataAnalystOffline/working-state.output-paging` | `read_output(ref, range)` returns exactly the requested slice and an out-of-range window is refused by the example's paging wrapper before it delegates to `std/outputs.NewReadOutput`, whose shipped behaviour is to clamp |
 
 Every one of those ten subtest names is a real, distinct function of the example and never a closure over the same helper: each asserts its own recorded evidence. A `-run` filter that matches zero subtests is a failure, not a pass.
 
