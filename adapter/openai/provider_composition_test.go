@@ -100,6 +100,36 @@ func (r *errAfterBytes) Read(p []byte) (int, error) {
 	return 0, r.read
 }
 
+// gatedFrames delivers one buffered frame per Read and parks each gated
+// frame boundary until the test closes its gate: the provider stays at the
+// boundary without sleeps, so a cancellation can be landed while a later
+// frame is in flight.
+type gatedFrames struct {
+	frames []string
+	gates  []chan struct{}
+	pos    int
+	off    int
+}
+
+func (r *gatedFrames) Read(p []byte) (int, error) {
+	for {
+		if r.pos >= len(r.frames) {
+			return 0, io.EOF
+		}
+		if r.pos > 0 && r.pos-1 < len(r.gates) {
+			<-r.gates[r.pos-1]
+		}
+		frame := r.frames[r.pos]
+		if r.off < len(frame) {
+			n := copy(p, frame[r.off:])
+			r.off += n
+			return n, nil
+		}
+		r.pos++
+		r.off = 0
+	}
+}
+
 type sseTransport struct {
 	status int
 	raw    string
@@ -979,8 +1009,14 @@ func TestProviderComposition(t *testing.T) {
 					}
 				}
 			})
-			if after != 0 {
-				t.Errorf("%d callbacks observed after the accepting consumer cancelled mid-chunk; consume must stop between the yields of one chunk", after)
+			if after != 1 {
+				t.Errorf("%d callbacks observed after the accepting consumer cancelled mid-chunk; the frozen cancellation transition requires exactly one terminal callback before the iteration returns", after)
+			}
+			if len(log.errs) != 1 || !errors.Is(log.errs[0], context.Canceled) {
+				t.Errorf("mid-chunk cancellation produced errors %v; exactly one terminal context.Canceled must follow the accepting consumer's cancel", log.errs)
+			}
+			if afterChunks := log.chunksAfterError(); afterChunks != 0 {
+				t.Errorf("%d chunks yielded after the cancellation error; no success chunk or usage may follow it", afterChunks)
 			}
 		})
 	})
@@ -1173,6 +1209,80 @@ func TestProviderComposition(t *testing.T) {
 			if counts := tr.closeCounts(); len(counts) != 1 || counts[0] != 1 {
 				t.Errorf("body close counts %v, want exactly one close", counts)
 			}
+		})
+		t.Run("external_cancel_mid_chunk", func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				mid := `data: {"model":"served-1","choices":[` +
+					`{"index":0,"delta":{"content":"b1"}},` +
+					`{"index":0,"delta":{"content":"b2"}}]}` + "\n\n"
+				gate := make(chan struct{})
+				tr := &sseTransport{status: 200, reader: &gatedFrames{
+					frames: []string{textFrame("a"), mid, textFrame("c"), finishFrame("stop", usageTotals), sseDone},
+					gates:  []chan struct{}{gate},
+				}}
+				p := fixtureProvider(t, proofCaps(nil), tr)
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				log := &yieldLog{}
+				accepts := make(chan struct{})
+				midSeen := make(chan struct{})
+				cancelAck := make(chan struct{})
+				midCancel := false
+				after := 0
+				texts := 0
+				go func() {
+					<-accepts
+					close(gate)
+					<-midSeen
+					cancel()
+					close(cancelAck)
+				}()
+				consumeGuarded(t, func() {
+					for c, e := range p.Generate(ctx, proofRequest("external mid-chunk cancel")) {
+						if midCancel {
+							after++
+						}
+						if !log.accept(c, e) {
+							break
+						}
+						if c.Kind != types.DeltaText {
+							continue
+						}
+						texts++
+						switch texts {
+						case 1:
+							// First accepted chunk observed: the external
+							// canceller may release the later frame.
+							accepts <- struct{}{}
+						case 2:
+							// Later frame's first delta consumed: the
+							// external canceller lands the cancellation
+							// before any sibling delta yields.
+							midSeen <- struct{}{}
+							<-cancelAck
+							midCancel = true
+						}
+					}
+				})
+				if len(log.errs) != 1 || !errors.Is(log.errs[0], context.Canceled) {
+					t.Fatalf("external mid-consume cancellation produced errors %v; the iteration must report exactly one terminal context.Canceled and return", log.errs)
+				}
+				if after != 1 {
+					t.Errorf("%d callbacks observed after the external cancellation landed mid-consume; the iteration must return after exactly the one terminal callback", after)
+				}
+				if chunks := log.chunksAfterError(); chunks != 0 {
+					t.Errorf("%d chunks yielded after the cancellation error; no success chunk or usage may follow it", chunks)
+				}
+				if u := len(log.usageReports()); u != 0 {
+					t.Errorf("streamed %d usage reports after cancellation, want none; success usage must not follow a cancelled stream", u)
+				}
+				if fin := log.finalFinish(); fin != "" {
+					t.Errorf("cancelled stream finalized with finish %q, want no success finish", fin)
+				}
+				if counts := tr.closeCounts(); len(counts) != 1 || counts[0] != 1 {
+					t.Errorf("body close counts %v, want exactly one close", counts)
+				}
+			})
 		})
 		t.Run("cancel_with_rejection", func(t *testing.T) {
 			raw := sse(textFrame("a"), textFrame("b"), finishFrame("stop", usageTotals), sseDone)
