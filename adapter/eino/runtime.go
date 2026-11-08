@@ -168,7 +168,8 @@ func (r *Runtime) Step(ctx context.Context, st runtime.State) (runtime.State, []
 		st.Pending = st.Pending[1:]
 	}
 	ag, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
-		Model: turnModel{rt: r},
+		Model:    turnModel{rt: r},
+		Handlers: []adk.ChatModelAgentMiddleware{NewToolCallIDHandler()},
 		ToolsConfig: adk.ToolsConfig{
 			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: r.einoTools()},
 			ReturnDirectly:  r.returnDirectly(),
@@ -394,6 +395,11 @@ func (t turnModel) call(ctx context.Context, in []*schema.Message) (turnResult, 
 	for chunk, cerr := range t.rt.run.Model.Generate(ctx, req) {
 		if cerr != nil {
 			return res, cerr
+		}
+		// Identity-only streaming previews carry no executable args; the
+		// complete call arrives later with its args.
+		if chunk.Kind == types.DeltaToolArgs && chunk.ToolUse != nil && len(chunk.ToolUse.Args) == 0 {
+			continue
 		}
 		switch {
 		case chunk.ToolUse != nil:

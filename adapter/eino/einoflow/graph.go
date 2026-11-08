@@ -128,6 +128,11 @@ type turnOutput struct {
 }
 
 func (o *turnOutput) fold(chunk types.ModelChunk) {
+	// Identity-only streaming previews carry no executable args; the
+	// complete call arrives later with its args.
+	if chunk.Kind == types.DeltaToolArgs && chunk.ToolUse != nil && len(chunk.ToolUse.Args) == 0 {
+		return
+	}
 	switch {
 	case chunk.ToolUse != nil:
 		o.calls = append(o.calls, *chunk.ToolUse)
