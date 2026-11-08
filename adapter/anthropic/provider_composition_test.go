@@ -763,5 +763,43 @@ func TestProviderComposition(t *testing.T) {
 				t.Fatalf("accepted terminal decode error was followed by %d completion/usage chunks (%v), want the error to be final with no completion or usage after it", len(after), after)
 			}
 		})
+
+		t.Run("stop_less_delta_then_eof", func(t *testing.T) {
+			// A message_delta without stop_reason over an open tool index
+			// must not swallow the truncation terminal: the pending flush
+			// marks the block emitted, but clean EOF still owes the public
+			// Generate stream exactly one FinishMaxTokens chunk.
+			stopLessFx := newCompFixture(t,
+				compTurn{events: []string{
+					compMsgStart(),
+					compToolStart(0, "toolu_sl", "search"),
+					compArgsDelta(0, `{"q":"sl`),
+					event("message_delta", `{"type":"message_delta","delta":{},"usage":{"output_tokens":5}}`),
+				}},
+			)
+			stopLessChunks := fbCollect(t, compModel(t, stopLessFx), fbRequest((&compRecorder{}).Spec()))
+			var stopLessPreviews int
+			for _, chunk := range stopLessChunks {
+				if chunk.Kind != types.DeltaToolArgs || chunk.ToolUse == nil {
+					continue
+				}
+				if len(chunk.ToolUse.Args) > 0 {
+					t.Errorf("stop-less delta completed tool args %s, want identity-only previews that never complete the call", chunk.ToolUse.Args)
+					continue
+				}
+				if chunk.ToolUse.ID != "toolu_sl" || chunk.ToolUse.Name != "search" {
+					t.Errorf("stop-less preview identity = %s/%s, want toolu_sl/search", chunk.ToolUse.ID, chunk.ToolUse.Name)
+					continue
+				}
+				stopLessPreviews++
+			}
+			if stopLessPreviews == 0 {
+				t.Errorf("stop-less delta over an open tool index surfaced no identity preview, want the pending fragment surfaced with the call identity before EOF")
+			}
+			stopLessFinishes := fbFinishes(stopLessChunks)
+			if len(stopLessFinishes) != 1 || stopLessFinishes[0] != types.FinishMaxTokens {
+				t.Errorf("stop-less message_delta followed by clean EOF over an open ordinary tool index reported finishes %v, want exactly one FinishMaxTokens chunk in the public Generate stream", stopLessFinishes)
+			}
+		})
 	})
 }
