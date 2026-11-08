@@ -3146,6 +3146,11 @@
     "origin": "protect-tool-output-storage",
     "title": "no store overflow"
   },
+  "sandbox.data-analyst-resume-and-page": {
+    "capability": "sandbox",
+    "origin": "m2-data-analyst-example",
+    "title": "data analyst resumes and pages"
+  },
   "tools.fetch-output-stored": {
     "capability": "tools",
     "origin": "protect-tool-output-storage",
