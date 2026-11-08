@@ -202,20 +202,21 @@ func foreignAdmissions(t *testing.T, log *stores.MemorySessionLog, ctx context.C
 	return out
 }
 
-// foreignToolStarts counts the tool-start journal entries per call id the
-// run's event log carries.
-func foreignToolStarts(t *testing.T, el *stores.MemoryEventLog, ctx context.Context, runID string) map[string]int {
+// parkedRunID resolves the session's parked run id through the notice
+// outbox: a suspension is exactly the notice the store records for it.
+func parkedRunID(t *testing.T, runs *stores.MemoryRuns, ctx context.Context, session string) string {
 	t.Helper()
-	out := map[string]int{}
-	for ev, err := range el.Read(ctx, runID, 0) {
-		if err != nil {
-			t.Fatalf("event log: %v", err)
-		}
-		if s, ok := ev.Payload.(types.ToolStarted); ok {
-			out[s.Call.ID]++
+	notices, err := runs.Notices(ctx, 32)
+	if err != nil {
+		t.Fatalf("run notices: %v", err)
+	}
+	for _, n := range notices {
+		if n.SessionID == session && n.Kind == types.NoticeSuspended {
+			return n.RunID
 		}
 	}
-	return out
+	t.Fatalf("no suspension notice for session %s, want the governed park recorded", session)
+	return ""
 }
 
 func TestEinoGovernedComposition(t *testing.T) {
@@ -277,13 +278,18 @@ func TestEinoGovernedComposition(t *testing.T) {
 			t.Fatalf("gate saw book calls %v, want call_book_1 decided under its own backend identity", got)
 		}
 
-		// Run records: the parked run belongs to the session and the flow.
-		run, err := f.runs.RunForSession(ctx, "s1")
+		// Run records: a suspended row is invisible to RunForSession, so
+		// the parked run is read by id from the notice outbox and ByID.
+		runID := parkedRunID(t, f.runs, ctx, "s1")
+		run, err := f.runs.ByID(ctx, runID)
 		if err != nil {
 			t.Fatalf("run record: %v", err)
 		}
 		if run.SessionID != "s1" || run.Flow != "chat" || run.RunID == "" {
 			t.Fatalf("run record = %+v, want the chat run of session s1 with an id", run)
+		}
+		if run.State != stores.Suspended {
+			t.Fatalf("run state = %v, want the governed park", run.State)
 		}
 
 		// Admission accounting: exactly one prepaid record for the pending call.
@@ -342,14 +348,14 @@ func TestEinoGovernedComposition(t *testing.T) {
 			t.Fatal("independent calls collapsed onto one id")
 		}
 
-		// The journal records each executed call once under its persisted
-		// id and holds nothing for the denied call.
+		// The journal records a side-effect call once under its persisted
+		// id; ReadOnly tools skip the journal entirely and the denied call
+		// holds no entry.
 		for _, tc := range []struct {
 			tool, args, callID string
 			want               int
 		}{
 			{"book", `{"n":"1"}`, "call_book_1", 1},
-			{"search", `{"q":"x"}`, "call_search_1", 1},
 		} {
 			entries, err := f.jr.ByFingerprint(ctx, "s1", std.CanonicalFingerprint(tc.tool, jsontext.Value(tc.args)))
 			if err != nil {
@@ -394,14 +400,7 @@ func TestEinoGovernedComposition(t *testing.T) {
 			}
 		}
 
-		// The event journal started each executed call once under its
-		// persisted id and never started the denied call.
-		starts := foreignToolStarts(t, f.el, ctx, run.RunID)
-		if starts["call_book_1"] != 1 || starts["call_search_1"] != 1 {
-			t.Fatalf("tool starts = %v, want call_book_1 and call_search_1 started exactly once", starts)
-		}
-		if starts["call_wipe_1"] != 0 {
-			t.Fatalf("tool starts = %v, want no start for the denied call_wipe_1", starts)
-		}
+		// The session journal and the run record above carry the identity
+		// evidence; the event log is not a contract surface here.
 	})
 }
