@@ -514,9 +514,13 @@ func TestProviderComposition(t *testing.T) {
 			t.Errorf("streamed %d identity-bearing DeltaToolArgs previews, want 4, one per argument fragment", len(previews))
 		} else {
 			wantID := []string{"call-a", "call-b", "call-a", "call-b"}
+			wantDelta := []string{`{"q":`, `{"n":`, `1}`, `2}`}
 			for i, pv := range previews {
 				if pv.ToolUse == nil || pv.ToolUse.ID != wantID[i] || pv.ToolUse.Name != "echo" {
 					t.Errorf("preview %d lost its call identity (%v), want %s on echo", i, pv.ToolUse, wantID[i])
+				}
+				if pv.Delta != wantDelta[i] {
+					t.Errorf("preview %d streamed fragment %q, want %q: the preview must carry the exact wire fragment", i, pv.Delta, wantDelta[i])
 				}
 				if args := strings.TrimSpace(string(pv.ToolUse.Args)); args != "" {
 					t.Errorf("preview %d carried executable args %q; previews must stay identity-only until completion", i, args)
@@ -553,6 +557,148 @@ func TestProviderComposition(t *testing.T) {
 				}
 			}
 		}
+		var argDeltas []types.ToolArgsDelta
+		var joined strings.Builder
+		for _, ev := range evs {
+			if d, ok := ev.(types.ToolArgsDelta); ok {
+				argDeltas = append(argDeltas, d)
+				joined.WriteString(d.Delta)
+			}
+		}
+		if len(argDeltas) == 0 {
+			t.Errorf("native conversation surfaced no ToolArgsDelta previews; a fragment stream must stay observable through the event stream")
+		}
+		for _, d := range argDeltas {
+			if d.CallID != "call-1" || d.Name != "echo" {
+				t.Errorf("native preview carried identity (%s,%s), want call-1 on echo", d.CallID, d.Name)
+			}
+			if d.Delta == "" {
+				t.Errorf("native preview for %s carried an empty fragment", d.CallID)
+			}
+		}
+		if joined.String() != `{"q":"go"}` {
+			t.Errorf("native preview fragments joined to %q, want the full argument string {\"q\":\"go\"}", joined.String())
+		}
+		t.Run("whole_argument_single_frame_control", func(t *testing.T) {
+			raw := sse(toolFrame(0, "call-1", "echo", argsValid), finishFrame("tool_calls", usageTotals), sseDone)
+			p := fixtureProvider(t, proofCaps(nil), &sseTransport{status: 200, raw: raw})
+			log := drain(t, p, compositionRequest("whole argument control"))
+			var previews []types.ModelChunk
+			var completes []types.ToolUse
+			for _, c := range log.chunks {
+				if c.Kind == types.DeltaToolArgs {
+					previews = append(previews, c)
+					continue
+				}
+				if c.ToolUse != nil {
+					completes = append(completes, *c.ToolUse)
+				}
+			}
+			if len(previews) != 1 {
+				t.Fatalf("whole-argument frame produced %d previews, want exactly one identity-bearing preview for the full string", len(previews))
+			}
+			pv := previews[0]
+			if pv.ToolUse == nil || pv.ToolUse.ID != "call-1" || pv.ToolUse.Name != "echo" {
+				t.Errorf("whole-argument preview identity %v, want call-1 on echo", pv.ToolUse)
+			}
+			if pv.Delta != `{"q":"go"}` {
+				t.Errorf("whole-argument preview fragment %q, want the full argument string {\"q\":\"go\"}", pv.Delta)
+			}
+			if strings.TrimSpace(string(pv.ToolUse.Args)) != "" {
+				t.Errorf("whole-argument preview carried executable args %q; previews must stay identity-only", pv.ToolUse.Args)
+			}
+			if len(completes) != 1 || completes[0].ID != "call-1" || string(completes[0].Args) != `{"q":"go"}` {
+				t.Errorf("whole-argument control completed %v, want one call-1({\"q\":\"go\"})", completes)
+			}
+		})
+		t.Run("release_channel_pause_zero_effects", func(t *testing.T) {
+			previewFrames := sse(
+				toolFrame(0, "call-1", "echo", `{\"q\":`),
+				toolFrame(0, "", "", `\"go\"}`),
+			)
+			rest := sse(finishFrame("tool_calls", usageTotals), sseDone)
+			release := make(chan struct{})
+			var once sync.Once
+			releaseOnce := func() { once.Do(func() { close(release) }) }
+			t.Cleanup(releaseOnce)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, previewFrames)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				<-release
+				_, _ = io.WriteString(w, rest)
+			}))
+			t.Cleanup(server.Close)
+			p, err := openai.New(openai.Config{
+				Profile: types.ModelProfile{
+					Name:    fixtureProfile,
+					Version: fixtureVersion,
+					Keys:    types.PlatformKey,
+					Caps:    proofCaps(nil),
+				},
+				Keys:      simpleKeys(fixtureKeyID, fixtureToken),
+				Transport: server.Client(),
+				Endpoint:  server.URL,
+			})
+			if err != nil {
+				t.Fatalf("build provider: %v", err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			log := &yieldLog{}
+			previewsSeen := make(chan struct{}, 1)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				seen := 0
+				for c, e := range p.Generate(ctx, compositionRequest("paused previews")) {
+					log.accept(c, e)
+					if c.Kind == types.DeltaToolArgs {
+						seen++
+						if seen == 2 {
+							select {
+							case previewsSeen <- struct{}{}:
+							default:
+							}
+						}
+					}
+				}
+			}()
+			select {
+			case <-previewsSeen:
+			case <-time.After(10 * time.Second):
+				t.Fatal("stream never delivered the two argument fragments; the fixture is stuck before the pause")
+			}
+			for _, c := range log.chunks {
+				if c.ToolUse != nil && c.Kind != types.DeltaToolArgs && strings.TrimSpace(string(c.ToolUse.Args)) != "" {
+					t.Errorf("paused stream yielded executable call %s(%s) before completion; nothing may execute mid-stream", c.ToolUse.ID, string(c.ToolUse.Args))
+				}
+				if c.Usage != nil {
+					t.Errorf("paused stream yielded usage %v before completion; no effect may precede the release", c.Usage)
+				}
+				if c.Finish != "" {
+					t.Errorf("paused stream yielded finish %q before completion", c.Finish)
+				}
+			}
+			releaseOnce()
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("stream did not finish after the release channel opened")
+			}
+			var completes []types.ToolUse
+			for _, c := range log.chunks {
+				if c.ToolUse != nil && c.Kind != types.DeltaToolArgs {
+					completes = append(completes, *c.ToolUse)
+				}
+			}
+			if len(completes) != 1 || completes[0].ID != "call-1" || string(completes[0].Args) != `{"q":"go"}` {
+				t.Errorf("released stream completed %v, want one call-1({\"q\":\"go\"})", completes)
+			}
+			assertSingleUsage(t, log, false)
+		})
 	})
 
 	t.Run("model.forced-output-and-tool-truncation", func(t *testing.T) {
@@ -697,6 +843,27 @@ func TestProviderComposition(t *testing.T) {
 			}
 			assertSingleUsage(t, log, false)
 		})
+		t.Run("forced_output_wire_tool_calls", func(t *testing.T) {
+			raw := sse(
+				toolFrame(0, "call-1", "echo", argsValid),
+				finishFrame("tool_calls", usageTotals),
+				sseDone,
+			)
+			req := proofRequest("forced output wire tool calls")
+			req.Options.ResponseSchema = json.RawMessage(`{"type":"object"}`)
+			p := fixtureProvider(t, proofCaps(func(c *types.Caps) { c.Constrained = true }), &sseTransport{status: 200, raw: raw})
+			log := drain(t, p, req)
+			for _, c := range log.chunks {
+				if c.ToolUse != nil && c.Kind != types.DeltaToolArgs && strings.TrimSpace(string(c.ToolUse.Args)) != "" {
+					t.Errorf("forced-schema turn yielded executable tool call %s(%s); a constrained response must never complete wire tool calls for an unoffered tool", c.ToolUse.ID, string(c.ToolUse.Args))
+				}
+			}
+			tool, evs, sendErr := nativeCase(t, raw)
+			if sendErr != nil {
+				t.Fatalf("native send: %v", sendErr)
+			}
+			assertNoToolEffects(t, tool, evs)
+		})
 	})
 
 	t.Run("model.openai-consumer-stop-final", func(t *testing.T) {
@@ -768,6 +935,33 @@ func TestProviderComposition(t *testing.T) {
 			}
 			if u.ModelVersion != fixtureVersion {
 				t.Errorf("estimated usage model version %q, want the served version %q", u.ModelVersion, fixtureVersion)
+			}
+		})
+		t.Run("cancel_mid_chunk", func(t *testing.T) {
+			frame := `data: {"model":"served-1","choices":[` +
+				`{"index":0,"delta":{"content":"a"}},` +
+				`{"index":0,"delta":{"content":"b"}}]}` + "\n\n"
+			tr := &sseTransport{status: 200, raw: frame}
+			p := fixtureProvider(t, proofCaps(nil), tr)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			log := &yieldLog{}
+			cancelled := false
+			after := 0
+			consumeGuarded(t, func() {
+				for c, e := range p.Generate(ctx, proofRequest("mid-chunk cancel")) {
+					if cancelled {
+						after++
+					}
+					log.accept(c, e)
+					if c.Kind == types.DeltaText && !cancelled {
+						cancelled = true
+						cancel()
+					}
+				}
+			})
+			if after != 0 {
+				t.Errorf("%d callbacks observed after the accepting consumer cancelled mid-chunk; consume must stop between the yields of one chunk", after)
 			}
 		})
 	})
@@ -977,6 +1171,69 @@ func TestProviderComposition(t *testing.T) {
 			}
 			if n := log.callsCount(); n != 1 {
 				t.Errorf("consumer received %d callbacks, want exactly the one rejecting callback; no callback may follow consumer rejection", n)
+			}
+			if counts := tr.closeCounts(); len(counts) != 1 || counts[0] != 1 {
+				t.Errorf("body close counts %v, want exactly one close", counts)
+			}
+		})
+		t.Run("cancel_after_last_frame", func(t *testing.T) {
+			// One text frame and then EOF with no trailing blank line: the
+			// loop-top context check never runs again, so the only exit is
+			// the stream finalizer. It must report the cancellation instead
+			// of finalizing success.
+			frame := `data: {"model":"served-1","choices":[{"index":0,"delta":{"content":"x"}}]}` + "\n"
+			tr := &sseTransport{status: 200, raw: frame}
+			p := fixtureProvider(t, proofCaps(nil), tr)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			log := &yieldLog{}
+			for c, e := range p.Generate(ctx, proofRequest("cancel after last frame")) {
+				if !log.accept(c, e) {
+					break
+				}
+				if c.Kind == types.DeltaText {
+					cancel()
+				}
+			}
+			if len(log.errs) != 1 || !errors.Is(log.errs[0], context.Canceled) {
+				t.Fatalf("cancellation on the last frame produced errors %v; the unguarded stream finalizer must report exactly one terminal context.Canceled instead of finalizing success", log.errs)
+			}
+			if after := log.chunksAfterError(); after != 0 {
+				t.Errorf("%d chunks yielded after the cancellation error; no estimated usage or completion may follow it", after)
+			}
+			if u := len(log.usageReports()); u != 0 {
+				t.Errorf("streamed %d usage reports after cancellation, want none; success usage must not follow a cancelled stream", u)
+			}
+			if fin := log.finalFinish(); fin != "" {
+				t.Errorf("cancelled stream finalized with finish %q, want no success finish", fin)
+			}
+			if counts := tr.closeCounts(); len(counts) != 1 || counts[0] != 1 {
+				t.Errorf("body close counts %v, want exactly one close", counts)
+			}
+		})
+		t.Run("content_and_finish_same_frame", func(t *testing.T) {
+			frame := `data: {"model":"served-1","choices":[{"index":0,"delta":{"content":"x"},"finish_reason":"stop"}],"usage":` + usageTotals + `}` + "\n\n"
+			tr := &sseTransport{status: 200, raw: frame}
+			p := fixtureProvider(t, proofCaps(nil), tr)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			log := &yieldLog{}
+			for c, e := range p.Generate(ctx, proofRequest("content and finish same frame")) {
+				if !log.accept(c, e) {
+					break
+				}
+				if c.Kind == types.DeltaText {
+					cancel()
+				}
+			}
+			if len(log.errs) != 1 || !errors.Is(log.errs[0], context.Canceled) {
+				t.Fatalf("cancellation before the same-frame finish produced errors %v; the unguarded terminal finalizer must yield exactly one terminal context.Canceled, not the success finish", log.errs)
+			}
+			if after := log.chunksAfterError(); after != 0 {
+				t.Errorf("%d chunks yielded after the cancellation error; no finish or usage may follow it", after)
+			}
+			if fin := log.finalFinish(); fin != "" {
+				t.Errorf("cancelled stream surfaced finish %q, want no success finish", fin)
 			}
 			if counts := tr.closeCounts(); len(counts) != 1 || counts[0] != 1 {
 				t.Errorf("body close counts %v, want exactly one close", counts)
