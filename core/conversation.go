@@ -691,7 +691,13 @@ func newRunID() (string, error) {
 	return "run-" + hex.EncodeToString(b[:]), nil
 }
 func (c *conversation) redactMessages(ctx context.Context, sessionID string, msgs []types.Message) ([]types.Message, error) {
-	if c.redactor == nil || len(c.redactionPolicy.Detectors) == 0 {
+	return redactMessagesWith(ctx, sessionID, msgs, c.redactor, c.redactionPolicy, c.redactionMaps)
+}
+
+// redactMessagesWith redacts message blocks under the redaction policy and
+// merges the produced map into the session's stored map.
+func redactMessagesWith(ctx context.Context, sessionID string, msgs []types.Message, redactor types.Redactor, policy types.RedactionPolicy, maps stores.RedactionMaps) ([]types.Message, error) {
+	if redactor == nil || len(policy.Detectors) == 0 {
 		return msgs, nil
 	}
 	info, _ := types.RunInfoFrom(ctx)
@@ -701,18 +707,18 @@ func (c *conversation) redactMessages(ctx context.Context, sessionID string, msg
 	for _, msg := range msgs {
 		blocks = append(blocks, msg.Blocks...)
 	}
-	redacted, m, err := c.redactor.Redact(ctx, blocks, c.redactionPolicy)
+	redacted, m, err := redactor.Redact(ctx, blocks, policy)
 	if err != nil {
 		return nil, fmt.Errorf("redact messages: %w", err)
 	}
-	if c.redactionMaps == nil {
+	if maps == nil {
 		return nil, fmt.Errorf("redaction map store missing")
 	}
-	m, err = c.mergeRedactionMap(ctx, m)
+	m, err = mergeRedactionMapWith(ctx, m, maps)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.redactionMaps.Put(ctx, info.Principal.Tenant, sessionID, m); err != nil {
+	if err := maps.Put(ctx, info.Principal.Tenant, sessionID, m); err != nil {
 		return nil, fmt.Errorf("store redaction map: %w", err)
 	}
 	out := append([]types.Message(nil), msgs...)
@@ -726,8 +732,12 @@ func (c *conversation) redactMessages(ctx context.Context, sessionID string, msg
 }
 
 func (c *conversation) mergeRedactionMap(ctx context.Context, m types.RedactionMap) (types.RedactionMap, error) {
+	return mergeRedactionMapWith(ctx, m, c.redactionMaps)
+}
+
+func mergeRedactionMapWith(ctx context.Context, m types.RedactionMap, maps stores.RedactionMaps) (types.RedactionMap, error) {
 	info, _ := types.RunInfoFrom(ctx)
-	old, err := c.redactionMaps.Get(ctx, info.Principal.Tenant, info.SessionID)
+	old, err := maps.Get(ctx, info.Principal.Tenant, info.SessionID)
 	if err != nil && !errors.Is(err, stores.ErrRedactionMapNotFound) {
 		return types.RedactionMap{}, fmt.Errorf("load redaction map: %w", err)
 	}
@@ -741,13 +751,18 @@ func (c *conversation) mergeRedactionMap(ctx context.Context, m types.RedactionM
 }
 
 func (c *conversation) redactEvent(ctx context.Context, event Event) (Event, error) {
-	if c.redactor == nil || len(c.redactionPolicy.Detectors) == 0 {
+	return redactEventWith(ctx, event, c.redactor, c.redactionPolicy, c.redactionMaps)
+}
+
+// redactEventWith redacts one event's payloads under the redaction policy.
+func redactEventWith(ctx context.Context, event Event, redactor types.Redactor, policy types.RedactionPolicy, maps stores.RedactionMaps) (Event, error) {
+	if redactor == nil || len(policy.Detectors) == 0 {
 		return event, nil
 	}
 	info, _ := types.RunInfoFrom(ctx)
 	switch e := event.(type) {
 	case types.TextDelta:
-		msgs, err := c.redactMessages(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{types.Text{Text: e.Delta}}}})
+		msgs, err := redactMessagesWith(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{types.Text{Text: e.Delta}}}}, redactor, policy, maps)
 		if err != nil {
 			return nil, err
 		}
@@ -756,42 +771,42 @@ func (c *conversation) redactEvent(ctx context.Context, event Event) (Event, err
 		}
 		return e, nil
 	case types.ReasoningDelta:
-		msgs, err := c.redactMessages(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{types.Reasoning{Text: e.Delta}}}})
+		msgs, err := redactMessagesWith(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{types.Reasoning{Text: e.Delta}}}}, redactor, policy, maps)
 		if err != nil {
 			return nil, err
 		}
 		e.Delta = msgs[0].Blocks[0].(types.Reasoning).Text
 		return e, nil
 	case types.ResultDelta:
-		msgs, err := c.redactMessages(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{types.Text{Text: e.Delta}}}})
+		msgs, err := redactMessagesWith(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{types.Text{Text: e.Delta}}}}, redactor, policy, maps)
 		if err != nil {
 			return nil, err
 		}
 		e.Delta = msgs[0].Blocks[0].(types.Text).Text
 		return e, nil
 	case types.ToolArgsDelta:
-		msgs, err := c.redactMessages(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{types.Text{Text: e.Delta}}}})
+		msgs, err := redactMessagesWith(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{types.Text{Text: e.Delta}}}}, redactor, policy, maps)
 		if err != nil {
 			return nil, err
 		}
 		e.Delta = msgs[0].Blocks[0].(types.Text).Text
 		return e, nil
 	case types.AssistantMessage:
-		out, err := c.redactMessages(ctx, info.SessionID, []types.Message{e.Message})
+		out, err := redactMessagesWith(ctx, info.SessionID, []types.Message{e.Message}, redactor, policy, maps)
 		if err != nil {
 			return nil, err
 		}
 		e.Message = out[0]
 		return e, nil
 	case types.ToolStarted:
-		out, err := c.redactMessages(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{e.Call}}})
+		out, err := redactMessagesWith(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{e.Call}}}, redactor, policy, maps)
 		if err != nil {
 			return nil, err
 		}
 		e.Call = out[0].Blocks[0].(types.ToolUse)
 		return e, nil
 	case types.ToolFinished:
-		out, err := c.redactMessages(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{e.Result}}})
+		out, err := redactMessagesWith(ctx, info.SessionID, []types.Message{{Blocks: []types.Block{e.Result}}}, redactor, policy, maps)
 		if err != nil {
 			return nil, err
 		}

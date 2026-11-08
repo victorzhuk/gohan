@@ -323,6 +323,14 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 				terminal = carried.Reason
 			}
 			next, evs, again, err := lc.finishTurn(sctx, st, terminal)
+			if err != nil {
+				// A failed terminal write cannot yield success: the
+				// carried Done stays unpublished and the error tuple is
+				// the only boundary the consumer sees.
+				lc.stopHeartbeat()
+				yield(nil, err)
+				return
+			}
 			if hasCarried && !again {
 				if lc.ledger != nil {
 					carried.Cost = lc.ledger.TreeCost()
@@ -333,11 +341,6 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 				if !yield(e, nil) {
 					return
 				}
-			}
-			if err != nil {
-				lc.stopHeartbeat()
-				yield(nil, err)
-				return
 			}
 			st = next
 			if again {

@@ -839,13 +839,13 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 		}
 	}
 
+	admitted := 0
+	if b, derr := decodeNativeBackend(st); derr == nil && b.Driver != nil {
+		admitted = b.Driver.ToolCalls
+	}
 	refund := func() {}
 	if c.reserve != nil {
-		historical := 0
-		if b, derr := decodeNativeBackend(st); derr == nil && b.Driver != nil {
-			historical = b.Driver.ToolCalls
-		}
-		ctx = withAdmittedToolTotal(ctx, historical)
+		ctx = withAdmittedToolTotal(ctx, admitted)
 		rctx, r, err := c.reserve(ctx, len(calls))
 		if err != nil {
 			return st, nil, runtime.Continue, err
@@ -1019,13 +1019,14 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 		}
 	}
 	// The batch phase marker is a string literal: the runtime's phase
-	// constants are unexported there. ToolCalls uses the gated batch size
-	// until the reservation hook reports the admitted ledger total.
+	// constants are unexported there. ToolCalls carries the cumulative
+	// admitted total, so a re-entered drive restores every earlier
+	// admission instead of only this batch's slots.
 	b := nativeBackend{
 		Phase: "batch",
 		Driver: &nativeProgress{
 			Version:   nativeProgressVersion,
-			ToolCalls: len(calls),
+			ToolCalls: admitted + len(calls),
 			Batch:     &nativeBatchContinuation{Calls: calls, Results: aligned},
 		},
 	}

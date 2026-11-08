@@ -2,8 +2,10 @@ package gohan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/runtime"
@@ -339,14 +341,45 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 	}
 	var uncertain []types.CallKey
 	rt = pre.Runtime(rt)
+	if _, ok := types.RunInfoFrom(ctx); !ok {
+		ctx = types.WithRunInfo(ctx, types.RunInfo{SessionID: run.SessionID, RunID: run.RunID, Flow: run.Flow})
+	}
+	// Completion writes ignore the reaper's cancellation but stay bounded:
+	// a cancelled reaper still leaves the recovered tail and its terminal
+	// boundary durable for the next attaching client.
+	completion, cancelCompletion := context.WithTimeout(context.WithoutCancel(ctx), recoveredEventBound)
+	defer cancelCompletion()
+	tail, terr := eventLogTail(completion, s.stores.EventLog, run.RunID)
+	if terr != nil {
+		return s.abandonWith(ctx, lease, run, fmt.Errorf("recover run %s: %w", run.RunID, terr))
+	}
+	var gbBoundary bool
 	for ev, err := range DriveLifecycle(ctx, lc, rt, ag) {
 		if err != nil {
+			var gb *types.GuardBlockedError
+			if errors.As(err, &gb) {
+				// A guard block ends the run at its own boundary, the
+				// way the live relay records it.
+				if gerr := s.recordRecovered(completion, run, types.GuardBlocked{Stage: gb.Stage, Reason: gb.Reason}); gerr == nil {
+					if serr := s.recordRecovered(completion, run, types.Done{Reason: types.StopGuardBlocked}); serr == nil {
+						gbBoundary = true
+					}
+				}
+			}
 			driveErr = fmt.Errorf("recover run %s: %w", run.RunID, err)
 			break
 		}
+		if rerr := s.recordRecovered(completion, run, ev); rerr != nil {
+			driveErr = fmt.Errorf("recover run %s: %w", run.RunID, rerr)
+			break
+		}
+		tail++
 		if d, ok := ev.(types.Done); ok && len(d.Uncertain) > 0 {
 			uncertain = d.Uncertain
 		}
+	}
+	if driveErr != nil && !gbBoundary {
+		s.recordRecoveredTerminal(completion, run, tail, driveErr)
 	}
 	state, terminal := s.terminalRun(ctx, run.RunID)
 	if !terminal {
@@ -359,6 +392,60 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 		countRecovered(ctx, s.telemetry, run)
 	}
 	return driveErr
+}
+
+// recoveredEventBound bounds the completion writes of a recovered drive.
+const recoveredEventBound = 30 * time.Second
+
+// recordRecovered appends one recovered event to the run's log with live
+// execution's redacted record-before-delivery semantics.
+func (s *Stack) recordRecovered(ctx context.Context, run stores.Run, ev types.Event) error {
+	if s.stores.EventLog == nil {
+		return nil
+	}
+	red, pol := s.flowRedaction(run.Flow)
+	stored, err := redactEventWith(ctx, ev, red, pol, s.stores.RedactionMaps)
+	if err != nil {
+		return fmt.Errorf("redact event: %w", err)
+	}
+	if err := s.stores.EventLog.Append(ctx, run.RunID, stores.Event{Payload: stored, Meta: types.EventMeta{RunID: run.RunID}}); err != nil {
+		return fmt.Errorf("record event: %w", err)
+	}
+	return nil
+}
+
+// recordRecoveredTerminal appends the terminal failure record a failed
+// recovered drive leaves behind; the run keeps the store's own terminal
+// transition.
+func (s *Stack) recordRecoveredTerminal(ctx context.Context, run stores.Run, tail int64, cause error) {
+	te := types.TerminalFailure(cause, run.RunID, tail+2)
+	_ = s.recordRecovered(ctx, run, te)
+}
+
+// eventLogTail reports the highest sequence the run's log holds.
+func eventLogTail(ctx context.Context, log stores.EventLog, runID string) (int64, error) {
+	if log == nil {
+		return 0, nil
+	}
+	var tail int64
+	for e, err := range log.Read(ctx, runID, 0) {
+		if err != nil {
+			return 0, fmt.Errorf("read event log tail: %w", err)
+		}
+		if e.Meta.Seq > tail {
+			tail = e.Meta.Seq
+		}
+	}
+	return tail, nil
+}
+
+// flowRedaction returns the redaction seam the flow's resolved
+// configuration carries; flows without one skip redaction.
+func (s *Stack) flowRedaction(flow string) (types.Redactor, types.RedactionPolicy) {
+	if cfg, ok := s.resolvedNative(flow); ok {
+		return cfg.redactor, cfg.redactionPolicy
+	}
+	return nil, types.RedactionPolicy{}
 }
 
 // terminalRun reports the run's stored state when the store can answer it.
@@ -505,6 +592,15 @@ func (s *Stack) replayState(ctx context.Context, run stores.Run, rt runtime.Runt
 		if aerr := applyResume(ctx, s.stores.SessionLog, cp.SessionID, &st, in); aerr != nil {
 			return st, nil, in, fmt.Errorf("recover run: %w", aerr)
 		}
+		// The consume that stranded the run is the decision the resume
+		// lease never delivered: without the ready mark the replayed ask
+		// suspends again instead of executing the call the approval paid
+		// for.
+		if cp.Reason == types.HumanApproval && in.Verdict == stores.VerdictApprove {
+			if rerr := markAskReady(&st); rerr != nil {
+				return st, nil, in, fmt.Errorf("recover run: %w", rerr)
+			}
+		}
 		return st, &cp, in, nil
 	}
 	st = runtime.State{
@@ -576,6 +672,22 @@ func (s *Stack) reconstructNativeRunning(ctx context.Context, run stores.Run, st
 			}
 		}
 	}
+	// The admitted total spans every batch the history carries, so a
+	// re-entered drive restores all earlier admissions instead of only
+	// the batch it re-enters with.
+	admitted := 0
+	seen := map[string]bool{}
+	for _, msg := range h.Messages {
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		for _, b := range msg.Blocks {
+			if tu, ok := b.(types.ToolUse); ok && !seen[tu.ID] {
+				seen[tu.ID] = true
+				admitted++
+			}
+		}
+	}
 	var pending []types.ToolUse
 	for _, c := range calls {
 		if !settled[c.ID] {
@@ -589,7 +701,7 @@ func (s *Stack) reconstructNativeRunning(ctx context.Context, run stores.Run, st
 	}
 	enc, encErr := encodeNativeBackend(nativeBackend{
 		Phase:  phase,
-		Driver: &nativeProgress{Version: nativeProgressVersion, ToolCalls: len(calls)},
+		Driver: &nativeProgress{Version: nativeProgressVersion, ToolCalls: admitted},
 	})
 	if encErr != nil {
 		return encErr
