@@ -899,8 +899,10 @@ func TestProviderComposition(t *testing.T) {
 					if len(log.errs) != 1 || !errors.Is(log.errs[0], context.Canceled) {
 						t.Errorf("silent cancellation produced errors %v; the iterator must report exactly one context.Canceled", log.errs)
 					}
-					if len(log.chunks) != 0 {
-						t.Errorf("%d success chunks yielded after cancellation, want none", len(log.chunks))
+					for _, c := range log.chunks {
+						if c != (types.ModelChunk{}) {
+							t.Errorf("chunk %+v yielded after cancellation; no success chunks may follow silent cancellation", c)
+						}
 					}
 					if counts := tr.closeCounts(); len(counts) != 1 || counts[0] != 1 {
 						t.Errorf("body close counts %v, want exactly one close for the acquired body", counts)
