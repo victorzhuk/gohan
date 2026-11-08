@@ -66,6 +66,7 @@ type Report struct {
 	Journal      stores.Journal
 	Store        stores.OutputStore
 	ReadOutput   types.Tool
+	LeakCount    int64
 }
 
 // analysisEnv holds the durable surfaces of one composition.
@@ -129,6 +130,7 @@ func (e *analysisEnv) Analyze(ctx context.Context) (Report, error) {
 		return Report{}, fmt.Errorf("build read_output: %w", err)
 	}
 	e.ReadOutput = readOutput
+	tel := newCountTelemetry()
 
 	policy := types.SandboxPolicy{
 		Lifecycle: types.PerSession,
@@ -147,13 +149,14 @@ func (e *analysisEnv) Analyze(ctx context.Context) (Report, error) {
 	if err != nil {
 		return Report{}, fmt.Errorf("build sandbox tool set: %w", err)
 	}
-	conv, err := e.conversation(model, set, handles, policy)
+	conv, err := e.conversation(model, set, handles, policy, tel)
 	if err != nil {
 		return Report{}, err
 	}
 
 	rep := Report{SessionID: sessionID}
 	ctx = types.WithPrincipal(ctx, analysisPrincipal())
+	ctx = types.WithTelemetry(ctx, tel)
 	for ev, err := range conv.Send(ctx, sessionID, types.Message{
 		Role:   types.RoleUser,
 		Blocks: []types.Block{types.Text{Text: queryPrompt}},
@@ -198,7 +201,7 @@ func (e *analysisEnv) Analyze(ctx context.Context) (Report, error) {
 	if err != nil {
 		return rep, fmt.Errorf("build resume tool set: %w", err)
 	}
-	resumeConv, err := e.conversation(model, resumeSet, resumeHandles, policy)
+	resumeConv, err := e.conversation(model, resumeSet, resumeHandles, policy, tel)
 	if err != nil {
 		return rep, err
 	}
@@ -226,6 +229,7 @@ func (e *analysisEnv) Analyze(ctx context.Context) (Report, error) {
 		return rep, err
 	}
 	rep.Page = page
+	rep.LeakCount = tel.leakCount()
 	return rep, nil
 }
 
@@ -233,7 +237,7 @@ func (e *analysisEnv) Analyze(ctx context.Context) (Report, error) {
 // and returns its native conversation. Both stacks register the same
 // flow, policy and scripted model instance, so the resumed turn re-runs
 // the identical configuration on the second coordinator.
-func (e *analysisEnv) conversation(model types.Model, set sandbox.ToolSet, handles *sandbox.Handles, policy types.SandboxPolicy) (gohan.Conversation, error) {
+func (e *analysisEnv) conversation(model types.Model, set sandbox.ToolSet, handles *sandbox.Handles, policy types.SandboxPolicy, tel types.Telemetry) (gohan.Conversation, error) {
 	stack, err := gohan.Build(append(std.Defaults(),
 		gohan.WithStores(stores.Stores{
 			SessionLog:  e.Sessions,
@@ -242,6 +246,7 @@ func (e *analysisEnv) conversation(model types.Model, set sandbox.ToolSet, handl
 			OutputStore: e.Redacting,
 		}),
 		gohan.WithModels(model),
+		gohan.WithTelemetry(tel),
 		gohan.WithSecretResolver(newFakeSecretResolver(fixtureSecretValue)),
 		gohan.WithEgressClient(func(types.EgressPolicy) *http.Client { return http.DefaultClient }),
 		gohan.WithApprovalPolicySource(stdpermission.PolicySource{}),

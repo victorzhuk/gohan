@@ -81,6 +81,9 @@ func TestDataAnalystOffline(t *testing.T) {
 		if !strings.Contains(head, "<gohan:secret:") {
 			t.Errorf("persisted result lacks the secret redaction marker")
 		}
+		if rep.LeakCount <= 0 {
+			t.Errorf("leak counter = %d, want it to increment", rep.LeakCount)
+		}
 		body := storedBody(t, rep, rep.OutputRef)
 		assertAbsent(t, "persisted result", head, fixtureSecretValue)
 		assertAbsent(t, "stored body", body, fixtureSecretValue)

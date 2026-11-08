@@ -437,3 +437,38 @@ func (s *redactingOutputs) Put(ctx context.Context, ri types.RunInfo, content []
 func (s *redactingOutputs) Get(ctx context.Context, ref string) ([]byte, error) {
 	return s.inner.Get(ctx, ref)
 }
+
+// leakCounterName is the shipped secret-leak counter the sandbox output
+// path emits through the context-seeded telemetry.
+const leakCounterName = "gohan.sandbox.secret_leak"
+
+// countTelemetry records the counters the composed path emits.
+type countTelemetry struct {
+	mu     sync.Mutex
+	counts map[string]int64
+}
+
+var _ types.Telemetry = (*countTelemetry)(nil)
+
+func newCountTelemetry() *countTelemetry {
+	return &countTelemetry{counts: make(map[string]int64)}
+}
+
+func (t *countTelemetry) StartSpan(ctx context.Context, name string, attrs ...types.Attr) (context.Context, func(attrs ...types.Attr)) {
+	return ctx, func(_ ...types.Attr) {}
+}
+
+func (t *countTelemetry) Count(_ context.Context, name string, n int64, _ ...types.Attr) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.counts[name] += n
+}
+
+func (t *countTelemetry) Record(_ context.Context, _ string, _ float64, _ ...types.Attr) {}
+
+// leakCount returns the recorded value of the shipped secret-leak counter.
+func (t *countTelemetry) leakCount() int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.counts[leakCounterName]
+}
