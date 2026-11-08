@@ -202,6 +202,7 @@ func NewFlowFixture(t *testing.T, suspendAt int, turns ...gohantest.Turn) *FlowF
 	cps := stores.NewMemoryCheckpoints(
 		stores.WithMemoryCheckpointClock(time.Now),
 		stores.WithMemoryCheckpointRunInfo(runInfoFromCtx),
+		stores.WithMemoryCheckpointRuns(memRuns),
 	)
 	stack, err := gohan.Build(append(std.Defaults(),
 		gohan.WithStores(stores.Stores{SessionLog: log}))...)

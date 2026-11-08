@@ -91,9 +91,10 @@ type RunFactory func(t *testing.T) (RunStore, RunClock)
 
 // Runs runs the Runs conformance suite against the implementation
 // produced by newRuns. It covers stores.lease-exclusivity,
-// stores.reclaim-race, stores.stale-by-store-clock,
-// stores.signal-cancel-cross-pod, stores.mailbox-full and
-// recovery.no-double-run.
+// stores.reclaim-race, stores.resume-session-exclusive,
+// stores.reclaim-session-exclusive, stores.reclaim-state-refused,
+// stores.stale-by-store-clock, stores.signal-cancel-cross-pod,
+// stores.mailbox-full and recovery.no-double-run.
 func Runs(t *testing.T, newRuns RunFactory) {
 	t.Run("stores.lease-exclusivity", func(t *testing.T) {
 		ctx := context.Background()
@@ -228,6 +229,90 @@ func Runs(t *testing.T, newRuns RunFactory) {
 		}
 		if won != 1 || lost != 9 {
 			t.Fatalf("reclaim race: %d won, %d lost, want 1 won 9 lost", won, lost)
+		}
+	})
+
+	t.Run("stores.resume-session-exclusive", func(t *testing.T) {
+		ctx := context.Background()
+		s, clk := newRuns(t)
+		l1, err := s.Start(ctx, RunRow{SessionID: "sess-o", RunID: "run-o1"}, time.Minute)
+		if err != nil {
+			t.Fatalf("Start run-o1: %v", err)
+		}
+		if err := s.Suspend(ctx, l1, "tok-o1"); err != nil {
+			t.Fatalf("Suspend run-o1: %v", err)
+		}
+		// The clock moves so the newer run's store timestamp orders it
+		// above the suspended one.
+		clk.Advance(time.Second)
+		l2, err := s.Start(ctx, RunRow{SessionID: "sess-o", RunID: "run-o2"}, time.Minute)
+		if err != nil {
+			t.Fatalf("Start run-o2 over suspended run-o1: %v", err)
+		}
+		// A newer run owning the session refuses the suspended one's
+		// resume without changing either run.
+		if _, err := s.Resuming(ctx, "run-o1", time.Minute); !errors.Is(err, types.ErrRunActive) {
+			t.Fatalf("Resuming over live owner: %v, want ErrRunActive", err)
+		}
+		if _, err := s.Heartbeat(ctx, l1); !errors.Is(err, types.ErrRunNotActive) {
+			t.Fatalf("suspended run lease after refused resume: %v, want ErrRunNotActive", err)
+		}
+		if _, err := s.Heartbeat(ctx, l2); err != nil {
+			t.Fatalf("newer owner lease unusable after refusal: %v", err)
+		}
+	})
+
+	t.Run("stores.reclaim-session-exclusive", func(t *testing.T) {
+		ctx := context.Background()
+		s, clk := newRuns(t)
+		if _, err := s.Start(ctx, RunRow{SessionID: "sess-p", RunID: "run-p1"}, 10*time.Second); err != nil {
+			t.Fatalf("Start run-p1: %v", err)
+		}
+		clk.Advance(20 * time.Second)
+		l2, err := s.Start(ctx, RunRow{SessionID: "sess-p", RunID: "run-p2"}, time.Minute)
+		if err != nil {
+			t.Fatalf("Start run-p2 over expired run-p1: %v", err)
+		}
+		stale, err := s.Stale(ctx, 10*time.Second, 10)
+		if err != nil {
+			t.Fatalf("Stale: %v", err)
+		}
+		if len(stale) != 1 || stale[0].RunID != "run-p1" {
+			t.Fatalf("Stale = %v, want run-p1", stale)
+		}
+		if _, err := s.Reclaim(ctx, stale[0], time.Minute); !errors.Is(err, types.ErrRunActive) {
+			t.Fatalf("Reclaim over live owner: %v, want ErrRunActive", err)
+		}
+		if _, err := s.Heartbeat(ctx, l2); err != nil {
+			t.Fatalf("newer owner lease unusable after refusal: %v", err)
+		}
+	})
+
+	t.Run("stores.reclaim-state-refused", func(t *testing.T) {
+		ctx := context.Background()
+		s, clk := newRuns(t)
+		l1, err := s.Start(ctx, RunRow{SessionID: "sess-q", RunID: "run-q1"}, time.Minute)
+		if err != nil {
+			t.Fatalf("Start run-q1: %v", err)
+		}
+		if err := s.Suspend(ctx, l1, "tok-q1"); err != nil {
+			t.Fatalf("Suspend run-q1: %v", err)
+		}
+		l2, err := s.Start(ctx, RunRow{SessionID: "sess-q2", RunID: "run-q2"}, time.Minute)
+		if err != nil {
+			t.Fatalf("Start run-q2: %v", err)
+		}
+		if err := s.Finish(ctx, l2, RunFinished, nil, ""); err != nil {
+			t.Fatalf("Finish run-q2: %v", err)
+		}
+		clk.Advance(2 * time.Minute)
+		// Stored suspended and terminal state refuses ownership even
+		// though the caller presents stale rows.
+		if _, err := s.Reclaim(ctx, RunRow{SessionID: "sess-q", RunID: "run-q1"}, time.Minute); !errors.Is(err, types.ErrRunNotActive) {
+			t.Fatalf("Reclaim of suspended run: %v, want ErrRunNotActive", err)
+		}
+		if _, err := s.Reclaim(ctx, RunRow{SessionID: "sess-q2", RunID: "run-q2"}, time.Minute); !errors.Is(err, types.ErrRunNotActive) {
+			t.Fatalf("Reclaim of finished run: %v, want ErrRunNotActive", err)
 		}
 	})
 
@@ -463,6 +548,76 @@ func Runs(t *testing.T, newRuns RunFactory) {
 		}
 		if _, err := s.Drain(ctx, Lease{RunID: "run-missing"}); err == nil {
 			t.Fatal("Drain unknown lease succeeded")
+		}
+	})
+}
+
+// RunCheckpointStore is the Runs port plus the optional token-fenced
+// resume surface, as the conformance suite sees it.
+type RunCheckpointStore interface {
+	RunStore
+	SuspensionToken(ctx context.Context, runID string) (types.ResumeToken, error)
+	ResumingCheckpoint(ctx context.Context, runID string, t types.ResumeToken, ttl time.Duration) (Lease, error)
+}
+
+// RunCheckpointsFactory returns a fresh, empty store with the optional
+// surface and its own clock.
+type RunCheckpointsFactory func(t *testing.T) (RunCheckpointStore, RunClock)
+
+// RunsWithCheckpoints runs the legs a CheckpointRuns-capable store must
+// hold: the optional surface reports the run's current suspension and
+// mints a resume lease only for it. It covers
+// stores.optional-checkpoint-resume-port and
+// stores.resume-current-token-fenced. Stores without the optional
+// surface skip the suite, the way CheckpointsResumer is bound.
+func RunsWithCheckpoints(t *testing.T, newRuns RunCheckpointsFactory) {
+	t.Helper()
+	t.Run("stores.optional-checkpoint-resume-port", func(t *testing.T) {
+		ctx := context.Background()
+		s, _ := newRuns(t)
+		l, err := s.Start(ctx, RunRow{SessionID: "sess-r", RunID: "run-r1"}, time.Minute)
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		current := types.ResumeToken("tok-r1")
+		if err := s.Suspend(ctx, l, current); err != nil {
+			t.Fatalf("Suspend: %v", err)
+		}
+		got, err := s.SuspensionToken(ctx, "run-r1")
+		if err != nil {
+			t.Fatalf("SuspensionToken: %v", err)
+		}
+		if got != current {
+			t.Fatalf("SuspensionToken = %q, want %q", got, current)
+		}
+	})
+
+	t.Run("stores.resume-current-token-fenced", func(t *testing.T) {
+		ctx := context.Background()
+		s, _ := newRuns(t)
+		l, err := s.Start(ctx, RunRow{SessionID: "sess-s", RunID: "run-s1"}, time.Minute)
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		current := types.ResumeToken("tok-s1-new")
+		if err := s.Suspend(ctx, l, current); err != nil {
+			t.Fatalf("Suspend: %v", err)
+		}
+		// The stale token cannot mint a lease and the current
+		// suspension stays untouched.
+		if _, err := s.ResumingCheckpoint(ctx, "run-s1", "tok-s1-old", time.Minute); !errors.Is(err, types.ErrTokenMismatch) {
+			t.Fatalf("ResumingCheckpoint with stale token: %v, want ErrTokenMismatch", err)
+		}
+		got, err := s.SuspensionToken(ctx, "run-s1")
+		if err != nil || got != current {
+			t.Fatalf("SuspensionToken after mismatch = %q, %v; want %q untouched", got, err, current)
+		}
+		l2, err := s.ResumingCheckpoint(ctx, "run-s1", current, time.Minute)
+		if err != nil {
+			t.Fatalf("ResumingCheckpoint with current token: %v", err)
+		}
+		if l2.RunID != "run-s1" || l2.Generation == 0 {
+			t.Fatalf("lease = %+v, want run-s1 with a minted generation", l2)
 		}
 	})
 }

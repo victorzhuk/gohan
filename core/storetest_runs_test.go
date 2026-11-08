@@ -88,6 +88,31 @@ func (b runsBinding) AckNotice(ctx context.Context, id string) error {
 	return b.s.AckNotice(ctx, id)
 }
 
+func (b runsBinding) SuspensionToken(ctx context.Context, runID string) (types.ResumeToken, error) {
+	return b.s.SuspensionToken(ctx, runID)
+}
+
+func (b runsBinding) ResumingCheckpoint(ctx context.Context, runID string, t types.ResumeToken, ttl time.Duration) (storetest.Lease, error) {
+	l, err := b.s.ResumingCheckpoint(ctx, runID, t, ttl)
+	return storetest.Lease{RunID: l.RunID, Generation: l.Generation}, err
+}
+
+func (b runsBinding) SuspendWithReason(ctx context.Context, l storetest.Lease, t types.ResumeToken, reason types.SuspendReason) error {
+	return b.s.SuspendWithReason(ctx, stores.Lease{RunID: l.RunID, Generation: l.Generation}, t, reason)
+}
+
+func (b runsBinding) Preempted(ctx context.Context, limit int) ([]storetest.RunRow, error) {
+	runs, err := b.s.Preempted(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]storetest.RunRow, len(runs))
+	for i, r := range runs {
+		out[i] = fromStoreRun(r)
+	}
+	return out, nil
+}
+
 func toStoreRun(r storetest.RunRow) stores.Run {
 	return stores.Run{
 		SessionID:   r.SessionID,
@@ -120,12 +145,20 @@ func (c storeClock) Advance(d time.Duration) {
 	*c.now = c.now.Add(d)
 }
 
-func newMemoryRuns(_ *testing.T) (storetest.RunStore, storetest.RunClock) {
+func newMemoryRuns(_ *testing.T) (runsBinding, storetest.RunClock) {
 	now := time.Now()
 	s := stores.NewMemoryRuns(stores.WithMemoryRunClock(func() time.Time { return now }))
 	return runsBinding{s: s}, storeClock{now: &now}
 }
 
 func TestStoretestRunsBind(t *testing.T) {
-	storetest.Runs(t, newMemoryRuns)
+	storetest.Runs(t, func(t *testing.T) (storetest.RunStore, storetest.RunClock) {
+		return newMemoryRuns(t)
+	})
+}
+
+func TestStoretestRunsWithCheckpointsBind(t *testing.T) {
+	storetest.RunsWithCheckpoints(t, func(t *testing.T) (storetest.RunCheckpointStore, storetest.RunClock) {
+		return newMemoryRuns(t)
+	})
 }

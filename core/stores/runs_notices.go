@@ -142,6 +142,7 @@ func (s *MemoryRuns) suspend(ctx context.Context, l Lease, t types.ResumeToken, 
 	}
 	rec.run.State = Suspended
 	rec.token = t
+	rec.reason = reason
 	rec.lease = Lease{}
 	rec.live = false
 	if err := s.encodeRunLocked(rec); err != nil {

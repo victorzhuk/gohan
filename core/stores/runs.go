@@ -131,6 +131,7 @@ type runRecord struct {
 	lease   Lease
 	ttl     time.Duration
 	token   types.ResumeToken
+	reason  types.SuspendReason
 	live    bool
 	signals []Signal
 }
@@ -303,10 +304,8 @@ func (s *MemoryRuns) Start(ctx context.Context, r Run, ttl time.Duration) (Lease
 			return Lease{}, OperationExistsError{RunID: runID}
 		}
 	}
-	if runID, ok := s.onSess[r.SessionID]; ok {
-		if rec := s.runs[runID]; rec != nil && rec.active(now) {
-			return Lease{}, fmt.Errorf("%w: run %s", types.ErrRunActive, runID)
-		}
+	if owner, live := s.liveSessionOwnerLocked(r.SessionID, now); live {
+		return Lease{}, fmt.Errorf("%w: run %s", types.ErrRunActive, owner)
 	}
 	generation, err := s.nextGenerationLocked()
 	if err != nil {
@@ -345,6 +344,21 @@ func (rec *runRecord) active(now time.Time) bool {
 	default:
 		return false
 	}
+}
+
+// liveSessionOwnerLocked reports the run id a live lease holds sessionID
+// with on the store clock. One predicate gates Start, Resuming, Reclaim
+// and ResumingCheckpoint so every acquisition refuses the same owner.
+func (s *MemoryRuns) liveSessionOwnerLocked(sessionID string, now time.Time) (string, bool) {
+	runID, ok := s.onSess[sessionID]
+	if !ok {
+		return "", false
+	}
+	rec := s.runs[runID]
+	if rec == nil || !rec.active(now) {
+		return "", false
+	}
+	return runID, true
 }
 
 // ByOperation returns the run recorded for the tenant and operation id.
@@ -406,7 +420,8 @@ func (s *MemoryRuns) ByID(ctx context.Context, runID string) (Run, error) {
 }
 
 // Resuming takes a fresh lease on a suspended run and marks it Resuming, so
-// a crash after this point leaves a stale Resuming run Stale lists.
+// a crash after this point leaves a stale Resuming run Stale lists. A live
+// competitor in the session refuses the resume without touching either run.
 func (s *MemoryRuns) Resuming(ctx context.Context, runID string, ttl time.Duration) (Lease, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -417,17 +432,11 @@ func (s *MemoryRuns) Resuming(ctx context.Context, runID string, ttl time.Durati
 	if rec.run.State != Suspended {
 		return Lease{}, fmt.Errorf("%w: run %s is %v", types.ErrRunNotActive, runID, rec.run.State)
 	}
-	generation, err := s.nextGenerationLocked()
-	if err != nil {
-		return Lease{}, err
-	}
 	now := s.now()
-	rec.run.State = Resuming
-	rec.run.Heartbeat = now
-	rec.ttl = ttl
-	rec.lease = Lease{RunID: runID, Generation: generation, Expires: now.Add(ttl)}
-	rec.live = true
-	if err := s.encodeRunLocked(rec); err != nil {
+	if owner, live := s.liveSessionOwnerLocked(rec.run.SessionID, now); live {
+		return Lease{}, fmt.Errorf("%w: run %s", types.ErrRunActive, owner)
+	}
+	if err := s.resumeLeaseLocked(rec, runID, now, ttl); err != nil {
 		return Lease{}, err
 	}
 	return rec.lease, nil

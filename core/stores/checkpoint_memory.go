@@ -33,6 +33,8 @@ type MemoryCheckpoints struct {
 	mu      sync.Mutex
 	now     func() time.Time
 	runs    RunInfoSource
+	cruns   CheckpointRuns
+	ttl     time.Duration
 	toks    map[types.ResumeToken]*checkpointRecord
 	byRun   map[string]types.ResumeToken
 	schemas *SchemaRegistry
@@ -51,6 +53,20 @@ func WithMemoryCheckpointRunInfo(src RunInfoSource) MemoryCheckpointOption {
 // against it, so tests drive time through it.
 func WithMemoryCheckpointClock(now func() time.Time) MemoryCheckpointOption {
 	return func(s *MemoryCheckpoints) { s.now = now }
+}
+
+// WithMemoryCheckpointRuns binds the run store recovery discovery consults
+// for current-token and suspended-run evidence. An unbound store refuses
+// discovery: that evidence is not decidable locally.
+func WithMemoryCheckpointRuns(r CheckpointRuns) MemoryCheckpointOption {
+	return func(s *MemoryCheckpoints) { s.cruns = r }
+}
+
+// WithMemoryCheckpointTTL sets the automatic checkpoint lifetime measured
+// from the store clock at Put. Zero keeps no automatic expiry; explicit
+// expiry on the checkpoint is never overwritten.
+func WithMemoryCheckpointTTL(ttl time.Duration) MemoryCheckpointOption {
+	return func(s *MemoryCheckpoints) { s.ttl = ttl }
 }
 
 func WithMemoryCheckpointRegion(region string) MemoryCheckpointOption {
@@ -113,6 +129,9 @@ func (s *MemoryCheckpoints) decode(ctx context.Context, rec *checkpointRecord) (
 // RunInfo in ctx so PendingInput can find the checkpoint after a crash; a
 // token put outside a run is reachable by Consume only.
 func (s *MemoryCheckpoints) Put(ctx context.Context, cp Checkpoint) (types.ResumeToken, error) {
+	if s.ttl < 0 {
+		return "", fmt.Errorf("gohan: negative checkpoint ttl %s", s.ttl)
+	}
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", fmt.Errorf("gohan: mint resume token: %w", err)
@@ -120,6 +139,9 @@ func (s *MemoryCheckpoints) Put(ctx context.Context, cp Checkpoint) (types.Resum
 	t := types.ResumeToken("cp_" + hex.EncodeToString(raw[:]))
 
 	cp = cloneCheckpoint(cp)
+	if s.ttl > 0 && cp.ExpiresAt.IsZero() {
+		cp.ExpiresAt = s.now().Add(s.ttl)
+	}
 	if cp.SchemaVersion == 0 {
 		cp.SchemaVersion = SchemaVersion(s.schemas.current)
 	}
@@ -309,21 +331,43 @@ func (s *MemoryCheckpoints) UpdatePending(ctx context.Context, t types.ResumeTok
 	return nil
 }
 
+// ResumeReady lists consumed checkpoints the run still waits on: a crash
+// after conditional consumption and a failed lease left the recorded
+// decision recoverable exactly once. Current-token, consumed-state, expiry
+// and suspended-run filters all run before the limit, so an older
+// ineligible record cannot shadow a newer eligible one. The run store is
+// consulted only after the checkpoint-local filters pass, and the lock
+// order stays checkpoint then run: no run path calls back into this store.
 func (s *MemoryCheckpoints) ResumeReady(ctx context.Context, limit int) ([]Checkpoint, error) {
+	if s.cruns == nil {
+		return nil, fmt.Errorf("gohan: recovery discovery unbound: %w", types.ErrCheckpointIncompatible)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now()
 	out := make([]Checkpoint, 0)
-	for _, rec := range s.toks {
-		if rec.consumed {
-			cp, err := s.decode(ctx, rec)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, cp)
-			if limit > 0 && len(out) >= limit {
-				break
-			}
+	for t, rec := range s.toks {
+		if limit > 0 && len(out) >= limit {
+			break
 		}
+		if !rec.consumed {
+			continue
+		}
+		if !rec.cp.ExpiresAt.IsZero() && !now.Before(rec.cp.ExpiresAt) {
+			continue
+		}
+		runID := rec.cp.RunID
+		if s.byRun[runID] != t {
+			continue
+		}
+		if cur, err := s.cruns.SuspensionToken(ctx, runID); err != nil || cur != t {
+			continue
+		}
+		cp, err := s.decode(ctx, rec)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, cp)
 	}
 	return out, nil
 

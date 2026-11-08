@@ -32,8 +32,10 @@ type ResumeInput struct {
 	Reason   string
 }
 
-// Checkpoint mirrors the suspended-run record the port stores.
+// Checkpoint mirrors the suspended-run record the port stores. RunID is
+// the suspended run the checkpoint waits on; discovery keys on it.
 type Checkpoint struct {
+	RunID          string
 	SessionID      string
 	Flow           string
 	Backend        string
@@ -511,6 +513,194 @@ func CheckpointsResumer(t *testing.T, factory CheckpointResumerFactory) {
 		}
 		if !reflect.DeepEqual(input, want) {
 			t.Fatalf("refused UpdatePending overwrote input: got %+v, want %+v", input, want)
+		}
+	})
+}
+
+// CheckpointsLifetimeFactory builds a fresh, empty Checkpoints store with
+// the requested automatic lifetime policy; zero keeps no automatic expiry.
+type CheckpointsLifetimeFactory func(t *testing.T, runID string, ttl time.Duration) (CheckpointStore, error)
+
+// CheckpointsLifetime runs the checkpoint lifetime policy legs against one
+// implementation: explicit expiry preserved, a positive TTL measured from
+// store time, no policy leaving expiry unset and a negative policy refused
+// before any write. It covers stores.checkpoint-lifetime-policy.
+func CheckpointsLifetime(t *testing.T, factory CheckpointsLifetimeFactory) {
+	t.Helper()
+	t.Run("stores.checkpoint-lifetime-policy", func(t *testing.T) {
+		ctx := context.Background()
+		before := time.Now()
+
+		explicit := openLifetime(t, factory, runID, 0)
+		want := before.Add(time.Minute)
+		if _, err := explicit.Put(ctx, Checkpoint{RunID: runID, SessionID: "sess-life-explicit", ExpiresAt: want}); err != nil {
+			t.Fatalf("Put explicit expiry: %v", err)
+		}
+		got, _, err := explicit.PendingInput(ctx, runID)
+		if err != nil {
+			t.Fatalf("PendingInput explicit expiry: %v", err)
+		}
+		// The slack absorbs store clock precision; the policy must not
+		// move the caller's instant.
+		if !nearInstant(got.ExpiresAt, want) {
+			t.Fatalf("explicit expiry = %v, want preserved %v", got.ExpiresAt, want)
+		}
+
+		timed := openLifetime(t, factory, runID, 5*time.Minute)
+		if _, err := timed.Put(ctx, Checkpoint{RunID: runID, SessionID: "sess-life-ttl"}); err != nil {
+			t.Fatalf("Put with ttl: %v", err)
+		}
+		got, _, err = timed.PendingInput(ctx, runID)
+		if err != nil {
+			t.Fatalf("PendingInput with ttl: %v", err)
+		}
+		ttlWant := before.Add(5 * time.Minute)
+		ttlUpper := time.Now().Add(5*time.Minute + 2*time.Second)
+		if got.ExpiresAt.Before(ttlWant.Add(-2*time.Second)) || got.ExpiresAt.After(ttlUpper) {
+			t.Fatalf("ttl expiry = %v, want store time plus 5m near %v", got.ExpiresAt, ttlWant)
+		}
+
+		plain := openLifetime(t, factory, runID, 0)
+		if _, err := plain.Put(ctx, Checkpoint{RunID: runID, SessionID: "sess-life-none"}); err != nil {
+			t.Fatalf("Put without policy: %v", err)
+		}
+		got, _, err = plain.PendingInput(ctx, runID)
+		if err != nil {
+			t.Fatalf("PendingInput without policy: %v", err)
+		}
+		if !got.ExpiresAt.IsZero() {
+			t.Fatalf("expiry without policy = %v, want unset", got.ExpiresAt)
+		}
+
+		negative := openLifetime(t, factory, runID, -time.Second)
+		if _, err := negative.Put(ctx, Checkpoint{RunID: runID, SessionID: "sess-life-neg"}); err == nil {
+			t.Fatal("negative ttl accepted, want refusal before any write")
+		}
+	})
+}
+
+func openLifetime(t *testing.T, factory CheckpointsLifetimeFactory, runID string, ttl time.Duration) CheckpointStore {
+	t.Helper()
+	s, err := factory(t, runID, ttl)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	return s
+}
+
+func nearInstant(got, want time.Time) bool {
+	return !got.IsZero() && !got.Before(want.Add(-2*time.Second)) && !got.After(want.Add(2*time.Second))
+}
+
+// RecoveryStore is the paired checkpoints-and-runs surface recovery
+// discovery consults: consumed checkpoints listed with the run evidence
+// that decides their eligibility.
+type RecoveryStore interface {
+	Put(ctx context.Context, cp Checkpoint) (types.ResumeToken, error)
+	Consume(ctx context.Context, t types.ResumeToken, in ResumeInput) (Checkpoint, error)
+	ResumeReady(ctx context.Context, limit int) ([]Checkpoint, error)
+	Start(ctx context.Context, r RunRow, ttl time.Duration) (Lease, error)
+	Suspend(ctx context.Context, l Lease, token types.ResumeToken) error
+	Resuming(ctx context.Context, runID string, ttl time.Duration) (Lease, error)
+	Finish(ctx context.Context, l Lease, state RunState, uncertain []types.CallKey, resultRef string) error
+	SuspendWithReason(ctx context.Context, l Lease, token types.ResumeToken, reason types.SuspendReason) error
+	Preempted(ctx context.Context, limit int) ([]RunRow, error)
+}
+
+// RecoveryFactory builds the paired stores per test.
+type RecoveryFactory func(t *testing.T) (RecoveryStore, error)
+
+// RecoveryDiscovery runs the recovery discovery legs: the eligibility
+// filters run before the discovery limit, so an older ineligible record
+// cannot shadow a newer eligible one. It covers
+// stores.resume-ready-filter-before-limit and
+// stores.preempted-filter-before-limit.
+func RecoveryDiscovery(t *testing.T, newRecovery RecoveryFactory) {
+	t.Helper()
+	open := func(t *testing.T) RecoveryStore {
+		t.Helper()
+		s, err := newRecovery(t)
+		if err != nil {
+			t.Fatalf("open stores: %v", err)
+		}
+		return s
+	}
+
+	t.Run("stores.resume-ready-filter-before-limit", func(t *testing.T) {
+		ctx := context.Background()
+		s := open(t)
+		lx, err := s.Start(ctx, RunRow{SessionID: "sess-rr-x", RunID: "run-rr-x"}, time.Minute)
+		if err != nil {
+			t.Fatalf("Start run-rr-x: %v", err)
+		}
+		tokX, err := s.Put(ctx, Checkpoint{RunID: "run-rr-x", SessionID: "sess-rr-x"})
+		if err != nil {
+			t.Fatalf("Put run-rr-x checkpoint: %v", err)
+		}
+		if err := s.Suspend(ctx, lx, tokX); err != nil {
+			t.Fatalf("Suspend run-rr-x: %v", err)
+		}
+		if _, err := s.Consume(ctx, tokX, ResumeInput{}); err != nil {
+			t.Fatalf("Consume run-rr-x checkpoint: %v", err)
+		}
+		// Finishing the run leaves its consumed checkpoint behind; the
+		// stored terminal state is what discovery must filter out.
+		lr, err := s.Resuming(ctx, "run-rr-x", time.Minute)
+		if err != nil {
+			t.Fatalf("Resuming run-rr-x: %v", err)
+		}
+		if err := s.Finish(ctx, lr, RunFinished, nil, ""); err != nil {
+			t.Fatalf("Finish run-rr-x: %v", err)
+		}
+
+		ly, err := s.Start(ctx, RunRow{SessionID: "sess-rr-y", RunID: "run-rr-y"}, time.Minute)
+		if err != nil {
+			t.Fatalf("Start run-rr-y: %v", err)
+		}
+		tokY, err := s.Put(ctx, Checkpoint{RunID: "run-rr-y", SessionID: "sess-rr-y"})
+		if err != nil {
+			t.Fatalf("Put run-rr-y checkpoint: %v", err)
+		}
+		if err := s.Suspend(ctx, ly, tokY); err != nil {
+			t.Fatalf("Suspend run-rr-y: %v", err)
+		}
+		if _, err := s.Consume(ctx, tokY, ResumeInput{}); err != nil {
+			t.Fatalf("Consume run-rr-y checkpoint: %v", err)
+		}
+
+		ready, err := s.ResumeReady(ctx, 1)
+		if err != nil {
+			t.Fatalf("ResumeReady: %v", err)
+		}
+		if len(ready) != 1 || ready[0].RunID != "run-rr-y" {
+			t.Fatalf("ResumeReady(1) = %+v, want only the eligible run-rr-y", ready)
+		}
+	})
+
+	t.Run("stores.preempted-filter-before-limit", func(t *testing.T) {
+		ctx := context.Background()
+		s := open(t)
+		lh, err := s.Start(ctx, RunRow{SessionID: "sess-pre-h", RunID: "run-pre-h"}, time.Minute)
+		if err != nil {
+			t.Fatalf("Start run-pre-h: %v", err)
+		}
+		if err := s.SuspendWithReason(ctx, lh, "tok-pre-h", types.HumanApproval); err != nil {
+			t.Fatalf("Suspend run-pre-h: %v", err)
+		}
+		lp, err := s.Start(ctx, RunRow{SessionID: "sess-pre-p", RunID: "run-pre-p"}, time.Minute)
+		if err != nil {
+			t.Fatalf("Start run-pre-p: %v", err)
+		}
+		if err := s.SuspendWithReason(ctx, lp, "tok-pre-p", types.Preempted); err != nil {
+			t.Fatalf("Suspend run-pre-p: %v", err)
+		}
+
+		got, err := s.Preempted(ctx, 1)
+		if err != nil {
+			t.Fatalf("Preempted: %v", err)
+		}
+		if len(got) != 1 || got[0].RunID != "run-pre-p" {
+			t.Fatalf("Preempted(1) = %+v, want only the preempted run-pre-p", got)
 		}
 	})
 }

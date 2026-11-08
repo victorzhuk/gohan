@@ -1,15 +1,18 @@
-package gohan
+package gohan_test
 
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 	"github.com/victorzhuk/gohan/testkit/storetest"
 )
 
-// adapter/postgres binds the same suite in M3 through this mirror interface.
+// checkpointBinding adapts the memory Checkpoints implementation to the
+// conformance suite's port view; adapter/postgres binds the same suites
+// through the mirror interfaces.
 type checkpointBinding struct {
 	s *stores.MemoryCheckpoints
 }
@@ -36,6 +39,7 @@ func (b *checkpointBinding) PendingInput(ctx context.Context, runID string) (sto
 
 func toStoresCheckpoint(cp storetest.Checkpoint) stores.Checkpoint {
 	return stores.Checkpoint{
+		RunID:          cp.RunID,
 		SessionID:      cp.SessionID,
 		Flow:           cp.Flow,
 		Backend:        cp.Backend,
@@ -51,6 +55,7 @@ func toStoresCheckpoint(cp storetest.Checkpoint) stores.Checkpoint {
 
 func toSuiteCheckpoint(cp stores.Checkpoint) storetest.Checkpoint {
 	return storetest.Checkpoint{
+		RunID:          cp.RunID,
 		SessionID:      cp.SessionID,
 		Flow:           cp.Flow,
 		Backend:        cp.Backend,
@@ -92,5 +97,55 @@ func TestStoretestCheckpointsBind(t *testing.T) {
 			},
 		))
 		return &checkpointBinding{s: s}, nil
+	})
+}
+
+func TestStoretestCheckpointsLifetimeBind(t *testing.T) {
+	storetest.CheckpointsLifetime(t, func(t *testing.T, runID string, ttl time.Duration) (storetest.CheckpointStore, error) {
+		now := time.Now()
+		s := stores.NewMemoryCheckpoints(
+			stores.WithMemoryCheckpointClock(func() time.Time { return now }),
+			stores.WithMemoryCheckpointRunInfo(func(context.Context) (types.RunInfo, bool) {
+				return types.RunInfo{RunID: runID}, true
+			}),
+			stores.WithMemoryCheckpointTTL(ttl),
+		)
+		return &checkpointBinding{s: s}, nil
+	})
+}
+
+// recoveryBinding pairs the memory checkpoints and runs stores the way
+// recovery discovery consults them: ResumeReady reads the run surface for
+// current-token and suspended-state evidence.
+type recoveryBinding struct {
+	*checkpointBinding
+	runsBinding
+}
+
+func (b *recoveryBinding) ResumeReady(ctx context.Context, limit int) ([]storetest.Checkpoint, error) {
+	cps, err := b.checkpointBinding.s.ResumeReady(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]storetest.Checkpoint, len(cps))
+	for i, cp := range cps {
+		out[i] = toSuiteCheckpoint(cp)
+	}
+	return out, nil
+}
+
+func TestStoretestRecoveryDiscoveryBind(t *testing.T) {
+	storetest.RecoveryDiscovery(t, func(t *testing.T) (storetest.RecoveryStore, error) {
+		now := time.Now()
+		clock := func() time.Time { return now }
+		runs := stores.NewMemoryRuns(stores.WithMemoryRunClock(clock))
+		s := stores.NewMemoryCheckpoints(
+			stores.WithMemoryCheckpointClock(clock),
+			stores.WithMemoryCheckpointRuns(runs),
+		)
+		return &recoveryBinding{
+			checkpointBinding: &checkpointBinding{s: s},
+			runsBinding:       runsBinding{s: runs},
+		}, nil
 	})
 }

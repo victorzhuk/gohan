@@ -67,6 +67,21 @@ func (s *fakeRuns) held(l Lease) (*fakeRun, error) {
 	return rec, nil
 }
 
+// liveOwnerLocked reports the run id a live lease holds sessionID with.
+// One predicate gates Start, Resuming and Reclaim so every acquisition
+// refuses the same owner.
+func (s *fakeRuns) liveOwnerLocked(sessionID string) (string, bool) {
+	runID, ok := s.onSess[sessionID]
+	if !ok {
+		return "", false
+	}
+	rec := s.runs[runID]
+	if rec == nil || !rec.live || s.expired(rec) {
+		return "", false
+	}
+	return runID, true
+}
+
 func (s *fakeRuns) Start(_ context.Context, r RunRow, ttl time.Duration) (Lease, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -76,10 +91,8 @@ func (s *fakeRuns) Start(_ context.Context, r RunRow, ttl time.Duration) (Lease,
 			return Lease{}, fmt.Errorf("%w: %s", types.ErrOperationExists, r.OperationID)
 		}
 	}
-	if prev, ok := s.onSess[r.SessionID]; ok {
-		if rec := s.runs[prev]; rec.live && !s.expired(rec) {
-			return Lease{}, fmt.Errorf("%w: session %s", types.ErrRunActive, r.SessionID)
-		}
+	if owner, ok := s.liveOwnerLocked(r.SessionID); ok {
+		return Lease{}, fmt.Errorf("%w: run %s", types.ErrRunActive, owner)
 	}
 	r.State = RunRunning
 	r.Heartbeat = s.now
@@ -131,11 +144,15 @@ func (s *fakeRuns) Resuming(_ context.Context, runID string, ttl time.Duration) 
 	if rec.row.State != RunSuspended {
 		return Lease{}, fmt.Errorf("%w: run %s is %d", types.ErrRunNotActive, runID, rec.row.State)
 	}
+	if owner, ok := s.liveOwnerLocked(rec.row.SessionID); ok && owner != runID {
+		return Lease{}, fmt.Errorf("%w: run %s", types.ErrRunActive, owner)
+	}
 	rec.row.State = RunResuming
 	rec.ttl = ttl
 	rec.lease = Lease{RunID: runID, Generation: s.nextGenerationLocked()}
 	rec.expires = s.now.Add(ttl)
 	rec.live = true
+	s.onSess[rec.row.SessionID] = runID
 	return rec.lease, nil
 }
 
@@ -198,11 +215,15 @@ func (s *fakeRuns) Reclaim(_ context.Context, r RunRow, ttl time.Duration) (Leas
 	if (rec.row.State != RunRunning && rec.row.State != RunResuming) || !s.expired(rec) {
 		return Lease{}, fmt.Errorf("%w: run %s not reclaimable", types.ErrRunNotActive, r.RunID)
 	}
+	if owner, ok := s.liveOwnerLocked(rec.row.SessionID); ok && owner != r.RunID {
+		return Lease{}, fmt.Errorf("%w: run %s", types.ErrRunActive, owner)
+	}
 	rec.ttl = ttl
 	rec.lease = Lease{RunID: r.RunID, Generation: s.nextGenerationLocked()}
 	rec.expires = s.now.Add(ttl)
 	rec.row.Heartbeat = s.now
 	rec.live = true
+	s.onSess[rec.row.SessionID] = r.RunID
 	return rec.lease, nil
 }
 
