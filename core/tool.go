@@ -135,8 +135,9 @@ func defaultTimeout(e types.Effect) time.Duration {
 // tool is the concrete value NewTool returns: built once, shared by every
 // run, with all per-request state taken from ctx and args.
 type tool[In, Out any] struct {
-	spec types.ToolSpec
-	fn   func(context.Context, In) (Out, error)
+	spec    types.ToolSpec
+	fn      func(context.Context, In) (Out, error)
+	builder *types.SchemaBuilder
 }
 
 // Spec returns the tool's declaration.
@@ -148,7 +149,7 @@ func (t *tool[In, Out]) Spec() types.ToolSpec { return t.spec }
 func (t *tool[In, Out]) Call(ctx context.Context, args json.RawMessage) (types.ToolResult, error) {
 	var in In
 	if len(args) > 0 {
-		if err := json.Unmarshal(args, &in); err != nil {
+		if err := t.builder.Decode(args, &in); err != nil {
 			return types.ToolResult{}, fmt.Errorf("gohan: tool arguments: %w", err)
 		}
 	}
@@ -185,10 +186,11 @@ func NewTool[In, Out any](name, desc string, fn func(context.Context, In) (Out, 
 	if cfg.spec.Timeout == 0 {
 		cfg.spec.Timeout = defaultTimeout(cfg.spec.Effect)
 	}
-	schema, err := types.NewSchemaBuilder(cfg.schema...).Schema(reflect.TypeFor[In]())
+	builder := types.NewSchemaBuilder(cfg.schema...)
+	schema, err := builder.Schema(reflect.TypeFor[In]())
 	if err != nil {
 		return nil, fmt.Errorf("gohan: tool %s schema: %w", name, err)
 	}
 	cfg.spec.Schema = schema
-	return &tool[In, Out]{spec: cfg.spec, fn: fn}, nil
+	return &tool[In, Out]{spec: cfg.spec, fn: fn, builder: builder}, nil
 }

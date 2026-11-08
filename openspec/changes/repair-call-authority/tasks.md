@@ -25,7 +25,7 @@ Parent references identify unique primary ownership, not duplicated implementati
 
 - [x] 3.1 Resolve one advertised host effect with option/declaration precedence. Verify `tools.host-effect-default-consistent`, `tools.host-effect-option-consistent` and governed timeout outcomes. Parent 3.1.
 - [x] 3.2 Install the reserved downstream key on initial execution and replay. Verify `tools.initial-and-replay-key-stable` with completion-loss injection and existing intent-level cases. Parent 3.2.
-- [ ] 3.3 Retain exclusion metadata and enforce it recursively during typed decoding. Verify `identity.excluded-arguments-not-decoded`, `identity.nested-excluded-arguments-not-decoded`, malformed JSON and duplicate keys. Parent 3.3.
+- [x] 3.3 Retain exclusion metadata and enforce it recursively during typed decoding. Verify `identity.excluded-arguments-not-decoded`, `identity.nested-excluded-arguments-not-decoded`, malformed JSON and duplicate keys. Parent 3.3.
 - [ ] 3.4 Update existing tool documentation and `[Unreleased]` entries. Verify documented effective effects, ignored identity arguments and stable keys through public scenarios. Parent 3.4.
 
 ## 4. Child acceptance

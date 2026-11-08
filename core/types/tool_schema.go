@@ -85,6 +85,87 @@ func (b *SchemaBuilder) Schema(in reflect.Type) (json.RawMessage, error) {
 	return json.RawMessage(out), nil
 }
 
+// Decode unmarshals tool arguments into v while keeping the fields excluded
+// at schema derivation at their zero values: a name the schema hides from
+// the model never reaches the decoded value, at any nesting depth. Malformed
+// JSON returns the encoding/json error unchanged.
+func (b *SchemaBuilder) Decode(data []byte, v any) error {
+	if err := json.Unmarshal(data, v); err != nil {
+		return err
+	}
+	if b.identity == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Pointer {
+		return fmt.Errorf("decode: destination must be a pointer, got %T", v)
+	}
+	b.zeroIdentity(rv.Elem())
+	return nil
+}
+
+// zeroIdentity clears the identity-excluded fields reachable from v and
+// reports whether any changed. It mirrors the schema walker: struct fields
+// by wire name at every depth, slice and array elements, map values.
+func (b *SchemaBuilder) zeroIdentity(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Pointer:
+		return !v.IsNil() && b.zeroIdentity(v.Elem())
+	case reflect.Struct:
+		return b.zeroStruct(v)
+	case reflect.Slice, reflect.Array:
+		changed := false
+		for i := range v.Len() {
+			if b.zeroIdentity(v.Index(i)) {
+				changed = true
+			}
+		}
+		return changed
+	case reflect.Map:
+		switch v.Type().Elem().Kind() {
+		case reflect.Pointer, reflect.Struct, reflect.Slice, reflect.Map:
+		default:
+			return false
+		}
+		changed := false
+		for _, k := range v.MapKeys() {
+			nv := reflect.New(v.Type().Elem()).Elem()
+			nv.Set(v.MapIndex(k))
+			if b.zeroIdentity(nv) {
+				v.SetMapIndex(k, nv)
+				changed = true
+			}
+		}
+		return changed
+	default:
+		return false
+	}
+}
+
+func (b *SchemaBuilder) zeroStruct(v reflect.Value) bool {
+	changed := false
+	for i := range v.NumField() {
+		f := v.Type().Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		if tag, ok := f.Tag.Lookup("json"); ok {
+			if name, _, _ := strings.Cut(tag, ","); name == "-" {
+				continue
+			}
+		}
+		if b.identity.Match(jsonName(f)) {
+			v.Field(i).SetZero()
+			changed = true
+			continue
+		}
+		if b.zeroIdentity(v.Field(i)) {
+			changed = true
+		}
+	}
+	return changed
+}
+
 // jsonName returns the encoding/json/v2 wire name of a field: the json tag
 // name when present, otherwise the Go field name.
 func jsonName(f reflect.StructField) string {

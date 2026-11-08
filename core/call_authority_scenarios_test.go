@@ -245,6 +245,109 @@ func TestCallAuthorityScenarios(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("identity.excluded-arguments-not-decoded", func(t *testing.T) {
+		var calls int
+		var got excludedDecodeInput
+		var callCtx context.Context
+		tool, err := NewTool("find_records", "find records by query",
+			func(ctx context.Context, in excludedDecodeInput) (string, error) {
+				calls++
+				got = in
+				callCtx = ctx
+				return "ok", nil
+			},
+			ExcludeFields("user_id", "tenant", "subject"),
+		)
+		if err != nil {
+			t.Fatalf("NewTool: unexpected error: %v", err)
+		}
+		set := ToolSetFunc(func(string) (types.Tool, bool) { return tool, true })
+		principalCtx := WithPrincipal(ctx, types.Principal{Tenant: "t1", Subject: "op-7"})
+
+		res, err := CallTool(principalCtx, set, "find_records", jsontext.Value(`{"query":"ok","user_id":"attacker","tenant":"t2"}`))
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if res.Outcome != types.Succeeded {
+			t.Fatalf("Outcome = %v, want %v", res.Outcome, types.Succeeded)
+		}
+		if calls != 1 {
+			t.Fatalf("calls = %d, want 1", calls)
+		}
+		if got.Query != "ok" {
+			t.Fatalf("query = %q, want the non-excluded argument decoded", got.Query)
+		}
+		if got.UserID != "" || got.Tenant != "" {
+			t.Fatalf("excluded identity arguments decoded: user_id=%q tenant=%q, want zero values", got.UserID, got.Tenant)
+		}
+		p, ok := PrincipalFrom(callCtx)
+		if !ok || p.Tenant != "t1" || p.Subject != "op-7" {
+			t.Fatalf("callback principal: got (%v, %v), want the transport principal t1/op-7", p, ok)
+		}
+
+		for name, bad := range map[string]jsontext.Value{
+			"malformed":     jsontext.Value(`{"query":`),
+			"duplicate key": jsontext.Value(`{"query":"a","query":"b"}`),
+		} {
+			res, err := CallTool(principalCtx, set, "find_records", bad)
+			if err != nil {
+				t.Fatalf("%s: err = %v, want nil", name, err)
+			}
+			if res.Outcome != types.Failed || res.Error == nil || res.Error.Kind != types.Permanent {
+				t.Fatalf("%s: result = %+v, want Failed(Permanent)", name, res)
+			}
+		}
+		if calls != 1 {
+			t.Fatalf("calls = %d, want 1: rejected arguments must not reach the callback", calls)
+		}
+	})
+
+	t.Run("identity.nested-excluded-arguments-not-decoded", func(t *testing.T) {
+		var got excludedDecodeInput
+		tool, err := NewTool("find_records", "find records by query",
+			func(_ context.Context, in excludedDecodeInput) (string, error) {
+				got = in
+				return "ok", nil
+			},
+			ExcludeFields("user_id", "tenant", "subject"),
+		)
+		if err != nil {
+			t.Fatalf("NewTool: unexpected error: %v", err)
+		}
+		set := ToolSetFunc(func(string) (types.Tool, bool) { return tool, true })
+
+		res, err := CallTool(ctx, set, "find_records", jsontext.Value(`{
+			"query":"ok",
+			"owner":{"account":"acc","user_id":"attacker"},
+			"members":[{"name":"m1","tenant":"t2"},{"name":"m2","tenant":"t3"}],
+			"labels":{"k":{"value":"v","subject":"attacker"}}
+		}`))
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if res.Outcome != types.Succeeded {
+			t.Fatalf("Outcome = %v, want %v", res.Outcome, types.Succeeded)
+		}
+		if got.Query != "ok" {
+			t.Fatalf("query = %q, want the non-excluded argument decoded", got.Query)
+		}
+		if got.Owner.Account != "acc" || got.Members[0].Name != "m1" || got.Members[1].Name != "m2" || got.Labels["k"].Value != "v" {
+			t.Fatalf("non-excluded nested values lost: %+v, want account, member names and label value decoded", got)
+		}
+		if got.UserID != "" || got.Tenant != "" {
+			t.Fatalf("excluded top-level identity arguments decoded: user_id=%q tenant=%q", got.UserID, got.Tenant)
+		}
+		if got.Owner.UserID != "" {
+			t.Fatalf("excluded identity inside a nested struct decoded: owner.user_id=%q", got.Owner.UserID)
+		}
+		if got.Members[0].Tenant != "" || got.Members[1].Tenant != "" {
+			t.Fatalf("excluded identity inside slice elements decoded: tenants=%q,%q", got.Members[0].Tenant, got.Members[1].Tenant)
+		}
+		if got.Labels["k"].Subject != "" {
+			t.Fatalf("excluded identity inside a map value decoded: labels[k].subject=%q", got.Labels["k"].Subject)
+		}
+	})
 }
 
 // legacyRoundedFingerprint reproduces the pre-fix rounded fingerprint format
@@ -281,4 +384,31 @@ func (s *scenarioGrantStore) Find(_ context.Context, _ string, tool string, fp s
 		}
 	}
 	return permission.Grant{}, false, nil
+}
+
+// excludedDecodeInput carries identity-named fields at the top level and
+// inside a struct, a slice and a map, the containers the schema walker
+// recurses into.
+type excludedDecodeInput struct {
+	Query   string                         `json:"query"`
+	UserID  string                         `json:"user_id"`
+	Tenant  string                         `json:"tenant"`
+	Owner   excludedDecodeOwner            `json:"owner"`
+	Members []excludedDecodeMember         `json:"members"`
+	Labels  map[string]excludedDecodeLabel `json:"labels"`
+}
+
+type excludedDecodeOwner struct {
+	Account string `json:"account"`
+	UserID  string `json:"user_id"`
+}
+
+type excludedDecodeMember struct {
+	Name   string `json:"name"`
+	Tenant string `json:"tenant"`
+}
+
+type excludedDecodeLabel struct {
+	Value   string `json:"value"`
+	Subject string `json:"subject"`
 }
