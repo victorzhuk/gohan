@@ -299,7 +299,7 @@ func (s *publishTwiceSandbox) Open(context.Context, types.WorkspaceRef, types.Sa
 }
 
 func TestSandboxCoordinatorPublishTwice(t *testing.T) {
-	t.Run("sandbox.publish-twice-advances-generation", func(t *testing.T) {
+	t.Run("publish twice advances the generation", func(t *testing.T) {
 		runs := stores.NewMemoryRuns()
 		sessions := stores.NewMemorySessionLog(
 			stores.WithSessionPrincipals(types.PrincipalFrom),
