@@ -532,7 +532,7 @@ Rules:
 3. On resume, the originator principal is restored from the checkpoint and passed through `CredentialSource` (token exchange / on-behalf-of / service-issued) before any tool runs. The approver is available via `ApprovalFrom(ctx)` and recorded in journal and audit spans; tools never execute with approver rights.
 4. A sub-flow invoked from a tool (`FlowAsTool`) inherits `RootRunID` and sets `ParentRunID`; budget, `RunLimits`, spans and `Runs` recovery are keyed by the root. Sub-flow output enters the parent as a tool result and passes the tool-result guard.
 5. Approval enters the system only through `Resume(ResumeInput{Approver})`, where `Approver` is set by transport code. No tool, model output, sub-flow or context provider can produce an approval; `ResumeInput` is not constructible from `ctx` inside a run.
-6. Tool code reads identity from `PrincipalFrom(ctx)` only. `NewTool` accepts `ExcludeFields(names...)` to keep identity-like fields out of the schema, and `Build` warns when a tool schema contains fields matching a configurable identity pattern (`user_id`, `tenant`, `customer_id`, …).
+6. Tool code reads identity from `PrincipalFrom(ctx)` only. `NewTool` accepts `ExcludeFields(names...)` to keep identity-like fields out of the schema. Typed decoding also clears excluded fields by JSON name at every nesting depth, including struct values in slices and maps; supplied values do not reach the tool function. `Build` warns when a tool schema contains fields matching a configurable identity pattern (`user_id`, `tenant`, `customer_id`, …).
 
 ### 6.5 Model and ModelProfile
 
@@ -691,6 +691,8 @@ func NewTool[In, Out any](name, desc string, fn func(context.Context, In) (Out, 
 
 Options: `WithEffect`, `WithScopes`, `WithTimeout`, `WithRisk`, `Deferred()`, `WithFingerprintFields(...)`. `Risk` defaults from `Effect` (`ReadOnly`→Low, `Idempotent`→Medium, `SideEffect`→High) and feeds the gate's defaults and the `ApprovalRequest`. `SideEffect` tools SHALL use `IdempotencyKey(ctx)` for external calls; `NewTool` with `SideEffect` requires `WithIdempotency()` acknowledgement or `WithJournalTx()` (postgres).
 
+The journal installs its reserved key in `IdempotencyKey(ctx)` for the initial execution and for replay. A replay of an unresolved intent uses the original key; a completed success does not prevent a genuinely new call.
+
 ```go
 type Trust int
 
@@ -724,7 +726,7 @@ func exec.New(spec gohan.ToolSpec, cmd exec.Cmd, opts ...exec.Option) gohan.Tool
 - env allowlist (empty by default), working dir, timeout with process-group kill
 - stdout/stderr capped (default 64 KiB each), truncated with marker
 - non-zero exit → `Outcome: Failed` with exit code and capped stderr; timeout on a `SideEffect` command → `Outcome: Unknown`
-- default `Effect` = `SideEffect`
+- `exec.WithEffect` overrides the supplied effect; otherwise a nonzero declaration wins, and a zero declaration defaults to `SideEffect`. `Spec()` advertises the resolved effect. Since `ReadOnly` is zero, select it explicitly with `exec.WithEffect(types.ReadOnly)`.
 
 ### 6.7 Decider
 
@@ -1022,6 +1024,8 @@ func ApproveScope(approver Principal, ttl time.Duration) ResumeInput
 ```
 
 Order inside the gate: hard blocks (scope check, live emergency flags, `Deny` from rules) → existing session grant for `(tool, fingerprint, subject)` → decider → `Ask`. A live emergency deny is re-checked on resume after approval and wins over the approval. `Ask` suspends with an `ApprovalRequest` as payload; `DiffFromLast` is computed against the last approved call with the same tool in the session; `ArgOrigins` says per argument whether it came from user text, a tool result or model inference. `Resume(ApproveScope(op, 2h))` approves the call and stores a `Grant` in session metadata; any change in fingerprint (or in the declared `FingerprintFields`) misses the grant. Grants never outlive the session, are capped by `MaxGrantTTL` (default 4 h), and are audit records (`AuditGrant`). Tenant-wide standing permissions are expressed as rules or scopes in reviewed configuration, not as grants.
+
+An ordinary approval receipt authorizes only the recorded session, run, argument generation, call ID, tool and complete arguments; it does not authorize a later call. Resume revalidates eligibility, current policy and every recorded quorum vote before execution; an ineligible decision leaves the token pending.
 
 Expiry: `OnExpiry` defaults to `RejectOnExpiry` (the pending call becomes a `Failed(Permanent)` result naming the expiry; the run continues or ends by policy); `EscalateOnExpiry` re-suspends with an escalation target via `Waker`. `RunLimits.MaxPendingApprovals` (per subject and per tenant, default 20) makes a further `Ask` fail with `*LimitExceededError{Limit: "pending_approvals"}` so a queue cannot be flooded. Metrics: `gohan.approval.requested/approved/rejected/expired/granted_by_scope`, `gohan.approval.review_time`, `gohan.approval.queue_age`, `gohan.approval.rate`; `gohan.approval.rubber_stamp_suspected` fires when the rolling approval rate exceeds a threshold (default 0.9) with median review time under a floor.
 

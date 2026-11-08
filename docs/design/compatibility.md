@@ -27,6 +27,14 @@ Before `v1` a port may still change, but every growth is expressed as an optiona
 - Exported value structs in core (`RunLimits`, `Caps`, `Usage`, `ModelProfile`, `ToolSpec`, …) are documented as *not comparable, keyed literals only*: fields may be added when the zero value preserves behaviour, and a field of non-comparable type may be added at any time.
 - Sentinel errors and error types are part of the API: their identity is stable; their messages are not.
 
+## Approval and journal fingerprint transition
+
+An ordinary approval receipt authorizes only its recorded session, run, argument generation, call ID, tool and complete arguments. It is not a reusable session grant. A scoped approval uses a subject-keyed, time-bounded grant instead. Resume checks eligibility and current policy, including scopes, exclusions, separation and each recorded quorum vote; an ineligible decision leaves the token pending.
+
+New approval and journal fingerprints carry the `exact-v1:` prefix and canonicalize numbers by their exact decimal values. Legacy rounded scoped grants do not match and must be renewed. New journal lookup treats a legacy fingerprint only as an unresolved-intent candidate: it reuses the entry and its key only when the complete stored arguments prove an exact match. Missing, unreadable or unequal evidence is refused.
+
+Drain old side-effect workers before transferring ownership to the new fingerprint format. Do not mix old and new intent lookup indefinitely. Before rollback, drain new workers and preserve journal records; old fingerprint lookup must not resume uncertain new-format intents.
+
 ## Deprecation
 
 - `// Deprecated: use X.` is the one comment that is not a *why* and is still allowed (Go tooling reads it).

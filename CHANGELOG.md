@@ -11,6 +11,13 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ### Fixed
 
+- Ordinary approval receipts authorize only their recorded call and complete arguments, not later calls in the same session.
+- Resume revalidates current approval policy and recorded quorum votes before execution, leaving the token pending when a decision is refused.
+- Approval and journal fingerprints use exact numeric canonicalization and the `exact-v1:` format; legacy rounded scoped grants require renewal, and legacy unresolved journal entries require exact full-argument proof before reuse.
+- The host command runner advertises and uses one effective effect: `exec.WithEffect` takes precedence, followed by a nonzero declaration and the `SideEffect` default.
+- Journaled tool calls receive the reserved downstream idempotency key on initial execution as well as replay.
+- `ExcludeFields` also clears excluded arguments during typed decoding, including nested fields, so supplied identity values do not reach the tool function.
+
 - `core` no longer imports `std`: the cache key seam it used now lives in `core/chains`, and the depguard rules that were meant to hold the line match the real import paths (the `std/**` prefix never matched, and the shared root allow admitted `adapter/*`).
 
 ## [1.0.0] - 2026-10-12
