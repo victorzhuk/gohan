@@ -3587,5 +3587,230 @@
     "capability": "sandbox",
     "origin": "m2-sandbox-lifecycle-resume",
     "title": "missing snapshot returns an error"
+  },
+  "identity.excluded-arguments-not-decoded": {
+    "capability": "identity",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "excluded identity is supplied through the public tool path"
+  },
+  "identity.nested-excluded-arguments-not-decoded": {
+    "capability": "identity",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "identity is supplied inside a nested argument"
+  },
+  "model.anthropic-complete-tool-blocks": {
+    "capability": "model",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "anthropic returns multiple tool blocks"
+  },
+  "model.provider-argument-preview-identity": {
+    "capability": "model",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "provider arguments stream before completion"
+  },
+  "model.forced-output-and-tool-truncation": {
+    "capability": "model",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "forced output and unfinished arguments"
+  },
+  "model.openai-consumer-stop-final": {
+    "capability": "model",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "the consumer stops before usage arrives"
+  },
+  "model.openai-stream-error-final": {
+    "capability": "model",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a stream decode fails before usage arrives"
+  },
+  "model.openai-cache-details-absent": {
+    "capability": "model",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "automatic cache mode receives only total usage"
+  },
+  "permission.ordinary-approval-call-bound": {
+    "capability": "permission",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a later call cannot reuse an ordinary approval"
+  },
+  "permission.approval-full-arguments-bound": {
+    "capability": "permission",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a non-fingerprinted argument changes"
+  },
+  "permission.tightened-scope-refused": {
+    "capability": "permission",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "required scope tightens while approval is pending"
+  },
+  "permission.tightened-votes-revalidated": {
+    "capability": "permission",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "earlier quorum votes no longer qualify"
+  },
+  "permission.legacy-rounded-grant-refused": {
+    "capability": "permission",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a legacy grant encounters the exact-value format"
+  },
+  "recovery.preemption-token-consumed": {
+    "capability": "recovery",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "recovery reaches a second suspension"
+  },
+  "recovery.human-approval-not-preempted": {
+    "capability": "recovery",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a human approval is pending"
+  },
+  "recovery.empty-continue-consumed": {
+    "capability": "recovery",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "the client dies after consuming an empty continuation"
+  },
+  "recovery.eventlog-tail-durable": {
+    "capability": "recovery",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a second instance attaches after recovery finishes"
+  },
+  "recovery.optional-token-surface-absent": {
+    "capability": "recovery",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a custom run store has no token-fenced extension"
+  },
+  "runtime.finish-error-no-done": {
+    "capability": "runtime",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a limit stop encounters a failed finish write"
+  },
+  "runtime.resume-tool-budget-cumulative": {
+    "capability": "runtime",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a later batch suspends and resumes"
+  },
+  "runtime.eino-governed-call-identity": {
+    "capability": "runtime",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "eino executes a governed tool through the shipped constructor"
+  },
+  "sandbox.firewall-authority-isolated": {
+    "capability": "sandbox",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "workload code attempts to remove the firewall"
+  },
+  "sandbox.policy-setup-failure-cleanup": {
+    "capability": "sandbox",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "privileged setup fails"
+  },
+  "sandbox.restored-startup-policy-first": {
+    "capability": "sandbox",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a restored snapshot replaces its startup executable"
+  },
+  "sandbox.same-workspace-snapshots-immutable": {
+    "capability": "sandbox",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "one live workspace publishes twice"
+  },
+  "sandbox.snapshot-cas-failure-keeps-content": {
+    "capability": "sandbox",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a later metadata publication loses its compare-and-set"
+  },
+  "sandbox.legacy-snapshot-ref-readable": {
+    "capability": "sandbox",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a legacy tagged snapshot is restored"
+  },
+  "stores.resume-session-exclusive": {
+    "capability": "stores",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a suspended run resumes while a newer run owns the session"
+  },
+  "stores.reclaim-session-exclusive": {
+    "capability": "stores",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "reclaim races another acquisition"
+  },
+  "stores.reclaim-state-refused": {
+    "capability": "stores",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a stored terminal or suspended run is reclaimed"
+  },
+  "stores.postgres-ownership-database-time": {
+    "capability": "stores",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "independent adapter instances have skewed process clocks"
+  },
+  "stores.checkpoint-lifetime-independent": {
+    "capability": "stores",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a healthy execution outlives its initial lease"
+  },
+  "stores.checkpoint-lifetime-policy": {
+    "capability": "stores",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "explicit and absent checkpoint expiry"
+  },
+  "stores.optional-checkpoint-resume-port": {
+    "capability": "stores",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "a token-aware store supports the optional port"
+  },
+  "stores.resume-current-token-fenced": {
+    "capability": "stores",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "an old token is used after a newer suspension"
+  },
+  "stores.resume-ready-filter-before-limit": {
+    "capability": "stores",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "completed checkpoints precede a recoverable checkpoint"
+  },
+  "stores.preempted-filter-before-limit": {
+    "capability": "stores",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "human approval precedes a preempted checkpoint"
+  },
+  "tools.host-effect-default-consistent": {
+    "capability": "tools",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "host effect is omitted"
+  },
+  "tools.host-effect-option-consistent": {
+    "capability": "tools",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "an effect option overrides the declaration"
+  },
+  "tools.initial-and-replay-key-stable": {
+    "capability": "tools",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "completion is lost after an external effect"
+  },
+  "tools.exact-numeric-fingerprint": {
+    "capability": "tools",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "adjacent large integer arguments differ"
+  },
+  "tools.legacy-intent-exact-match": {
+    "capability": "tools",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "an unresolved legacy intent is recovered"
+  },
+  "tools.cgnat-destination-denied": {
+    "capability": "tools",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "an allowed hostname resolves into CGNAT"
+  },
+  "tools.proxy-destination-pinned": {
+    "capability": "tools",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "proxy DNS disagrees with client validation"
+  },
+  "tools.proxy-tls-authority-preserved": {
+    "capability": "tools",
+    "origin": "repair-runtime-safety-contracts",
+    "title": "HTTPS uses a pinned address with the original authority"
   }
 }
