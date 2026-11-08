@@ -161,4 +161,7 @@ func (t *captureTransport) Do(r *http.Request) (*http.Response, error) {
 
 func TestModelConformance(t *testing.T) {
 	conformance.ModelScenarios(t, newModel, conformance.DefaultFixtures())
+	t.Run("legacy conformance suite", func(t *testing.T) {
+		conformance.Model(t, newModel, conformance.DefaultFixtures())
+	})
 }

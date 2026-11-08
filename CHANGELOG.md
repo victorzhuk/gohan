@@ -12,6 +12,11 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ### Fixed
 
+- Anthropic completes tool blocks by content-block index, emits identity-only argument previews, and rejects malformed explicit completions as protocol errors.
+- OpenAI stream termination preserves terminal reasons, reports usage once, stops callbacks after consumer rejection, handles missing cache details and reports cancellation during silent reads.
+- The Eino foreign runtime installs call-ID middleware so backend identity reaches governed admission, permission and journal operations.
+- The `einoflow` graph collector no longer folds argument previews into executable calls.
+- Shipped provider fixtures now carry real wire boundaries, and both provider packages run the legacy conformance suite again.
 - Recovered runs record their redacted event tail for `Attach`, including the terminal boundary.
 - A failed terminal store write surfaces an error instead of emitting `Done`.
 - Admitted tool calls retain their cumulative budget across resume and recovery; prepaid pending calls are not charged twice.

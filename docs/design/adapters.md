@@ -16,7 +16,9 @@ Verified against eino v0.9.x (`adk`, `compose`, `components/tool`) and adk-go v1
 | Tool export/import | `tool.InvokableTool{Info(ctx) (*schema.ToolInfo, error); InvokableRun(ctx, argsJSON string, ...Option) (string, error)}`; `StreamableTool` imported by draining |
 | Model export/import | `model.ToolCallingChatModel` (*verify* name/methods) |
 
-gohan does not use eino agent middleware (`ChatModelAgentMiddleware`) for governance; governance is already in the exported components. Framework callbacks/tracing are disabled by default to avoid duplicate spans.
+`Runtime.Step` installs `NewToolCallIDHandler` through `ChatModelAgentConfig.Handlers` (eino v0.9.1). The middleware transports the backend call ID into the tool context; permission, limits and journal governance remain in the integrated components. Framework callbacks/tracing are disabled by default to avoid duplicate spans.
+
+`turnModel.call` and `einoflow`'s `turnOutput.fold` exclude identity-only `DeltaToolArgs` previews from executable calls. Legacy non-preview calls with nil `Args` remain calls. Pending calls replay before the next model invocation under their recorded identity; the checkpoint format and `replayCall` identity are unchanged.
 
 ### 7.2 adk-go (v2)
 
@@ -59,6 +61,10 @@ Both providers implement the provider adapter contract in `openspec/specs/model/
 
 - `adapter/openai`: OpenAI and any OpenAI-compatible endpoint (vLLM, enterprise gateways). `CacheAuto` only (provider prefix caching); `ResponseSchema` → `response_format` with `strict` where the endpoint declares `Caps.Constrained`; `Extra` → request body extension minus governed keys; `AffinityKey` → configurable header; `Priority` → engine priority where supported (*verify* vLLM parameter).
 - `adapter/anthropic`: `CacheExplicit` with `CacheBreakpoints: 4` (`CacheBreak` → `cache_control`), `CacheWriteTokens` from usage; `ResponseSchema` → forced tool schema; opaque `Reasoning` with signature round-trip; tool use; streaming.
+
+Anthropic owns tool identity and argument fragments per content-block index. Argument deltas are identity-only previews; `content_block_stop` completes only its own index. An explicit stop with empty, incomplete or malformed ordinary arguments emits one `ClassPermanent` protocol error before that call can execute, with no later usage report. Open blocks at message end or EOF remain previews. Forced-schema output remains text.
+
+OpenAI validates the whole pending `tool_calls` batch before emitting any completed call. `length`, `[DONE]`, EOF or `stop` abandon pending calls and report `FinishMaxTokens`; a plain `stop` without pending calls reports `FinishStop`. `content_filter` takes precedence and reports `FinishRefusal`; `error` and unknown reasons emit one `ClassTransient` error. Usage is reported at most once: usage arriving after a finish is used if none was reported earlier, and an estimate is made only at clean `[DONE]` or EOF without reported usage. Under `CacheAuto`, missing `prompt_tokens_details` means zero cached tokens. Cancellation reports `context.Canceled` once, including a silent blocked read, and consumer rejection ends callbacks.
 
 ### 7.6 Postgres adapter contract
 

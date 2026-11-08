@@ -57,4 +57,7 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 
 func TestModelConformance(t *testing.T) {
 	conformance.ModelScenarios(t, fixtureModel, conformance.DefaultFixtures())
+	t.Run("legacy conformance suite", func(t *testing.T) {
+		conformance.Model(t, fixtureModel, conformance.DefaultFixtures())
+	})
 }

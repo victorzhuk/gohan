@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -26,6 +27,12 @@ func textDelta(text string) string {
 	return event("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"`+text+`"}}`)
 }
 
+// blockStop closes one content block index. The provider closes every block
+// it completes, so the recording carries the boundary the wire carries.
+func blockStop(index int) string {
+	return event("content_block_stop", `{"type":"content_block_stop","index":`+strconv.Itoa(index)+`}`)
+}
+
 // Fixtures returns the recorded responses the conformance suite replays,
 // keyed by suite fixture name.
 func Fixtures() map[string]Playback {
@@ -35,6 +42,7 @@ func Fixtures() map[string]Playback {
 			event("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
 			textDelta("hel"),
 			textDelta("lo"),
+			blockStop(0),
 			event("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}`),
 			event("message_stop", `{"type":"message_stop"}`),
 		)},
@@ -42,6 +50,7 @@ func Fixtures() map[string]Playback {
 			event("message_start", `{"type":"message_start","message":{"model":"served-1","usage":{"input_tokens":100,"cache_read_input_tokens":20}}}`),
 			event("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
 			textDelta("hello"),
+			blockStop(0),
 			event("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":30,"cache_creation_input_tokens":15}}`),
 			event("message_stop", `{"type":"message_stop"}`),
 		)},
@@ -49,13 +58,14 @@ func Fixtures() map[string]Playback {
 			event("message_start", `{"type":"message_start","message":{"model":"served-1"}}`),
 			event("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
 			textDelta("hello there"),
+			blockStop(0),
 			event("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`),
 			event("message_stop", `{"type":"message_stop"}`),
 		)},
 		"truncated tool call": {Status: 200, Body: sse(
 			event("message_start", `{"type":"message_start","message":{"model":"served-1","usage":{"input_tokens":12}}}`),
 			event("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"search"}}`),
-			event("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"q\":\"go\"}"}}`),
+			event("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"q\":\"go"}}`),
 			event("message_delta", `{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":9}}`),
 			event("message_stop", `{"type":"message_stop"}`),
 		)},
@@ -63,6 +73,7 @@ func Fixtures() map[string]Playback {
 			event("message_start", `{"type":"message_start","message":{"model":"served-1","usage":{"input_tokens":8}}}`),
 			event("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
 			textDelta("ok"),
+			blockStop(0),
 			event("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`),
 			event("message_stop", `{"type":"message_stop"}`),
 		)},
@@ -70,6 +81,7 @@ func Fixtures() map[string]Playback {
 			event("message_start", `{"type":"message_start","message":{"model":"served-1","usage":{"input_tokens":40}}}`),
 			event("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
 			textDelta("cached"),
+			blockStop(0),
 			event("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2,"cache_creation_input_tokens":12}}`),
 			event("message_stop", `{"type":"message_stop"}`),
 		)},
@@ -77,8 +89,10 @@ func Fixtures() map[string]Playback {
 			event("message_start", `{"type":"message_start","message":{"model":"served-1","usage":{"input_tokens":6}}}`),
 			event("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search"}}`),
 			event("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"q\":\"go\"}"}}`),
+			blockStop(0),
 			event("content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_2","name":"web_search"}}`),
 			event("content_block_delta", `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"q\":\"llm\"}"}}`),
+			blockStop(1),
 			event("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}`),
 			event("message_stop", `{"type":"message_stop"}`),
 		)},
