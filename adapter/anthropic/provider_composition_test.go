@@ -482,7 +482,9 @@ func TestProviderComposition(t *testing.T) {
 
 	t.Run("model.forced-output-and-tool-truncation", func(t *testing.T) {
 		forcedArgs := `{"answer":"hi"}`
-		fx := newCompFixture(t,
+
+		// Control: a forced-schema response stays text and executes no local tool.
+		forcedFx := newCompFixture(t,
 			compTurn{events: []string{
 				compMsgStart(),
 				compToolStart(0, "toolu_f", forcedToolName),
@@ -491,66 +493,12 @@ func TestProviderComposition(t *testing.T) {
 				compMsgDelta("end_turn"),
 				compStop(),
 			}},
-			compTurn{events: []string{
-				compMsgStart(),
-				compToolStart(0, "toolu_v", "search"),
-				compArgsDelta(0, `{}`),
-				compBlockStop(0),
-				compMsgDelta("tool_use"),
-				compStop(),
-			}},
-			compTurn{events: compTextEvents("done")},
-			compTurn{events: []string{
-				compMsgStart(),
-				compToolStart(0, "toolu_e", "search"),
-				compArgsDelta(0, `{"q":"par`),
-			}},
-			compTurn{events: compTextEvents("done")},
-			compTurn{events: []string{
-				compMsgStart(),
-				compToolStart(0, "toolu_t", "search"),
-				compArgsDelta(0, `{"q":"go"}`),
-				compMsgDelta("max_tokens"),
-				compStop(),
-			}},
-			compTurn{events: compTextEvents("done")},
-			compTurn{events: []string{
-				compMsgStart(),
-				compToolStart(0, "toolu_b1", "search"),
-				compBlockStop(0),
-				compMsgDelta("tool_use"),
-				compStop(),
-			}},
-			compTurn{events: compTextEvents("done")},
-			compTurn{events: []string{
-				compMsgStart(),
-				compToolStart(0, "toolu_b2", "search"),
-				compArgsDelta(0, `{"q":`),
-				compBlockStop(0),
-				compMsgDelta("tool_use"),
-				compStop(),
-			}},
-			compTurn{events: compTextEvents("done")},
-			compTurn{events: []string{
-				compMsgStart(),
-				compToolStart(0, "toolu_b3", "search"),
-				compArgsDelta(0, `{`),
-				compBlockStop(0),
-				compMsgDelta("tool_use"),
-				compStop(),
-			}},
-			compTurn{events: compTextEvents("done")},
 		)
-
 		forcedRecorder := &compRecorder{}
-		forcedStack := compStack(t, compModel(t, fx), forcedRecorder, compForcedAssemble)
-		plainRecorder := &compRecorder{}
-		plainStack := compStack(t, compModel(t, fx), plainRecorder, compAssemble)
-
-		// Control: a forced-schema response stays text and executes no local tool.
+		forcedStack := compStack(t, compModel(t, forcedFx), forcedRecorder, compForcedAssemble)
 		forcedRun := compSend(compCtx(t), compConversation(t, forcedStack), "s-forced-output", nil)
-		compAssertAssembled(t, fx.request(t, 0), forcedToolName)
-		choice, _ := fx.request(t, 0)["tool_choice"].(map[string]any)
+		compAssertAssembled(t, forcedFx.request(t, 0), forcedToolName)
+		choice, _ := forcedFx.request(t, 0)["tool_choice"].(map[string]any)
 		if choice["type"] != "tool" || choice["name"] != forcedToolName {
 			t.Errorf("assembled tool_choice = %v, want the forced gohan_respond tool", choice)
 		}
@@ -568,8 +516,20 @@ func TestProviderComposition(t *testing.T) {
 		}
 
 		// Control: a valid {} completion executes exactly once.
-		validRun := compSend(compCtx(t), compConversation(t, plainStack), "s-valid-empty-object", nil)
-		if got := plainRecorder.effects(); len(got) != 1 || got[0] != `{}` {
+		validFx := newCompFixture(t,
+			compTurn{events: []string{
+				compMsgStart(),
+				compToolStart(0, "toolu_v", "search"),
+				compArgsDelta(0, `{}`),
+				compBlockStop(0),
+				compMsgDelta("tool_use"),
+				compStop(),
+			}},
+		)
+		validRecorder := &compRecorder{}
+		validStack := compStack(t, compModel(t, validFx), validRecorder, compAssemble)
+		validRun := compSend(compCtx(t), compConversation(t, validStack), "s-valid-empty-object", nil)
+		if got := validRecorder.effects(); len(got) != 1 || got[0] != `{}` {
 			t.Errorf("valid {} completion recorded effects %v, want exactly one execution with {}", got)
 		}
 		if !compDone(validRun.events) {
@@ -577,9 +537,17 @@ func TestProviderComposition(t *testing.T) {
 		}
 
 		// Control: EOF with an unclosed tool block never completes the call.
-		mark := len(plainRecorder.effects())
-		eofRun := compSend(compCtx(t), compConversation(t, plainStack), "s-eof-open-block", nil)
-		if got := plainRecorder.effects()[mark:]; len(got) != 0 {
+		eofFx := newCompFixture(t,
+			compTurn{events: []string{
+				compMsgStart(),
+				compToolStart(0, "toolu_e", "search"),
+				compArgsDelta(0, `{"q":"par`),
+			}},
+		)
+		eofRecorder := &compRecorder{}
+		eofStack := compStack(t, compModel(t, eofFx), eofRecorder, compAssemble)
+		eofRun := compSend(compCtx(t), compConversation(t, eofStack), "s-eof-open-block", nil)
+		if got := eofRecorder.effects(); len(got) != 0 {
 			t.Errorf("open-block EOF run executed effects %v, want zero tool effects", got)
 		}
 		if !compDone(eofRun.events) {
@@ -587,9 +555,19 @@ func TestProviderComposition(t *testing.T) {
 		}
 
 		// Control: max_tokens truncation of an unclosed block executes nothing.
-		mark = len(plainRecorder.effects())
-		truncRun := compSend(compCtx(t), compConversation(t, plainStack), "s-max-tokens-open-block", nil)
-		if got := plainRecorder.effects()[mark:]; len(got) != 0 {
+		truncFx := newCompFixture(t,
+			compTurn{events: []string{
+				compMsgStart(),
+				compToolStart(0, "toolu_t", "search"),
+				compArgsDelta(0, `{"q":"go"}`),
+				compMsgDelta("max_tokens"),
+				compStop(),
+			}},
+		)
+		truncRecorder := &compRecorder{}
+		truncStack := compStack(t, compModel(t, truncFx), truncRecorder, compAssemble)
+		truncRun := compSend(compCtx(t), compConversation(t, truncStack), "s-max-tokens-open-block", nil)
+		if got := truncRecorder.effects(); len(got) != 0 {
 			t.Errorf("max_tokens truncation run executed effects %v, want zero tool effects", got)
 		}
 		if !compDone(truncRun.events) {
@@ -597,9 +575,17 @@ func TestProviderComposition(t *testing.T) {
 		}
 
 		t.Run("block_stop_empty_args", func(t *testing.T) {
-			mark := len(plainRecorder.effects())
-			run := compSend(compCtx(t), compConversation(t, plainStack), "s-stop-empty-args", nil)
-			if got := plainRecorder.effects()[mark:]; len(got) != 0 {
+			fx := newCompFixture(t,
+				compTurn{events: []string{
+					compMsgStart(),
+					compToolStart(0, "toolu_b1", "search"),
+					compBlockStop(0),
+				}},
+			)
+			recorder := &compRecorder{}
+			stack := compStack(t, compModel(t, fx), recorder, compAssemble)
+			run := compSend(compCtx(t), compConversation(t, stack), "s-stop-empty-args", nil)
+			if got := recorder.effects(); len(got) != 0 {
 				t.Fatalf("empty-args completion executed effects %v, want zero tool effects", got)
 			}
 			if run.err == nil {
@@ -608,9 +594,18 @@ func TestProviderComposition(t *testing.T) {
 		})
 
 		t.Run("block_stop_incomplete_args", func(t *testing.T) {
-			mark := len(plainRecorder.effects())
-			run := compSend(compCtx(t), compConversation(t, plainStack), "s-stop-incomplete-args", nil)
-			if got := plainRecorder.effects()[mark:]; len(got) != 0 {
+			fx := newCompFixture(t,
+				compTurn{events: []string{
+					compMsgStart(),
+					compToolStart(0, "toolu_b2", "search"),
+					compArgsDelta(0, `{"q":`),
+					compBlockStop(0),
+				}},
+			)
+			recorder := &compRecorder{}
+			stack := compStack(t, compModel(t, fx), recorder, compAssemble)
+			run := compSend(compCtx(t), compConversation(t, stack), "s-stop-incomplete-args", nil)
+			if got := recorder.effects(); len(got) != 0 {
 				t.Fatalf("incomplete-args completion executed effects %v, want zero tool effects", got)
 			}
 			if run.err == nil {
@@ -619,9 +614,18 @@ func TestProviderComposition(t *testing.T) {
 		})
 
 		t.Run("block_stop_malformed_args", func(t *testing.T) {
-			mark := len(plainRecorder.effects())
-			run := compSend(compCtx(t), compConversation(t, plainStack), "s-stop-malformed-args", nil)
-			if got := plainRecorder.effects()[mark:]; len(got) != 0 {
+			fx := newCompFixture(t,
+				compTurn{events: []string{
+					compMsgStart(),
+					compToolStart(0, "toolu_b3", "search"),
+					compArgsDelta(0, `{`),
+					compBlockStop(0),
+				}},
+			)
+			recorder := &compRecorder{}
+			stack := compStack(t, compModel(t, fx), recorder, compAssemble)
+			run := compSend(compCtx(t), compConversation(t, stack), "s-stop-malformed-args", nil)
+			if got := recorder.effects(); len(got) != 0 {
 				t.Fatalf("malformed-args completion executed effects %v, want zero tool effects", got)
 			}
 			if run.err == nil {
