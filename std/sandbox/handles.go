@@ -139,7 +139,7 @@ func (h *Handles) Publish(ctx context.Context, sessionID string, owner types.Wor
 	if ok {
 		expected = meta.Generation
 	}
-	generation, err := h.meta.SetWorkspaceMeta(ctx, sessionID, expected, stores.WorkspaceMeta{Ref: ref, Generation: expected, Owner: owner})
+	generation, err := h.meta.SetWorkspaceMeta(ctx, sessionID, expected, stores.WorkspaceMeta{Ref: ref, Generation: expected + 1, Owner: owner})
 	if err != nil {
 		return types.WorkspaceSnapshot{}, err
 	}

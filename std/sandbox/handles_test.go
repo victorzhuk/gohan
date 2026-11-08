@@ -3,8 +3,10 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
@@ -274,6 +276,75 @@ func TestSandboxCoordinator(t *testing.T) {
 	if err := h.Sweep(ctx, 0); !errors.Is(err, ErrZeroLimit) {
 		t.Fatalf("zero-limit sweep err = %v, want ErrZeroLimit", err)
 	}
+}
+
+// publishTwiceWorkspace mints a fresh snapshot ref on every Snapshot call,
+// the way a mutating live workspace does. A fixed ref cannot reproduce the
+// stale-version refusal a second publication hits in the real stores.
+type publishTwiceWorkspace struct {
+	fakeWorkspace
+	snaps int
+}
+
+func (w *publishTwiceWorkspace) Snapshot(context.Context) (types.WorkspaceRef, error) {
+	w.snaps++
+	return types.WorkspaceRef(fmt.Sprintf("snap-%d", w.snaps)), nil
+}
+
+// publishTwiceSandbox opens one publishTwiceWorkspace for the coordinator.
+type publishTwiceSandbox struct{}
+
+func (s *publishTwiceSandbox) Open(context.Context, types.WorkspaceRef, types.SandboxPolicy) (types.Workspace, error) {
+	return &publishTwiceWorkspace{}, nil
+}
+
+func TestSandboxCoordinatorPublishTwice(t *testing.T) {
+	t.Run("sandbox.publish-twice-advances-generation", func(t *testing.T) {
+		runs := stores.NewMemoryRuns()
+		sessions := stores.NewMemorySessionLog(
+			stores.WithSessionPrincipals(types.PrincipalFrom),
+			stores.WithSessionWorkspaceOwnerGuard(runs),
+		)
+		pctx := types.WithPrincipal(context.Background(), types.Principal{Tenant: "acme", Subject: "alice"})
+		if _, err := sessions.Append(pctx, "s1", 0, types.Message{
+			Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: "start"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		lease, err := runs.Start(pctx, stores.Run{SessionID: "s1", RunID: "run-1", Flow: "flights", Backend: "scripted"}, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		owner := types.WorkspaceOwner{RunID: "run-1", LeaseGeneration: lease.Generation}
+		ctx := types.WithRunInfo(pctx, types.RunInfo{SessionID: "s1", RunID: "run-1"})
+
+		h, err := NewHandles(&publishTwiceSandbox{}, types.SandboxPolicy{Lifecycle: types.PerCall}, sessions)
+		if err != nil {
+			t.Fatalf("NewHandles: %v", err)
+		}
+		if _, err := h.Acquire(ctx, "s1", owner); err != nil {
+			t.Fatalf("acquire: %v", err)
+		}
+
+		first, err := h.Publish(ctx, "s1", owner)
+		if err != nil || first.Ref != "snap-1" || first.Generation != 1 {
+			t.Fatalf("first publish = %+v err = %v, want snap-1 at generation 1", first, err)
+		}
+		second, err := h.Publish(ctx, "s1", owner)
+		if err != nil {
+			t.Fatalf("second publish: %v", err)
+		}
+		if second.Ref != "snap-2" || second.Generation != 2 {
+			t.Fatalf("second publish = %+v, want snap-2 at generation 2", second)
+		}
+		m, ok, err := sessions.WorkspaceMeta(ctx, "s1")
+		if err != nil || !ok {
+			t.Fatalf("workspace meta ok = %v err = %v, want a stored row", ok, err)
+		}
+		if m.Ref != second.Ref || m.Generation != 2 {
+			t.Fatalf("durable meta = %+v, want %q at generation 2", m, second.Ref)
+		}
+	})
 }
 
 func TestCoordinatorSharedInstance(t *testing.T) {
