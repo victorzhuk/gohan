@@ -222,7 +222,10 @@ func parkedRunID(t *testing.T, runs *stores.MemoryRuns, ctx context.Context, ses
 func TestEinoGovernedComposition(t *testing.T) {
 	t.Run("runtime.eino-governed-call-identity", func(t *testing.T) {
 		model := &compositionModel{turns: [][]types.ModelChunk{
-			{ // turn 1: the side-effect call whose verdict must ask
+			{ // turn 1: an identity-only preview for the governed identity
+				// precedes the side-effect call whose verdict must ask; the
+				// preview carries no args and must reach nothing downstream.
+				{Kind: types.DeltaToolArgs, ToolUse: &types.ToolUse{ID: "call_book_1", Name: "book", Args: jsontext.Value(``)}},
 				{Kind: types.DeltaToolArgs, ToolUse: &types.ToolUse{ID: "call_book_1", Name: "book", Args: jsontext.Value(`{"n":"1"}`)}},
 				{Finish: types.FinishToolUse},
 			},
@@ -276,6 +279,9 @@ func TestEinoGovernedComposition(t *testing.T) {
 		}
 		if got := dec.callsFor("book"); len(got) == 0 || got[0] != "call_book_1" {
 			t.Fatalf("gate saw book calls %v, want call_book_1 decided under its own backend identity", got)
+		}
+		if got := dec.callsFor("book"); len(got) != 1 {
+			t.Fatalf("gate saw %d book decisions, want exactly one under call_book_1: the identity-only preview must add no gate decision and no effect", len(got))
 		}
 
 		// Run records: a suspended row is invisible to RunForSession, so
