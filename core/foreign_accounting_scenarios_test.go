@@ -265,6 +265,22 @@ func (d *foreignAccountDecider) Decide(context.Context, *permission.ToolInvocati
 	return types.Decision[permission.Verdict]{Value: permission.Ask, Confidence: 1}, nil
 }
 
+// foreignAccountAskOnceDecider asks on the first decision and allows after.
+type foreignAccountAskOnceDecider struct {
+	mu    sync.Mutex
+	asked bool
+}
+
+func (d *foreignAccountAskOnceDecider) Decide(context.Context, *permission.ToolInvocation) (types.Decision[permission.Verdict], error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.asked {
+		d.asked = true
+		return types.Decision[permission.Verdict]{Value: permission.Ask, Confidence: 1}, nil
+	}
+	return types.Decision[permission.Verdict]{Value: permission.Allow, Confidence: 1}, nil
+}
+
 // foreignAccountStack carries one foreign flow's fixture state.
 type foreignAccountStack struct {
 	conv  gohan.Conversation
@@ -734,7 +750,7 @@ func TestForeignAccountAdmissionBudget(t *testing.T) {
 	})
 
 	t.Run("repeated-resume-keeps-admitted-total", func(t *testing.T) {
-		f, _, commit, log := build(t, 2, 2, nil)
+		f, _, commit, log := build(t, 2, 2, &foreignAccountAskOnceDecider{})
 		token, err := f.send(t)
 		if err != nil || token == "" {
 			t.Fatalf("Send: token=%q err=%v, want the ask suspension", token, err)
