@@ -73,6 +73,8 @@ type streamRun struct {
 	req      types.ModelRequest
 	keyID    string
 	yield    func(types.ModelChunk, error) bool
+	ctx      context.Context
+	forced   bool
 
 	served    string
 	streamed  strings.Builder
@@ -81,24 +83,53 @@ type streamRun struct {
 	completed []types.ToolUse
 	wire      *wireUsage
 	usage     bool
+	reported  bool
+}
+
+// canceled reports the caller's cancellation: the context of the run
+// ended the stream.
+func (r *streamRun) canceled() bool {
+	return r.ctx.Err() != nil
+}
+
+// reportCancel yields the terminal cancellation exactly once: no success
+// chunk, no usage and no finish may follow it.
+func (r *streamRun) reportCancel() bool {
+	if r.reported {
+		return false
+	}
+	r.reported = true
+	r.yield(types.ModelChunk{}, r.ctx.Err())
+	return false
+}
+
+// finalize closes the stream with the terminal reason: a cancelled
+// context reports the cancellation instead of a success terminal.
+func (r *streamRun) finalize(raw string) bool {
+	if r.canceled() {
+		return r.reportCancel()
+	}
+	return r.end(raw)
 }
 
 // stream decodes the SSE body and yields chunks on the caller's goroutine.
-// It returns at the first refusal to receive, yields nothing after an error
-// and closes the body on the way out.
+// Generate owns and closes the response body; stream returns at the first
+// refusal and yields nothing after a terminal error.
 func (p *Provider) stream(ctx context.Context, resp *http.Response, req types.ModelRequest, keyID string, yield func(types.ModelChunk, error) bool) {
 	run := &streamRun{
 		provider: p,
 		req:      req,
 		keyID:    keyID,
 		yield:    yield,
+		ctx:      ctx,
+		forced:   p.forcedSchema(req),
 		pending:  map[int]*toolCall{},
 	}
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for scanner.Scan() {
-		if err := ctx.Err(); err != nil {
-			yield(types.ModelChunk{}, err)
+		if run.canceled() {
+			run.reportCancel()
 			return
 		}
 		line := strings.TrimSpace(scanner.Text())
@@ -110,7 +141,7 @@ func (p *Provider) stream(ctx context.Context, resp *http.Response, req types.Mo
 		}
 		payload := strings.TrimSpace(line[len("data:"):])
 		if payload == "[DONE]" {
-			run.end("")
+			run.finalize("")
 			return
 		}
 		var chunk wireChunk
@@ -140,13 +171,13 @@ func (p *Provider) stream(ctx context.Context, resp *http.Response, req types.Mo
 		if finish == "" {
 			continue
 		}
-		if !run.end(finish) {
+		if !run.finalize(finish) {
 			return
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		if ctx.Err() != nil {
-			yield(types.ModelChunk{}, ctx.Err())
+		if run.canceled() {
+			run.reportCancel()
 			return
 		}
 		yield(types.ModelChunk{}, &types.ModelError{
@@ -156,7 +187,15 @@ func (p *Provider) stream(ctx context.Context, resp *http.Response, req types.Mo
 		})
 		return
 	}
-	run.end("")
+	run.finalize("")
+}
+
+// forcedSchema reports whether the request forces a structured response.
+// The condition is the one the request assembler uses to map the response
+// schema: a forced response carries its payload as text and never
+// completes a wire tool call.
+func (p *Provider) forcedSchema(req types.ModelRequest) bool {
+	return len(req.Options.ResponseSchema) > 0 && p.profile.Caps.Constrained
 }
 
 // consume streams the content, the reasoning and the tool-call previews of
@@ -164,6 +203,9 @@ func (p *Provider) stream(ctx context.Context, resp *http.Response, req types.Mo
 func (r *streamRun) consume(chunk wireChunk) bool {
 	for _, choice := range chunk.Choices {
 		if choice.Delta.Content != "" {
+			if r.canceled() {
+				return false
+			}
 			r.streamed.WriteString(choice.Delta.Content)
 			if !r.yield(types.ModelChunk{Kind: types.DeltaText, Delta: choice.Delta.Content}, nil) {
 				return false
@@ -176,6 +218,9 @@ func (r *streamRun) consume(chunk wireChunk) bool {
 			reasoning = *choice.Delta.Reasoning
 		}
 		if reasoning != "" {
+			if r.canceled() {
+				return false
+			}
 			r.streamed.WriteString(reasoning)
 			if !r.yield(types.ModelChunk{Kind: types.DeltaReasoning, Delta: reasoning}, nil) {
 				return false
@@ -192,8 +237,12 @@ func (r *streamRun) consume(chunk wireChunk) bool {
 
 // preview streams one argument fragment with the identity of its call. The
 // arguments stay empty: a preview carries the identity, never an argument
-// set that could reach tool execution.
+// set that could reach tool execution. A forced response previews
+// nothing: its payload surfaces as text.
 func (r *streamRun) preview(delta wireToolCallDelta) bool {
+	if r.canceled() {
+		return false
+	}
 	acc := r.call(delta.Index)
 	if delta.ID != "" {
 		acc.id = delta.ID
@@ -206,6 +255,9 @@ func (r *streamRun) preview(delta wireToolCallDelta) bool {
 		return true
 	}
 	acc.fragments = append(acc.fragments, fragment)
+	if r.forced {
+		return true
+	}
 	return r.yield(types.ModelChunk{
 		Kind:    types.DeltaToolArgs,
 		Delta:   fragment,
@@ -228,9 +280,23 @@ func (r *streamRun) call(index int) *toolCall {
 
 // completeBatch validates every pending call before any of them is emitted:
 // a batch that carries an invalid argument set is refused whole, so no
-// sibling of a broken call ever reaches tool execution.
+// sibling of a broken call ever reaches tool execution. A forced response
+// completes no call at all: its payload surfaces as text.
 func (r *streamRun) completeBatch() bool {
 	calls := r.pendingCalls()
+	if r.forced {
+		for i := range calls {
+			if r.canceled() {
+				return false
+			}
+			r.streamed.WriteString(string(calls[i].Args))
+			if !r.yield(types.ModelChunk{Kind: types.DeltaText, Delta: string(calls[i].Args)}, nil) {
+				return false
+			}
+		}
+		r.clear()
+		return true
+	}
 	for _, call := range calls {
 		if !json.Valid(call.Args) {
 			r.fail(types.ClassPermanent, fmt.Errorf("tool call %q carries invalid arguments %q", call.ID, string(call.Args)))
@@ -238,6 +304,9 @@ func (r *streamRun) completeBatch() bool {
 		}
 	}
 	for i := range calls {
+		if r.canceled() {
+			return false
+		}
 		r.completed = append(r.completed, calls[i])
 		if !r.yield(types.ModelChunk{ToolUse: &calls[i]}, nil) {
 			return false
@@ -317,6 +386,9 @@ func (r *streamRun) end(raw string) bool {
 // usage. The estimate fills a missing usage only at the clean end of a
 // stream, never at a finish reason.
 func (r *streamRun) terminal(finish types.FinishReason, estimate bool) bool {
+	if r.canceled() {
+		return r.reportCancel()
+	}
 	out := types.ModelChunk{Finish: finish}
 	if !r.usage {
 		use := r.provider.usageFrom(r.wire, r.keyID, r.served)
