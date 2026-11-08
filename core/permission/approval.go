@@ -1,10 +1,13 @@
 package permission
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/json/jsontext"
+	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"time"
 
@@ -160,11 +163,13 @@ type argsDiff struct {
 }
 
 // diffFromLast compares the two calls' arguments and renders the change as
-// canonical JSON. Equal or missing predecessors yield nil.
+// canonical JSON. Numbers compare by their exact value and render as the
+// raw tokens each call carried, so equivalent decimal spellings count as
+// equal while no float64 rounding decides the comparison. Equal or missing
+// predecessors yield nil.
 func diffFromLast(prev, cur jsontext.Value) json.RawMessage {
-	var prevArgs, curArgs map[string]any
-	hasPrev := json.Unmarshal(prev, &prevArgs) == nil && prevArgs != nil
-	hasCur := json.Unmarshal(cur, &curArgs) == nil && curArgs != nil
+	prevArgs, hasPrev := decodeExactArgs(prev)
+	curArgs, hasCur := decodeExactArgs(cur)
 	if !hasPrev || !hasCur {
 		return nil
 	}
@@ -179,7 +184,7 @@ func diffFromLast(prev, cur jsontext.Value) json.RawMessage {
 			d.Added[k] = v
 			continue
 		}
-		if !sameJSON(before, v) {
+		if !exactEqual(before, v) {
 			if d.Changed == nil {
 				d.Changed = map[string]diffDelta{}
 			}
@@ -203,8 +208,29 @@ func diffFromLast(prev, cur jsontext.Value) json.RawMessage {
 	return raw
 }
 
-func sameJSON(a, b any) bool {
+func decodeExactArgs(v jsontext.Value) (map[string]any, bool) {
+	dec := json.NewDecoder(bytes.NewReader([]byte(v)))
+	dec.UseNumber()
+	var args map[string]any
+	if err := dec.Decode(&args); err != nil || args == nil {
+		return nil, false
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, false
+	}
+	return args, true
+}
+
+func exactEqual(a, b any) bool {
 	ab, errA := json.Marshal(a)
 	bb, errB := json.Marshal(b)
-	return errA == nil && errB == nil && string(ab) == string(bb)
+	if errA != nil || errB != nil {
+		return false
+	}
+	if bytes.Equal(ab, bb) {
+		return true
+	}
+	ac, errC := types.CanonicalJSONValue(ab)
+	bc, errD := types.CanonicalJSONValue(bb)
+	return errC == nil && errD == nil && bytes.Equal(ac, bc)
 }

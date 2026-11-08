@@ -6,6 +6,7 @@ import (
 	"encoding/json/jsontext"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	gohan "github.com/victorzhuk/gohan/core"
@@ -210,6 +211,16 @@ func TestJournalIntent(t *testing.T) {
 		}
 		if a == CanonicalFingerprint("create_booking", json.RawMessage(`{"a":3,"b":1}`)) {
 			t.Fatal("different args produced the same fingerprint")
+		}
+		if !strings.HasPrefix(string(a), "exact-v1:") {
+			t.Fatalf("fingerprint %q, want the exact-v1 version prefix", a)
+		}
+		n92 := CanonicalFingerprint("create_booking", json.RawMessage(`{"b":1,"a":9007199254740992}`))
+		if n92 == CanonicalFingerprint("create_booking", json.RawMessage(`{"b":1,"a":9007199254740993}`)) {
+			t.Fatal("adjacent integers produced the same fingerprint")
+		}
+		if e := CanonicalFingerprint("create_booking", json.RawMessage(`{"b":1,"a":1e2}`)); e != CanonicalFingerprint("create_booking", json.RawMessage(`{"b":1,"a":100.0}`)) {
+			t.Fatalf("decimal-equivalent args produced different fingerprints: %s", e)
 		}
 	})
 }

@@ -18,25 +18,19 @@ import (
 type SpecLookup func(name string) (types.ToolSpec, bool)
 
 // CanonicalFingerprint computes the journal fingerprint for a call: the
-// SHA-256 of the tool name and the canonical JSON of its arguments. The
-// canonical form re-encodes the arguments so key order and whitespace do
-// not change the fingerprint. The encoding is frozen: changing it breaks
-// every replay window that spans the change.
+// SHA-256 of the tool name and the exact canonical JSON of its arguments,
+// prefixed with the exact-v1 version so a legacy rounded fingerprint can
+// never match a fresh one. The canonical form sorts keys and renders every
+// number by its exact decimal value, so key order, whitespace and decimal
+// spelling do not change the fingerprint. The encoding is frozen: changing
+// it breaks every replay window that spans the change.
 func CanonicalFingerprint(tool string, args json.RawMessage) stores.Fingerprint {
-	sum := sha256.Sum256([]byte(tool + "\n" + canonicalJSON(args)))
-	return stores.Fingerprint(hex.EncodeToString(sum[:]))
-}
-
-func canonicalJSON(args json.RawMessage) string {
-	var v any
-	if err := json.Unmarshal(args, &v); err != nil {
-		return string(args)
-	}
-	b, err := json.Marshal(v)
+	canonical, err := types.CanonicalJSONValue(args)
 	if err != nil {
-		return string(args)
+		canonical = args
 	}
-	return string(b)
+	sum := sha256.Sum256([]byte(tool + "\n" + string(canonical)))
+	return stores.Fingerprint(types.ExactFingerprintVersion + hex.EncodeToString(sum[:]))
 }
 
 // JournalOption configures Journal.

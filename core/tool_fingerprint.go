@@ -1,6 +1,7 @@
 package gohan
 
 import (
+	"bytes"
 	"encoding/json"
 
 	"github.com/victorzhuk/gohan/core/stores"
@@ -16,19 +17,26 @@ func WithFingerprintFields(fields ...string) ToolOption {
 }
 
 // ToolFingerprint derives the fingerprint one call carries into the journal
-// and the grant check: the tool name plus the canonical JSON of the
-// arguments the spec's FingerprintFields select. Canonical form sorts object
-// keys, so equal arguments in any order share a fingerprint.
+// and the grant check: the exact-v1 version prefix, the tool name and the
+// canonical JSON of the arguments the spec's FingerprintFields select.
+// Canonical form sorts object keys and renders every number by its exact
+// value, so equal arguments in any order or spelling share a fingerprint
+// and unequal numbers never collapse into one identity.
 func ToolFingerprint(spec types.ToolSpec, args json.RawMessage) stores.Fingerprint {
-	var full map[string]any
-	if err := json.Unmarshal(args, &full); err != nil || full == nil {
-		full = map[string]any{}
+	obj := map[string]any{}
+	if canonical, err := types.CanonicalJSONValue(args); err == nil {
+		dec := json.NewDecoder(bytes.NewReader(canonical))
+		dec.UseNumber()
+		var full map[string]any
+		if err := dec.Decode(&full); err == nil && full != nil {
+			obj = full
+		}
 	}
-	selected := any(full)
+	selected := any(obj)
 	if len(spec.FingerprintFields) > 0 {
 		picked := make(map[string]any, len(spec.FingerprintFields))
 		for _, f := range spec.FingerprintFields {
-			if v, ok := full[f]; ok {
+			if v, ok := obj[f]; ok {
 				picked[f] = v
 			}
 		}
@@ -38,7 +46,7 @@ func ToolFingerprint(spec types.ToolSpec, args json.RawMessage) stores.Fingerpri
 	if err != nil {
 		canonical = []byte{}
 	}
-	return stores.Fingerprint(spec.Name + ":" + string(canonical))
+	return stores.Fingerprint(types.ExactFingerprintVersion + spec.Name + ":" + string(canonical))
 }
 
 // fullArgsFingerprint pins the complete argument value: it ignores the

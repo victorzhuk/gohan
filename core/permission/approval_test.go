@@ -80,6 +80,33 @@ func TestApprovalContract(t *testing.T) {
 		}
 	})
 
+	t.Run("tools.exact-numeric-fingerprint", func(t *testing.T) {
+		req := NewApprovalRequest(
+			invocation(jsontext.Value(`{"n":9007199254740993}`)),
+			jsontext.Value(`{"n":9007199254740992}`), time.Time{},
+		)
+		var diff struct {
+			Changed map[string]struct {
+				From json.Number `json:"from"`
+				To   json.Number `json:"to"`
+			} `json:"changed"`
+		}
+		if err := json.Unmarshal(req.DiffFromLast, &diff); err != nil {
+			t.Fatalf("DiffFromLast is not JSON: %v", err)
+		}
+		got := diff.Changed["n"]
+		if got.From != "9007199254740992" || got.To != "9007199254740993" {
+			t.Fatalf("DiffFromLast changed[n] = %s -> %s, want the exact adjacent integers", got.From, got.To)
+		}
+		equivalent := NewApprovalRequest(
+			invocation(jsontext.Value(`{"n":1e2}`)),
+			jsontext.Value(`{"n":100.0}`), time.Time{},
+		)
+		if equivalent.DiffFromLast != nil {
+			t.Fatalf("DiffFromLast = %s, want nil for decimal-equivalent arguments", equivalent.DiffFromLast)
+		}
+	})
+
 	t.Run("permission.ineligible-keeps-token", func(t *testing.T) {
 		req := ApprovalRequest{
 			Risk: types.RiskHigh,
