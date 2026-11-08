@@ -351,10 +351,10 @@ func TestScopeGrantCheckEnforcesSubjectAndExpiry(t *testing.T) {
 	store := std.NewMemoryGrantStore(func() time.Time { return at })
 	// The approving subject serves the parked call the resume approved,
 	// and only that one: the marker is the persisted decision, matched on
-	// call id and fingerprint together.
+	// call id, fingerprint and the complete argument value together.
 	ctx := withApprovedCalls(types.WithApproval(types.WithRunInfo(types.WithPrincipal(context.Background(), scopedApprover),
 		types.RunInfo{SessionID: "s1"}), types.Approval{Approver: scopedApprover}),
-		map[approvedCall]bool{{id: "p1", fingerprint: fp}: true})
+		map[approvedCall]bool{{id: "p1", fingerprint: fp, fullArgs: fullArgsFingerprint("probe", json.RawMessage(`{"id":"p1"}`)), generation: 1}: true})
 	check := scopeGrantCheck(store)
 	grant := func(expires time.Time) {
 		if err := store.Put(context.Background(), "s1", permission.Grant{

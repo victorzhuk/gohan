@@ -74,11 +74,17 @@ func storeScopedGrants(ctx context.Context, store permission.GrantStore, audit s
 }
 
 // approvedCall is one checkpointed pending call a resume approved, pinned
-// by both its id and its fingerprint so an edited or reissued call never
+// by its id, fingerprint, the complete argument value and the
+// checkpoint's argument generation so an edited or reissued call never
 // inherits the decision.
 type approvedCall struct {
 	id          string
 	fingerprint stores.Fingerprint
+	// fullArgs pins the complete argument value, canonicalized over every
+	// argument, so a change outside the spec's fingerprint fields never
+	// replays the decision.
+	fullArgs   stores.Fingerprint
+	generation uint64
 }
 
 type approvedCallKey struct{}
@@ -105,7 +111,12 @@ func approvedCalls(env checkpointEnvelope, approver types.Principal) map[approve
 		if calls == nil {
 			calls = make(map[approvedCall]bool, len(env.Approvals))
 		}
-		calls[approvedCall{id: ap.Call.ID, fingerprint: ap.Fingerprint}] = true
+		calls[approvedCall{
+			id:          ap.Call.ID,
+			fingerprint: ap.Fingerprint,
+			fullArgs:    fullArgsFingerprint(ap.Call.Name, ap.Call.Args),
+			generation:  env.Generation,
+		}] = true
 	}
 	if len(calls) == 0 {
 		return nil
@@ -116,17 +127,31 @@ func approvedCalls(env checkpointEnvelope, approver types.Principal) map[approve
 	return calls
 }
 
-// approvedCallReplayed reports whether the invocation is the parked call
-// this resume approved, matched on call id and fingerprint.
-func approvedCallReplayed(ctx context.Context, inv *permission.ToolInvocation) bool {
+// approvedReplay reports the parked call this resume approved when the
+// invocation replays exactly that call: id, fingerprint and complete
+// argument value together. The returned entry carries the checkpoint's
+// argument generation for callers that bind it to a recorded receipt.
+func approvedReplay(ctx context.Context, inv *permission.ToolInvocation) (approvedCall, bool) {
 	calls, _ := ctx.Value(approvedCallKey{}).(map[approvedCall]bool)
 	if len(calls) == 0 {
-		return false
+		return approvedCall{}, false
 	}
-	return calls[approvedCall{
-		id:          inv.Call.ID,
-		fingerprint: ToolFingerprint(inv.Spec, inv.Call.Args),
-	}]
+	fp := ToolFingerprint(inv.Spec, inv.Call.Args)
+	for c := range calls {
+		if c.id != inv.Call.ID || c.fingerprint != fp {
+			continue
+		}
+		if c.fullArgs != fullArgsFingerprint(inv.Spec.Name, inv.Call.Args) {
+			continue
+		}
+		return c, true
+	}
+	return approvedCall{}, false
+}
+
+func approvedCallReplayed(ctx context.Context, inv *permission.ToolInvocation) bool {
+	_, ok := approvedReplay(ctx, inv)
+	return ok
 }
 
 // grantSubject resolves the subject a grant must be keyed on. The parked

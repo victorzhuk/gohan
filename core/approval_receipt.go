@@ -45,18 +45,29 @@ func approvalReceiptMessage(rc approvalReceipt) (types.Message, error) {
 }
 
 // receiptGrantCheck builds the session-grant lookup the permission gate
-// consults after the taint policy and before the decider: an approval
-// receipt recorded at quorum grants the call's fingerprint for the rest of
-// the session, so a resumed or recovered drive executes the call instead of
-// asking again. A malformed receipt is treated as no grant; a live deny
-// from the decider runs after this check and always wins.
+// consults after the taint policy and before the decider: the approval
+// receipt recorded at quorum authorizes only the call identity it
+// recorded — run, argument generation, call id, tool and the complete
+// argument value — so the parked call replays on a resumed or recovered
+// drive without asking while any later call asks for its own decision. A
+// malformed receipt is treated as no grant; a live deny from the decider
+// runs after this check and always wins.
 func receiptGrantCheck(h stores.History) func(context.Context, *permission.ToolInvocation) bool {
-	return func(_ context.Context, inv *permission.ToolInvocation) bool {
-		args, err := latestApprovedArgs(h, inv.Spec.Name)
-		if err != nil || args == nil {
+	return func(ctx context.Context, inv *permission.ToolInvocation) bool {
+		rc, found, err := latestApprovedReceipt(h, inv.Spec.Name)
+		if err != nil || !found {
 			return false
 		}
-		return ToolFingerprint(inv.Spec, args) == ToolFingerprint(inv.Spec, inv.Call.Args)
+		if rc.RunID != inv.Run.RunID || rc.CallID != inv.Call.ID {
+			return false
+		}
+		if fullArgsFingerprint(inv.Spec.Name, rc.Args) != fullArgsFingerprint(inv.Spec.Name, inv.Call.Args) {
+			return false
+		}
+		if entry, replayed := approvedReplay(ctx, inv); replayed && entry.generation != rc.Generation {
+			return false
+		}
+		return true
 	}
 }
 
@@ -138,13 +149,11 @@ func appendReceiptMessages(ctx context.Context, log stores.SessionLog, sessionID
 	return log.Append(ctx, sessionID, h.Version, msgs...)
 }
 
-// latestApprovedArgs returns the arguments of the latest valid approval
-// receipt for tool in the session history, or nil when none exists. A
-// scoped receipt never grants through this path: its authority lives in
-// the grant store. It decodes Meta through JSON so a persisted map and an
-// in-memory struct behave identically; a malformed reserved receipt is an
-// error.
-func latestApprovedArgs(h stores.History, tool string) (json.RawMessage, error) {
+// latestApprovedReceipt returns the latest valid non-scoped approval
+// receipt for tool in the session history. It decodes Meta through JSON
+// so a persisted map and an in-memory struct behave identically; a
+// malformed reserved receipt is an error.
+func latestApprovedReceipt(h stores.History, tool string) (approvalReceipt, bool, error) {
 	var latest approvalReceipt
 	found := false
 	for _, msg := range h.Messages {
@@ -154,7 +163,7 @@ func latestApprovedArgs(h stores.History, tool string) (json.RawMessage, error) 
 		}
 		rc, err := decodeReceipt(value)
 		if err != nil {
-			return nil, err
+			return approvalReceipt{}, false, err
 		}
 		if rc.Scoped || rc.Tool != tool {
 			continue
@@ -162,8 +171,17 @@ func latestApprovedArgs(h stores.History, tool string) (json.RawMessage, error) 
 		latest = rc
 		found = true
 	}
-	if !found {
-		return nil, nil
+	return latest, found, nil
+}
+
+// latestApprovedArgs returns the arguments of the latest valid approval
+// receipt for tool in the session history, or nil when none exists. A
+// scoped receipt never grants through this path: its authority lives in
+// the grant store.
+func latestApprovedArgs(h stores.History, tool string) (json.RawMessage, error) {
+	rc, found, err := latestApprovedReceipt(h, tool)
+	if err != nil || !found {
+		return nil, err
 	}
-	return latest.Args, nil
+	return rc.Args, nil
 }

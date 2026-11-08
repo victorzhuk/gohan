@@ -40,3 +40,9 @@ func ToolFingerprint(spec types.ToolSpec, args json.RawMessage) stores.Fingerpri
 	}
 	return stores.Fingerprint(spec.Name + ":" + string(canonical))
 }
+
+// fullArgsFingerprint pins the complete argument value: it ignores the
+// spec's FingerprintFields, so a change in any argument moves it.
+func fullArgsFingerprint(tool string, args json.RawMessage) stores.Fingerprint {
+	return ToolFingerprint(types.ToolSpec{Name: tool}, args)
+}

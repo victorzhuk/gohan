@@ -74,11 +74,16 @@ func TestNativeBatchGateSessionGrant(t *testing.T) {
 	}
 	askDecider := gateTestConfig(nil)
 
-	t.Run("approved call executes on the next drive without asking", func(t *testing.T) {
+	t.Run("approved call replays on its own identity without asking", func(t *testing.T) {
 		gate := nativeBatchGate(askDecider, approveWipe(t, `{"a":1}`))
-		dec := gate(context.Background(), types.ToolUse{ID: "wipe", Name: "wipe", Args: json.RawMessage(`{"a":1}`)})
+		ctx := types.WithRunInfo(context.Background(), types.RunInfo{RunID: "run-1"})
+		dec := gate(ctx, types.ToolUse{ID: "c1", Name: "wipe", Args: json.RawMessage(`{"a":1}`)})
 		if dec.Outcome != runtime.BatchAllow {
-			t.Fatalf("outcome = %v, want allow for the approved fingerprint", dec.Outcome)
+			t.Fatalf("outcome = %v, want allow for the approved call identity", dec.Outcome)
+		}
+		dec = gate(ctx, types.ToolUse{ID: "c2", Name: "wipe", Args: json.RawMessage(`{"a":1}`)})
+		if dec.Outcome != runtime.BatchAsk {
+			t.Fatalf("outcome = %v, want ask for another call on the same fingerprint", dec.Outcome)
 		}
 	})
 
