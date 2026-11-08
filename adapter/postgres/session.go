@@ -104,6 +104,23 @@ func scanSessionRow(row pgx.Row) (*sessionRow, error) {
 
 const sessionColumns = `session_id, owner, kind, archived, version, forked_from, history, payload`
 
+// scanSessionRowStamp scans the session columns plus the statement's
+// trailing store-instant column, so the caller reads one clock evaluation
+// with the locked row.
+func scanSessionRowStamp(row pgx.Row) (*sessionRow, time.Time, error) {
+	var r sessionRow
+	var owner []byte
+	var now time.Time
+	err := row.Scan(&r.id, &owner, &r.kind, &r.archived, &r.version, &r.forked, &r.history, &r.payload, &now)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	if err := json.Unmarshal(owner, &r.owner); err != nil {
+		return nil, time.Time{}, fmt.Errorf("decode session owner: %w", err)
+	}
+	return &r, now, nil
+}
+
 func (s *SessionLog) principal(ctx context.Context) (types.Principal, error) {
 	if s.principals == nil {
 		return types.Principal{}, errors.New("gohan: no principal source wired")
@@ -125,22 +142,25 @@ func checkSessionAccess(p types.Principal, owner types.SessionOwner, scope strin
 	return nil
 }
 
-func (s *SessionLog) getSession(ctx context.Context, q executor, sessionID, scope string) (*sessionRow, types.Principal, error) {
+func (s *SessionLog) getSession(ctx context.Context, q executor, sessionID, scope string) (*sessionRow, types.Principal, time.Time, error) {
 	p, err := s.principal(ctx)
 	if err != nil {
-		return nil, types.Principal{}, err
+		return nil, types.Principal{}, time.Time{}, err
 	}
-	r, err := scanSessionRow(q.QueryRow(ctx, `SELECT `+sessionColumns+` FROM session_record WHERE session_id = $1 FOR UPDATE`, sessionID))
+	tsExpr, tsArgs := s.db.clockExpr(2)
+	r, now, err := scanSessionRowStamp(q.QueryRow(ctx,
+		`SELECT `+sessionColumns+`, `+tsExpr+` FROM session_record WHERE session_id = $1 FOR UPDATE`,
+		append([]any{sessionID}, tsArgs...)...))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, p, fmt.Errorf("session %s: %w", sessionID, stores.ErrSessionNotFound)
+		return nil, p, time.Time{}, fmt.Errorf("session %s: %w", sessionID, stores.ErrSessionNotFound)
 	}
 	if err != nil {
-		return nil, types.Principal{}, fmt.Errorf("load session %s: %w", sessionID, err)
+		return nil, types.Principal{}, time.Time{}, fmt.Errorf("load session %s: %w", sessionID, err)
 	}
 	if err := checkSessionAccess(p, r.owner, scope); err != nil {
-		return nil, types.Principal{}, fmt.Errorf("session %s: %w", sessionID, err)
+		return nil, types.Principal{}, time.Time{}, fmt.Errorf("session %s: %w", sessionID, err)
 	}
-	return r, p, nil
+	return r, p, now, nil
 }
 
 func (s *SessionLog) meta(ctx context.Context, r *sessionRow) (sessionMetaRecord, error) {
@@ -166,7 +186,7 @@ func messageID() (string, error) {
 // Load replays the recorded history, decoding every message envelope
 // through the schema registry.
 func (s *SessionLog) Load(ctx context.Context, sessionID string) (stores.History, error) {
-	r, _, err := s.getSession(ctx, poolConn{s.db.pool}, sessionID, scopeSessionRead)
+	r, _, _, err := s.getSession(ctx, poolConn{s.db.pool}, sessionID, scopeSessionRead)
 	if err != nil {
 		return stores.History{}, err
 	}
@@ -194,11 +214,7 @@ func (s *SessionLog) Append(ctx context.Context, sessionID string, expectedVersi
 	}
 	defer tx.Rollback(ctx)
 
-	now, err := s.db.now(ctx, txConn{tx})
-	if err != nil {
-		return 0, err
-	}
-	version, history, meta, owner, err := s.appendLocked(ctx, tx, sessionID, expectedVersion, msgs, now)
+	version, history, meta, owner, now, err := s.appendLocked(ctx, tx, sessionID, expectedVersion, msgs)
 	if err != nil {
 		return 0, err
 	}
@@ -355,7 +371,7 @@ func (s *SessionLog) AppendCompaction(ctx context.Context, sessionID string, exp
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	r, _, err := s.getSession(ctx, txConn{tx}, sessionID, scopeSessionWrite)
+	r, _, _, err := s.getSession(ctx, txConn{tx}, sessionID, scopeSessionWrite)
 	if err != nil {
 		return 0, fmt.Errorf("compaction session %s: %w", sessionID, err)
 	}
@@ -411,41 +427,51 @@ func (s *SessionLog) AppendCompaction(ctx context.Context, sessionID string, exp
 	return version, nil
 }
 
-func (s *SessionLog) appendLocked(ctx context.Context, tx pgx.Tx, sessionID string, expectedVersion int64, msgs []types.Message, now time.Time) (int64, json.RawMessage, sessionMetaRecord, *types.SessionOwner, error) {
-	r, p, err := s.getSession(ctx, txConn{tx}, sessionID, scopeSessionWrite)
+// appendLocked reads the session row and its store instant in one locked
+// statement, so the append stamps the same database instant it read under
+// the row lock. A missing session has no row to stamp from, so the create
+// path falls back to one explicit clock read.
+func (s *SessionLog) appendLocked(ctx context.Context, tx pgx.Tx, sessionID string, expectedVersion int64, msgs []types.Message) (int64, json.RawMessage, sessionMetaRecord, *types.SessionOwner, time.Time, error) {
+	r, p, now, err := s.getSession(ctx, txConn{tx}, sessionID, scopeSessionWrite)
 	switch {
 	case errors.Is(err, stores.ErrSessionNotFound):
 		if expectedVersion != 0 {
-			return 0, nil, sessionMetaRecord{}, nil, fmt.Errorf("append session %s: %w", sessionID, types.ErrVersionConflict)
+			return 0, nil, sessionMetaRecord{}, nil, time.Time{}, fmt.Errorf("append session %s: %w", sessionID, types.ErrVersionConflict)
+		}
+		if now.IsZero() {
+			now, err = s.db.now(ctx, txConn{tx})
+			if err != nil {
+				return 0, nil, sessionMetaRecord{}, nil, time.Time{}, err
+			}
 		}
 		meta := sessionMetaRecord{CreatedAt: now, LastActivity: now, Messages: len(msgs)}
 		history, err := s.envelopes(ctx, msgs)
 		if err != nil {
-			return 0, nil, sessionMetaRecord{}, nil, err
+			return 0, nil, sessionMetaRecord{}, nil, time.Time{}, err
 		}
 		owner := types.SessionOwner{Tenant: p.Tenant, Subject: p.Subject}
-		return int64(len(msgs)), history, meta, &owner, nil
+		return int64(len(msgs)), history, meta, &owner, now, nil
 	case err != nil:
-		return 0, nil, sessionMetaRecord{}, nil, err
+		return 0, nil, sessionMetaRecord{}, nil, time.Time{}, err
 	}
 	if expectedVersion != r.version {
-		return 0, nil, sessionMetaRecord{}, nil, fmt.Errorf("append session %s at version %d: %w", sessionID, expectedVersion, types.ErrVersionConflict)
+		return 0, nil, sessionMetaRecord{}, nil, time.Time{}, fmt.Errorf("append session %s at version %d: %w", sessionID, expectedVersion, types.ErrVersionConflict)
 	}
 	meta, err := s.meta(ctx, r)
 	if err != nil {
-		return 0, nil, sessionMetaRecord{}, nil, err
+		return 0, nil, sessionMetaRecord{}, nil, time.Time{}, err
 	}
 	fresh, err := s.envelopes(ctx, msgs)
 	if err != nil {
-		return 0, nil, sessionMetaRecord{}, nil, err
+		return 0, nil, sessionMetaRecord{}, nil, time.Time{}, err
 	}
 	history, err := concatHistory(r.history, fresh)
 	if err != nil {
-		return 0, nil, sessionMetaRecord{}, nil, err
+		return 0, nil, sessionMetaRecord{}, nil, time.Time{}, err
 	}
 	meta.LastActivity = now
 	meta.Messages += len(msgs)
-	return r.version + int64(len(msgs)), history, meta, nil, nil
+	return r.version + int64(len(msgs)), history, meta, nil, now, nil
 }
 
 func (s *SessionLog) envelopes(ctx context.Context, msgs []types.Message) (json.RawMessage, error) {
@@ -497,7 +523,7 @@ func (s *SessionLog) Delete(ctx context.Context, sessionID string) error {
 	}
 	defer tx.Rollback(ctx)
 
-	r, _, err := s.getSession(ctx, txConn{tx}, sessionID, scopeSessionWrite)
+	r, _, _, err := s.getSession(ctx, txConn{tx}, sessionID, scopeSessionWrite)
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
@@ -927,7 +953,7 @@ func (s *SessionLog) UpdateSession(ctx context.Context, sessionID string, p stor
 	}
 	defer tx.Rollback(ctx)
 
-	r, _, err := s.getSession(ctx, txConn{tx}, sessionID, scopeSessionWrite)
+	r, _, _, err := s.getSession(ctx, txConn{tx}, sessionID, scopeSessionWrite)
 	if err != nil {
 		return fmt.Errorf("update session %s: %w", sessionID, err)
 	}

@@ -50,24 +50,22 @@ func (s *EventLog) Append(ctx context.Context, runID string, e stores.Event) err
 		return fmt.Errorf("event append: %w", err)
 	}
 	e.Meta.RunID = runID
-	if e.Meta.Time.IsZero() {
-		at, err := s.db.now(ctx, poolConn{s.db.pool})
-		if err != nil {
-			return fmt.Errorf("event append: %w", err)
-		}
-		e.Meta.Time = at
-	}
+	tsExpr, tsArgs := s.db.clockExpr(2)
 	tx, err := s.db.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("event append: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	var seq int64
+	var at time.Time
 	if err := tx.QueryRow(ctx,
 		`INSERT INTO event_seq (run_id, next) VALUES ($1, 1)
 		 ON CONFLICT (run_id) DO UPDATE SET next = event_seq.next + 1
-		 RETURNING next`, runID).Scan(&seq); err != nil {
+		 RETURNING next, `+tsExpr, append([]any{runID}, tsArgs...)...).Scan(&seq, &at); err != nil {
 		return fmt.Errorf("event append: %w", err)
+	}
+	if e.Meta.Time.IsZero() {
+		e.Meta.Time = at
 	}
 	e.Meta.Seq = seq
 	raw, err := encodeEventRecord(e)

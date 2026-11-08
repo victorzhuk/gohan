@@ -93,22 +93,14 @@ func (j *Journal) CompleteModel(ctx context.Context, k types.CallKey, res types.
 // caller owns the transaction, so a tool's own row and the journal entry
 // reach one commit or neither survives.
 func (j *Journal) CompleteTx(ctx context.Context, tx pgx.Tx, k types.CallKey, res types.ToolResult) error {
-	now, err := j.db.now(ctx, txConn{tx})
-	if err != nil {
-		return fmt.Errorf("journal complete: %w", err)
-	}
-	_, err = completeOnTx(ctx, txConn{tx}, j.schemas, k, res, stores.ModelCompletion{}, now, j.ttl)
+	_, err := completeOnTx(ctx, j.db, txConn{tx}, j.schemas, k, res, stores.ModelCompletion{}, j.ttl)
 	return err
 }
 
 // CompleteModelTx is the transaction-taking variant of CompleteModel: a
 // model step's extended entry fields and a caller write commit together.
 func (j *Journal) CompleteModelTx(ctx context.Context, tx pgx.Tx, k types.CallKey, res types.ToolResult, mc stores.ModelCompletion) error {
-	now, err := j.db.now(ctx, txConn{tx})
-	if err != nil {
-		return fmt.Errorf("journal complete: %w", err)
-	}
-	_, err = completeOnTx(ctx, txConn{tx}, j.schemas, k, res, mc, now, j.ttl)
+	_, err := completeOnTx(ctx, j.db, txConn{tx}, j.schemas, k, res, mc, j.ttl)
 	return err
 }
 
@@ -118,11 +110,7 @@ func (j *Journal) completePool(ctx context.Context, k types.CallKey, res types.T
 		return fmt.Errorf("journal complete: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
-	now, err := j.db.now(ctx, txConn{tx})
-	if err != nil {
-		return fmt.Errorf("journal complete: %w", err)
-	}
-	if _, err := completeOnTx(ctx, txConn{tx}, j.schemas, k, res, mc, now, j.ttl); err != nil {
+	if _, err := completeOnTx(ctx, j.db, txConn{tx}, j.schemas, k, res, mc, j.ttl); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -225,12 +213,17 @@ func decodeEntry(ctx context.Context, reg *stores.SchemaRegistry, raw []byte) (s
 
 // completeOnTx is the one guarded statement path Complete, CompleteTx,
 // CompleteModel and CompleteModelTx share, so the guards cannot diverge.
-func completeOnTx(ctx context.Context, q executor, reg *stores.SchemaRegistry, k types.CallKey, res types.ToolResult, mc stores.ModelCompletion, now time.Time, ttl time.Duration) (stores.Entry, error) {
+// The store instant is read alongside the locked row: the statement's
+// clock_timestamp guards the expiry and stamps the entry unless WithClock
+// overrides it, so no separate clock read runs.
+func completeOnTx(ctx context.Context, db *DB, q executor, reg *stores.SchemaRegistry, k types.CallKey, res types.ToolResult, mc stores.ModelCompletion, ttl time.Duration) (stores.Entry, error) {
+	tsExpr, tsArgs := db.clockExpr(3)
 	var raw []byte
+	var at time.Time
 	err := q.QueryRow(ctx, `
-SELECT payload FROM journal_record
-WHERE session_id = $1 AND call_id = $2 AND state = 0 AND expires_at > $3
-FOR UPDATE`, k.SessionID, k.CallID, now).Scan(&raw)
+SELECT payload, `+tsExpr+` FROM journal_record
+WHERE session_id = $1 AND call_id = $2 AND state = 0 AND expires_at > `+tsExpr+`
+FOR UPDATE`, append([]any{k.SessionID, k.CallID}, tsArgs...)...).Scan(&raw, &at)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return stores.Entry{}, stores.ErrJournalCompleteMissed
 	}
@@ -245,7 +238,7 @@ FOR UPDATE`, k.SessionID, k.CallID, now).Scan(&raw)
 	entry.Result = res
 	entry.Attempts = mc.Attempts
 	entry.Endpoint = mc.Endpoint
-	entry.At = now
+	entry.At = at
 	encoded, err := encodeEntry(entry)
 	if err != nil {
 		return stores.Entry{}, err
@@ -254,7 +247,7 @@ FOR UPDATE`, k.SessionID, k.CallID, now).Scan(&raw)
 UPDATE journal_record
 SET state = 1, result = $3, at = $4, attempts = $5, endpoint = $6, payload = $7
 WHERE session_id = $1 AND call_id = $2 AND state = 0`,
-		k.SessionID, k.CallID, res, now, mc.Attempts, mc.Endpoint, encoded)
+		k.SessionID, k.CallID, res, at, mc.Attempts, mc.Endpoint, encoded)
 	if err != nil {
 		return stores.Entry{}, fmt.Errorf("journal complete: %w", err)
 	}

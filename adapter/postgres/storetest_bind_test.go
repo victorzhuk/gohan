@@ -307,11 +307,20 @@ func TestRuns(t *testing.T) {
 	})
 }
 
-// runsFencedBinding exposes the optional CheckpointRuns surface beside the
+// checkpointRunPort mirrors the optional token-fenced resume surface by
+// structure: the root stores.CheckpointRuns is not part of the published
+// release this module resolves independently, so the tests assert the
+// released method signatures on the concrete store directly.
+type checkpointRunPort interface {
+	SuspensionToken(context.Context, string) (types.ResumeToken, error)
+	ResumingCheckpoint(context.Context, string, types.ResumeToken, time.Duration) (stores.Lease, error)
+}
+
+// runsFencedBinding exposes the optional token-fenced surface beside the
 // frozen Runs port view.
 type runsFencedBinding struct {
 	runsBinding
-	cp stores.CheckpointRuns
+	cp checkpointRunPort
 }
 
 func (b runsFencedBinding) SuspensionToken(ctx context.Context, runID string) (types.ResumeToken, error) {

@@ -216,13 +216,73 @@ func TestPostgres(t *testing.T) {
 		}
 	})
 
+	t.Run("stores.reclaim-oldest-first-exclusive", func(t *testing.T) {
+		ctx := t.Context()
+		db := newDB(t, "reclaim_order")
+		runs := newPgRuns(t, db)
+		const sess = "s-reclaim-order"
+		seedRun(t, ctx, runs, sess, "run-a", 80*time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
+		seedRun(t, ctx, runs, sess, "run-b", 80*time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
+
+		if _, err := runs.Reclaim(ctx, stores.Run{RunID: "run-a", SessionID: sess}, time.Hour); err != nil {
+			t.Fatalf("reclaim oldest expired run-a: %v", err)
+		}
+		if _, err := runs.Reclaim(ctx, stores.Run{RunID: "run-b", SessionID: sess}, time.Hour); !errors.Is(err, types.ErrRunActive) {
+			t.Fatalf("reclaim newest expired run-b err = %v, want ErrRunActive under run-a's live lease", err)
+		}
+		if !runs.SessionLeaseActive(ctx, sess) {
+			t.Fatal("reclaimed oldest run must hold a live session lease")
+		}
+	})
+
+	t.Run("stores.start-refused-reclaimed-lease", func(t *testing.T) {
+		ctx := t.Context()
+		db := newDB(t, "start_reclaimed")
+		runs := newPgRuns(t, db)
+		const sess = "s-start-reclaimed"
+		seedRun(t, ctx, runs, sess, "run-a", 80*time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
+		seedRun(t, ctx, runs, sess, "run-b", 80*time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
+
+		if _, err := runs.Reclaim(ctx, stores.Run{RunID: "run-a", SessionID: sess}, time.Hour); err != nil {
+			t.Fatalf("reclaim run-a: %v", err)
+		}
+		if _, err := runs.Start(ctx, stores.Run{SessionID: sess, RunID: "run-c"}, time.Hour); !errors.Is(err, types.ErrRunActive) {
+			t.Fatalf("start err = %v, want ErrRunActive while reclaimed run-a holds the session lease", err)
+		}
+	})
+
+	t.Run("stores.resume-older-owner-blocks-start", func(t *testing.T) {
+		ctx := t.Context()
+		db := newDB(t, "resume_older")
+		runs := newPgRuns(t, db)
+		cps := newPgCheckpoints(t, db)
+		const sess = "s-resume-older"
+		la := seedRun(t, ctx, runs, sess, "run-a", time.Hour)
+		suspendRun(t, ctx, runs, cps, la, sess, "")
+		lb := seedRun(t, ctx, runs, sess, "run-b", time.Hour)
+		if err := runs.Finish(ctx, lb, stores.Finished, nil, ""); err != nil {
+			t.Fatalf("finish run-b: %v", err)
+		}
+
+		if _, err := runs.Resuming(ctx, "run-a", time.Hour); err != nil {
+			t.Fatalf("resume run-a after the newer finished run: %v", err)
+		}
+		if _, err := runs.Start(ctx, stores.Run{SessionID: sess, RunID: "run-c"}, time.Hour); !errors.Is(err, types.ErrRunActive) {
+			t.Fatalf("start err = %v, want ErrRunActive while resumed older run-a holds the session lease", err)
+		}
+	})
+
 	t.Run("stores.optional-checkpoint-resume-port", func(t *testing.T) {
 		ctx := t.Context()
 		db := newDB(t, "resume_port")
 		runs := newPgRuns(t, db)
 		cps := newPgCheckpoints(t, db)
 
-		var port stores.CheckpointRuns = runs
+		var port checkpointRunPort = runs
 		var frozen stores.Runs = runs
 		_ = frozen
 
@@ -320,6 +380,20 @@ func TestPostgres(t *testing.T) {
 		if _, err := cpsB.Peek(ctx, tok); !errors.Is(err, types.ErrTokenExpired) {
 			t.Fatalf("expired checkpoint peek err = %v, want ErrTokenExpired", err)
 		}
+
+		stale, err := runsB.Stale(ctx, time.Second, 10)
+		if err != nil {
+			t.Fatalf("stale: %v", err)
+		}
+		found := false
+		for _, r := range stale {
+			if r.RunID == "run-a" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("Stale(1s) missed run-a: staleness must follow the statement-stamped heartbeat_at by database time")
+		}
 	})
 
 	t.Run("stores.checkpoint-lifetime-policy", func(t *testing.T) {
@@ -410,6 +484,15 @@ func TestPostgres(t *testing.T) {
 		runs := newPgRuns(t, db)
 		cps := newPgCheckpoints(t, db)
 
+		ll := seedRun(t, ctx, runs, "s-pre-l", "run-l", time.Hour)
+		tokL, err := cps.Put(ctx, stores.Checkpoint{RunID: "run-l", SessionID: "s-pre-l", Reason: types.Preempted})
+		if err != nil {
+			t.Fatalf("put legacy checkpoint for run-l: %v", err)
+		}
+		if err := runs.Suspend(ctx, ll, tokL); err != nil {
+			t.Fatalf("suspend legacy run-l: %v", err)
+		}
+
 		lh := seedRun(t, ctx, runs, "s-pre-h", "run-h", time.Hour)
 		suspendRun(t, ctx, runs, cps, lh, "s-pre-h", types.HumanApproval)
 		lp := seedRun(t, ctx, runs, "s-pre-p", "run-p", time.Hour)
@@ -419,15 +502,15 @@ func TestPostgres(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Preempted: %v", err)
 		}
-		if len(out) != 1 || out[0].RunID != "run-p" {
-			t.Fatalf("Preempted(1) = %d rows, want only the newer preempted run-p", len(out))
+		if len(out) != 1 || out[0].RunID != "run-l" {
+			t.Fatalf("Preempted(1) = %d rows (first %v), want only the older legacy preempted run-l", len(out), out)
 		}
 		out, err = runs.Preempted(ctx, 10)
 		if err != nil {
 			t.Fatalf("Preempted: %v", err)
 		}
-		if len(out) != 1 || out[0].RunID != "run-p" {
-			t.Fatalf("Preempted(10) = %d rows, want the human approval filtered out", len(out))
+		if len(out) != 2 || out[0].RunID != "run-l" || out[1].RunID != "run-p" {
+			t.Fatalf("Preempted(10) = %d rows (%v), want legacy run-l and run-p with the human approval filtered out", len(out), out)
 		}
 	})
 }

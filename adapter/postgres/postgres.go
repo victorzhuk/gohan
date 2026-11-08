@@ -136,6 +136,18 @@ func (db *DB) now(ctx context.Context, q executor) (time.Time, error) {
 	return t, nil
 }
 
+// clockExpr returns the SQL expression carrying the store instant at
+// placeholder n and the bind value for it. The WithClock override binds its
+// instant; without an override the expression evaluates clock_timestamp()
+// inside the statement, so ownership and staleness decisions never read
+// the Go process clock.
+func (db *DB) clockExpr(n int) (string, []any) {
+	if db.clock != nil {
+		return fmt.Sprintf("$%d::timestamptz", n), []any{db.clock()}
+	}
+	return "clock_timestamp()", nil
+}
+
 // Begin opens the caller-owned transaction a tool joins its own write to
 // its journal completion in.
 func (db *DB) Begin(ctx context.Context) (pgx.Tx, error) {

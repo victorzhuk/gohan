@@ -108,6 +108,19 @@ func (s *Runs) encode(ctx context.Context, run stores.Run) ([]byte, error) {
 	return raw, nil
 }
 
+// scanRunRowStamp scans the run columns plus the statement's trailing
+// store-instant column, so the caller reads one clock evaluation with the
+// locked row instead of querying the clock separately.
+func scanRunRowStamp(row pgx.Row) (*runRow, time.Time, error) {
+	var r runRow
+	var now time.Time
+	err := row.Scan(&r.runID, &r.sessionID, &r.tenant, &r.operationID, &r.state, &r.seq, &r.resultRef, &r.payload, &r.startedAt, &r.heartbeatAt, &r.generation, &r.leaseExpiry, &r.token, &r.reason, &now)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	return &r, now, nil
+}
+
 func (r *runRow) expiredAt(now time.Time) bool {
 	return r.leaseExpiry != nil && !now.Before(*r.leaseExpiry)
 }
@@ -186,27 +199,28 @@ func (s *Runs) sessionOf(ctx context.Context, q executor, runID string) (string,
 	return sessionID, nil
 }
 
-// liveSessionOwner names the newest run of the session while its lease is
-// live; an empty name means the session is free. Callers hold the session
-// advisory lock, so the answer stays stable until they commit.
-func (s *Runs) liveSessionOwner(ctx context.Context, q executor, sessionID string, now time.Time) (string, error) {
+// liveSessionOwner names any run of the session whose Running or Resuming
+// lease is still live; an empty name means the session is free. The
+// predicate ignores started_at order, so an older reclaimed or resumed run
+// blocks a newer acquisition the same way a newer owner does. The instant
+// is evaluated inside the statement unless WithClock overrides it. Callers
+// hold the session advisory lock, so the answer stays stable until they
+// commit.
+func (s *Runs) liveSessionOwner(ctx context.Context, q executor, sessionID string) (string, error) {
+	tsExpr, tsArgs := s.db.clockExpr(4)
 	var liveID string
-	var liveState stores.RunState
-	var liveExpiry *time.Time
 	err := q.QueryRow(ctx,
-		`SELECT run_id, state, lease_expires FROM run_record WHERE session_id = $1 ORDER BY started_at DESC LIMIT 1`, sessionID).
-		Scan(&liveID, &liveState, &liveExpiry)
+		`SELECT run_id FROM run_record
+		 WHERE session_id = $1 AND state IN ($2, $3) AND lease_expires IS NOT NULL AND lease_expires > `+tsExpr+`
+		 LIMIT 1`,
+		append([]any{sessionID, stores.Running, stores.Resuming}, tsArgs...)...).Scan(&liveID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("live run for session %s: %w", sessionID, err)
 	}
-	live := runRow{runID: liveID, state: liveState, leaseExpiry: liveExpiry}
-	if live.active(now) {
-		return liveID, nil
-	}
-	return "", nil
+	return liveID, nil
 }
 
 // Start records a new run and mints its lease. A live lease on the session
@@ -246,7 +260,7 @@ func (s *Runs) Start(ctx context.Context, r stores.Run, ttl time.Duration) (stor
 	if err != nil {
 		return stores.Lease{}, fmt.Errorf("start run %s: %w", r.RunID, err)
 	}
-	owner, err := s.liveSessionOwner(ctx, txConn{tx}, r.SessionID, now)
+	owner, err := s.liveSessionOwner(ctx, txConn{tx}, r.SessionID)
 	if err != nil {
 		return stores.Lease{}, fmt.Errorf("start run %s: %w", r.RunID, err)
 	}
@@ -291,14 +305,13 @@ func (s *Runs) Heartbeat(ctx context.Context, l stores.Lease) (stores.Lease, err
 	}
 	defer tx.Rollback(ctx)
 
-	r, err := scanRunRow(tx.QueryRow(ctx, `SELECT `+runColumns+` FROM run_record WHERE run_id = $1 FOR UPDATE`, l.RunID))
+	tsExpr, tsArgs := s.db.clockExpr(2)
+	r, now, err := scanRunRowStamp(tx.QueryRow(ctx,
+		`SELECT `+runColumns+`, `+tsExpr+` FROM run_record WHERE run_id = $1 FOR UPDATE`,
+		append([]any{l.RunID}, tsArgs...)...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return stores.Lease{}, runNotFound(l.RunID, "run")
 	}
-	if err != nil {
-		return stores.Lease{}, fmt.Errorf("heartbeat run %s: %w", l.RunID, err)
-	}
-	now, err := s.db.now(ctx, txConn{tx})
 	if err != nil {
 		return stores.Lease{}, fmt.Errorf("heartbeat run %s: %w", l.RunID, err)
 	}
@@ -396,7 +409,7 @@ func (s *Runs) Resuming(ctx context.Context, runID string, ttl time.Duration) (s
 	if err != nil {
 		return stores.Lease{}, fmt.Errorf("resume run %s: %w", runID, err)
 	}
-	owner, err := s.liveSessionOwner(ctx, txConn{tx}, sessionID, now)
+	owner, err := s.liveSessionOwner(ctx, txConn{tx}, sessionID)
 	if err != nil {
 		return stores.Lease{}, fmt.Errorf("resume run %s: %w", runID, err)
 	}
@@ -482,7 +495,7 @@ func (s *Runs) ResumingCheckpoint(ctx context.Context, runID string, t types.Res
 	if err != nil {
 		return stores.Lease{}, fmt.Errorf("resume checkpoint %s: %w", runID, err)
 	}
-	owner, err := s.liveSessionOwner(ctx, txConn{tx}, sessionID, now)
+	owner, err := s.liveSessionOwner(ctx, txConn{tx}, sessionID)
 	if err != nil {
 		return stores.Lease{}, fmt.Errorf("resume checkpoint %s: %w", runID, err)
 	}
@@ -537,11 +550,20 @@ func (s *Runs) Stale(ctx context.Context, staleAfter time.Duration, limit int) (
 	return s.decodeAll(ctx, rs)
 }
 
-// Preempted lists up to limit runs whose stored suspension reason is
-// Preempted, in heartbeat order; every other suspended reason stays out.
+// Preempted lists up to limit suspended runs in heartbeat order whose
+// stored suspension reason is Preempted, or whose reasonless legacy row is
+// suspended on the checkpoint its resume token names when that
+// checkpoint's payload proves Preempted; every other suspended reason
+// stays out. The reason filter runs before the limit.
 func (s *Runs) Preempted(ctx context.Context, limit int) ([]stores.Run, error) {
 	rows, err := s.db.pool.Query(ctx,
-		`SELECT `+runColumns+` FROM run_record WHERE state = $1 AND suspend_reason = $2 ORDER BY heartbeat_at LIMIT $3`,
+		`SELECT `+runColumns+` FROM run_record WHERE state = $1 AND (
+		    suspend_reason = $2
+		    OR (suspend_reason = '' AND EXISTS (
+		        SELECT 1 FROM checkpoint_record
+		        WHERE checkpoint_record.token = run_record.resume_token
+		          AND convert_from(checkpoint_record.payload, 'UTF8')::jsonb->'payload'->>'Reason' = $2))
+		 ) ORDER BY heartbeat_at LIMIT $3`,
 		stores.Suspended, string(types.Preempted), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list preempted runs: %w", err)
@@ -604,7 +626,7 @@ func (s *Runs) Reclaim(ctx context.Context, r stores.Run, ttl time.Duration) (st
 	if !row.expiredAt(now) {
 		return stores.Lease{}, fmt.Errorf("%w: run %s lease is live", types.ErrRunNotActive, r.RunID)
 	}
-	owner, err := s.liveSessionOwner(ctx, txConn{tx}, sessionID, now)
+	owner, err := s.liveSessionOwner(ctx, txConn{tx}, sessionID)
 	if err != nil {
 		return stores.Lease{}, fmt.Errorf("reclaim run %s: %w", r.RunID, err)
 	}
@@ -638,22 +660,17 @@ func (s *Runs) Reclaim(ctx context.Context, r stores.Run, ttl time.Duration) (st
 }
 
 // SessionLeaseActive answers whether the session currently holds a live
-// run lease.
+// run lease: any Running or Resuming row whose lease is unexpired,
+// regardless of which run started first.
 func (s *Runs) SessionLeaseActive(ctx context.Context, sessionID string) bool {
-	var state stores.RunState
-	var expiry *time.Time
+	tsExpr, tsArgs := s.db.clockExpr(4)
+	var liveID string
 	err := s.db.pool.QueryRow(ctx,
-		`SELECT state, lease_expires FROM run_record WHERE session_id = $1 ORDER BY started_at DESC LIMIT 1`, sessionID).
-		Scan(&state, &expiry)
-	if err != nil {
-		return false
-	}
-	now, err := s.db.now(ctx, poolConn{s.db.pool})
-	if err != nil {
-		return false
-	}
-	r := runRow{state: state, leaseExpiry: expiry}
-	return r.active(now)
+		`SELECT run_id FROM run_record
+		 WHERE session_id = $1 AND state IN ($2, $3) AND lease_expires IS NOT NULL AND lease_expires > `+tsExpr+`
+		 LIMIT 1`,
+		append([]any{sessionID, stores.Running, stores.Resuming}, tsArgs...)...).Scan(&liveID)
+	return err == nil
 }
 
 // Signal appends one mailbox entry for a running run; the bound and the
@@ -683,12 +700,10 @@ func (s *Runs) Signal(ctx context.Context, runID string, sig stores.Signal) erro
 	if pending >= stores.MaxPendingSignals {
 		return fmt.Errorf("%w: run %s", types.ErrMailboxFull, runID)
 	}
-	now, err := s.db.now(ctx, txConn{tx})
-	if err != nil {
-		return fmt.Errorf("signal run %s: %w", runID, err)
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO run_signal (run_id, kind, message, at) VALUES ($1, $2, $3, $4)`,
-		runID, sig.Kind, sig.Message, now); err != nil {
+	tsExpr, tsArgs := s.db.clockExpr(4)
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO run_signal (run_id, kind, message, at) VALUES ($1, $2, $3, `+tsExpr+`)`,
+		append([]any{runID, sig.Kind, sig.Message}, tsArgs...)...); err != nil {
 		return fmt.Errorf("signal run %s: %w", runID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {

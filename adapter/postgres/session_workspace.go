@@ -40,7 +40,7 @@ const workspaceColumns = `ref, generation, owner`
 // whether one is stored. The read is authorized with the session-read
 // scope, matching the memory store.
 func (s *SessionLog) WorkspaceMeta(ctx context.Context, sessionID string) (stores.WorkspaceMeta, bool, error) {
-	if _, _, err := s.getSession(ctx, poolConn{s.db.pool}, sessionID, scopeSessionRead); err != nil {
+	if _, _, _, err := s.getSession(ctx, poolConn{s.db.pool}, sessionID, scopeSessionRead); err != nil {
 		return stores.WorkspaceMeta{}, false, err
 	}
 	r, err := scanWorkspaceMeta(s.db.pool.QueryRow(ctx,
@@ -97,7 +97,7 @@ func (s *SessionLog) SetWorkspaceMeta(ctx context.Context, sessionID string, exp
 	defer tx.Rollback(ctx)
 	q := txConn{tx}
 
-	if _, _, err := s.getSession(ctx, q, sessionID, scopeSessionWrite); err != nil {
+	if _, _, _, err := s.getSession(ctx, q, sessionID, scopeSessionWrite); err != nil {
 		return 0, err
 	}
 	stored, err := scanWorkspaceMeta(q.QueryRow(ctx,
@@ -152,7 +152,7 @@ func (s *SessionLog) ImportWorkspaceMeta(ctx context.Context, sessionID string, 
 	defer tx.Rollback(ctx)
 	q := txConn{tx}
 
-	if _, _, err := s.getSession(ctx, q, sessionID, scopeSessionWrite); err != nil {
+	if _, _, _, err := s.getSession(ctx, q, sessionID, scopeSessionWrite); err != nil {
 		return types.WorkspaceSnapshot{}, err
 	}
 	stored, err := scanWorkspaceMeta(q.QueryRow(ctx,
