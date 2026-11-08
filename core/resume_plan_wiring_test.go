@@ -77,9 +77,6 @@ func seedPlanHarness(t *testing.T, rt *planRT, storedVersion string) (Conversati
 	if err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
-	if err := runs.Suspend(ownCtx, lease, "tok-1"); err != nil {
-		t.Fatalf("seed suspend: %v", err)
-	}
 	data, err := encodeCheckpoint(checkpointEnvelope{
 		Version:    checkpointEnvelopeVersion,
 		Run:        types.RunInfo{RunID: "run-1", SessionID: sessionID, Flow: "chat"},
@@ -103,6 +100,11 @@ func seedPlanHarness(t *testing.T, rt *planRT, storedVersion string) (Conversati
 	})
 	if err != nil {
 		t.Fatalf("seed checkpoint: %v", err)
+	}
+	// The run must wait on the exact token the checkpoint minted: the
+	// token-fenced lease refuses a suspension parked on another token.
+	if err := runs.Suspend(ownCtx, lease, tok); err != nil {
+		t.Fatalf("seed suspend: %v", err)
 	}
 	return conv, tok, sink
 }

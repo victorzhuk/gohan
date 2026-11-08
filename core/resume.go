@@ -244,6 +244,14 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			yield(nil, fmt.Errorf("resume: checkpoints store cannot list ready checkpoints: %w", types.ErrCheckpointIncompatible))
 			return
 		}
+		// The lease must be fenced to this exact token before anything
+		// consumes it: a runs store without the optional surface cannot
+		// guarantee that, so resume refuses with the token untouched.
+		fenced, ok := c.runs.(stores.CheckpointRuns)
+		if !ok {
+			yield(nil, fmt.Errorf("resume: runs store cannot fence resume leases: %w", types.ErrCheckpointIncompatible))
+			return
+		}
 		resumer := c.cps.(stores.CheckpointResumer)
 		cp, err := resumer.Peek(ctx, t)
 		if err != nil {
@@ -394,7 +402,11 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 				return
 			}
 		}
-		lease, err := c.runs.Resuming(credCtx, consumed.RunID, resumeLeaseTTL)
+		// The lease is bound to the exact token the checkpoint carried: a
+		// newer suspension refuses here instead of being replaced. The
+		// consumption above stays recorded, and a later recovery pass
+		// completes the decision exactly once.
+		lease, err := fenced.ResumingCheckpoint(credCtx, consumed.RunID, t, resumeLeaseTTL)
 		if err != nil {
 			c.dropRun(cp.RunID)
 			yield(nil, err)

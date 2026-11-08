@@ -113,7 +113,7 @@ func TestRecoveryAuthority(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.runs.Suspend(t.Context(), lease, tok); err != nil {
+		if err := f.runs.SuspendWithReason(t.Context(), lease, tok, types.Preempted); err != nil {
 			t.Fatal(err)
 		}
 

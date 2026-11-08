@@ -65,7 +65,8 @@ func (s *Stack) Recover(ctx context.Context, limit int) error {
 
 // recoverConsumed re-drives checkpoints whose token was consumed while the
 // run is still Suspended — the crash interval between a client decision and
-// Runs.Resuming. Exactly one driver wins the Resuming transition; a
+// the token-fenced resume lease. Exactly one driver wins the Resuming
+// transition; a
 // Finished run is never re-executed. A checkpoint store without the lister
 // leaves this window to the stale pass, which covers only runs already
 // marked Resuming.
@@ -97,18 +98,27 @@ func (s *Stack) recoverConsumedRun(ctx context.Context, cp stores.Checkpoint) er
 	if s.shuttingDown() {
 		return types.ErrShuttingDown
 	}
+	cr, ok := s.stores.Runs.(stores.CheckpointRuns)
+	if !ok {
+		// The token-fenced lease is unsupported: recovery skips the
+		// automatic consumed path and the stale pass owns the run.
+		return nil
+	}
+	tok, err := cr.SuspensionToken(ctx, cp.RunID)
+	if err != nil {
+		// The run no longer waits on a token: a client or a competitor
+		// moved it.
+		return nil
+	}
+	lease, err := cr.ResumingCheckpoint(ctx, cp.RunID, tok, stores.LeaseTTL)
+	if err != nil {
+		// A racing driver won the run, or a newer suspension replaced
+		// this token: driven exactly once either way.
+		return nil
+	}
 	rt, ok := s.recovery[run.Flow]
 	if !ok {
-		lease, lerr := s.stores.Runs.Resuming(ctx, run.RunID, stores.LeaseTTL)
-		if lerr != nil {
-			return nil
-		}
 		return s.abandonRun(ctx, lease, run)
-	}
-	lease, err := s.stores.Runs.Resuming(ctx, run.RunID, stores.LeaseTTL)
-	if err != nil {
-		// A racing driver won the run or it finished: driven exactly once.
-		return nil
 	}
 	run.State = stores.Resuming
 	st, rcp, rin, err := s.replayState(ctx, run, rt)
@@ -179,6 +189,13 @@ func reconcileJournalUnknowns(ctx context.Context, sessionID string, j stores.Jo
 	return uncertain, err
 }
 
+// resumeDecided reports whether the recorded resume input carries an
+// actual decision for the receipts: a plain or empty continuation has no
+// approver to receipt, whether it was consumed or not.
+func resumeDecided(in stores.ResumeInput) bool {
+	return in.Approver != nil || len(in.Args) > 0 || len(in.Data) > 0 || in.Reason != ""
+}
+
 // driveRecovered re-drives one recovered run through the shared lifecycle:
 // the lifecycle holds the lease, owns the heartbeat, suspension
 // persistence, terminal store transitions and failure cleanup. When the
@@ -196,11 +213,11 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 		// checkpoint store it cannot park the run again.
 		return s.abandonWith(ctx, lease, run, fmt.Errorf("recover run %s: no checkpoint store to suspend through", run.RunID))
 	}
-	// An approval delivered between the token consume and Runs.Resuming
-	// never passed the resume path that records its receipts. Record them
-	// before the gate is wired, or the re-drive asks again for a call the
-	// approver already granted.
-	if cp != nil && in.Verdict == stores.VerdictApprove && resumeConsumed(in) {
+	// An approval delivered between the token consume and the resume
+	// lease never passed the resume path that records its receipts. Record
+	// them before the gate is wired, or the re-drive asks again for a call
+	// the approver already granted.
+	if cp != nil && in.Verdict == stores.VerdictApprove && resumeDecided(in) {
 		if err := s.recoveryReceipts(ctx, cp, in, run, &st); err != nil {
 			return s.abandonWith(ctx, lease, run, err)
 		}
@@ -482,10 +499,11 @@ func (s *Stack) replayState(ctx context.Context, run stores.Run, rt runtime.Runt
 		// The run continues as the originator before any history append
 		// touches the session.
 		ctx = WithPrincipal(ctx, cp.Originator)
-		if resumeConsumed(in) {
-			if aerr := applyResume(ctx, s.stores.SessionLog, cp.SessionID, &st, in); aerr != nil {
-				return st, nil, in, fmt.Errorf("recover run: %w", aerr)
-			}
+		// A Resuming run consumed its token before the lease, so the
+		// recorded input replays even when it is an empty Continue(),
+		// which applies nothing.
+		if aerr := applyResume(ctx, s.stores.SessionLog, cp.SessionID, &st, in); aerr != nil {
+			return st, nil, in, fmt.Errorf("recover run: %w", aerr)
 		}
 		return st, &cp, in, nil
 	}

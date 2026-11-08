@@ -127,7 +127,13 @@ func newRecoverFixture(t *testing.T, flows ...string) *recoverFixture {
 	f := &recoverFixture{now: time.Unix(0, 0)}
 	tick := func() time.Time { return f.now }
 	f.runs = stores.NewMemoryRuns(stores.WithMemoryRunClock(tick))
-	f.cps = stores.NewMemoryCheckpoints(stores.WithMemoryCheckpointClock(tick), stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom))
+	f.cps = stores.NewMemoryCheckpoints(
+		stores.WithMemoryCheckpointClock(tick),
+		stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom),
+		// Recovery discovery consults the runs store for current-token
+		// evidence; an unbound checkpoint store refuses it.
+		stores.WithMemoryCheckpointRuns(f.runs),
+	)
 	f.log = stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
 	f.jnl = stores.NewMemoryJournal(stores.WithMemoryJournalClock(tick))
 	f.rt = &recoverRuntime{journal: f.jnl, log: f.log, session: "s1"}

@@ -258,8 +258,9 @@ func (r *resuspendRuntime) Step(ctx context.Context, st runtime.State) (runtime.
 }
 
 // seedPreempted parks a run Preempted at a safe point: a live Suspended
-// row with a fresh heartbeat and a checkpoint carrying the state to
-// re-drive. It returns the single-use resume token a client would hold.
+// row carrying the preemption reason and a checkpoint holding the state
+// to re-drive. It returns the single-use resume token a client would
+// hold.
 func (f *recoverFixture) seedPreempted(t *testing.T, runID string) types.ResumeToken {
 	t.Helper()
 	lease, err := f.runs.Start(t.Context(), stores.Run{
@@ -284,7 +285,7 @@ func (f *recoverFixture) seedPreempted(t *testing.T, runID string) types.ResumeT
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.runs.Suspend(t.Context(), lease, tok); err != nil {
+	if err := f.runs.SuspendWithReason(t.Context(), lease, tok, types.Preempted); err != nil {
 		t.Fatal(err)
 	}
 	return tok
