@@ -115,7 +115,6 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 		Backend:             rt.Name(),
 		Reason:              reason,
 		Originator:          lc.originator,
-		ExpiresAt:           lc.lease.Expires,
 		Workspace:           snap.Ref,
 		WorkspaceGeneration: snap.Generation,
 		Data:                data,

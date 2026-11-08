@@ -402,8 +402,8 @@ func TestRuntimeLifecycle(t *testing.T) {
 		if saved.Originator.Tenant != originator.Tenant || saved.Originator.Subject != originator.Subject {
 			t.Fatalf("checkpoint originator %+v, want %+v", saved.Originator, originator)
 		}
-		if !saved.ExpiresAt.Equal(lease.Expires) {
-			t.Fatalf("checkpoint expiry %v, want lease expiry %v", saved.ExpiresAt, lease.Expires)
+		if !saved.ExpiresAt.IsZero() {
+			t.Fatalf("checkpoint expiry %v set by the driver, want the store lifetime policy to own expiry", saved.ExpiresAt)
 		}
 		env, st, err := decodeCheckpoint(saved, rt, "chat")
 		if err != nil {
