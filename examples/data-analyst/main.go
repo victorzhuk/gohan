@@ -34,6 +34,9 @@ const (
 	sessionID = "analysis-1"
 	// extractPath is where the model parks the extract in the workspace.
 	extractPath = "extract.csv"
+	// gatedTool is the one call the demo policy asks about; the approval
+	// scope the shipped tier policy demands derives from its name.
+	gatedTool = "read_file"
 	// pageLimit bounds the demo page window over the stored output.
 	pageLimit = 160
 	// outputRefMarker is the spill marker text the sandbox tool set
@@ -199,7 +202,7 @@ func (e *analysisEnv) Analyze(ctx context.Context) (Report, error) {
 	if err != nil {
 		return rep, err
 	}
-	for ev, err := range resumeConv.Resume(ctx, rep.ResumeToken, gohan.Approve()) {
+	for ev, err := range resumeConv.Resume(types.WithPrincipal(ctx, approverPrincipal()), rep.ResumeToken, gohan.Approve()) {
 		if err != nil {
 			return rep, err
 		}
@@ -279,7 +282,7 @@ func analysisTurns() map[int][]types.ModelChunk {
 	}
 	read := types.ToolUse{
 		ID:   "call_read_extract",
-		Name: "read_file",
+		Name: gatedTool,
 		Args: jsontext.Value(`{"path":"extract.csv"}`),
 	}
 	return map[int][]types.ModelChunk{
@@ -320,20 +323,32 @@ func queryStdout() []byte {
 type analysisDecider struct{}
 
 func (analysisDecider) Decide(_ context.Context, inv *permission.ToolInvocation) (types.Decision[permission.Verdict], error) {
-	if inv.Spec.Name == "read_file" {
+	if inv.Spec.Name == gatedTool {
 		return types.Decision[permission.Verdict]{Value: permission.Ask, Confidence: 1}, nil
 	}
 	return types.Decision[permission.Verdict]{Value: permission.Allow, Confidence: 1}, nil
 }
 
 // analysisPrincipal is the demo operator: session read and write, no
-// approve scope, so the approval on the resumed turn rides the eligibility
-// the transport principal already carries.
+// approve scope, so the approval on the resumed turn cannot come from the
+// originator.
 func analysisPrincipal() types.Principal {
 	return types.Principal{
 		Tenant:  "local",
 		Subject: "analyst",
 		Scopes:  []string{types.ScopeSessionRead, types.ScopeSessionWrite},
+	}
+}
+
+// approverPrincipal is the second human the resumed turn rides on: a
+// subject distinct from the originator, holding the session access the
+// resume authority check requires plus the approve scope the shipped tier
+// policy demands for the gated tool.
+func approverPrincipal() types.Principal {
+	return types.Principal{
+		Tenant:  "local",
+		Subject: "supervisor",
+		Scopes:  []string{types.ScopeSessionRead, types.ScopeSessionWrite, "approve:" + gatedTool},
 	}
 }
 
