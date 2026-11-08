@@ -382,6 +382,15 @@ func userMsg(text string) types.Message {
 }
 
 func nativeCase(t *testing.T, raw string) (*recordingTool, []types.Event, error) {
+	return nativeCaseAssemble(t, raw, func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+		return types.ModelRequest{Messages: append(append([]types.Message{}, in.History...), in.Input...)}, nil
+	})
+}
+
+// nativeCaseAssemble runs the controlled native fixture with the supplied
+// request assembler: the wire response stays identical, only the request the
+// adapter sees changes.
+func nativeCaseAssemble(t *testing.T, raw string, assemble func(context.Context, types.AssembleInput) (types.ModelRequest, error)) (*recordingTool, []types.Event, error) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -424,12 +433,10 @@ func nativeCase(t *testing.T, raw string) (*recordingTool, []types.Event, error)
 			MaxParallelTools:    2,
 		}),
 		gohan.WithNativeAgent(gohan.NativeSpec{
-			Request: gohan.FlowRequest{Name: "chat"},
-			Profile: fixtureProfile,
-			Tools:   []types.Tool{tool},
-			Assemble: func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
-				return types.ModelRequest{Messages: append(append([]types.Message{}, in.History...), in.Input...)}, nil
-			},
+			Request:  gohan.FlowRequest{Name: "chat"},
+			Profile:  fixtureProfile,
+			Tools:    []types.Tool{tool},
+			Assemble: assemble,
 		}),
 	)
 	if err != nil {
@@ -460,6 +467,18 @@ func nativeCase(t *testing.T, raw string) (*recordingTool, []types.Event, error)
 		evs = append(evs, ev)
 	}
 	return tool, evs, sendErr
+}
+
+// forcedNativeCase runs the same controlled fixture with a schema-carrying
+// request: the adapter sees a constrained turn, so wire tool calls for an
+// unoffered tool must never complete.
+func forcedNativeCase(t *testing.T, raw string) (*recordingTool, []types.Event, error) {
+	return nativeCaseAssemble(t, raw, func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+		return types.ModelRequest{
+			Messages: append(append([]types.Message{}, in.History...), in.Input...),
+			Options:  types.ModelOptions{ResponseSchema: json.RawMessage(`{"type":"object"}`)},
+		}, nil
+	})
 }
 
 func assertNoToolEffects(t *testing.T, tool *recordingTool, evs []types.Event) {
@@ -858,7 +877,7 @@ func TestProviderComposition(t *testing.T) {
 					t.Errorf("forced-schema turn yielded executable tool call %s(%s); a constrained response must never complete wire tool calls for an unoffered tool", c.ToolUse.ID, string(c.ToolUse.Args))
 				}
 			}
-			tool, evs, sendErr := nativeCase(t, raw)
+			tool, evs, sendErr := forcedNativeCase(t, raw)
 			if sendErr != nil {
 				t.Fatalf("native send: %v", sendErr)
 			}
