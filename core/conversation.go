@@ -731,10 +731,6 @@ func redactMessagesWith(ctx context.Context, sessionID string, msgs []types.Mess
 	return out, nil
 }
 
-func (c *conversation) mergeRedactionMap(ctx context.Context, m types.RedactionMap) (types.RedactionMap, error) {
-	return mergeRedactionMapWith(ctx, m, c.redactionMaps)
-}
-
 func mergeRedactionMapWith(ctx context.Context, m types.RedactionMap, maps stores.RedactionMaps) (types.RedactionMap, error) {
 	info, _ := types.RunInfoFrom(ctx)
 	old, err := maps.Get(ctx, info.Principal.Tenant, info.SessionID)

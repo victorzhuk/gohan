@@ -267,7 +267,9 @@ func TestRecoveryEventTail(t *testing.T) {
 		<-rt2.entered
 		rcancel()
 		close(rt2.block)
-		<-recDone
+		if err := <-recDone; err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled recovery: %v", err)
+		}
 		var r2Records int
 		for e, err := range evlog.Read(ctx, "r2", 0) {
 			if err != nil {
