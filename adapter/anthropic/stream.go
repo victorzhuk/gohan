@@ -43,6 +43,9 @@ type streamState struct {
 	blocks       map[int]*blockState
 	specs        []types.ToolSpec
 	providerTool []types.ToolUse
+	// finishEmitted records that the stream already reported its finish,
+	// so the terminal never reports a second one.
+	finishEmitted bool
 }
 
 func (m *Model) decode(ctx context.Context, r io.Reader, state *assembled, yield func(types.ModelChunk, error) bool) {
@@ -99,8 +102,17 @@ func (m *Model) dispatch(st *streamState, event sseEvent, yield func(types.Model
 }
 
 func (m *Model) finish(st *streamState, yield func(types.ModelChunk, error) bool) {
+	// The truncation is decided before the flush: the flush marks the open
+	// blocks emitted, so afterwards no index looks unfinished any more.
+	truncated := len(openBlocks(st)) > 0
 	if !flushOpenBlocks(st, yield) {
 		return
+	}
+	if truncated && !st.finishEmitted {
+		st.finishEmitted = true
+		if !yield(types.ModelChunk{Finish: types.FinishMaxTokens}, nil) {
+			return
+		}
 	}
 	gohan.CountProviderCalls(st.specs, st.providerTool, &st.usage)
 	if st.usageSeen && st.usage.OutputTokens == 0 {
@@ -148,7 +160,8 @@ func messageStart(st *streamState, data []byte, yield func(types.ModelChunk, err
 		} `json:"message"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return yield(types.ModelChunk{}, decodeErr(err))
+		yield(types.ModelChunk{}, decodeErr(err))
+		return false
 	}
 	st.usage.InputTokens = payload.Message.Usage.InputTokens
 	st.usage.CachedInputTokens = payload.Message.Usage.CacheReadInputTokens
@@ -168,7 +181,8 @@ func contentBlockStart(st *streamState, data []byte, yield func(types.ModelChunk
 		} `json:"content_block"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return yield(types.ModelChunk{}, decodeErr(err))
+		yield(types.ModelChunk{}, decodeErr(err))
+		return false
 	}
 	b := &blockState{id: payload.ContentBlock.ID, name: payload.ContentBlock.Name}
 	switch payload.ContentBlock.Type {
@@ -197,7 +211,8 @@ func contentBlockDelta(st *streamState, data []byte, yield func(types.ModelChunk
 		} `json:"delta"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return yield(types.ModelChunk{}, decodeErr(err))
+		yield(types.ModelChunk{}, decodeErr(err))
+		return false
 	}
 	switch payload.Delta.Type {
 	case "text_delta":
@@ -208,7 +223,8 @@ func contentBlockDelta(st *streamState, data []byte, yield func(types.ModelChunk
 	case "signature_delta":
 		raw, err := base64.StdEncoding.DecodeString(payload.Delta.Signature)
 		if err != nil {
-			return yield(types.ModelChunk{}, decodeErr(err))
+			yield(types.ModelChunk{}, decodeErr(err))
+			return false
 		}
 		return yield(types.ModelChunk{Kind: types.DeltaReasoning, Delta: string(raw)}, nil)
 	case "input_json_delta":
@@ -234,7 +250,8 @@ func contentBlockStop(st *streamState, data []byte, yield func(types.ModelChunk,
 		Index int `json:"index"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return yield(types.ModelChunk{}, decodeErr(err))
+		yield(types.ModelChunk{}, decodeErr(err))
+		return false
 	}
 	b := st.blocks[payload.Index]
 	if b == nil || !b.tool || b.done {
@@ -276,7 +293,8 @@ func messageDelta(st *streamState, data []byte, yield func(types.ModelChunk, err
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return yield(types.ModelChunk{}, decodeErr(err))
+		yield(types.ModelChunk{}, decodeErr(err))
+		return false
 	}
 	if payload.Usage.OutputTokens > 0 {
 		st.usage.OutputTokens = payload.Usage.OutputTokens
@@ -286,10 +304,20 @@ func messageDelta(st *streamState, data []byte, yield func(types.ModelChunk, err
 		st.usage.CacheWriteTokens = payload.Usage.CacheCreationInputTokens
 		st.usageSeen = true
 	}
+	// The truncation is decided before the flush: the flush marks the open
+	// blocks emitted, so afterwards no index looks unfinished any more.
+	truncated := len(openBlocks(st)) > 0
 	if !flushOpenBlocks(st, yield) {
 		return false
 	}
 	if stop := payload.Delta.StopReason; stop != "" {
+		if st.finishEmitted {
+			return true
+		}
+		st.finishEmitted = true
+		if truncated {
+			return yield(types.ModelChunk{Finish: types.FinishMaxTokens}, nil)
+		}
 		return yield(types.ModelChunk{Finish: finishReason(stop)}, nil)
 	}
 	return true
