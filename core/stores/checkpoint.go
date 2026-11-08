@@ -57,6 +57,9 @@ type Checkpoint struct {
 	// zero, which is older than every stored generation.
 	WorkspaceGeneration int64
 	ExpiresAt           time.Time
+	// Token is the suspension token the record was discovered under.
+	// Discovery fills it; a stored checkpoint never names its own token.
+	Token types.ResumeToken
 }
 
 type CheckpointResumer interface {

@@ -328,7 +328,7 @@ func (s *Checkpoints) ResumeReady(ctx context.Context, limit int) ([]stores.Chec
 		return nil, fmt.Errorf("list resume ready: %w", err)
 	}
 	rows, err := s.db.pool.Query(ctx,
-		`SELECT c.payload FROM checkpoint_record c
+		`SELECT c.payload, c.token FROM checkpoint_record c
 		 JOIN run_record r ON r.resume_token = c.token AND r.state = $1
 		 WHERE c.consumed AND (c.expires_at IS NULL OR c.expires_at > $2)
 		 ORDER BY c.created_at LIMIT $3`,
@@ -341,13 +341,17 @@ func (s *Checkpoints) ResumeReady(ctx context.Context, limit int) ([]stores.Chec
 	var out []stores.Checkpoint
 	for rows.Next() {
 		var payload []byte
-		if err := rows.Scan(&payload); err != nil {
+		var token types.ResumeToken
+		if err := rows.Scan(&payload, &token); err != nil {
 			return nil, fmt.Errorf("list resume ready: %w", err)
 		}
 		cp, err := decode[stores.Checkpoint](ctx, s.reg, payload)
 		if err != nil {
 			return nil, err
 		}
+		// The record carries the token it was discovered under; the
+		// stored checkpoint itself never names it.
+		cp.Token = token
 		out = append(out, cp)
 	}
 	if err := rows.Err(); err != nil {

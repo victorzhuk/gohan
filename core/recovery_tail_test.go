@@ -3,6 +3,8 @@ package gohan
 import (
 	"context"
 	"errors"
+	"iter"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -286,6 +288,268 @@ func TestRecoveryEventTail(t *testing.T) {
 	})
 }
 
+// slowEventLog delays every append and refuses it once its context is
+// done, standing in for a store whose completion writes are slow.
+type slowEventLog struct {
+	stores.EventLog
+	delay time.Duration
+}
+
+func (s *slowEventLog) Append(ctx context.Context, runID string, e stores.Event) error {
+	time.Sleep(s.delay)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.EventLog.Append(ctx, runID, e)
+}
+
+func TestRecoveryEventBound(t *testing.T) {
+	t.Run("recovery.eventlog-bound-outlives-drive", func(t *testing.T) {
+		// A drive that spans more than one write bound must still end
+		// with exactly one terminal boundary: the shared-deadline shape
+		// loses the tail mid-flight, per-write bounds do not.
+		prevBound := recoveredEventBound
+		recoveredEventBound = 60 * time.Millisecond
+		defer func() { recoveredEventBound = prevBound }()
+
+		f := newRecoverFixture(t, "agent")
+		ctx := f.reaperCtx()
+		inner := stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))
+		f.stack.stores.EventLog = &slowEventLog{EventLog: inner, delay: 40 * time.Millisecond}
+		f.stack.recovery["agent"] = &tailRT{journal: f.jnl, log: f.log, session: "s1"}
+
+		f.completeInJournal(t, "c1")
+		f.seedHistory(t, 1)
+		f.seedRun(t, stores.Run{SessionID: "s1", RunID: "r1", Flow: "agent", State: stores.Running, Turn: 2, Seq: 1, Pending: pendingCalls("c1")})
+		f.expire()
+
+		if err := f.stack.Recover(ctx, 10); err != nil {
+			t.Fatalf("recover: %v", err)
+		}
+		var payloads []types.Event
+		var dones int
+		for e, err := range inner.Read(ctx, "r1", 0) {
+			if err != nil {
+				t.Fatalf("read event log: %v", err)
+			}
+			payloads = append(payloads, e.Payload)
+			if _, ok := e.Payload.(types.Done); ok {
+				dones++
+			}
+		}
+		if len(payloads) != 2 {
+			t.Fatalf("recovered tail = %d records, want the ordinary event and the boundary", len(payloads))
+		}
+		if dones != 1 {
+			t.Fatalf("Done records = %d, want exactly one terminal boundary", dones)
+		}
+
+		// A second attach from the prior cursor terminates on its own
+		// with the boundary only, without waiting for any cancellation.
+		conv, err := NewConversation(f.stack, "agent", f.rt,
+			WithConversationRuns(f.runs),
+			WithConversationCheckpoints(f.cps),
+			WithConversationEventLog(inner),
+		)
+		if err != nil {
+			t.Fatalf("second conversation: %v", err)
+		}
+		actx, acancel := context.WithCancel(context.Background())
+		defer acancel()
+		var attached []types.Event
+		for ev, err := range conv.Attach(actx, "r1", 1) {
+			if err != nil {
+				t.Fatalf("attach past the prior cursor: %v", err)
+			}
+			attached = append(attached, ev)
+		}
+		if len(attached) != 1 {
+			t.Fatalf("attached events = %d, want the boundary only", len(attached))
+		}
+		if _, ok := attached[0].(types.Done); !ok {
+			t.Fatalf("attached event %T, want Done", attached[0])
+		}
+
+		// A reaper cancelled past the bound still leaves exactly one
+		// terminal boundary: the terminal write carries its own bound.
+		rt2 := &tailRT{journal: f.jnl, log: f.log, session: "s1", block: make(chan struct{}), entered: make(chan struct{})}
+		f.stack.recovery["agent"] = rt2
+		f.completeInJournal(t, "c2")
+		f.seedRun(t, stores.Run{SessionID: "s1", RunID: "r2", Flow: "agent", State: stores.Running, Turn: 2, Seq: 1, Pending: pendingCalls("c2")})
+		f.expire()
+		rctx, rcancel := context.WithCancel(ctx)
+		defer rcancel()
+		recDone := make(chan error, 1)
+		go func() { recDone <- f.stack.Recover(rctx, 10) }()
+		<-rt2.entered
+		time.Sleep(2 * recoveredEventBound)
+		rcancel()
+		close(rt2.block)
+		if err := <-recDone; err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled recovery: %v", err)
+		}
+		var r2Records int
+		for e, err := range inner.Read(ctx, "r2", 0) {
+			if err != nil {
+				t.Fatalf("read r2 event log: %v", err)
+			}
+			r2Records++
+			if _, ok := e.Payload.(types.TerminalError); !ok {
+				t.Fatalf("record %T, want the terminal failure", e.Payload)
+			}
+		}
+		if r2Records != 1 {
+			t.Fatalf("r2 records = %d, want exactly the terminal boundary", r2Records)
+		}
+	})
+}
+
+// piiBatchModel scripts one tool batch that suspends on the ask, with a
+// live prefix naming one redactable entity, and a closing line naming
+// another, so the recovered tail crosses the redaction seam.
+type piiBatchModel struct {
+	mu      sync.Mutex
+	emitted int
+	steps   [][]types.ToolUse
+	closing string
+}
+
+func (m *piiBatchModel) Profile() types.ModelProfile {
+	return types.ModelProfile{Name: "native", Caps: types.Caps{Tools: true}}
+}
+
+func (m *piiBatchModel) Generate(_ context.Context, _ types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+	return func(yield func(types.ModelChunk, error) bool) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.emitted < len(m.steps) {
+			yield(types.ModelChunk{Kind: types.DeltaText, Delta: "Ada Lovelace"}, nil)
+			for _, call := range m.steps[m.emitted] {
+				cu := call
+				yield(types.ModelChunk{Kind: types.DeltaToolArgs, ToolUse: &cu}, nil)
+			}
+			m.emitted++
+			yield(types.ModelChunk{Finish: types.FinishToolUse}, nil)
+			return
+		}
+		yield(types.ModelChunk{Kind: types.DeltaText, Delta: m.closing}, nil)
+		yield(types.ModelChunk{Finish: types.FinishStop}, nil)
+	}
+}
+
+func TestRecoveryTailRedaction(t *testing.T) {
+	t.Run("recovery.redaction-tenant-continuity", func(t *testing.T) {
+		model := &piiBatchModel{steps: [][]types.ToolUse{{nrrBook("b1")}}, closing: "Anna Petrova"}
+		runs := stores.NewMemoryRuns(
+			stores.WithMemoryRunClock(time.Now),
+			stores.WithMemoryRunInfo(func(ctx context.Context) (types.RunInfo, bool) {
+				p, ok := types.PrincipalFrom(ctx)
+				return types.RunInfo{Principal: p}, ok
+			}),
+		)
+		evlog := stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))
+		maps := stores.NewMemoryRedactionMaps()
+		stack, err := Build(
+			WithStores(stores.Stores{
+				SessionLog: stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom)),
+				Runs:       runs,
+				Checkpoints: stores.NewMemoryCheckpoints(
+					stores.WithMemoryCheckpointClock(time.Now),
+					stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom),
+					stores.WithMemoryCheckpointRuns(runs),
+				),
+				EventLog:      evlog,
+				RedactionMaps: maps,
+			}),
+			WithModels(model),
+			WithNativeAgent(NativeSpec{
+				Request: FlowRequest{Name: "chat"},
+				Profile: "native",
+				Tools:   []types.Tool{&bookTool{}, &nrrNoteTool{}},
+				Assemble: func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+					return types.ModelRequest{Messages: append(append([]types.Message{}, in.History...), in.Input...)}, nil
+				},
+			}),
+			WithRedactor(scenarioRedactor()),
+			WithRedactionPolicy(scenarioPolicy()),
+			WithRecoveryRuntime("chat", runtime.NewNative()),
+		)
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		conv, err := NewNativeConversation(stack, "chat",
+			WithConversationRuns(runs),
+			WithConversationEventLog(evlog),
+			WithConversationApprovalPolicy(nrrAllowPolicy{}),
+		)
+		if err != nil {
+			t.Fatalf("conversation: %v", err)
+		}
+
+		// The live prefix redacts its assistant text under the owner's
+		// tenant and accumulates the session map.
+		token := suspendToken(t, conv)
+		live, err := maps.Get(nrrCtx(), "t1", "s1")
+		if err != nil {
+			t.Fatalf("live redaction map: %v", err)
+		}
+		if len(live.Entries) != 1 {
+			t.Fatalf("live map entries = %d, want the live prefix's pseudonym", len(live.Entries))
+		}
+
+		// The client consumes the approval and dies before its resume
+		// lease; recovery completes the decision headlessly.
+		decided := stores.ResumeInput{Verdict: stores.VerdictApprove, Approver: &nrrOwner}
+		consumed, err := stack.stores.Checkpoints.Consume(nrrCtx(), token, decided)
+		if err != nil {
+			t.Fatalf("consume approval: %v", err)
+		}
+		if err := stack.Recover(nrrCtx(), 10); err != nil {
+			t.Fatalf("recover: %v", err)
+		}
+		if st := runState(t, runs, consumed.RunID); st != stores.Finished {
+			t.Fatalf("recovered run state = %v, want Finished", st)
+		}
+
+		var recoveredText string
+		for e, err := range evlog.Read(nrrCtx(), consumed.RunID, 0) {
+			if err != nil {
+				t.Fatalf("read recovered events: %v", err)
+			}
+			if am, ok := e.Payload.(types.AssistantMessage); ok {
+				for _, b := range am.Message.Blocks {
+					if txt, ok := b.(types.Text); ok {
+						recoveredText += txt.Text
+					}
+				}
+			}
+		}
+		if recoveredText == "" {
+			t.Fatal("recovered tail carried no assistant text")
+		}
+		if strings.Contains(recoveredText, "Anna Petrova") || strings.Contains(recoveredText, "Ada Lovelace") {
+			t.Fatalf("recovered tail stored a raw entity: %q", recoveredText)
+		}
+
+		// The recovered tail continues the session's accumulated map: its
+		// pseudonym resolves there next to the live prefix's entry, and no
+		// zero-tenant row exists.
+		session, err := maps.Get(nrrCtx(), "t1", "s1")
+		if err != nil {
+			t.Fatalf("session map: %v", err)
+		}
+		if _, ok := session.Entries[recoveredText]; !ok {
+			t.Fatalf("recovered pseudonym %q missing from the session map", recoveredText)
+		}
+		if len(session.Entries) != 2 {
+			t.Fatalf("session map entries = %d, want the live prefix's and the recovered tail's", len(session.Entries))
+		}
+		if _, err := maps.Get(nrrCtx(), "", "s1"); !errors.Is(err, stores.ErrRedactionMapNotFound) {
+			t.Fatalf("zero-tenant map row = %v, want none", err)
+		}
+	})
+}
+
 func TestRuntimeResumeToolBudget(t *testing.T) {
 	t.Run("runtime.resume-tool-budget-cumulative", func(t *testing.T) {
 		// The approval Resume path: two fresh batches before the ask, the
@@ -379,11 +643,12 @@ func TestRuntimeResumeToolBudget(t *testing.T) {
 			t.Fatalf("consume approval: %v", err)
 		}
 		recoverErr := stack2.Recover(nrrCtx(), 10)
-		if recoverErr != nil {
-			var recOver *types.LimitExceededError
-			if !errors.As(recoverErr, &recOver) && !errors.Is(recoverErr, types.ErrBatchOverrun) {
-				t.Fatalf("recover: %v", recoverErr)
-			}
+		if recoverErr == nil {
+			t.Fatal("recovery completed past the limit refusal")
+		}
+		var recOver *types.LimitExceededError
+		if !errors.As(recoverErr, &recOver) && !errors.Is(recoverErr, types.ErrBatchOverrun) {
+			t.Fatalf("recover err = %v, want the limit refusal", recoverErr)
 		}
 		if st := runState(t, runs, consumed.RunID); st != stores.Failed {
 			t.Fatalf("recovered run state = %v, want Failed on the limit refusal", st)

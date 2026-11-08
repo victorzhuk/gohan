@@ -32,6 +32,67 @@ func (r *oneShotFenceRuns) ResumingCheckpoint(ctx context.Context, runID string,
 	return r.MemoryRuns.ResumingCheckpoint(ctx, runID, t, ttl)
 }
 
+// raceFenceRuns parks the run on a newer unconsumed human approval in the
+// window between the discovery snapshot and the fenced acquire: the
+// deterministic shape of a second driver completing the discovered token
+// and suspending on B before recovery fences.
+type raceFenceRuns struct {
+	*stores.MemoryRuns
+	cps   *stores.MemoryCheckpoints
+	t     *testing.T
+	reads atomic.Int32
+	moved atomic.Bool
+	tokB  types.ResumeToken
+}
+
+func (r *raceFenceRuns) move(ctx context.Context, runID string) {
+	r.t.Helper()
+	owner := types.Principal{Subject: "u1", Tenant: "t1"}
+	lease, err := r.MemoryRuns.Resuming(ctx, runID, stores.LeaseTTL)
+	if err != nil {
+		r.t.Fatalf("competitor resume: %v", err)
+	}
+	tokCtx := types.WithRunInfo(ctx, types.RunInfo{SessionID: "s1", RunID: runID, Flow: "agent"})
+	tokB, err := r.cps.Put(WithPrincipal(tokCtx, owner), stores.Checkpoint{
+		RunID:      runID,
+		SessionID:  "s1",
+		Flow:       "agent",
+		Reason:     types.HumanApproval,
+		Originator: owner,
+		Data:       mustJSON(r.t, runtime.State{Turn: 2, HistoryVersion: 1, Pending: pendingCalls("c1")}),
+	})
+	if err != nil {
+		r.t.Fatalf("competitor suspend: %v", err)
+	}
+	if err := r.MemoryRuns.SuspendWithReason(r.t.Context(), lease, tokB, types.Preempted); err != nil {
+		r.t.Fatalf("competitor park: %v", err)
+	}
+	r.tokB = tokB
+}
+
+func (r *raceFenceRuns) SuspensionToken(ctx context.Context, runID string) (types.ResumeToken, error) {
+	tok, err := r.MemoryRuns.SuspensionToken(ctx, runID)
+	if err != nil {
+		return tok, err
+	}
+	// The discovery snapshot's fence check still sees A; recovery's own
+	// re-read after it is where the competitor lands B.
+	if r.reads.Add(1) == 3 && !r.moved.Swap(true) {
+		r.move(ctx, runID)
+	}
+	return r.MemoryRuns.SuspensionToken(ctx, runID)
+}
+
+func (r *raceFenceRuns) ResumingCheckpoint(ctx context.Context, runID string, t types.ResumeToken, ttl time.Duration) (stores.Lease, error) {
+	// Recovery that fences on the discovered token never re-reads, so the
+	// competitor moves here: the acquire must refuse the obsolete token,
+	// never lease B.
+	if !r.moved.Swap(true) {
+		r.move(ctx, runID)
+	}
+	return r.MemoryRuns.ResumingCheckpoint(ctx, runID, t, ttl)
+}
+
 // frozenPortRuns wraps Runs without the optional PreemptedLister and
 // CheckpointRuns surfaces, standing in for a store built before the
 // token-fenced resume existed.
@@ -98,6 +159,41 @@ func TestRecoveryContract(t *testing.T) {
 		}
 		if n := f.rt.modelCalls(); n != 1 {
 			t.Fatalf("model calls after second recover = %d, want 1", n)
+		}
+	})
+
+	t.Run("recovery.consumed-token-fenced", func(t *testing.T) {
+		f := newRecoverFixture(t, "agent")
+		ctx := f.reaperCtx()
+		f.seedHistory(t, 1)
+		raced := &raceFenceRuns{MemoryRuns: f.runs, cps: f.cps, t: t}
+		f.stack.stores.Runs = raced
+		tokA := f.seedPreempted(t, "r1")
+		if _, err := f.cps.Consume(ctx, tokA, Continue()); err != nil {
+			t.Fatal(err)
+		}
+
+		// Recovery fences on the discovered record's own token: the
+		// competitor's newer suspension B is neither acquired nor
+		// replayed, and A's recorded decision waits for its own resume
+		// path exactly once.
+		if err := f.stack.Recover(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+		if n := f.rt.modelCalls(); n != 0 {
+			t.Fatalf("model calls = %d, want 0: recovery replayed onto the newer suspension", n)
+		}
+		if st := runState(t, raced, "r1"); st != stores.Suspended {
+			t.Fatalf("run state = %v, want Suspended", st)
+		}
+		if got, err := raced.SuspensionToken(ctx, "r1"); err != nil || got != raced.tokB {
+			t.Fatalf("suspension token = %q err %v, want the newer %q", got, err, raced.tokB)
+		}
+		if _, err := f.cps.Peek(ctx, raced.tokB); err != nil {
+			t.Fatalf("peek at B after recovery = %v, want the approval pending", err)
+		}
+		if _, err := f.cps.Peek(ctx, tokA); !errors.Is(err, types.ErrTokenConsumed) {
+			t.Fatalf("peek at consumed A = %v, want ErrTokenConsumed", err)
 		}
 	})
 

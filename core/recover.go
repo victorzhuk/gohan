@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math"
 	"slices"
 	"time"
 
@@ -106,13 +108,10 @@ func (s *Stack) recoverConsumedRun(ctx context.Context, cp stores.Checkpoint) er
 		// automatic consumed path and the stale pass owns the run.
 		return nil
 	}
-	tok, err := cr.SuspensionToken(ctx, cp.RunID)
-	if err != nil {
-		// The run no longer waits on a token: a client or a competitor
-		// moved it.
-		return nil
-	}
-	lease, err := cr.ResumingCheckpoint(ctx, cp.RunID, tok, stores.LeaseTTL)
+	// The discovery record's own token fences the acquisition: a newer
+	// suspension that landed between discovery and the lease makes the
+	// store refuse, and an obsolete token never replaces it.
+	lease, err := cr.ResumingCheckpoint(ctx, cp.RunID, cp.Token, stores.LeaseTTL)
 	if err != nil {
 		// A racing driver won the run, or a newer suspension replaced
 		// this token: driven exactly once either way.
@@ -342,14 +341,19 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 	var uncertain []types.CallKey
 	rt = pre.Runtime(rt)
 	if _, ok := types.RunInfoFrom(ctx); !ok {
-		ctx = types.WithRunInfo(ctx, types.RunInfo{SessionID: run.SessionID, RunID: run.RunID, Flow: run.Flow})
+		// Mirrors replayState: the completion writes record as the
+		// originator, so their redaction map joins the session's map
+		// instead of a zero-tenant one.
+		ctx = types.WithPrincipal(ctx, p)
+		ctx = types.WithRunInfo(ctx, types.RunInfo{SessionID: run.SessionID, RunID: run.RunID, Flow: run.Flow, Principal: p})
 	}
-	// Completion writes ignore the reaper's cancellation but stay bounded:
-	// a cancelled reaper still leaves the recovered tail and its terminal
-	// boundary durable for the next attaching client.
-	completion, cancelCompletion := context.WithTimeout(context.WithoutCancel(ctx), recoveredEventBound)
-	defer cancelCompletion()
-	tail, terr := eventLogTail(completion, s.stores.EventLog, run.RunID)
+	// The tail read carries one bounded completion context; every
+	// completion write in recordRecovered carries its own fresh bound, so
+	// a drive that outlives one bound still records its tail and exactly
+	// one terminal boundary for the next attaching client.
+	tailCtx, cancelTail := context.WithTimeout(context.WithoutCancel(ctx), recoveredEventBound)
+	tail, terr := eventLogTail(tailCtx, s.stores.EventLog, run.RunID)
+	cancelTail()
 	if terr != nil {
 		return s.abandonWith(ctx, lease, run, fmt.Errorf("recover run %s: %w", run.RunID, terr))
 	}
@@ -360,8 +364,8 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 			if errors.As(err, &gb) {
 				// A guard block ends the run at its own boundary, the
 				// way the live relay records it.
-				if gerr := s.recordRecovered(completion, run, types.GuardBlocked{Stage: gb.Stage, Reason: gb.Reason}); gerr == nil {
-					if serr := s.recordRecovered(completion, run, types.Done{Reason: types.StopGuardBlocked}); serr == nil {
+				if gerr := s.recordRecovered(ctx, run, types.GuardBlocked{Stage: gb.Stage, Reason: gb.Reason}); gerr == nil {
+					if serr := s.recordRecovered(ctx, run, types.Done{Reason: types.StopGuardBlocked}); serr == nil {
 						gbBoundary = true
 					}
 				}
@@ -369,7 +373,7 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 			driveErr = fmt.Errorf("recover run %s: %w", run.RunID, err)
 			break
 		}
-		if rerr := s.recordRecovered(completion, run, ev); rerr != nil {
+		if rerr := s.recordRecovered(ctx, run, ev); rerr != nil {
 			driveErr = fmt.Errorf("recover run %s: %w", run.RunID, rerr)
 			break
 		}
@@ -379,7 +383,11 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 		}
 	}
 	if driveErr != nil && !gbBoundary {
-		s.recordRecoveredTerminal(completion, run, tail, driveErr)
+		// The drive failure already fails Recover; the boundary write
+		// reports its own loss here once instead of vanishing.
+		if terr := s.recordRecoveredTerminal(ctx, run, tail, driveErr); terr != nil {
+			slog.WarnContext(ctx, "recovered terminal boundary write failed", "run", run.RunID, "err", terr)
+		}
 	}
 	state, terminal := s.terminalRun(ctx, run.RunID)
 	if !terminal {
@@ -394,8 +402,8 @@ func (s *Stack) driveRecovered(ctx context.Context, lease stores.Lease, run stor
 	return driveErr
 }
 
-// recoveredEventBound bounds the completion writes of a recovered drive.
-const recoveredEventBound = 30 * time.Second
+// recoveredEventBound bounds one completion write of a recovered drive.
+var recoveredEventBound = 30 * time.Second
 
 // recordRecovered appends one recovered event to the run's log with live
 // execution's redacted record-before-delivery semantics.
@@ -403,6 +411,11 @@ func (s *Stack) recordRecovered(ctx context.Context, run stores.Run, ev types.Ev
 	if s.stores.EventLog == nil {
 		return nil
 	}
+	// Completion writes ignore the reaper's cancellation but stay bounded:
+	// a cancelled reaper still leaves the recovered tail and its terminal
+	// boundary durable for the next attaching client.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recoveredEventBound)
+	defer cancel()
 	red, pol := s.flowRedaction(run.Flow)
 	stored, err := redactEventWith(ctx, ev, red, pol, s.stores.RedactionMaps)
 	if err != nil {
@@ -417,26 +430,63 @@ func (s *Stack) recordRecovered(ctx context.Context, run stores.Run, ev types.Ev
 // recordRecoveredTerminal appends the terminal failure record a failed
 // recovered drive leaves behind; the run keeps the store's own terminal
 // transition.
-func (s *Stack) recordRecoveredTerminal(ctx context.Context, run stores.Run, tail int64, cause error) {
+func (s *Stack) recordRecoveredTerminal(ctx context.Context, run stores.Run, tail int64, cause error) error {
 	te := types.TerminalFailure(cause, run.RunID, tail+2)
-	_ = s.recordRecovered(ctx, run, te)
+	return s.recordRecovered(ctx, run, te)
 }
 
-// eventLogTail reports the highest sequence the run's log holds.
+// eventLogTail reports the highest sequence the run's log holds. The port
+// has no tail read, so it probes the log's monotone read cursor — Read is
+// empty exactly past the last sequence — and bisects instead of replaying
+// the whole history per recovered run.
 func eventLogTail(ctx context.Context, log stores.EventLog, runID string) (int64, error) {
 	if log == nil {
 		return 0, nil
 	}
-	var tail int64
-	for e, err := range log.Read(ctx, runID, 0) {
-		if err != nil {
-			return 0, fmt.Errorf("read event log tail: %w", err)
+	holds := func(after int64) (bool, error) {
+		for _, err := range log.Read(ctx, runID, after) {
+			if err != nil {
+				return false, fmt.Errorf("read event log tail: %w", err)
+			}
+			return true, nil
 		}
-		if e.Meta.Seq > tail {
-			tail = e.Meta.Seq
-		}
+		return false, nil
 	}
-	return tail, nil
+	more, err := holds(0)
+	if err != nil {
+		return 0, err
+	}
+	if !more {
+		return 0, nil
+	}
+	hi := int64(1)
+	for {
+		more, err = holds(hi)
+		if err != nil {
+			return 0, err
+		}
+		if !more {
+			break
+		}
+		if hi > math.MaxInt64/2 {
+			return 0, fmt.Errorf("read event log tail: sequence overflow past %d", hi)
+		}
+		hi *= 2
+	}
+	lo := hi / 2
+	for lo+1 < hi {
+		mid := lo + (hi-lo)/2
+		more, err = holds(mid)
+		if err != nil {
+			return 0, err
+		}
+		if more {
+			lo = mid
+			continue
+		}
+		hi = mid
+	}
+	return hi, nil
 }
 
 // flowRedaction returns the redaction seam the flow's resolved

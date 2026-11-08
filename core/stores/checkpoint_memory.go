@@ -376,6 +376,9 @@ func (s *MemoryCheckpoints) ResumeReady(ctx context.Context, limit int) ([]Check
 		if err != nil {
 			return nil, err
 		}
+		// The record carries the token it was discovered under; the
+		// stored checkpoint itself never names it.
+		cp.Token = c.token
 		out = append(out, cp)
 	}
 	return out, nil
