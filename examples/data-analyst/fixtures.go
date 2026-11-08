@@ -11,7 +11,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std/redact"
 )
 
 const (
@@ -176,6 +179,26 @@ func (s *fakeSandbox) confine(path string) (string, error) {
 		return "", fmt.Errorf("workspace path %q: %w", path, errPathOutsideRoot)
 	}
 	return clean, nil
+}
+
+// fakeAdapter is an independent adapter value over the shared fake
+// backend: Open delegates, so the composed run gets a second stack with
+// its own coordinator while a resumed turn still restores the snapshot
+// and the extract the first stack stored.
+type fakeAdapter struct {
+	sb *fakeSandbox
+}
+
+var _ types.Sandbox = fakeAdapter{}
+
+func (a fakeAdapter) Open(ctx context.Context, ref types.WorkspaceRef, p types.SandboxPolicy) (types.Workspace, error) {
+	return a.sb.Open(ctx, ref, p)
+}
+
+// newAdapter returns a fresh adapter value over the same fake; backend
+// map, exec script and counters stay shared across instances.
+func (s *fakeSandbox) newAdapter() types.Sandbox {
+	return fakeAdapter{sb: s}
 }
 
 // fakeWorkspace is the workspace one Open handed out. It carries its own
@@ -351,4 +374,91 @@ func copyResult(res types.ExecResult) types.ExecResult {
 	out.Stdout = append([]byte(nil), res.Stdout...)
 	out.Stderr = append([]byte(nil), res.Stderr...)
 	return out
+}
+
+// fixedKeySource answers every tenant with the same offline phrase, so
+// HMAC tokens stay deterministic across a demo run and never look like
+// a credential.
+type fixedKeySource struct{}
+
+func (fixedKeySource) Key(_ context.Context, _ string) ([]byte, error) {
+	return []byte("data-analyst example offline redaction key"), nil
+}
+
+// newRedactor builds the redactor behind both output guards: the chain
+// step that masks tool results before the scheduler journals them and
+// the store wrapper that masks content before it is stored.
+func newRedactor() *redact.Redactor {
+	return redact.New(fixedKeySource{})
+}
+
+// newGuardChain masks personally identifying rows in a tool result
+// before it is journaled, so no clear identity survives into history.
+func newGuardChain(red *redact.Redactor) chains.ToolChain {
+	return chains.ToolChain{
+		{
+			Name: "redact-output",
+			Kind: chains.KindRedact,
+			Use: func(next types.ToolFunc) types.ToolFunc {
+				return func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+					res, err := next(ctx, call)
+					if err != nil {
+						return res, err
+					}
+					if len(res.Content) == 0 {
+						return res, nil
+					}
+					masked, _, err := red.Redact(ctx, res.Content, types.RedactionPolicy{Mode: types.HMACToken})
+					if err != nil {
+						return res, fmt.Errorf("redact tool output: %w", err)
+					}
+					res.Content = masked
+					return res, nil
+				}
+			},
+		},
+	}
+}
+
+// redactingOutputs masks identifying rows before the inner store sees
+// the content, so the stored bytes and the ref they hash to never carry
+// clear identity; the inner store keeps owning ref semantics.
+type redactingOutputs struct {
+	inner stores.OutputStore
+	red   *redact.Redactor
+
+	mu     sync.Mutex
+	stored []string
+}
+
+var _ stores.OutputStore = (*redactingOutputs)(nil)
+
+func newRedactingOutputs(inner stores.OutputStore) *redactingOutputs {
+	return &redactingOutputs{inner: inner, red: newRedactor()}
+}
+
+func (s *redactingOutputs) Put(ctx context.Context, ri types.RunInfo, content []types.Block) (string, error) {
+	masked, _, err := s.red.Redact(types.WithRunInfo(ctx, ri), content, types.RedactionPolicy{Mode: types.HMACToken})
+	if err != nil {
+		return "", fmt.Errorf("redact output: %w", err)
+	}
+	ref, err := s.inner.Put(ctx, ri, masked)
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stored = append(s.stored, ref)
+	return ref, nil
+}
+
+func (s *redactingOutputs) Get(ctx context.Context, ref string) ([]byte, error) {
+	return s.inner.Get(ctx, ref)
+}
+
+// refs reports the refs the wrapper stored, in call order, as a copy.
+func (s *redactingOutputs) refs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.stored...)
 }
