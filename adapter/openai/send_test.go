@@ -370,13 +370,34 @@ func TestProviderToolCalls(t *testing.T) {
 	req.Tools = []types.ToolSpec{{Name: "web_search", Executor: types.ByProvider}}
 	chunks := collect(t, p, req)
 	var toolUses int
+	var previews []types.ModelChunk
 	for _, chunk := range chunks {
-		if chunk.ToolUse != nil {
+		if chunk.ToolUse == nil {
+			continue
+		}
+		if chunk.Kind == types.DeltaToolArgs {
+			previews = append(previews, chunk)
+			continue
+		}
+		if len(chunk.ToolUse.Args) > 0 {
 			toolUses++
 		}
 	}
 	if toolUses != 2 {
-		t.Errorf("%d tool-use chunks streamed, want 2", toolUses)
+		t.Errorf("%d complete tool-use chunks streamed, want 2", toolUses)
+	}
+	if len(previews) != 2 {
+		t.Errorf("%d argument previews streamed, want one per argument fragment", len(previews))
+	} else {
+		wantID := []string{"call-1", "call-2"}
+		for i, pv := range previews {
+			if pv.ToolUse.ID != wantID[i] || pv.ToolUse.Name != "web_search" {
+				t.Errorf("preview %d lost its call identity (%v), want %s on web_search", i, pv.ToolUse, wantID[i])
+			}
+			if args := strings.TrimSpace(string(pv.ToolUse.Args)); args != "" {
+				t.Errorf("preview %d carried executable args %q; a preview stays identity-only", i, args)
+			}
+		}
 	}
 	u := lastUsage(t, chunks)
 	if u.ProviderToolCalls["web_search"] != 2 {

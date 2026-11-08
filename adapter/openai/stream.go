@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/victorzhuk/gohan/core"
@@ -46,41 +45,60 @@ type wireChunk struct {
 	Usage *wireUsage `json:"usage"`
 }
 
-func finishReason(raw string) types.FinishReason {
-	switch raw {
-	case "stop":
-		return types.FinishStop
-	case "tool_calls":
-		return types.FinishToolUse
-	case "length":
-		return types.FinishMaxTokens
-	case "content_filter":
-		return types.FinishRefusal
+// toolCall accumulates one streamed tool call: the identity the provider
+// sent and the argument fragments. The fragments stay apart from the
+// identity so a preview never carries an executable argument set.
+type toolCall struct {
+	id        string
+	name      string
+	fragments []string
+}
+
+// args joins the accumulated fragments once, when the call completes.
+func (t *toolCall) args() string {
+	switch len(t.fragments) {
+	case 0:
+		return ""
+	case 1:
+		return t.fragments[0]
 	default:
-		return types.FinishError
+		return strings.Join(t.fragments, "")
 	}
+}
+
+// streamRun carries the state of one streamed response: the pending tool
+// calls, the served model and the usage accounting.
+type streamRun struct {
+	provider *Provider
+	req      types.ModelRequest
+	keyID    string
+	yield    func(types.ModelChunk, error) bool
+
+	served    string
+	streamed  strings.Builder
+	pending   map[int]*toolCall
+	order     []int
+	completed []types.ToolUse
+	wire      *wireUsage
+	usage     bool
 }
 
 // stream decodes the SSE body and yields chunks on the caller's goroutine.
 // It returns at the first refusal to receive, yields nothing after an error
 // and closes the body on the way out.
 func (p *Provider) stream(ctx context.Context, resp *http.Response, req types.ModelRequest, keyID string, yield func(types.ModelChunk, error) bool) {
-	type toolAcc struct {
-		id, name, args string
+	run := &streamRun{
+		provider: p,
+		req:      req,
+		keyID:    keyID,
+		yield:    yield,
+		pending:  map[int]*toolCall{},
 	}
-	var usageEmitted bool
-	pending := map[int]*toolAcc{}
-	var streamed strings.Builder
-	served := ""
-	defer func() {
-		if !usageEmitted && ctx.Err() == nil {
-			yield(types.ModelChunk{Usage: p.estimatedUsage(req, keyID, streamed.String())}, nil)
-		}
-	}()
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for scanner.Scan() {
-		if ctx.Err() != nil {
+		if err := ctx.Err(); err != nil {
+			yield(types.ModelChunk{}, err)
 			return
 		}
 		line := strings.TrimSpace(scanner.Text())
@@ -92,6 +110,7 @@ func (p *Provider) stream(ctx context.Context, resp *http.Response, req types.Mo
 		}
 		payload := strings.TrimSpace(line[len("data:"):])
 		if payload == "[DONE]" {
+			run.end("")
 			return
 		}
 		var chunk wireChunk
@@ -104,41 +123,7 @@ func (p *Provider) stream(ctx context.Context, resp *http.Response, req types.Mo
 			return
 		}
 		if chunk.Model != "" {
-			served = chunk.Model
-		}
-		for _, choice := range chunk.Choices {
-			if choice.Delta.Content != "" {
-				streamed.WriteString(choice.Delta.Content)
-				if !yield(types.ModelChunk{Kind: types.DeltaText, Delta: choice.Delta.Content}, nil) {
-					return
-				}
-			}
-			reasoning := ""
-			if choice.Delta.ReasoningContent != nil {
-				reasoning = *choice.Delta.ReasoningContent
-			} else if choice.Delta.Reasoning != nil {
-				reasoning = *choice.Delta.Reasoning
-			}
-			if reasoning != "" {
-				streamed.WriteString(reasoning)
-				if !yield(types.ModelChunk{Kind: types.DeltaReasoning, Delta: reasoning}, nil) {
-					return
-				}
-			}
-			for _, delta := range choice.Delta.ToolCalls {
-				acc := pending[delta.Index]
-				if acc == nil {
-					acc = &toolAcc{}
-					pending[delta.Index] = acc
-				}
-				if delta.ID != "" {
-					acc.id = delta.ID
-				}
-				if delta.Function.Name != "" {
-					acc.name = delta.Function.Name
-				}
-				acc.args += delta.Function.Arguments
-			}
+			run.served = chunk.Model
 		}
 		finish := ""
 		for _, choice := range chunk.Choices {
@@ -146,56 +131,226 @@ func (p *Provider) stream(ctx context.Context, resp *http.Response, req types.Mo
 				finish = *choice.FinishReason
 			}
 		}
-		if finish == "" && chunk.Usage == nil {
+		if !run.consume(chunk) {
+			return
+		}
+		if chunk.Usage != nil {
+			run.wire = chunk.Usage
+		}
+		if finish == "" {
 			continue
 		}
-		var calls []types.ToolUse
-		for index := range pending {
-			acc := pending[index]
-			calls = append(calls, types.ToolUse{
-				ID:   acc.id,
-				Name: acc.name,
-				Args: json.RawMessage(acc.args),
-			})
-		}
-		pending = nil
-		slices.SortFunc(calls, func(a, b types.ToolUse) int {
-			return strings.Compare(a.ID, b.ID)
-		})
-		for i := range calls[:max(len(calls)-1, 0)] {
-			if !yield(types.ModelChunk{ToolUse: &calls[i]}, nil) {
-				return
-			}
-		}
-		out := &types.ModelChunk{}
-		if len(calls) > 0 {
-			out.ToolUse = &calls[len(calls)-1]
-		}
-		use := p.usageFrom(chunk.Usage, keyID, served, req, streamed.String())
-		gohan.CountProviderCalls(req.Tools, calls, use)
-		if finish != "" {
-			out.Finish = finishReason(finish)
-		}
-		out.Usage = use
-		usageEmitted = true
-		if !yield(*out, nil) {
+		if !run.end(finish) {
 			return
 		}
 	}
-	if err := scanner.Err(); err != nil && ctx.Err() == nil {
+	if err := scanner.Err(); err != nil {
+		if ctx.Err() != nil {
+			yield(types.ModelChunk{}, ctx.Err())
+			return
+		}
 		yield(types.ModelChunk{}, &types.ModelError{
 			Class:    types.ClassTransient,
 			Provider: p.profile.Name,
 			Err:      fmt.Errorf("read stream: %w", err),
 		})
+		return
+	}
+	run.end("")
+}
+
+// consume streams the content, the reasoning and the tool-call previews of
+// one chunk. It reports false when the consumer refused the chunk.
+func (r *streamRun) consume(chunk wireChunk) bool {
+	for _, choice := range chunk.Choices {
+		if choice.Delta.Content != "" {
+			r.streamed.WriteString(choice.Delta.Content)
+			if !r.yield(types.ModelChunk{Kind: types.DeltaText, Delta: choice.Delta.Content}, nil) {
+				return false
+			}
+		}
+		reasoning := ""
+		if choice.Delta.ReasoningContent != nil {
+			reasoning = *choice.Delta.ReasoningContent
+		} else if choice.Delta.Reasoning != nil {
+			reasoning = *choice.Delta.Reasoning
+		}
+		if reasoning != "" {
+			r.streamed.WriteString(reasoning)
+			if !r.yield(types.ModelChunk{Kind: types.DeltaReasoning, Delta: reasoning}, nil) {
+				return false
+			}
+		}
+		for _, delta := range choice.Delta.ToolCalls {
+			if !r.preview(delta) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// preview streams one argument fragment with the identity of its call. The
+// arguments stay empty: a preview carries the identity, never an argument
+// set that could reach tool execution.
+func (r *streamRun) preview(delta wireToolCallDelta) bool {
+	acc := r.call(delta.Index)
+	if delta.ID != "" {
+		acc.id = delta.ID
+	}
+	if delta.Function.Name != "" {
+		acc.name = delta.Function.Name
+	}
+	fragment := delta.Function.Arguments
+	if fragment == "" {
+		return true
+	}
+	acc.fragments = append(acc.fragments, fragment)
+	return r.yield(types.ModelChunk{
+		Kind:    types.DeltaToolArgs,
+		Delta:   fragment,
+		ToolUse: &types.ToolUse{ID: acc.id, Name: acc.name},
+	}, nil)
+}
+
+// call returns the accumulator of one tool-call index. The identity the
+// provider sent stays with the index, so a fragment without an identity
+// still previews under the call it belongs to.
+func (r *streamRun) call(index int) *toolCall {
+	acc, ok := r.pending[index]
+	if !ok {
+		acc = &toolCall{}
+		r.pending[index] = acc
+		r.order = append(r.order, index)
+	}
+	return acc
+}
+
+// completeBatch validates every pending call before any of them is emitted:
+// a batch that carries an invalid argument set is refused whole, so no
+// sibling of a broken call ever reaches tool execution.
+func (r *streamRun) completeBatch() bool {
+	calls := r.pendingCalls()
+	for _, call := range calls {
+		if !json.Valid(call.Args) {
+			r.fail(types.ClassPermanent, fmt.Errorf("tool call %q carries invalid arguments %q", call.ID, string(call.Args)))
+			return false
+		}
+	}
+	for i := range calls {
+		r.completed = append(r.completed, calls[i])
+		if !r.yield(types.ModelChunk{ToolUse: &calls[i]}, nil) {
+			return false
+		}
+	}
+	r.clear()
+	return true
+}
+
+// pendingCalls returns the accumulated calls in provider order.
+func (r *streamRun) pendingCalls() []types.ToolUse {
+	calls := make([]types.ToolUse, 0, len(r.order))
+	for _, index := range r.order {
+		acc := r.pending[index]
+		calls = append(calls, types.ToolUse{
+			ID:   acc.id,
+			Name: acc.name,
+			Args: json.RawMessage(acc.args()),
+		})
+	}
+	return calls
+}
+
+// abandon drops every pending call: an argument set the provider never
+// finished never reaches tool execution.
+func (r *streamRun) abandon() {
+	r.clear()
+}
+
+// clear drops the pending calls: they are completed or abandoned, never
+// pending any more.
+func (r *streamRun) clear() {
+	clear(r.pending)
+	r.order = nil
+}
+
+// end closes the stream: it completes or abandons the pending calls and
+// reports the terminal reason and the usage exactly once. It reports false
+// when the stream must stop: the consumer refused the terminal chunk or the
+// terminal was a failure.
+func (r *streamRun) end(raw string) bool {
+	switch raw {
+	case "tool_calls":
+		if !r.completeBatch() {
+			return false
+		}
+		return r.terminal(types.FinishToolUse, false)
+	case "length":
+		r.abandon()
+		return r.terminal(types.FinishMaxTokens, false)
+	case "content_filter":
+		r.abandon()
+		return r.terminal(types.FinishRefusal, false)
+	case "stop":
+		if len(r.pending) > 0 {
+			r.abandon()
+			return r.terminal(types.FinishMaxTokens, false)
+		}
+		return r.terminal(types.FinishStop, false)
+	case "":
+		finish := types.FinishReason("")
+		if len(r.pending) > 0 {
+			r.abandon()
+			finish = types.FinishMaxTokens
+		}
+		return r.terminal(finish, true)
+	case "error":
+		r.fail(types.ClassTransient, fmt.Errorf("provider ended the stream with an error"))
+		return false
+	default:
+		r.fail(types.ClassTransient, fmt.Errorf("provider ended the stream with an unknown reason %q", raw))
+		return false
 	}
 }
 
-// usageFrom fills the final-chunk usage. A provider that sends no usage
-// never produces a zero report: the estimate rule fills it instead.
-func (p *Provider) usageFrom(wire *wireUsage, keyID, served string, req types.ModelRequest, streamed string) *types.Usage {
+// terminal yields the last chunk of the stream: the finish reason and the
+// usage. The estimate fills a missing usage only at the clean end of a
+// stream, never at a finish reason.
+func (r *streamRun) terminal(finish types.FinishReason, estimate bool) bool {
+	out := types.ModelChunk{Finish: finish}
+	if !r.usage {
+		use := r.provider.usageFrom(r.wire, r.keyID, r.served)
+		if use == nil && estimate {
+			use = r.provider.estimatedUsage(r.req, r.keyID, r.streamed.String())
+		}
+		if use != nil {
+			gohan.CountProviderCalls(r.req.Tools, r.completed, use)
+			out.Usage = use
+			r.usage = true
+		}
+	}
+	if out == (types.ModelChunk{}) {
+		return true
+	}
+	return r.yield(out, nil)
+}
+
+// fail reports one terminal model error. The stream ends with it: no usage
+// and no completion follows a failure.
+func (r *streamRun) fail(class types.ErrorClass, err error) {
+	r.yield(types.ModelChunk{}, &types.ModelError{
+		Class:    class,
+		Provider: r.provider.profile.Name,
+		Err:      err,
+	})
+}
+
+// usageFrom fills the usage the provider reported. A provider that reports
+// no usage leaves the report to the estimate rule: a zero report never
+// reaches the accounting.
+func (p *Provider) usageFrom(wire *wireUsage, keyID, served string) *types.Usage {
 	if wire == nil || (wire.PromptTokens == 0 && wire.CompletionTokens == 0) {
-		return p.estimatedUsage(req, keyID, streamed)
+		return nil
 	}
 	use := &types.Usage{
 		InputTokens:  wire.PromptTokens,
@@ -213,7 +368,9 @@ func (p *Provider) usageFrom(wire *wireUsage, keyID, served string, req types.Mo
 			use.CacheWriteTokens = use.CachedInputTokens
 		}
 	case types.CacheAuto:
-		use.CachedInputTokens = wire.PromptTokensDetails.CachedTokens
+		if wire.PromptTokensDetails != nil {
+			use.CachedInputTokens = wire.PromptTokensDetails.CachedTokens
+		}
 	default:
 	}
 	return use
