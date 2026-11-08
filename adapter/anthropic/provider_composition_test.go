@@ -1,0 +1,632 @@
+package anthropic
+
+import (
+	"context"
+	"encoding/json"
+	"encoding/json/jsontext"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	gohan "github.com/victorzhuk/gohan/core"
+	"github.com/victorzhuk/gohan/core/stores"
+	"github.com/victorzhuk/gohan/core/types"
+)
+
+type compTurn struct {
+	events  []string
+	pauseAt int
+	gate    <-chan struct{}
+}
+
+type compFixture struct {
+	srv    *httptest.Server
+	mu     sync.Mutex
+	bodies []map[string]any
+	turns  []compTurn
+}
+
+func newCompFixture(t *testing.T, turns ...compTurn) *compFixture {
+	t.Helper()
+	fx := &compFixture{turns: turns}
+	fx.srv = httptest.NewServer(http.HandlerFunc(fx.serve))
+	t.Cleanup(fx.srv.Close)
+	return fx
+}
+
+func (fx *compFixture) serve(w http.ResponseWriter, r *http.Request) {
+	raw, _ := io.ReadAll(r.Body)
+	var body map[string]any
+	_ = json.Unmarshal(raw, &body)
+	fx.mu.Lock()
+	idx := len(fx.bodies)
+	fx.bodies = append(fx.bodies, body)
+	fx.mu.Unlock()
+	turn := compTurn{}
+	if idx < len(fx.turns) {
+		turn = fx.turns[idx]
+	}
+	events := turn.events
+	if events == nil {
+		events = compTextEvents("done")
+	}
+	cut := len(events)
+	if turn.gate != nil {
+		cut = turn.pauseAt
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	flusher, _ := w.(http.Flusher)
+	compWriteEvents(w, flusher, events[:cut])
+	if turn.gate != nil {
+		select {
+		case <-turn.gate:
+		case <-r.Context().Done():
+			return
+		}
+	}
+	compWriteEvents(w, flusher, events[cut:])
+}
+
+func compWriteEvents(w io.Writer, flusher http.Flusher, events []string) {
+	for _, ev := range events {
+		_, _ = io.WriteString(w, ev)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+}
+
+func (fx *compFixture) request(t *testing.T, i int) map[string]any {
+	t.Helper()
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	if i >= len(fx.bodies) {
+		t.Fatalf("recorded %d requests, want request %d", len(fx.bodies), i+1)
+	}
+	return fx.bodies[i]
+}
+
+func compMsgStart() string {
+	return event("message_start", `{"type":"message_start","message":{"model":"claude-composition-1","usage":{"input_tokens":10}}}`)
+}
+
+func compMsgDelta(stop string) string {
+	return event("message_delta", fmt.Sprintf(`{"type":"message_delta","delta":{"stop_reason":%q},"usage":{"output_tokens":5}}`, stop))
+}
+
+func compStop() string {
+	return event("message_stop", `{"type":"message_stop"}`)
+}
+
+func compToolStart(index int, id, name string) string {
+	return event("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"tool_use","id":%q,"name":%q}}`, index, id, name))
+}
+
+func compBlockStop(index int) string {
+	return event("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, index))
+}
+
+func compArgsDelta(index int, frag string) string {
+	return event("content_block_delta", fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":%q}}`, index, frag))
+}
+
+func compTextEvents(text string) []string {
+	return []string{
+		compMsgStart(),
+		event("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+		textDelta(text),
+		compMsgDelta("end_turn"),
+		compStop(),
+	}
+}
+
+type compRecorder struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (r *compRecorder) Spec() types.ToolSpec {
+	return types.ToolSpec{Name: "search", Description: "recorded search tool", Effect: types.ReadOnly}
+}
+
+func (r *compRecorder) Call(_ context.Context, args jsontext.Value) (types.ToolResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, string(args))
+	return types.ToolResult{Content: []types.Block{types.Text{Text: "found"}}, Outcome: types.Succeeded}, nil
+}
+
+func (r *compRecorder) effects() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.calls...)
+}
+
+func compModel(t *testing.T, fx *compFixture) *Model {
+	t.Helper()
+	m, err := New(Config{
+		Endpoint: fx.srv.URL,
+		APIKey:   "test" + "-key",
+		KeyID:    "test-key-1",
+		Profile: types.ModelProfile{
+			Name:    "claude-composition",
+			Version: "claude-composition-1",
+			Caps: types.Caps{
+				Tools:            true,
+				Constrained:      true,
+				Streaming:        true,
+				Cache:            types.CacheExplicit,
+				CacheBreakpoints: 2,
+			},
+		},
+		Client: fx.srv.Client(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return m
+}
+
+func compAssemble(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+	msgs := append(append([]types.Message{}, in.History...), in.Input...)
+	return types.ModelRequest{Messages: msgs, Tools: in.Tools}, nil
+}
+
+func compForcedAssemble(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+	msgs := append(append([]types.Message{}, in.History...), in.Input...)
+	return types.ModelRequest{
+		Messages: msgs,
+		Tools:    in.Tools,
+		Options: types.ModelOptions{
+			ResponseSchema: json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}`),
+		},
+	}, nil
+}
+
+func compStack(t *testing.T, m *Model, recorder types.Tool, assemble func(context.Context, types.AssembleInput) (types.ModelRequest, error)) *gohan.Stack {
+	t.Helper()
+	stack, err := gohan.Build(
+		gohan.WithStores(stores.Stores{SessionLog: stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))}),
+		gohan.WithModels(m),
+		gohan.WithNativeAgent(gohan.NativeSpec{
+			Request:  gohan.FlowRequest{Name: "chat"},
+			Profile:  m.Profile().Name,
+			Tools:    []types.Tool{recorder},
+			Assemble: assemble,
+		}),
+		gohan.WithLimits("chat", types.RunLimits{
+			MaxTurns:            3,
+			MaxToolCalls:        4,
+			MaxWallClock:        time.Minute,
+			SoftRatio:           0.8,
+			MaxDepth:            2,
+			MaxParallelChildren: 2,
+			MaxParallelTools:    1,
+		}),
+	)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	return stack
+}
+
+func compConversation(t *testing.T, stack *gohan.Stack) gohan.Conversation {
+	t.Helper()
+	conv, err := gohan.NewNativeConversation(stack, "chat",
+		gohan.WithConversationRuns(stores.NewMemoryRuns(
+			stores.WithMemoryRunClock(time.Now),
+			stores.WithMemoryRunInfo(func(ctx context.Context) (types.RunInfo, bool) {
+				p, ok := types.PrincipalFrom(ctx)
+				return types.RunInfo{Principal: p}, ok
+			}),
+		)),
+		gohan.WithConversationEventLog(stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))),
+	)
+	if err != nil {
+		t.Fatalf("new native conversation: %v", err)
+	}
+	return conv
+}
+
+func compCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+type compRun struct {
+	events []types.Event
+	err    error
+}
+
+func compSend(ctx context.Context, conv gohan.Conversation, sessionID string, hook func(types.Event)) compRun {
+	var res compRun
+	send := conv.Send(gohan.WithPrincipal(ctx, types.Principal{Tenant: "t-a", Subject: "u1"}), sessionID, types.Message{
+		Role: types.RoleUser,
+		Blocks: []types.Block{types.Text{
+			BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginUser}},
+			Text:      "go",
+		}},
+	})
+	for ev, err := range send {
+		if err != nil {
+			res.err = err
+			return res
+		}
+		res.events = append(res.events, ev)
+		if hook != nil {
+			hook(ev)
+		}
+	}
+	return res
+}
+
+func compPreviews(evs []types.Event) []types.ToolArgsDelta {
+	var out []types.ToolArgsDelta
+	for _, ev := range evs {
+		if p, ok := ev.(types.ToolArgsDelta); ok {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func compStarted(evs []types.Event) []types.ToolUse {
+	var out []types.ToolUse
+	for _, ev := range evs {
+		if s, ok := ev.(types.ToolStarted); ok {
+			out = append(out, s.Call)
+		}
+	}
+	return out
+}
+
+func compAssistantText(evs []types.Event) string {
+	var out strings.Builder
+	for _, ev := range evs {
+		am, ok := ev.(types.AssistantMessage)
+		if !ok {
+			continue
+		}
+		for _, b := range am.Message.Blocks {
+			if txt, ok := b.(types.Text); ok {
+				out.WriteString(txt.Text)
+			}
+		}
+	}
+	return out.String()
+}
+
+func compDone(evs []types.Event) bool {
+	for _, ev := range evs {
+		if _, ok := ev.(types.Done); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func compAssertAssembled(t *testing.T, body map[string]any, wantTool string) {
+	t.Helper()
+	if body["stream"] != true {
+		t.Errorf("assembled request stream = %v, want true", body["stream"])
+	}
+	if body["model"] != "claude-composition-1" {
+		t.Errorf("assembled request model = %v, want claude-composition-1", body["model"])
+	}
+	tools, _ := body["tools"].([]any)
+	found := false
+	for _, raw := range tools {
+		tool, _ := raw.(map[string]any)
+		if tool["name"] == wantTool {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("assembled request tools = %v, want %s declared", tools, wantTool)
+	}
+	msgs, _ := body["messages"].([]any)
+	if len(msgs) == 0 {
+		t.Fatalf("assembled request carries no messages")
+	}
+	first, _ := msgs[0].(map[string]any)
+	if first["role"] != "user" {
+		t.Errorf("first assembled message role = %v, want user", first["role"])
+	}
+}
+
+func TestProviderComposition(t *testing.T) {
+	t.Run("model.anthropic-complete-tool-blocks", func(t *testing.T) {
+		release := make(chan struct{})
+		var once sync.Once
+		// The fixture parks after the first fragment, before the first
+		// block stops, so no effect may run while the completion is open.
+		turn1 := compTurn{
+			events: []string{
+				compMsgStart(),
+				compToolStart(0, "toolu_a", "search"),
+				compArgsDelta(0, `{"q":`),
+				compArgsDelta(0, `"go"}`),
+				compBlockStop(0),
+				compToolStart(1, "toolu_b", "search"),
+				compArgsDelta(1, `{"lang":`),
+				compArgsDelta(1, `"en"}`),
+				compBlockStop(1),
+				compMsgDelta("tool_use"),
+				compStop(),
+			},
+			pauseAt: 3,
+			gate:    release,
+		}
+		fx := newCompFixture(t, turn1, compTurn{events: compTextEvents("done")})
+		recorder := &compRecorder{}
+		stack := compStack(t, compModel(t, fx), recorder, compAssemble)
+		conv := compConversation(t, stack)
+		ctx := compCtx(t)
+
+		res := compSend(ctx, conv, "s-complete-tool-blocks", func(ev types.Event) {
+			p, ok := ev.(types.ToolArgsDelta)
+			if !ok || p.CallID == "" {
+				return
+			}
+			if n := len(recorder.effects()); n != 0 {
+				t.Errorf("effect executed while the fixture paused before completion: %d effects", n)
+			}
+			once.Do(func() { close(release) })
+		})
+
+		compAssertAssembled(t, fx.request(t, 0), "search")
+
+		effects := recorder.effects()
+		want := map[string]bool{`{"q":"go"}`: false, `{"lang":"en"}`: false}
+		for _, call := range effects {
+			if _, ok := want[call]; ok {
+				want[call] = true
+			}
+		}
+		complete := 0
+		for _, seen := range want {
+			if seen {
+				complete++
+			}
+		}
+		if len(effects) != 2 || complete != 2 {
+			t.Fatalf("recorded tool effects %v, want exactly two complete calls executed once each with independent arguments {\"q\":\"go\"} and {\"lang\":\"en\"} from both content_block_stop boundaries", effects)
+		}
+
+		started := compStarted(res.events)
+		ids := map[string]bool{}
+		for _, call := range started {
+			ids[call.ID] = true
+		}
+		if len(started) != 2 || !ids["toolu_a"] || !ids["toolu_b"] {
+			t.Fatalf("started tool calls %v, want distinct IDs toolu_a and toolu_b, one per stopped block", started)
+		}
+
+		if text := compAssistantText(res.events); !strings.Contains(text, "done") {
+			t.Fatalf("terminal assistant text = %q, want the final text response to complete the conversation", text)
+		}
+		if !compDone(res.events) {
+			t.Fatalf("conversation ended without Done after the terminal text response")
+		}
+	})
+
+	t.Run("model.provider-argument-preview-identity", func(t *testing.T) {
+		whole := `{"q":"gohan","limit":42}`
+		fx := newCompFixture(t,
+			compTurn{events: []string{
+				compMsgStart(),
+				compToolStart(0, "toolu_p", "search"),
+				compArgsDelta(0, `{"q":`),
+				compArgsDelta(0, `"gohan",`),
+				compArgsDelta(0, `"limit":`),
+				compArgsDelta(0, `42}`),
+				compBlockStop(0),
+				compMsgDelta("tool_use"),
+				compStop(),
+			}},
+			compTurn{events: compTextEvents("done")},
+			compTurn{events: []string{
+				compMsgStart(),
+				compToolStart(0, "toolu_w", "search"),
+				compArgsDelta(0, whole),
+				compBlockStop(0),
+				compMsgDelta("tool_use"),
+				compStop(),
+			}},
+			compTurn{events: compTextEvents("done")},
+		)
+		recorder := &compRecorder{}
+		stack := compStack(t, compModel(t, fx), recorder, compAssemble)
+
+		multi := compSend(compCtx(t), compConversation(t, stack), "s-preview-fragments", nil)
+		single := compSend(compCtx(t), compConversation(t, stack), "s-preview-whole", nil)
+
+		previews := compPreviews(multi.events)
+		if len(previews) != 4 {
+			t.Fatalf("streamed %d argument previews, want one identity-bearing preview per fragment (4 fragments sent)", len(previews))
+		}
+		var streamed strings.Builder
+		for _, p := range previews {
+			if p.CallID != "toolu_p" || p.Name != "search" || p.Delta == "" {
+				t.Fatalf("preview carries CallID=%q Name=%q Delta=%q, want call identity and fragment text", p.CallID, p.Name, p.Delta)
+			}
+			streamed.WriteString(p.Delta)
+		}
+		if streamed.String() != whole {
+			t.Fatalf("preview fragments concatenate to %q, want the complete argument string %q", streamed.String(), whole)
+		}
+
+		solo := compPreviews(single.events)
+		if len(solo) != 1 {
+			t.Fatalf("whole-argument completion streamed %d previews, want exactly one identity-bearing preview", len(solo))
+		}
+		if solo[0].CallID != "toolu_w" || solo[0].Name != "search" || solo[0].Delta != whole {
+			t.Fatalf("whole-argument preview = CallID %q Name %q Delta %q, want toolu_w/search carrying the whole argument string", solo[0].CallID, solo[0].Name, solo[0].Delta)
+		}
+
+		effects := recorder.effects()
+		if len(effects) != 2 || effects[0] != whole || effects[1] != whole {
+			t.Fatalf("recorded tool effects %v, want each previewed call to execute once with its complete argument string", effects)
+		}
+		if !compDone(multi.events) || !compDone(single.events) {
+			t.Fatalf("both preview runs must end with Done after their terminal text responses")
+		}
+	})
+
+	t.Run("model.forced-output-and-tool-truncation", func(t *testing.T) {
+		forcedArgs := `{"answer":"hi"}`
+		fx := newCompFixture(t,
+			compTurn{events: []string{
+				compMsgStart(),
+				compToolStart(0, "toolu_f", forcedToolName),
+				compArgsDelta(0, forcedArgs),
+				compBlockStop(0),
+				compMsgDelta("end_turn"),
+				compStop(),
+			}},
+			compTurn{events: []string{
+				compMsgStart(),
+				compToolStart(0, "toolu_v", "search"),
+				compArgsDelta(0, `{}`),
+				compBlockStop(0),
+				compMsgDelta("tool_use"),
+				compStop(),
+			}},
+			compTurn{events: compTextEvents("done")},
+			compTurn{events: []string{
+				compMsgStart(),
+				compToolStart(0, "toolu_e", "search"),
+				compArgsDelta(0, `{"q":"par`),
+			}},
+			compTurn{events: compTextEvents("done")},
+			compTurn{events: []string{
+				compMsgStart(),
+				compToolStart(0, "toolu_t", "search"),
+				compArgsDelta(0, `{"q":"go"}`),
+				compMsgDelta("max_tokens"),
+				compStop(),
+			}},
+			compTurn{events: compTextEvents("done")},
+			compTurn{events: []string{
+				compMsgStart(),
+				compToolStart(0, "toolu_b1", "search"),
+				compBlockStop(0),
+				compMsgDelta("tool_use"),
+				compStop(),
+			}},
+			compTurn{events: compTextEvents("done")},
+			compTurn{events: []string{
+				compMsgStart(),
+				compToolStart(0, "toolu_b2", "search"),
+				compArgsDelta(0, `{"q":`),
+				compBlockStop(0),
+				compMsgDelta("tool_use"),
+				compStop(),
+			}},
+			compTurn{events: compTextEvents("done")},
+			compTurn{events: []string{
+				compMsgStart(),
+				compToolStart(0, "toolu_b3", "search"),
+				compArgsDelta(0, `{`),
+				compBlockStop(0),
+				compMsgDelta("tool_use"),
+				compStop(),
+			}},
+			compTurn{events: compTextEvents("done")},
+		)
+
+		forcedRecorder := &compRecorder{}
+		forcedStack := compStack(t, compModel(t, fx), forcedRecorder, compForcedAssemble)
+		plainRecorder := &compRecorder{}
+		plainStack := compStack(t, compModel(t, fx), plainRecorder, compAssemble)
+
+		// Control: a forced-schema response stays text and executes no local tool.
+		forcedRun := compSend(compCtx(t), compConversation(t, forcedStack), "s-forced-output", nil)
+		compAssertAssembled(t, fx.request(t, 0), forcedToolName)
+		choice, _ := fx.request(t, 0)["tool_choice"].(map[string]any)
+		if choice["type"] != "tool" || choice["name"] != forcedToolName {
+			t.Errorf("assembled tool_choice = %v, want the forced gohan_respond tool", choice)
+		}
+		if text := compAssistantText(forcedRun.events); text != forcedArgs {
+			t.Errorf("forced-schema assistant text = %q, want the response JSON %q as plain text", text, forcedArgs)
+		}
+		if n := len(forcedRecorder.effects()); n != 0 {
+			t.Errorf("forced output executed %d local tool effects, want none", n)
+		}
+		if started := compStarted(forcedRun.events); len(started) != 0 {
+			t.Errorf("forced output started %d local tool calls, want none", len(started))
+		}
+		if !compDone(forcedRun.events) {
+			t.Errorf("forced-schema response did not complete the conversation")
+		}
+
+		// Control: a valid {} completion executes exactly once.
+		validRun := compSend(compCtx(t), compConversation(t, plainStack), "s-valid-empty-object", nil)
+		if got := plainRecorder.effects(); len(got) != 1 || got[0] != `{}` {
+			t.Errorf("valid {} completion recorded effects %v, want exactly one execution with {}", got)
+		}
+		if !compDone(validRun.events) {
+			t.Errorf("valid {} completion did not end the conversation")
+		}
+
+		// Control: EOF with an unclosed tool block never completes the call.
+		mark := len(plainRecorder.effects())
+		eofRun := compSend(compCtx(t), compConversation(t, plainStack), "s-eof-open-block", nil)
+		if got := plainRecorder.effects()[mark:]; len(got) != 0 {
+			t.Errorf("open-block EOF run executed effects %v, want zero tool effects", got)
+		}
+		if !compDone(eofRun.events) {
+			t.Errorf("open-block EOF run did not complete the conversation")
+		}
+
+		// Control: max_tokens truncation of an unclosed block executes nothing.
+		mark = len(plainRecorder.effects())
+		truncRun := compSend(compCtx(t), compConversation(t, plainStack), "s-max-tokens-open-block", nil)
+		if got := plainRecorder.effects()[mark:]; len(got) != 0 {
+			t.Errorf("max_tokens truncation run executed effects %v, want zero tool effects", got)
+		}
+		if !compDone(truncRun.events) {
+			t.Errorf("max_tokens truncation run did not complete the conversation")
+		}
+
+		t.Run("block_stop_empty_args", func(t *testing.T) {
+			mark := len(plainRecorder.effects())
+			run := compSend(compCtx(t), compConversation(t, plainStack), "s-stop-empty-args", nil)
+			if got := plainRecorder.effects()[mark:]; len(got) != 0 {
+				t.Fatalf("empty-args completion executed effects %v, want zero tool effects", got)
+			}
+			if run.err == nil {
+				t.Fatalf("explicit content_block_stop after empty argument bytes surfaced no error, want the public Generate error callback with a zero-effect outcome")
+			}
+		})
+
+		t.Run("block_stop_incomplete_args", func(t *testing.T) {
+			mark := len(plainRecorder.effects())
+			run := compSend(compCtx(t), compConversation(t, plainStack), "s-stop-incomplete-args", nil)
+			if got := plainRecorder.effects()[mark:]; len(got) != 0 {
+				t.Fatalf("incomplete-args completion executed effects %v, want zero tool effects", got)
+			}
+			if run.err == nil {
+				t.Fatalf("explicit content_block_stop after the incomplete prefix {\"q\": surfaced no error, want the public Generate error callback with a zero-effect outcome")
+			}
+		})
+
+		t.Run("block_stop_malformed_args", func(t *testing.T) {
+			mark := len(plainRecorder.effects())
+			run := compSend(compCtx(t), compConversation(t, plainStack), "s-stop-malformed-args", nil)
+			if got := plainRecorder.effects()[mark:]; len(got) != 0 {
+				t.Fatalf("malformed-args completion executed effects %v, want zero tool effects", got)
+			}
+			if run.err == nil {
+				t.Fatalf("explicit content_block_stop after malformed bytes { surfaced no error, want the public Generate error callback with a zero-effect outcome")
+			}
+		})
+	})
+}
