@@ -1,6 +1,7 @@
 package std
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -31,6 +32,53 @@ func CanonicalFingerprint(tool string, args json.RawMessage) stores.Fingerprint 
 	}
 	sum := sha256.Sum256([]byte(tool + "\n" + string(canonical)))
 	return stores.Fingerprint(types.ExactFingerprintVersion + hex.EncodeToString(sum[:]))
+}
+
+// legacyFingerprint reproduces the pre-exact journal fingerprint byte for
+// byte: the SHA-256 of the tool name and the arguments re-encoded through
+// float64, which rounds numbers above 2^53 onto one value. It only finds
+// entries stored before the exact-v1 format; fresh reservations never
+// store it.
+func legacyFingerprint(tool string, args json.RawMessage) stores.Fingerprint {
+	var v any
+	if err := json.Unmarshal(args, &v); err != nil {
+		return legacySum(tool, string(args))
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return legacySum(tool, string(args))
+	}
+	return legacySum(tool, string(b))
+}
+
+func legacySum(tool, canonical string) stores.Fingerprint {
+	sum := sha256.Sum256([]byte(tool + "\n" + canonical))
+	return stores.Fingerprint(hex.EncodeToString(sum[:]))
+}
+
+// proveLegacyIntent refuses a legacy candidate whose stored evidence cannot
+// prove the new call: identical raw bytes, or equal canonical forms once
+// numbers render by their exact decimal value. Missing or unreadable
+// evidence refuses, as does any surviving inequality.
+func proveLegacyIntent(stored, args json.RawMessage) error {
+	if len(stored) == 0 {
+		return fmt.Errorf("stored arguments missing: %w", stores.ErrJournalFingerprintMismatch)
+	}
+	if bytes.Equal(stored, args) {
+		return nil
+	}
+	storedCanon, err := types.CanonicalJSONValue(stored)
+	if err != nil {
+		return fmt.Errorf("stored arguments unreadable: %w", stores.ErrJournalFingerprintMismatch)
+	}
+	argsCanon, err := types.CanonicalJSONValue(args)
+	if err != nil {
+		return fmt.Errorf("call arguments unreadable: %w", stores.ErrJournalFingerprintMismatch)
+	}
+	if !bytes.Equal(storedCanon, argsCanon) {
+		return fmt.Errorf("stored arguments differ: %w", stores.ErrJournalFingerprintMismatch)
+	}
+	return nil
 }
 
 // JournalOption configures Journal.
@@ -90,16 +138,39 @@ func Journal(j stores.Journal, opts ...JournalOption) chains.ToolMiddleware {
 			}
 			session := cfg.sessionID(ctx)
 			key := types.CallKey{SessionID: session, CallID: call.ID}
-			fp := CanonicalFingerprint(call.Name, json.RawMessage(call.Args))
+			args := json.RawMessage(call.Args)
+			fp := CanonicalFingerprint(call.Name, args)
+			pinned := false
 			if prior, err := j.ByFingerprint(ctx, session, fp); err == nil {
 				for _, e := range prior {
 					if e.State == stores.Reserved || e.Result.Outcome == types.Unknown {
 						key.CallID = e.Key
+						pinned = true
 						break
 					}
 				}
 			}
-			entry, created, err := j.Reserve(ctx, key, call.Name, fp, json.RawMessage(call.Args))
+			if !pinned {
+				// A legacy fingerprint is only an unresolved-intent
+				// candidate pointer: rounding can collide unequal
+				// arguments, so the stored entry proves nothing until its
+				// complete arguments match the call exactly.
+				if prior, err := j.ByFingerprint(ctx, session, legacyFingerprint(call.Name, args)); err == nil {
+					for _, e := range prior {
+						if e.State != stores.Reserved && e.Result.Outcome != types.Unknown {
+							continue
+						}
+						if err := proveLegacyIntent(e.Args, args); err != nil {
+							// The refused intent must not run the effect.
+							return types.ToolResult{}, fmt.Errorf("journal intent %s: %w", call.Name, err)
+						}
+						key.CallID = e.Key
+						fp = e.Fingerprint
+						break
+					}
+				}
+			}
+			entry, created, err := j.Reserve(ctx, key, call.Name, fp, args)
 			if err != nil {
 				// A refused identity must not run the effect: the tool
 				// would execute under a call key the journal declined.
