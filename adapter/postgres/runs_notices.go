@@ -63,7 +63,11 @@ func (s *Runs) finish(ctx context.Context, l stores.Lease, state stores.RunState
 	if err != nil {
 		return fmt.Errorf("finish run %s: %w", l.RunID, err)
 	}
-	if err := s.held(r, l, s.db.clock()); err != nil {
+	now, err := s.db.now(ctx, txConn{tx})
+	if err != nil {
+		return fmt.Errorf("finish run %s: %w", l.RunID, err)
+	}
+	if err := s.held(r, l, now); err != nil {
 		return fmt.Errorf("finish: %w", err)
 	}
 	if err := s.refuseSteerPending(ctx, txConn{tx}, r.runID); err != nil {
@@ -133,7 +137,11 @@ func (s *Runs) suspend(ctx context.Context, l stores.Lease, t types.ResumeToken,
 	if err != nil {
 		return fmt.Errorf("suspend run %s: %w", l.RunID, err)
 	}
-	if err := s.held(r, l, s.db.clock()); err != nil {
+	now, err := s.db.now(ctx, txConn{tx})
+	if err != nil {
+		return fmt.Errorf("suspend run %s: %w", l.RunID, err)
+	}
+	if err := s.held(r, l, now); err != nil {
 		return fmt.Errorf("suspend: %w", err)
 	}
 	run, err := s.decode(ctx, r)
@@ -146,6 +154,7 @@ func (s *Runs) suspend(ctx context.Context, l stores.Lease, t types.ResumeToken,
 	r.leaseExpiry = nil
 	token := string(t)
 	r.token = &token
+	r.reason = string(reason)
 	if r.payload, err = s.encode(ctx, run); err != nil {
 		return fmt.Errorf("suspend run %s: %w", l.RunID, err)
 	}
@@ -206,11 +215,23 @@ func (s *Runs) Notices(ctx context.Context, limit int) ([]types.RunNotice, error
 	}
 	defer tx.Rollback(ctx)
 
-	now := s.db.clock()
-	rows, err := tx.Query(ctx,
-		`SELECT seq, id, run_id, session_id, tenant, kind, reason, at FROM run_notice
-		 WHERE claim IS NULL OR claim <= $1 ORDER BY seq LIMIT $2 FOR UPDATE SKIP LOCKED`,
-		now.Add(-noticeClaimTTL), limit)
+	var claimNow *time.Time
+	if s.db.clock != nil {
+		n := s.db.clock()
+		claimNow = &n
+	}
+	var rows pgx.Rows
+	if claimNow != nil {
+		rows, err = tx.Query(ctx,
+			`SELECT seq, id, run_id, session_id, tenant, kind, reason, at FROM run_notice
+			 WHERE claim IS NULL OR claim <= $1 ORDER BY seq LIMIT $2 FOR UPDATE SKIP LOCKED`,
+			claimNow.Add(-noticeClaimTTL), limit)
+	} else {
+		rows, err = tx.Query(ctx,
+			`SELECT seq, id, run_id, session_id, tenant, kind, reason, at FROM run_notice
+			 WHERE claim IS NULL OR claim <= clock_timestamp() - make_interval(secs => $1) ORDER BY seq LIMIT $2 FOR UPDATE SKIP LOCKED`,
+			noticeClaimTTL.Seconds(), limit)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("list notices: %w", err)
 	}
@@ -238,7 +259,11 @@ func (s *Runs) Notices(ctx context.Context, limit int) ([]types.RunNotice, error
 		claimed = append(claimed, p.n)
 	}
 	if len(seqs) > 0 {
-		if _, err := tx.Exec(ctx, `UPDATE run_notice SET claim = $1 WHERE seq = ANY($2)`, now, seqs); err != nil {
+		if claimNow != nil {
+			if _, err := tx.Exec(ctx, `UPDATE run_notice SET claim = $1 WHERE seq = ANY($2)`, *claimNow, seqs); err != nil {
+				return nil, fmt.Errorf("claim notices: %w", err)
+			}
+		} else if _, err := tx.Exec(ctx, `UPDATE run_notice SET claim = clock_timestamp() WHERE seq = ANY($1)`, seqs); err != nil {
 			return nil, fmt.Errorf("claim notices: %w", err)
 		}
 	}

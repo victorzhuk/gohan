@@ -55,7 +55,6 @@ func (a *AuditLog) Append(ctx context.Context, r stores.AuditRecord) error {
 		return fmt.Errorf("audit append: %w", err)
 	}
 	rec := r
-	rec.At = a.db.clock()
 	var prev string
 	err := a.db.pool.QueryRow(ctx,
 		`SELECT hash FROM audit_record WHERE session_id = $1 ORDER BY seq DESC LIMIT 1`,
@@ -68,6 +67,11 @@ func (a *AuditLog) Append(ctx context.Context, r stores.AuditRecord) error {
 	default:
 		return fmt.Errorf("audit append: %w", err)
 	}
+	at, err := a.db.now(ctx, poolConn{a.db.pool})
+	if err != nil {
+		return fmt.Errorf("audit append: %w", err)
+	}
+	rec.At = at
 	rec.Hash = auditHash(rec)
 	raw, err := encodeRecord("AuditRecord", rec)
 	if err != nil {
@@ -297,7 +301,11 @@ func (a *AuditLog) appendCompactionAuditTx(ctx context.Context, tx pgx.Tx, pendi
 	case err != nil:
 		return false, fmt.Errorf("audit compaction append: %w", err)
 	}
-	pending.At = a.db.clock()
+	at, err := a.db.now(ctx, txConn{tx})
+	if err != nil {
+		return false, fmt.Errorf("audit compaction append: %w", err)
+	}
+	pending.At = at
 	pending.Hash = auditHash(pending)
 	raw, err := encodeRecord("AuditRecord", pending)
 	if err != nil {

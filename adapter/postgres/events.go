@@ -51,7 +51,11 @@ func (s *EventLog) Append(ctx context.Context, runID string, e stores.Event) err
 	}
 	e.Meta.RunID = runID
 	if e.Meta.Time.IsZero() {
-		e.Meta.Time = s.db.clock()
+		at, err := s.db.now(ctx, poolConn{s.db.pool})
+		if err != nil {
+			return fmt.Errorf("event append: %w", err)
+		}
+		e.Meta.Time = at
 	}
 	tx, err := s.db.pool.Begin(ctx)
 	if err != nil {
@@ -193,7 +197,11 @@ func (s *EventLog) AppendCompactionEvent(ctx context.Context, publicationID stri
 	stamped := semantic
 	stamped.Meta.Seq = seq
 	if stamped.Meta.Time.IsZero() {
-		stamped.Meta.Time = s.db.clock()
+		at, err := s.db.now(ctx, txConn{tx})
+		if err != nil {
+			return false, fmt.Errorf("event compaction append: %w", err)
+		}
+		stamped.Meta.Time = at
 	}
 	raw, err := encodeEventRecord(stamped)
 	if err != nil {

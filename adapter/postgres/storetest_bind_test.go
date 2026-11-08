@@ -63,6 +63,7 @@ func (b sessionLogBinding) Delete(ctx context.Context, sessionID string) error {
 
 func checkpointToStore(cp storetest.Checkpoint) stores.Checkpoint {
 	return stores.Checkpoint{
+		RunID:          cp.RunID,
 		SessionID:      cp.SessionID,
 		Flow:           cp.Flow,
 		Backend:        cp.Backend,
@@ -78,6 +79,7 @@ func checkpointToStore(cp storetest.Checkpoint) stores.Checkpoint {
 
 func checkpointFromStore(cp stores.Checkpoint) storetest.Checkpoint {
 	return storetest.Checkpoint{
+		RunID:          cp.RunID,
 		SessionID:      cp.SessionID,
 		Flow:           cp.Flow,
 		Backend:        cp.Backend,
@@ -196,7 +198,7 @@ func stateFromStore(s stores.RunState) storetest.RunState {
 }
 
 type runsBinding struct {
-	s stores.Runs
+	s *postgres.Runs
 }
 
 func rowToStore(r storetest.RunRow) stores.Run {
@@ -280,12 +282,89 @@ func (b runsBinding) AckNotice(ctx context.Context, id string) error {
 	return b.s.AckNotice(ctx, id)
 }
 
+func (b runsBinding) SuspendWithReason(ctx context.Context, l storetest.Lease, t types.ResumeToken, reason types.SuspendReason) error {
+	return b.s.SuspendWithReason(ctx, stores.Lease{RunID: l.RunID, Generation: l.Generation}, t, reason)
+}
+
+func (b runsBinding) Preempted(ctx context.Context, limit int) ([]storetest.RunRow, error) {
+	runs, err := b.s.Preempted(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]storetest.RunRow, len(runs))
+	for i, r := range runs {
+		out[i] = runFromStore(r)
+	}
+	return out, nil
+}
+
 func TestRuns(t *testing.T) {
 	storetest.Runs(t, func(t *testing.T) (storetest.RunStore, storetest.RunClock) {
 		t.Helper()
 		clk := &advClock{now: time.Now()}
 		db := newDB(t, bindSchema("runs"), postgres.WithClock(clk.Now))
 		return runsBinding{s: postgres.NewRuns(db)}, clk
+	})
+}
+
+// runsFencedBinding exposes the optional CheckpointRuns surface beside the
+// frozen Runs port view.
+type runsFencedBinding struct {
+	runsBinding
+	cp stores.CheckpointRuns
+}
+
+func (b runsFencedBinding) SuspensionToken(ctx context.Context, runID string) (types.ResumeToken, error) {
+	return b.cp.SuspensionToken(ctx, runID)
+}
+
+func (b runsFencedBinding) ResumingCheckpoint(ctx context.Context, runID string, t types.ResumeToken, ttl time.Duration) (storetest.Lease, error) {
+	l, err := b.cp.ResumingCheckpoint(ctx, runID, t, ttl)
+	return storetest.Lease{RunID: l.RunID, Generation: l.Generation}, err
+}
+
+func TestRunsWithCheckpoints(t *testing.T) {
+	storetest.RunsWithCheckpoints(t, func(t *testing.T) (storetest.RunCheckpointStore, storetest.RunClock) {
+		t.Helper()
+		clk := &advClock{now: time.Now()}
+		db := newDB(t, bindSchema("runs_fence"), postgres.WithClock(clk.Now))
+		runs := postgres.NewRuns(db)
+		return runsFencedBinding{runsBinding{s: runs}, runs}, clk
+	})
+}
+
+// recoveryBinding pairs the checkpoints and runs adapters recovery
+// discovery consults on one schema. Checkpoints carry their run id on the
+// checkpoint itself, so discovery keys on what the suite put.
+type recoveryBinding struct {
+	checkpointsBinding
+	runsBinding
+}
+
+func (b recoveryBinding) Put(ctx context.Context, cp storetest.Checkpoint) (types.ResumeToken, error) {
+	return b.checkpointsBinding.s.Put(ctx, checkpointToStore(cp))
+}
+
+func (b recoveryBinding) ResumeReady(ctx context.Context, limit int) ([]storetest.Checkpoint, error) {
+	cps, err := b.checkpointsBinding.s.ResumeReady(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]storetest.Checkpoint, len(cps))
+	for i, cp := range cps {
+		out[i] = checkpointFromStore(cp)
+	}
+	return out, nil
+}
+
+func TestRecoveryDiscovery(t *testing.T) {
+	storetest.RecoveryDiscovery(t, func(t *testing.T) (storetest.RecoveryStore, error) {
+		t.Helper()
+		db := newDB(t, bindSchema("recovery_suite"))
+		return recoveryBinding{
+			checkpointsBinding{s: postgres.NewCheckpoints(db)},
+			runsBinding{s: postgres.NewRuns(db)},
+		}, nil
 	})
 }
 

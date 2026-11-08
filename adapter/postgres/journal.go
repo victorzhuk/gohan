@@ -46,7 +46,10 @@ func NewJournal(db *DB, opts ...JournalOption) *Journal {
 // A fingerprint mismatch on a live entry is refused with
 // stores.ErrJournalFingerprintMismatch; an expired entry is replaced.
 func (j *Journal) Reserve(ctx context.Context, k types.CallKey, tool string, fp stores.Fingerprint, args json.RawMessage) (stores.Entry, bool, error) {
-	now := j.db.clock()
+	now, err := j.db.now(ctx, poolConn{j.db.pool})
+	if err != nil {
+		return stores.Entry{}, false, fmt.Errorf("journal reserve: %w", err)
+	}
 	tx, err := j.db.pool.Begin(ctx)
 	if err != nil {
 		return stores.Entry{}, false, fmt.Errorf("journal reserve: %w", err)
@@ -67,7 +70,11 @@ func (j *Journal) Reserve(ctx context.Context, k types.CallKey, tool string, fp 
 // commit. It shares the insert-first statement path with Reserve, so both
 // entry points stay atomic inside a caller transaction.
 func (j *Journal) ReserveTx(ctx context.Context, tx pgx.Tx, k types.CallKey, tool string, fp stores.Fingerprint, args json.RawMessage) (stores.Entry, bool, error) {
-	return reserveOnTx(ctx, txConn{tx}, j.schemas, k, tool, fp, args, j.db.clock(), j.ttl)
+	now, err := j.db.now(ctx, txConn{tx})
+	if err != nil {
+		return stores.Entry{}, false, fmt.Errorf("journal reserve: %w", err)
+	}
+	return reserveOnTx(ctx, txConn{tx}, j.schemas, k, tool, fp, args, now, j.ttl)
 }
 
 // Complete records the result on the pool. The entry must be live and
@@ -86,14 +93,22 @@ func (j *Journal) CompleteModel(ctx context.Context, k types.CallKey, res types.
 // caller owns the transaction, so a tool's own row and the journal entry
 // reach one commit or neither survives.
 func (j *Journal) CompleteTx(ctx context.Context, tx pgx.Tx, k types.CallKey, res types.ToolResult) error {
-	_, err := completeOnTx(ctx, txConn{tx}, j.schemas, k, res, stores.ModelCompletion{}, j.db.clock(), j.ttl)
+	now, err := j.db.now(ctx, txConn{tx})
+	if err != nil {
+		return fmt.Errorf("journal complete: %w", err)
+	}
+	_, err = completeOnTx(ctx, txConn{tx}, j.schemas, k, res, stores.ModelCompletion{}, now, j.ttl)
 	return err
 }
 
 // CompleteModelTx is the transaction-taking variant of CompleteModel: a
 // model step's extended entry fields and a caller write commit together.
 func (j *Journal) CompleteModelTx(ctx context.Context, tx pgx.Tx, k types.CallKey, res types.ToolResult, mc stores.ModelCompletion) error {
-	_, err := completeOnTx(ctx, txConn{tx}, j.schemas, k, res, mc, j.db.clock(), j.ttl)
+	now, err := j.db.now(ctx, txConn{tx})
+	if err != nil {
+		return fmt.Errorf("journal complete: %w", err)
+	}
+	_, err = completeOnTx(ctx, txConn{tx}, j.schemas, k, res, mc, now, j.ttl)
 	return err
 }
 
@@ -103,7 +118,11 @@ func (j *Journal) completePool(ctx context.Context, k types.CallKey, res types.T
 		return fmt.Errorf("journal complete: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
-	if _, err := completeOnTx(ctx, txConn{tx}, j.schemas, k, res, mc, j.db.clock(), j.ttl); err != nil {
+	now, err := j.db.now(ctx, txConn{tx})
+	if err != nil {
+		return fmt.Errorf("journal complete: %w", err)
+	}
+	if _, err := completeOnTx(ctx, txConn{tx}, j.schemas, k, res, mc, now, j.ttl); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -115,13 +134,21 @@ func (j *Journal) completePool(ctx context.Context, k types.CallKey, res types.T
 // ByFingerprint lists the session's non-expired entries for a fingerprint,
 // newest first.
 func (j *Journal) ByFingerprint(ctx context.Context, sessionID string, fp stores.Fingerprint) ([]stores.Entry, error) {
-	return j.list(ctx, `SELECT payload FROM journal_record WHERE session_id = $1 AND fingerprint = $2 AND expires_at > $3 ORDER BY at DESC`, sessionID, string(fp), j.db.clock())
+	now, err := j.db.now(ctx, poolConn{j.db.pool})
+	if err != nil {
+		return nil, fmt.Errorf("journal list: %w", err)
+	}
+	return j.list(ctx, `SELECT payload FROM journal_record WHERE session_id = $1 AND fingerprint = $2 AND expires_at > $3 ORDER BY at DESC`, sessionID, string(fp), now)
 }
 
 // Unknown lists the reserved entries whose outcome the process never
 // recorded, so a crash window is visible per session.
 func (j *Journal) Unknown(ctx context.Context, sessionID string) ([]stores.Entry, error) {
-	return j.list(ctx, `SELECT payload FROM journal_record WHERE session_id = $1 AND state = 0 AND expires_at > $2 ORDER BY at`, sessionID, j.db.clock())
+	now, err := j.db.now(ctx, poolConn{j.db.pool})
+	if err != nil {
+		return nil, fmt.Errorf("journal list: %w", err)
+	}
+	return j.list(ctx, `SELECT payload FROM journal_record WHERE session_id = $1 AND state = 0 AND expires_at > $2 ORDER BY at`, sessionID, now)
 }
 
 func (j *Journal) list(ctx context.Context, sql string, args ...any) ([]stores.Entry, error) {

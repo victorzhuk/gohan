@@ -52,22 +52,24 @@ type Telemetry struct {
 
 // DB is the connection surface every store in this package is built from.
 type DB struct {
-	pool        *pgxpool.Pool
-	schema      string
-	clock       func() time.Time
-	autoMigrate bool
-	tel         Telemetry
+	pool          *pgxpool.Pool
+	schema        string
+	clock         func() time.Time
+	checkpointTTL time.Duration
+	autoMigrate   bool
+	tel           Telemetry
 }
 
 // Option configures New.
 type Option func(*dbConfig)
 
 type dbConfig struct {
-	schema      string
-	clock       func() time.Time
-	autoMigrate bool
-	tel         Telemetry
-	poolConfig  *pgxpool.Config
+	schema        string
+	clock         func() time.Time
+	checkpointTTL time.Duration
+	autoMigrate   bool
+	tel           Telemetry
+	poolConfig    *pgxpool.Config
 }
 
 // WithSchema moves every table into the named schema. Two stacks on one
@@ -85,6 +87,13 @@ func WithAutoMigrate() Option {
 // WithClock replaces the store clock.
 func WithClock(now func() time.Time) Option {
 	return func(c *dbConfig) { c.clock = now }
+}
+
+// WithCheckpointTTL gives checkpoints without an explicit expiry a finite
+// lifetime measured from store time at Put. Zero keeps them unexpired; a
+// negative policy is refused before anything is written.
+func WithCheckpointTTL(d time.Duration) Option {
+	return func(c *dbConfig) { c.checkpointTTL = d }
 }
 
 // WithTelemetry wires the adapter's log and metric surface.
@@ -112,6 +121,21 @@ func (db *DB) Pool() *pgxpool.Pool { return db.pool }
 // Close releases the pool.
 func (db *DB) Close() { db.pool.Close() }
 
+// now returns the store instant. The WithClock override wins for tests;
+// otherwise clock_timestamp is read through q, so a caller inside a
+// transaction stamps and compares one consistent database instant instead
+// of the local process clock.
+func (db *DB) now(ctx context.Context, q executor) (time.Time, error) {
+	if db.clock != nil {
+		return db.clock(), nil
+	}
+	var t time.Time
+	if err := q.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&t); err != nil {
+		return time.Time{}, fmt.Errorf("read store time: %w", err)
+	}
+	return t, nil
+}
+
 // Begin opens the caller-owned transaction a tool joins its own write to
 // its journal completion in.
 func (db *DB) Begin(ctx context.Context) (pgx.Tx, error) {
@@ -123,7 +147,7 @@ func (db *DB) Begin(ctx context.Context) (pgx.Tx, error) {
 // with types.ErrSchemaTooOld; a database newer than the embedded
 // migrations warns through gohan.postgres.schema_ahead and builds.
 func New(ctx context.Context, dsn string, opts ...Option) (*DB, error) {
-	c := dbConfig{schema: DefaultSchema, clock: time.Now}
+	c := dbConfig{schema: DefaultSchema}
 	for _, o := range opts {
 		o(&c)
 	}
@@ -144,7 +168,7 @@ func New(ctx context.Context, dsn string, opts ...Option) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("postgres: connect: %w", err)
 	}
-	db := &DB{pool: pool, schema: schema, clock: c.clock, autoMigrate: c.autoMigrate, tel: c.tel}
+	db := &DB{pool: pool, schema: schema, clock: c.clock, checkpointTTL: c.checkpointTTL, autoMigrate: c.autoMigrate, tel: c.tel}
 	if c.autoMigrate {
 		if _, err := Migrate(ctx, pool, MigrateOptions{Schema: schema}); err != nil {
 			db.Close()

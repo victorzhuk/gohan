@@ -58,7 +58,7 @@ func (s *SessionLog) WorkspaceMeta(ctx context.Context, sessionID string) (store
 // row. The caller has already locked session_record, so the lock order is
 // session-then-run and a concurrent Heartbeat or Reclaim cannot move the
 // lease between the validation and the commit.
-func workspaceOwnerTx(ctx context.Context, q executor, sessionID string, owner types.WorkspaceOwner, now time.Time) error {
+func workspaceOwnerTx(ctx context.Context, db *DB, q executor, sessionID string, owner types.WorkspaceOwner) error {
 	var runSession string
 	var state stores.RunState
 	var generation uint64
@@ -69,6 +69,10 @@ func workspaceOwnerTx(ctx context.Context, q executor, sessionID string, owner t
 	if errors.Is(err, pgx.ErrNoRows) {
 		return runNotActive(owner.RunID)
 	}
+	if err != nil {
+		return fmt.Errorf("workspace run %s: %w", owner.RunID, err)
+	}
+	now, err := db.now(ctx, q)
 	if err != nil {
 		return fmt.Errorf("workspace run %s: %w", owner.RunID, err)
 	}
@@ -111,7 +115,7 @@ func (s *SessionLog) SetWorkspaceMeta(ctx context.Context, sessionID string, exp
 	case m.Generation == stored.generation && m.Ref != stored.ref:
 		return 0, fmt.Errorf("workspace session %s ref %s at generation %d: %w", sessionID, m.Ref, expectedGeneration, types.ErrVersionConflict)
 	}
-	if err := workspaceOwnerTx(ctx, q, sessionID, m.Owner, s.db.clock()); err != nil {
+	if err := workspaceOwnerTx(ctx, s.db, q, sessionID, m.Owner); err != nil {
 		return 0, err
 	}
 	owner, err := json.Marshal(m.Owner)
@@ -159,7 +163,7 @@ func (s *SessionLog) ImportWorkspaceMeta(ctx context.Context, sessionID string, 
 	if stored != nil {
 		return types.WorkspaceSnapshot{}, fmt.Errorf("import session %s: metadata already stored: %w", sessionID, types.ErrVersionConflict)
 	}
-	if err := workspaceOwnerTx(ctx, q, sessionID, owner, s.db.clock()); err != nil {
+	if err := workspaceOwnerTx(ctx, s.db, q, sessionID, owner); err != nil {
 		return types.WorkspaceSnapshot{}, fmt.Errorf("import session %s: %w", sessionID, err)
 	}
 	encoded, err := json.Marshal(owner)

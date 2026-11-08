@@ -63,13 +63,14 @@ type runRow struct {
 	generation  uint64
 	leaseExpiry *time.Time
 	token       *string
+	reason      string
 }
 
-const runColumns = `run_id, session_id, tenant, operation_id, state, seq, result_ref, payload, started_at, heartbeat_at, generation, lease_expires, resume_token`
+const runColumns = `run_id, session_id, tenant, operation_id, state, seq, result_ref, payload, started_at, heartbeat_at, generation, lease_expires, resume_token, suspend_reason`
 
 func scanRunRow(row pgx.Row) (*runRow, error) {
 	var r runRow
-	err := row.Scan(&r.runID, &r.sessionID, &r.tenant, &r.operationID, &r.state, &r.seq, &r.resultRef, &r.payload, &r.startedAt, &r.heartbeatAt, &r.generation, &r.leaseExpiry, &r.token)
+	err := row.Scan(&r.runID, &r.sessionID, &r.tenant, &r.operationID, &r.state, &r.seq, &r.resultRef, &r.payload, &r.startedAt, &r.heartbeatAt, &r.generation, &r.leaseExpiry, &r.token, &r.reason)
 	if err != nil {
 		return nil, err
 	}
@@ -171,6 +172,43 @@ func lockOperation(ctx context.Context, q executor, tenant, operationID string) 
 	return nil
 }
 
+// sessionOf reads the owning session of a run without locking, so the
+// caller can take the session advisory lock before the run row lock.
+func (s *Runs) sessionOf(ctx context.Context, q executor, runID string) (string, error) {
+	var sessionID string
+	err := q.QueryRow(ctx, `SELECT session_id FROM run_record WHERE run_id = $1`, runID).Scan(&sessionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", runNotFound(runID, "run")
+	}
+	if err != nil {
+		return "", fmt.Errorf("run %s: %w", runID, err)
+	}
+	return sessionID, nil
+}
+
+// liveSessionOwner names the newest run of the session while its lease is
+// live; an empty name means the session is free. Callers hold the session
+// advisory lock, so the answer stays stable until they commit.
+func (s *Runs) liveSessionOwner(ctx context.Context, q executor, sessionID string, now time.Time) (string, error) {
+	var liveID string
+	var liveState stores.RunState
+	var liveExpiry *time.Time
+	err := q.QueryRow(ctx,
+		`SELECT run_id, state, lease_expires FROM run_record WHERE session_id = $1 ORDER BY started_at DESC LIMIT 1`, sessionID).
+		Scan(&liveID, &liveState, &liveExpiry)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("live run for session %s: %w", sessionID, err)
+	}
+	live := runRow{runID: liveID, state: liveState, leaseExpiry: liveExpiry}
+	if live.active(now) {
+		return liveID, nil
+	}
+	return "", nil
+}
+
 // Start records a new run and mints its lease. A live lease on the session
 // refuses with types.ErrRunActive; a recorded operation id refuses with
 // stores.OperationExistsError naming the recorded run. For a non-empty
@@ -204,27 +242,22 @@ func (s *Runs) Start(ctx context.Context, r stores.Run, ttl time.Duration) (stor
 			return stores.Lease{}, fmt.Errorf("start run %s: %w", r.RunID, err)
 		}
 	}
-	var liveID string
-	var liveState stores.RunState
-	var liveExpiry *time.Time
-	err = tx.QueryRow(ctx,
-		`SELECT run_id, state, lease_expires FROM run_record WHERE session_id = $1 ORDER BY started_at DESC LIMIT 1`, r.SessionID).
-		Scan(&liveID, &liveState, &liveExpiry)
-	switch {
-	case err == nil:
-		live := runRow{runID: liveID, state: liveState, leaseExpiry: liveExpiry}
-		if live.active(s.db.clock()) {
-			return stores.Lease{}, fmt.Errorf("%w: run %s", types.ErrRunActive, liveID)
-		}
-	case !errors.Is(err, pgx.ErrNoRows):
+	now, err := s.db.now(ctx, txConn{tx})
+	if err != nil {
 		return stores.Lease{}, fmt.Errorf("start run %s: %w", r.RunID, err)
+	}
+	owner, err := s.liveSessionOwner(ctx, txConn{tx}, r.SessionID, now)
+	if err != nil {
+		return stores.Lease{}, fmt.Errorf("start run %s: %w", r.RunID, err)
+	}
+	if owner != "" {
+		return stores.Lease{}, fmt.Errorf("%w: run %s", types.ErrRunActive, owner)
 	}
 
 	generation, err := nextGeneration(ctx, txConn{tx})
 	if err != nil {
 		return stores.Lease{}, fmt.Errorf("start run %s: %w", r.RunID, err)
 	}
-	now := s.db.clock()
 	r.State = stores.Running
 	r.StartedAt = now
 	r.Heartbeat = now
@@ -265,7 +298,10 @@ func (s *Runs) Heartbeat(ctx context.Context, l stores.Lease) (stores.Lease, err
 	if err != nil {
 		return stores.Lease{}, fmt.Errorf("heartbeat run %s: %w", l.RunID, err)
 	}
-	now := s.db.clock()
+	now, err := s.db.now(ctx, txConn{tx})
+	if err != nil {
+		return stores.Lease{}, fmt.Errorf("heartbeat run %s: %w", l.RunID, err)
+	}
 	if err := s.held(r, l, now); err != nil {
 		return stores.Lease{}, fmt.Errorf("heartbeat: %w", err)
 	}
@@ -295,8 +331,8 @@ func (s *Runs) Heartbeat(ctx context.Context, l stores.Lease) (stores.Lease, err
 
 func (s *Runs) persist(ctx context.Context, tx pgx.Tx, r *runRow) error {
 	if _, err := tx.Exec(ctx,
-		`UPDATE run_record SET state = $1, seq = $2, result_ref = $3, payload = $4, heartbeat_at = $5, generation = $6, lease_expires = $7, resume_token = $8 WHERE run_id = $9`,
-		r.state, r.seq, r.resultRef, r.payload, r.heartbeatAt, r.generation, r.leaseExpiry, r.token, r.runID); err != nil {
+		`UPDATE run_record SET state = $1, seq = $2, result_ref = $3, payload = $4, heartbeat_at = $5, generation = $6, lease_expires = $7, resume_token = $8, suspend_reason = $9 WHERE run_id = $10`,
+		r.state, r.seq, r.resultRef, r.payload, r.heartbeatAt, r.generation, r.leaseExpiry, r.token, r.reason, r.runID); err != nil {
 		return err
 	}
 	return nil
@@ -329,7 +365,9 @@ func (s *Runs) ByID(ctx context.Context, runID string) (stores.Run, error) {
 }
 
 // Resuming takes a fresh lease on a suspended run and marks it Resuming, so
-// a crash after this point leaves a stale Resuming run Stale lists.
+// a crash after this point leaves a stale Resuming run Stale lists. The
+// session advisory lock precedes the run row lock and a live run in the
+// same session refuses the resume without changing either row.
 func (s *Runs) Resuming(ctx context.Context, runID string, ttl time.Duration) (stores.Lease, error) {
 	tx, err := s.db.pool.Begin(ctx)
 	if err != nil {
@@ -337,6 +375,13 @@ func (s *Runs) Resuming(ctx context.Context, runID string, ttl time.Duration) (s
 	}
 	defer tx.Rollback(ctx)
 
+	sessionID, err := s.sessionOf(ctx, txConn{tx}, runID)
+	if err != nil {
+		return stores.Lease{}, fmt.Errorf("resume run %s: %w", runID, err)
+	}
+	if err := lockSession(ctx, txConn{tx}, sessionID); err != nil {
+		return stores.Lease{}, fmt.Errorf("resume run %s: %w", runID, err)
+	}
 	r, err := scanRunRow(tx.QueryRow(ctx, `SELECT `+runColumns+` FROM run_record WHERE run_id = $1 FOR UPDATE`, runID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return stores.Lease{}, runNotFound(runID, "run")
@@ -347,11 +392,21 @@ func (s *Runs) Resuming(ctx context.Context, runID string, ttl time.Duration) (s
 	if r.state != stores.Suspended {
 		return stores.Lease{}, runNotActive(runID)
 	}
+	now, err := s.db.now(ctx, txConn{tx})
+	if err != nil {
+		return stores.Lease{}, fmt.Errorf("resume run %s: %w", runID, err)
+	}
+	owner, err := s.liveSessionOwner(ctx, txConn{tx}, sessionID, now)
+	if err != nil {
+		return stores.Lease{}, fmt.Errorf("resume run %s: %w", runID, err)
+	}
+	if owner != "" {
+		return stores.Lease{}, fmt.Errorf("%w: run %s", types.ErrRunActive, owner)
+	}
 	generation, err := nextGeneration(ctx, txConn{tx})
 	if err != nil {
 		return stores.Lease{}, fmt.Errorf("resume run %s: %w", runID, err)
 	}
-	now := s.db.clock()
 	run, err := s.decode(ctx, r)
 	if err != nil {
 		return stores.Lease{}, fmt.Errorf("resume run %s: %w", runID, err)
@@ -375,10 +430,100 @@ func (s *Runs) Resuming(ctx context.Context, runID string, ttl time.Duration) (s
 	return stores.Lease{RunID: runID, Generation: generation, Expires: expires}, nil
 }
 
+// SuspensionToken returns the token the suspended run currently waits on;
+// a run that is not suspended or carries no token reports
+// types.ErrTokenMismatch.
+func (s *Runs) SuspensionToken(ctx context.Context, runID string) (types.ResumeToken, error) {
+	r, err := scanRunRow(s.db.pool.QueryRow(ctx, `SELECT `+runColumns+` FROM run_record WHERE run_id = $1`, runID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", runNotFound(runID, "run")
+	}
+	if err != nil {
+		return "", fmt.Errorf("suspension token run %s: %w", runID, err)
+	}
+	if r.state != stores.Suspended || r.token == nil || *r.token == "" {
+		return "", fmt.Errorf("%w: run %s", types.ErrTokenMismatch, runID)
+	}
+	return types.ResumeToken(*r.token), nil
+}
+
+// ResumingCheckpoint mints a resume lease only while the run is suspended
+// on exactly t and no other run holds the session; the session advisory
+// lock precedes the run row lock, matching Start's serialization order. A
+// token mismatch refuses without touching the newer suspension.
+func (s *Runs) ResumingCheckpoint(ctx context.Context, runID string, t types.ResumeToken, ttl time.Duration) (stores.Lease, error) {
+	tx, err := s.db.pool.Begin(ctx)
+	if err != nil {
+		return stores.Lease{}, fmt.Errorf("resume checkpoint %s: %w", runID, err)
+	}
+	defer tx.Rollback(ctx)
+
+	sessionID, err := s.sessionOf(ctx, txConn{tx}, runID)
+	if err != nil {
+		return stores.Lease{}, fmt.Errorf("resume checkpoint %s: %w", runID, err)
+	}
+	if err := lockSession(ctx, txConn{tx}, sessionID); err != nil {
+		return stores.Lease{}, fmt.Errorf("resume checkpoint %s: %w", runID, err)
+	}
+	r, err := scanRunRow(tx.QueryRow(ctx, `SELECT `+runColumns+` FROM run_record WHERE run_id = $1 FOR UPDATE`, runID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return stores.Lease{}, runNotFound(runID, "run")
+	}
+	if err != nil {
+		return stores.Lease{}, fmt.Errorf("resume checkpoint %s: %w", runID, err)
+	}
+	if r.state != stores.Suspended {
+		return stores.Lease{}, runNotActive(runID)
+	}
+	if r.token == nil || *r.token != string(t) {
+		return stores.Lease{}, fmt.Errorf("%w: run %s", types.ErrTokenMismatch, runID)
+	}
+	now, err := s.db.now(ctx, txConn{tx})
+	if err != nil {
+		return stores.Lease{}, fmt.Errorf("resume checkpoint %s: %w", runID, err)
+	}
+	owner, err := s.liveSessionOwner(ctx, txConn{tx}, sessionID, now)
+	if err != nil {
+		return stores.Lease{}, fmt.Errorf("resume checkpoint %s: %w", runID, err)
+	}
+	if owner != "" {
+		return stores.Lease{}, fmt.Errorf("%w: run %s", types.ErrRunActive, owner)
+	}
+	generation, err := nextGeneration(ctx, txConn{tx})
+	if err != nil {
+		return stores.Lease{}, fmt.Errorf("resume checkpoint %s: %w", runID, err)
+	}
+	run, err := s.decode(ctx, r)
+	if err != nil {
+		return stores.Lease{}, fmt.Errorf("resume checkpoint %s: %w", runID, err)
+	}
+	run.State = stores.Resuming
+	run.Heartbeat = now
+	r.state = stores.Resuming
+	r.heartbeatAt = now
+	r.generation = generation
+	expires := now.Add(ttl)
+	r.leaseExpiry = &expires
+	if r.payload, err = s.encode(ctx, run); err != nil {
+		return stores.Lease{}, fmt.Errorf("resume checkpoint %s: %w", runID, err)
+	}
+	if err := s.persist(ctx, tx, r); err != nil {
+		return stores.Lease{}, fmt.Errorf("resume checkpoint %s: %w", runID, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return stores.Lease{}, fmt.Errorf("resume checkpoint %s: %w", runID, err)
+	}
+	return stores.Lease{RunID: runID, Generation: generation, Expires: expires}, nil
+}
+
 // Stale lists up to limit runs whose heartbeat is older than staleAfter by
 // the store's clock, in heartbeat order, covering Running and Resuming.
 func (s *Runs) Stale(ctx context.Context, staleAfter time.Duration, limit int) ([]stores.Run, error) {
-	cutoff := s.db.clock().Add(-staleAfter)
+	now, err := s.db.now(ctx, poolConn{s.db.pool})
+	if err != nil {
+		return nil, fmt.Errorf("list stale runs: %w", err)
+	}
+	cutoff := now.Add(-staleAfter)
 	rows, err := s.db.pool.Query(ctx,
 		`SELECT `+runColumns+` FROM run_record WHERE state IN (0, 2) AND heartbeat_at <= $1 ORDER BY heartbeat_at LIMIT $2`,
 		cutoff, limit)
@@ -392,10 +537,12 @@ func (s *Runs) Stale(ctx context.Context, staleAfter time.Duration, limit int) (
 	return s.decodeAll(ctx, rs)
 }
 
-// Preempted lists up to limit suspended runs in heartbeat order.
+// Preempted lists up to limit runs whose stored suspension reason is
+// Preempted, in heartbeat order; every other suspended reason stays out.
 func (s *Runs) Preempted(ctx context.Context, limit int) ([]stores.Run, error) {
 	rows, err := s.db.pool.Query(ctx,
-		`SELECT `+runColumns+` FROM run_record WHERE state = 1 ORDER BY heartbeat_at LIMIT $1`, limit)
+		`SELECT `+runColumns+` FROM run_record WHERE state = $1 AND suspend_reason = $2 ORDER BY heartbeat_at LIMIT $3`,
+		stores.Suspended, string(types.Preempted), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list preempted runs: %w", err)
 	}
@@ -418,8 +565,12 @@ func (s *Runs) decodeAll(ctx context.Context, rs []*runRow) ([]stores.Run, error
 	return out, nil
 }
 
-// Reclaim takes a fresh lease on a run Stale listed. The row lock plus the
-// expiry recheck make exactly one concurrent reaper win.
+// Reclaim takes a fresh lease on a run Stale listed. Only an expired
+// stored Running or Resuming row qualifies; a terminal or suspended run
+// refuses without minting ownership. The session advisory lock precedes
+// the run row lock and a live run in the same session refuses the
+// reclaim, and the row lock plus the expiry recheck make exactly one
+// concurrent reaper win.
 func (s *Runs) Reclaim(ctx context.Context, r stores.Run, ttl time.Duration) (stores.Lease, error) {
 	tx, err := s.db.pool.Begin(ctx)
 	if err != nil {
@@ -427,6 +578,13 @@ func (s *Runs) Reclaim(ctx context.Context, r stores.Run, ttl time.Duration) (st
 	}
 	defer tx.Rollback(ctx)
 
+	sessionID, err := s.sessionOf(ctx, txConn{tx}, r.RunID)
+	if err != nil {
+		return stores.Lease{}, fmt.Errorf("reclaim run %s: %w", r.RunID, err)
+	}
+	if err := lockSession(ctx, txConn{tx}, sessionID); err != nil {
+		return stores.Lease{}, fmt.Errorf("reclaim run %s: %w", r.RunID, err)
+	}
 	row, err := scanRunRow(tx.QueryRow(ctx, `SELECT `+runColumns+` FROM run_record WHERE run_id = $1 FOR UPDATE`, r.RunID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return stores.Lease{}, runNotFound(r.RunID, "run")
@@ -434,9 +592,24 @@ func (s *Runs) Reclaim(ctx context.Context, r stores.Run, ttl time.Duration) (st
 	if err != nil {
 		return stores.Lease{}, fmt.Errorf("reclaim run %s: %w", r.RunID, err)
 	}
-	now := s.db.clock()
+	now, err := s.db.now(ctx, txConn{tx})
+	if err != nil {
+		return stores.Lease{}, fmt.Errorf("reclaim run %s: %w", r.RunID, err)
+	}
+	switch row.state {
+	case stores.Running, stores.Resuming:
+	default:
+		return stores.Lease{}, runNotActive(r.RunID)
+	}
 	if !row.expiredAt(now) {
 		return stores.Lease{}, fmt.Errorf("%w: run %s lease is live", types.ErrRunNotActive, r.RunID)
+	}
+	owner, err := s.liveSessionOwner(ctx, txConn{tx}, sessionID, now)
+	if err != nil {
+		return stores.Lease{}, fmt.Errorf("reclaim run %s: %w", r.RunID, err)
+	}
+	if owner != "" {
+		return stores.Lease{}, fmt.Errorf("%w: run %s", types.ErrRunActive, owner)
 	}
 	generation, err := nextGeneration(ctx, txConn{tx})
 	if err != nil {
@@ -475,8 +648,12 @@ func (s *Runs) SessionLeaseActive(ctx context.Context, sessionID string) bool {
 	if err != nil {
 		return false
 	}
+	now, err := s.db.now(ctx, poolConn{s.db.pool})
+	if err != nil {
+		return false
+	}
 	r := runRow{state: state, leaseExpiry: expiry}
-	return r.active(s.db.clock())
+	return r.active(now)
 }
 
 // Signal appends one mailbox entry for a running run; the bound and the
@@ -506,8 +683,12 @@ func (s *Runs) Signal(ctx context.Context, runID string, sig stores.Signal) erro
 	if pending >= stores.MaxPendingSignals {
 		return fmt.Errorf("%w: run %s", types.ErrMailboxFull, runID)
 	}
+	now, err := s.db.now(ctx, txConn{tx})
+	if err != nil {
+		return fmt.Errorf("signal run %s: %w", runID, err)
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO run_signal (run_id, kind, message, at) VALUES ($1, $2, $3, $4)`,
-		runID, sig.Kind, sig.Message, s.db.clock()); err != nil {
+		runID, sig.Kind, sig.Message, now); err != nil {
 		return fmt.Errorf("signal run %s: %w", runID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -532,7 +713,11 @@ func (s *Runs) Drain(ctx context.Context, l stores.Lease) ([]stores.Signal, erro
 	if err != nil {
 		return nil, fmt.Errorf("drain run %s: %w", l.RunID, err)
 	}
-	if err := s.held(r, l, s.db.clock()); err != nil {
+	now, err := s.db.now(ctx, txConn{tx})
+	if err != nil {
+		return nil, fmt.Errorf("drain run %s: %w", l.RunID, err)
+	}
+	if err := s.held(r, l, now); err != nil {
 		return nil, fmt.Errorf("drain: %w", err)
 	}
 	rows, err := tx.Query(ctx, `DELETE FROM run_signal WHERE run_id = $1 RETURNING kind, message, at`, l.RunID)
@@ -572,11 +757,15 @@ var _ sessionRunFinder = (*Runs)(nil)
 // reach a run another pod started; owner authorization stays with that
 // lane, and Signal remains the cross-pod control handle.
 func (s *Runs) RunForSession(ctx context.Context, sessionID string) (stores.Run, error) {
+	now, err := s.db.now(ctx, poolConn{s.db.pool})
+	if err != nil {
+		return stores.Run{}, fmt.Errorf("run for session %s: %w", sessionID, err)
+	}
 	r, err := scanRunRow(s.db.pool.QueryRow(ctx,
 		`SELECT `+runColumns+` FROM run_record
 		 WHERE session_id = $1 AND state IN ($2, $3) AND lease_expires IS NOT NULL AND lease_expires > $4
 		 ORDER BY started_at DESC, run_id DESC LIMIT 1`,
-		sessionID, stores.Running, stores.Resuming, s.db.clock()))
+		sessionID, stores.Running, stores.Resuming, now))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return stores.Run{}, runNotFound(sessionID, "session")
 	}

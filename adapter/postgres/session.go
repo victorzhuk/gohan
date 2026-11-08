@@ -194,7 +194,10 @@ func (s *SessionLog) Append(ctx context.Context, sessionID string, expectedVersi
 	}
 	defer tx.Rollback(ctx)
 
-	now := s.db.clock()
+	now, err := s.db.now(ctx, txConn{tx})
+	if err != nil {
+		return 0, err
+	}
 	version, history, meta, owner, err := s.appendLocked(ctx, tx, sessionID, expectedVersion, msgs, now)
 	if err != nil {
 		return 0, err
@@ -386,7 +389,10 @@ func (s *SessionLog) AppendCompaction(ctx context.Context, sessionID string, exp
 	if err != nil {
 		return 0, fmt.Errorf("compaction session %s: %w", sessionID, err)
 	}
-	now := s.db.clock()
+	now, err := s.db.now(ctx, txConn{tx})
+	if err != nil {
+		return 0, err
+	}
 	meta.LastActivity = now
 	meta.Messages++
 	version := r.version + 1
@@ -602,7 +608,12 @@ func (s *SessionLog) Purge(ctx context.Context, olderThan time.Time) (int, error
 			continue
 		}
 		if r.archived {
-			if meta.LastActivity.Before(s.db.clock().Add(-archivedRetention)) {
+			archivedNow, aerr := s.db.now(ctx, poolConn{s.db.pool})
+			if aerr != nil {
+				rows.Close()
+				return 0, aerr
+			}
+			if meta.LastActivity.Before(archivedNow.Add(-archivedRetention)) {
 				candidates = append(candidates, r.id)
 			}
 			continue
@@ -615,7 +626,11 @@ func (s *SessionLog) Purge(ctx context.Context, olderThan time.Time) (int, error
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("purge sessions: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM session_cursor WHERE expires_at <= $1`, s.db.clock()); err != nil {
+	purgeNow, err := s.db.now(ctx, txConn{tx})
+	if err != nil {
+		return 0, fmt.Errorf("purge sessions: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM session_cursor WHERE expires_at <= $1`, purgeNow); err != nil {
 		return 0, fmt.Errorf("purge sessions: %w", err)
 	}
 	for _, id := range candidates {
@@ -679,7 +694,11 @@ func (s *SessionLog) Sessions(ctx context.Context, owner types.SessionOwner, q s
 	if err != nil {
 		return nil, "", fmt.Errorf("list sessions: %w", err)
 	}
-	if _, err := s.db.pool.Exec(ctx, `DELETE FROM session_cursor WHERE expires_at <= $1`, s.db.clock()); err != nil {
+	sweepNow, err := s.db.now(ctx, poolConn{s.db.pool})
+	if err != nil {
+		return nil, "", fmt.Errorf("list sessions: %w", err)
+	}
+	if _, err := s.db.pool.Exec(ctx, `DELETE FROM session_cursor WHERE expires_at <= $1`, sweepNow); err != nil {
 		return nil, "", fmt.Errorf("list sessions: %w", err)
 	}
 	if q.After == "" {
@@ -724,7 +743,10 @@ func (s *SessionLog) materializeSessionCursor(ctx context.Context, cursorID stri
 	if q.Control != nil {
 		where += ` AND convert_from(payload, 'utf8')::jsonb->'payload'->>'control' = ` + addArg(strconv.Itoa(int(*q.Control)))
 	}
-	now := s.db.clock()
+	now, err := s.db.now(ctx, poolConn{s.db.pool})
+	if err != nil {
+		return fmt.Errorf("list sessions: %w", err)
+	}
 	tx, err := s.db.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("list sessions: %w", err)
@@ -773,7 +795,11 @@ func (s *SessionLog) readSessionCursorPage(ctx context.Context, cursorID string,
 	if stored != filters {
 		return nil, "", fmt.Errorf("%w: filters changed", errInvalidSessionCursor)
 	}
-	if !s.db.clock().Before(expires) {
+	cursorNow, cerr := s.db.now(ctx, poolConn{s.db.pool})
+	if cerr != nil {
+		return nil, "", fmt.Errorf("list sessions: %w", cerr)
+	}
+	if !cursorNow.Before(expires) {
 		return nil, "", fmt.Errorf("%w: cursor expired", errInvalidSessionCursor)
 	}
 	rows, err := s.db.pool.Query(ctx,
@@ -929,9 +955,13 @@ func (s *SessionLog) UpdateSession(ctx context.Context, sessionID string, p stor
 	if err != nil {
 		return fmt.Errorf("update session %s: %w", sessionID, err)
 	}
+	updateNow, err := s.db.now(ctx, txConn{tx})
+	if err != nil {
+		return fmt.Errorf("update session %s: %w", sessionID, err)
+	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE session_record SET archived = $1, payload = $2, updated_at = $3 WHERE session_id = $4`,
-		r.archived, payload, s.db.clock(), sessionID); err != nil {
+		r.archived, payload, updateNow, sessionID); err != nil {
 		return fmt.Errorf("update session %s: %w", sessionID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {

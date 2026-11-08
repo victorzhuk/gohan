@@ -76,7 +76,11 @@ func (s *Checkpoints) live(ctx context.Context, q executor, t types.ResumeToken)
 	if r.consumed {
 		return nil, fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenConsumed)
 	}
-	if r.expired(s.db.clock()) {
+	now, err := s.db.now(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	if r.expired(now) {
 		return nil, fmt.Errorf("gohan: resume token %s: %w", t, types.ErrTokenExpired)
 	}
 	return r, nil
@@ -103,8 +107,13 @@ func encodeCheckpoint(cp stores.Checkpoint) ([]byte, error) {
 	return envelope, nil
 }
 
-// Put mints a fresh single-use token for cp.
+// Put mints a fresh single-use token for cp. Without an explicit expiry a
+// positive configured TTL bounds the checkpoint from store time; with zero
+// TTL it never expires.
 func (s *Checkpoints) Put(ctx context.Context, cp stores.Checkpoint) (types.ResumeToken, error) {
+	if s.db.checkpointTTL < 0 {
+		return "", fmt.Errorf("put checkpoint: ttl %s: %w", s.db.checkpointTTL, types.ErrInputInvalid)
+	}
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", fmt.Errorf("gohan: mint resume token: %w", err)
@@ -123,13 +132,30 @@ func (s *Checkpoints) Put(ctx context.Context, cp stores.Checkpoint) (types.Resu
 			runID = ri.RunID
 		}
 	}
+	if cp.ExpiresAt.IsZero() && s.db.checkpointTTL > 0 && s.db.clock == nil {
+		if _, err := s.db.pool.Exec(ctx,
+			`INSERT INTO checkpoint_record (token, run_id, session_id, expires_at, payload, created_at)
+			 VALUES ($1, $2, $3, clock_timestamp() + make_interval(secs => $4), $5, clock_timestamp())`,
+			string(t), runID, cp.SessionID, s.db.checkpointTTL.Seconds(), payload); err != nil {
+			return "", fmt.Errorf("put checkpoint: %w", err)
+		}
+		return t, nil
+	}
+	now, err := s.db.now(ctx, poolConn{s.db.pool})
+	if err != nil {
+		return "", fmt.Errorf("put checkpoint: %w", err)
+	}
 	var expires *time.Time
-	if !cp.ExpiresAt.IsZero() {
+	switch {
+	case !cp.ExpiresAt.IsZero():
 		expires = &cp.ExpiresAt
+	case s.db.checkpointTTL > 0:
+		e := now.Add(s.db.checkpointTTL)
+		expires = &e
 	}
 	if _, err := s.db.pool.Exec(ctx,
 		`INSERT INTO checkpoint_record (token, run_id, session_id, expires_at, payload, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
-		string(t), runID, cp.SessionID, expires, payload, s.db.clock()); err != nil {
+		string(t), runID, cp.SessionID, expires, payload, now); err != nil {
 		return "", fmt.Errorf("put checkpoint: %w", err)
 	}
 	return t, nil
@@ -293,10 +319,20 @@ func (s *Checkpoints) UpdatePending(ctx context.Context, t types.ResumeToken, ex
 	return nil
 }
 
-// ResumeReady lists consumed checkpoints, oldest first.
+// ResumeReady lists consumed checkpoints whose run still waits on the same
+// token, unexpired by store time, oldest first; the limit applies only to
+// the eligible rows.
 func (s *Checkpoints) ResumeReady(ctx context.Context, limit int) ([]stores.Checkpoint, error) {
+	now, err := s.db.now(ctx, poolConn{s.db.pool})
+	if err != nil {
+		return nil, fmt.Errorf("list resume ready: %w", err)
+	}
 	rows, err := s.db.pool.Query(ctx,
-		`SELECT payload FROM checkpoint_record WHERE consumed ORDER BY created_at LIMIT $1`, limit)
+		`SELECT c.payload FROM checkpoint_record c
+		 JOIN run_record r ON r.resume_token = c.token AND r.state = $1
+		 WHERE c.consumed AND (c.expires_at IS NULL OR c.expires_at > $2)
+		 ORDER BY c.created_at LIMIT $3`,
+		stores.Suspended, now, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list resume ready: %w", err)
 	}
