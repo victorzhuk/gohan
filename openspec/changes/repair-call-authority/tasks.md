@@ -16,7 +16,7 @@ Parent references identify unique primary ownership, not duplicated implementati
 
 - [x] 2.1 Add native and foreign regressions for later run/call IDs and changed non-fingerprinted arguments. Establish failures for `permission.ordinary-approval-call-bound` and `permission.approval-full-arguments-bound`. Parent 2.1.
 - [x] 2.2 Bind receipt and context authority to complete persisted call identity. Preserve reads, deduplication and `DiffFromLast`. Verify both call-binding scenarios and existing scoped grants. Parent 2.2.
-- [ ] 2.3 Revalidate current scopes, exclusions, separation and every quorum vote before execution. Verify `permission.tightened-scope-refused`, `permission.tightened-votes-revalidated`, duplicate votes and token preservation. Parent 2.3.
+- [x] 2.3 Revalidate current scopes, exclusions, separation and every quorum vote before execution. Verify `permission.tightened-scope-refused`, `permission.tightened-votes-revalidated`, duplicate votes and token preservation. Parent 2.3.
 - [ ] 2.4 Implement exact numeric canonicalization and versioned fingerprints. Refuse legacy rounded grants. Preserve exact history rendering. Verify `tools.exact-numeric-fingerprint` and `permission.legacy-rounded-grant-refused` with equivalent decimal spellings and nested values. Parent 2.4.
 - [ ] 2.5 Compare unresolved legacy journal candidates using exact full arguments. Preserve original entry identity, stored fingerprint and downstream key on exact matches. Verify `tools.legacy-intent-exact-match`, fresh completed-success behavior and missing-evidence refusal. Parent 2.5.
 - [ ] 2.6 Update existing compatibility documentation and `[Unreleased]` entries. Verify receipt authority, mixed-version drain and rollback instructions against the repairs. Parent 2.6.

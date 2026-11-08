@@ -158,14 +158,18 @@ func validateResumeInput(cp stores.Checkpoint, in stores.ResumeInput) error {
 
 // checkpointEligibility checks the transport principal against one recorded
 // approval request under the current policy: the recorded eligibility must
-// still hold, a policy error never grants permission, and separation from
-// the originator applies when the policy requires it.
+// still hold, the scope the current policy requires must be in the
+// approver's hands, a policy error never grants permission, and separation
+// from the originator applies when the policy requires it.
 func checkpointEligibility(ap checkpointApproval, pol permission.ApprovalPolicy, approver, originator types.Principal) error {
 	if err := permission.CheckEligibility(permission.ApprovalRequest{
 		Risk:     ap.Risk,
 		Eligible: ap.Eligible,
 	}, approver); err != nil {
 		return err
+	}
+	if pol.Scope != "" && !slices.Contains(approver.Scopes, pol.Scope) {
+		return fmt.Errorf("%w: missing scope %q", types.ErrApproverNotEligible, pol.Scope)
 	}
 	if pol.SeparateFromOriginator && approver.Subject == originator.Subject && approver.Tenant == originator.Tenant {
 		return fmt.Errorf("%w: policy separates the approval from the originator", types.ErrApproverNotEligible)
@@ -348,7 +352,7 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 				return
 			}
 			return
-		case cp.Reason == types.HumanApproval && r.Verdict == stores.VerdictApprove && !approvalCompletes(env, pols, approver):
+		case cp.Reason == types.HumanApproval && r.Verdict == stores.VerdictApprove && !approvalCompletes(env, pols, approver, cp.Originator):
 			next := cloneCheckpoint(cp)
 			nenv := env
 			for i := range nenv.Approvals {
@@ -631,9 +635,11 @@ func applyEdit(env checkpointEnvelope, cp stores.Checkpoint, r stores.ResumeInpu
 	return next, nil
 }
 
-// approvalCompletes reports whether this approval, added to the recorded
-// ones, brings the active ask to the quorum the current policy sets.
-func approvalCompletes(env checkpointEnvelope, pols []permission.ApprovalPolicy, approver types.Principal) bool {
+// approvalCompletes reports whether this approval, joined with the
+// recorded ones that still qualify under the current policy, brings the
+// active ask to the quorum the current policy sets. A recorded vote the
+// current policy no longer admits does not count toward the quorum.
+func approvalCompletes(env checkpointEnvelope, pols []permission.ApprovalPolicy, approver, originator types.Principal) bool {
 	if len(env.Approvals) == 0 {
 		// No persisted approvals means no active ask: the checkpoint
 		// suspends without approval-controlled calls, so any approval
@@ -645,7 +651,12 @@ func approvalCompletes(env checkpointEnvelope, pols []permission.ApprovalPolicy,
 	if len(pols) > 0 {
 		pol = pols[0]
 	}
-	count := len(ap.ApprovedBy)
+	count := 0
+	for _, vote := range ap.ApprovedBy {
+		if checkpointEligibility(ap, pol, vote, originator) == nil {
+			count++
+		}
+	}
 	if !approverRecorded(ap, approver) {
 		count++
 	}
