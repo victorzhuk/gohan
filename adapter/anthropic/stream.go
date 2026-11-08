@@ -6,9 +6,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	gohan "github.com/victorzhuk/gohan/core"
@@ -20,13 +22,25 @@ type sseEvent struct {
 	data []byte
 }
 
+// blockState owns one content block index: its call identity, its own
+// argument fragments and its lifecycle, so two indices never share an
+// accumulator.
+type blockState struct {
+	id      string
+	name    string
+	tool    bool
+	forced  bool
+	done    bool
+	emitted bool
+	args    strings.Builder
+}
+
 type streamState struct {
 	schemaForced bool
 	usage        types.Usage
 	usageSeen    bool
 	chars        int
-	toolArgs     strings.Builder
-	toolOpen     bool
+	blocks       map[int]*blockState
 	specs        []types.ToolSpec
 	providerTool []types.ToolUse
 }
@@ -59,7 +73,9 @@ func (m *Model) decode(ctx context.Context, r io.Reader, state *assembled, yield
 		return
 	}
 	if len(event.data) > 0 {
-		m.dispatch(st, event, yield)
+		if !m.dispatch(st, event, yield) {
+			return
+		}
 	}
 	m.finish(st, yield)
 }
@@ -72,6 +88,8 @@ func (m *Model) dispatch(st *streamState, event sseEvent, yield func(types.Model
 		return contentBlockStart(st, event.data, yield)
 	case "content_block_delta":
 		return contentBlockDelta(st, event.data, yield)
+	case "content_block_stop":
+		return contentBlockStop(st, event.data, yield)
 	case "message_delta":
 		return messageDelta(st, event.data, yield)
 	case "error":
@@ -81,6 +99,9 @@ func (m *Model) dispatch(st *streamState, event sseEvent, yield func(types.Model
 }
 
 func (m *Model) finish(st *streamState, yield func(types.ModelChunk, error) bool) {
+	if !flushOpenBlocks(st, yield) {
+		return
+	}
 	gohan.CountProviderCalls(st.specs, st.providerTool, &st.usage)
 	if st.usageSeen && st.usage.OutputTokens == 0 {
 		st.usage.OutputTokens = estimate(st.chars)
@@ -149,23 +170,24 @@ func contentBlockStart(st *streamState, data []byte, yield func(types.ModelChunk
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return yield(types.ModelChunk{}, decodeErr(err))
 	}
-	if payload.ContentBlock.Type == "tool_use" {
-		st.toolOpen = true
-		if !yield(types.ModelChunk{Kind: types.DeltaToolArgs, ToolUse: &types.ToolUse{
-			ID:   payload.ContentBlock.ID,
-			Name: payload.ContentBlock.Name,
-		}}, nil) {
-			return false
-		}
-	}
-	if payload.ContentBlock.Type == "server_tool_use" {
+	b := &blockState{id: payload.ContentBlock.ID, name: payload.ContentBlock.Name}
+	switch payload.ContentBlock.Type {
+	case "tool_use":
+		b.tool = true
+		b.forced = st.schemaForced
+	case "server_tool_use":
 		st.providerTool = append(st.providerTool, types.ToolUse{Name: payload.ContentBlock.Name})
 	}
+	if st.blocks == nil {
+		st.blocks = make(map[int]*blockState)
+	}
+	st.blocks[payload.Index] = b
 	return true
 }
 
 func contentBlockDelta(st *streamState, data []byte, yield func(types.ModelChunk, error) bool) bool {
 	var payload struct {
+		Index int `json:"index"`
 		Delta struct {
 			Type        string `json:"type"`
 			Text        string `json:"text"`
@@ -190,9 +212,57 @@ func contentBlockDelta(st *streamState, data []byte, yield func(types.ModelChunk
 		}
 		return yield(types.ModelChunk{Kind: types.DeltaReasoning, Delta: string(raw)}, nil)
 	case "input_json_delta":
-		st.toolArgs.WriteString(payload.Delta.PartialJSON)
+		b := st.blocks[payload.Index]
+		if b == nil || !b.tool {
+			return true
+		}
+		b.args.WriteString(payload.Delta.PartialJSON)
+		if b.forced {
+			return true
+		}
+		return yield(types.ModelChunk{
+			Kind:    types.DeltaToolArgs,
+			Delta:   payload.Delta.PartialJSON,
+			ToolUse: &types.ToolUse{ID: b.id, Name: b.name},
+		}, nil)
 	}
 	return true
+}
+
+func contentBlockStop(st *streamState, data []byte, yield func(types.ModelChunk, error) bool) bool {
+	var payload struct {
+		Index int `json:"index"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return yield(types.ModelChunk{}, decodeErr(err))
+	}
+	b := st.blocks[payload.Index]
+	if b == nil || !b.tool || b.done {
+		return true
+	}
+	args := b.args.String()
+	if b.forced {
+		b.done = true
+		b.emitted = true
+		if args == "" {
+			return true
+		}
+		return yield(types.ModelChunk{Kind: types.DeltaText, Delta: args}, nil)
+	}
+	if !json.Valid([]byte(args)) {
+		yield(types.ModelChunk{}, &types.ModelError{
+			Class:    types.ClassPermanent,
+			Provider: providerName,
+			Err:      fmt.Errorf("content block %d ended with invalid tool arguments %q", payload.Index, args),
+		})
+		return false
+	}
+	b.done = true
+	b.emitted = true
+	return yield(types.ModelChunk{
+		Kind:    types.DeltaToolArgs,
+		ToolUse: &types.ToolUse{ID: b.id, Name: b.name, Args: jsontext.Value(args)},
+	}, nil)
 }
 
 func messageDelta(st *streamState, data []byte, yield func(types.ModelChunk, error) bool) bool {
@@ -216,19 +286,58 @@ func messageDelta(st *streamState, data []byte, yield func(types.ModelChunk, err
 		st.usage.CacheWriteTokens = payload.Usage.CacheCreationInputTokens
 		st.usageSeen = true
 	}
-	if args := st.toolArgs.String(); args != "" {
-		kind := types.DeltaToolArgs
-		if st.schemaForced {
-			kind = types.DeltaText
-		}
-		if !yield(types.ModelChunk{Kind: kind, Delta: args}, nil) {
-			return false
-		}
+	if !flushOpenBlocks(st, yield) {
+		return false
 	}
 	if stop := payload.Delta.StopReason; stop != "" {
 		return yield(types.ModelChunk{Finish: finishReason(stop)}, nil)
 	}
 	return true
+}
+
+// flushOpenBlocks surfaces pending bytes of still-open tool blocks as
+// identity-only previews with empty Args, so truncation by max_tokens,
+// message end or EOF never completes a call.
+func flushOpenBlocks(st *streamState, yield func(types.ModelChunk, error) bool) bool {
+	for _, b := range openBlocks(st) {
+		args := b.args.String()
+		if args == "" {
+			continue
+		}
+		b.emitted = true
+		if b.forced {
+			if !yield(types.ModelChunk{Kind: types.DeltaText, Delta: args}, nil) {
+				return false
+			}
+			continue
+		}
+		if !yield(types.ModelChunk{
+			Kind:    types.DeltaToolArgs,
+			Delta:   args,
+			ToolUse: &types.ToolUse{ID: b.id, Name: b.name},
+		}, nil) {
+			return false
+		}
+	}
+	return true
+}
+
+func openBlocks(st *streamState) []*blockState {
+	if len(st.blocks) == 0 {
+		return nil
+	}
+	idx := make([]int, 0, len(st.blocks))
+	for i, b := range st.blocks {
+		if b.tool && !b.done && !b.emitted {
+			idx = append(idx, i)
+		}
+	}
+	sort.Ints(idx)
+	out := make([]*blockState, 0, len(idx))
+	for _, i := range idx {
+		out = append(out, st.blocks[i])
+	}
+	return out
 }
 
 func streamError(data []byte, yield func(types.ModelChunk, error) bool) bool {
