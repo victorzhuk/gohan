@@ -48,7 +48,7 @@ type raceFenceRuns struct {
 func (r *raceFenceRuns) move(ctx context.Context, runID string) {
 	r.t.Helper()
 	owner := types.Principal{Subject: "u1", Tenant: "t1"}
-	lease, err := r.MemoryRuns.Resuming(ctx, runID, stores.LeaseTTL)
+	lease, err := r.Resuming(ctx, runID, stores.LeaseTTL)
 	if err != nil {
 		r.t.Fatalf("competitor resume: %v", err)
 	}
@@ -64,7 +64,7 @@ func (r *raceFenceRuns) move(ctx context.Context, runID string) {
 	if err != nil {
 		r.t.Fatalf("competitor suspend: %v", err)
 	}
-	if err := r.MemoryRuns.SuspendWithReason(r.t.Context(), lease, tokB, types.Preempted); err != nil {
+	if err := r.SuspendWithReason(r.t.Context(), lease, tokB, types.Preempted); err != nil {
 		r.t.Fatalf("competitor park: %v", err)
 	}
 	r.tokB = tokB

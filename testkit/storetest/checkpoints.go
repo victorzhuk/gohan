@@ -33,7 +33,9 @@ type ResumeInput struct {
 }
 
 // Checkpoint mirrors the suspended-run record the port stores. RunID is
-// the suspended run the checkpoint waits on; discovery keys on it.
+// the suspended run the checkpoint waits on; discovery keys on it. Token
+// is the suspension token the record was discovered under; only
+// discovery fills it.
 type Checkpoint struct {
 	RunID          string
 	SessionID      string
@@ -46,6 +48,7 @@ type Checkpoint struct {
 	Child          types.ResumeToken
 	Workspace      string
 	ExpiresAt      time.Time
+	Token          types.ResumeToken
 }
 
 // Checkpoints is the port under test. It mirrors the consumer-owned
@@ -674,6 +677,9 @@ func RecoveryDiscovery(t *testing.T, newRecovery RecoveryFactory) {
 		}
 		if len(ready) != 1 || ready[0].RunID != "run-rr-y" {
 			t.Fatalf("ResumeReady(1) = %+v, want only the eligible run-rr-y", ready)
+		}
+		if ready[0].Token == "" || ready[0].Token != tokY {
+			t.Fatalf("ResumeReady token = %q, want the suspended run's current token %q", ready[0].Token, tokY)
 		}
 	})
 

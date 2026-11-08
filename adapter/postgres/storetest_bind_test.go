@@ -74,6 +74,7 @@ func checkpointToStore(cp storetest.Checkpoint) stores.Checkpoint {
 		Child:          cp.Child,
 		Workspace:      stores.WorkspaceRef(cp.Workspace),
 		ExpiresAt:      cp.ExpiresAt,
+		Token:          cp.Token,
 	}
 }
 
@@ -90,6 +91,7 @@ func checkpointFromStore(cp stores.Checkpoint) storetest.Checkpoint {
 		Child:          cp.Child,
 		Workspace:      string(cp.Workspace),
 		ExpiresAt:      cp.ExpiresAt,
+		Token:          cp.Token,
 	}
 }
 
