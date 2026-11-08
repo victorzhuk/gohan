@@ -1,0 +1,92 @@
+{
+  "change": "repair-provider-composition",
+  "task": "2.1",
+  "revision": "63f5eb3 (final fix-round tip; post round-2 review fixes 80bcf2b, 9729235, 99ab2df, f4616a6, f4d0a2d, 63f5eb3)",
+  "executedAt": "2026-11-09",
+  "method": "literal design.md:71 acceptance.scenarios[].check commands, driver-run with -count=1 (gate requires positive execution evidence; cached results rejected). Rows carry executed subtest IDs from go test -json pass actions; zero-match/skip would be marked incomplete, none occurred.",
+  "scenarios": [
+    {
+      "scenario": "model.anthropic-complete-tool-blocks",
+      "package": "./adapter/anthropic",
+      "command": "timeout 180s go test -count=1 -json -short -timeout 120s -p 2 -parallel 2 ./adapter/anthropic -run '^TestProviderComposition$/^model[.]anthropic-complete-tool-blocks$'",
+      "executed": ["TestProviderComposition/model.anthropic-complete-tool-blocks"],
+      "status": "pass",
+      "publicPathEvidence": "httptest endpoint received the assembled request; recording tools executed toolu_a({\"q\":\"go\"}) and toolu_b({\"lang\":\"en\"}) exactly once with distinct IDs; interleaved-index variant included (43f0b3c hardening); terminal text + Done"
+    },
+    {
+      "scenario": "model.provider-argument-preview-identity",
+      "package": "./adapter/anthropic",
+      "command": "timeout 180s go test -count=1 -json -short -timeout 120s -p 2 -parallel 2 ./adapter/anthropic ./adapter/openai -run '^TestProviderComposition$/^model[.]provider-argument-preview-identity$'",
+      "executed": ["TestProviderComposition/model.provider-argument-preview-identity"],
+      "status": "pass",
+      "publicPathEvidence": "native Send path; ToolArgsDelta previews carry CallID/Name/fragment with empty Args; zero effects while paused; whole-argument yields one identity-bearing preview; completed authorized call executes exactly once"
+    },
+    {
+      "scenario": "model.provider-argument-preview-identity",
+      "package": "./adapter/openai",
+      "command": "same literal shared check (both packages, 2/2 implementations)",
+      "executed": ["TestProviderComposition/model.provider-argument-preview-identity"],
+      "status": "pass",
+      "publicPathEvidence": "per-fragment Delta values {\"q\":, {\"n\":, 1}, 2} with call-a/call-b identity, empty Args; native ToolArgsDelta events observed joining to {\"q\":\"go\"}; whole_argument_single_frame_control one preview + one complete call; release_channel_pause_zero_effects blocks mid-stream with zero executable/usage/finish until released (ec2bd7b hardening)"
+    },
+    {
+      "scenario": "model.forced-output-and-tool-truncation",
+      "package": "./adapter/anthropic",
+      "command": "timeout 180s go test -count=1 -json -short -timeout 120s -p 2 -parallel 2 ./adapter/anthropic ./adapter/openai -run '^TestProviderComposition$/^model[.]forced-output-and-tool-truncation$'",
+      "executed": ["TestProviderComposition/model.forced-output-and-tool-truncation", "block_stop_empty_args", "block_stop_incomplete_args", "block_stop_malformed_args", "decode_error_accepted_terminal"],
+      "status": "pass",
+      "publicPathEvidence": "forced gohan_respond stays DeltaText zero local execution; valid {} executes once; open-block EOF/max_tokens and stop-less message_delta + clean EOF each yield exactly one FinishMaxTokens with zero effects (terminals pinned 43f0b3c/99ab2df, sticky flag 9729235); explicit stop on empty/{\"q\":/{] yields one ClassPermanent *types.ModelError, exactly one error, no event after, zero effects; accepted decode error is final - no completion/usage after (f4d0a2d); final acceptance run 25 pass events 0 fail 0 skip"
+    },
+    {
+      "scenario": "model.forced-output-and-tool-truncation",
+      "package": "./adapter/openai",
+      "command": "same literal shared check (both packages, 2/2 implementations)",
+      "executed": ["TestProviderComposition/model.forced-output-and-tool-truncation (13 children incl. pending_length pending_done pending_eof pending_stop pending_content_filter pending_error pending_unknown_finish tool_calls_empty_args tool_calls_incomplete_args tool_calls_malformed_args tool_calls_valid_sibling_before_invalid tool_calls_valid_completion_control forced_output_stays_text_control forced_output_wire_tool_calls)"],
+      "status": "pass",
+      "publicPathEvidence": "whole-batch validation one ClassPermanent incl. valid-sibling-before-invalid; length/DONE/EOF/stop -> FinishMaxTokens zero executable; content_filter -> FinishRefusal; error/unknown -> one ClassTransient no later usage; native zero-effect rows across all invalid fixtures; forced-schema hostile wire tool_calls suppressed at provider level AND native zero ToolStarted with schema-carrying request (f6ce6d6+e2b69ca)"
+    },
+    {
+      "scenario": "model.openai-consumer-stop-final",
+      "package": "./adapter/openai",
+      "command": "timeout 180s go test -count=1 -json -short -timeout 120s -p 2 -parallel 2 ./adapter/openai -run '^TestProviderComposition$/^model[.]openai-consumer-stop-final$'",
+      "executed": ["TestProviderComposition/model.openai-consumer-stop-final (9 children incl. reject_after_text/reasoning/preview/completion/finish/usage, range_break_does_not_panic, clean_done_reports_single_usage, clean_done_estimates_once_with_counts, cancel_mid_chunk)"],
+      "status": "pass",
+      "publicPathEvidence": "public Generate with tracked ReadCloser: zero callbacks after false, no panic, one close per acquired body; one final usage report preserving reported-over-estimated; cancel_mid_chunk (f4616a6 amendment, f6ce6d6+63f5eb3 production) observes exactly ONE post-cancel callback, the context.Canceled terminal, and zero success chunks after it, per the frozen 'cancelled before finalization' transition"
+    },
+    {
+      "scenario": "model.openai-stream-error-final",
+      "package": "./adapter/openai",
+      "command": "timeout 180s go test -count=1 -json -short -timeout 120s -p 2 -parallel 2 ./adapter/openai -run '^TestProviderComposition$/^model[.]openai-stream-error-final$'",
+      "executed": ["TestProviderComposition/model.openai-stream-error-final (8 children incl. decode_error_no_usage_after, read_error_no_usage_after, clean_estimate_control, body_closes_once_on_every_exit matrix)"],
+      "status": "pass",
+      "publicPathEvidence": "one ModelError then silence on malformed frame and fixed read failure; accepting error callback receives no later usage; close-once across clean/decode/read/http500 exits"
+    },
+    {
+      "scenario": "model.openai-cache-details-absent",
+      "package": "./adapter/openai",
+      "command": "timeout 180s go test -count=1 -json -short -timeout 120s -p 2 -parallel 2 ./adapter/openai -run '^TestProviderComposition$/^model[.]openai-cache-details-absent$'",
+      "executed": ["TestProviderComposition/model.openai-cache-details-absent (3 children incl. absent_details_zero_cached, present_details_counted_control, cache_explicit_unchanged_control)"],
+      "status": "pass",
+      "publicPathEvidence": "CacheAuto absent prompt_tokens_details: exact nonzero totals, CachedInputTokens 0, Estimated false, no panic; present details and explicit cache unchanged"
+    },
+    {
+      "scenario": "runtime.eino-governed-call-identity",
+      "package": "./adapter/eino",
+      "command": "timeout 180s go test -count=1 -json -short -timeout 120s -p 2 -parallel 2 ./adapter/eino -run '^TestEinoGovernedComposition$/^runtime[.]eino-governed-call-identity$'",
+      "executed": ["TestEinoGovernedComposition/runtime.eino-governed-call-identity"],
+      "status": "pass",
+      "publicPathEvidence": "gohan.NewForeignConversation over shipped Runtime.Step: identity-only preview bound in-turn (e399179) never reaches gate or effects; call_book_1 reaches gate/admissions/journal under backend identity; Ask suspends zero effects; authorized Resume executes once under persisted ID; cumulative admissions hold; call_wipe_1 denied decided with no effect. GREEN under -race at this tip (80bcf2b sequential governed batches; -race count=10 x2 during debug, full sweep adapter/eino ok)"
+    },
+    {
+      "scenario": "model.cancel-returns-promptly",
+      "package": "./adapter/openai",
+      "command": "timeout 180s go test -count=1 -json -short -timeout 120s -p 2 -parallel 2 ./adapter/openai -run '^TestProviderComposition$/^model[.]cancel-returns-promptly$'",
+      "executed": ["TestProviderComposition/model.cancel-returns-promptly (7 children: silent_cancel, cancel_before_generate, cancel_after_accept, cancel_with_rejection, cancel_after_last_frame, content_and_finish_same_frame, external_cancel_mid_chunk)"],
+      "status": "pass",
+      "publicPathEvidence": "synctest silent blocked-Read: exactly one errors.Is context.Canceled within 1s virtual deadline, zero success chunks, one close; pre-cancel no body acquired; last-frame and same-frame content+finish cancels report the terminal error BEFORE any success finalization (ec2bd7b+f6ce6d6); external_cancel_mid_chunk (f4616a6) pins the same exactly-once terminal for an external canceller between frame deltas and for the accepting-callback mid-chunk shape (replacing the earlier over-pin per the frozen 'cancelled before finalization' transition); rejecting callback receives nothing after; final run 10 pass events 0 fail 0 skip"
+    }
+  ],
+  "counts": {"scenarioIds": 8, "rows": 10, "sharedTwoPackage": ["model.provider-argument-preview-identity", "model.forced-output-and-tool-truncation"], "pass": 10, "incomplete": 0},
+  "suiteFloor": "5-package plain go test at e2b69ca exit 0, zero fail zero skip events (floor2-tests.json)",
+  "provenance": "commands string-identical to design.md:71 acceptance.scenarios[].check (RevQA verified -count only added for execution proof); raw runs retained driver-side"
+}

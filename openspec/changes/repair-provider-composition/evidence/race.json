@@ -1,0 +1,18 @@
+{
+  "change": "repair-provider-composition",
+  "task": "2.2",
+  "revision": "63f5eb3",
+  "capturedAt": "2026-11-09",
+  "source": "floor-sweep-extraction",
+  "method": "One admitted full-workspace race sweep: timeout 1200s env GOFLAGS=\"-p=2 -parallel=2\" GOMAXPROCS=2 task test:race (Taskfile.yml sweep across root, adapter/otel and examples modules). Rows below are extracted for the four packages mutated by this change plus the conformance kit; extraction does not re-verify and does not claim independent release verification from workspace success.",
+  "raceBounds": {"processTimeout": "1200s", "testTimeout": "10m per module leg", "workers": 2, "gomaxprocs": 2, "parallelTests": 2},
+  "rows": [
+    {"package": "adapter/anthropic", "status": "ok", "detail": "-race -short 1.043s, zero DATA RACE reports"},
+    {"package": "adapter/openai", "status": "ok", "detail": "-race -short 1.047s incl. synctest silent-cancel and mid-chunk cancellation leaves"},
+    {"package": "adapter/eino", "status": "ok", "detail": "-race -short 1.103s; the pre-fix sweep FAILED runtime.eino-governed-call-identity (governed_composition_test.go:351, denied call never reached the gate) - root-caused as optimistic-concurrency collision of parallel batch admissions on the session version (reserve appends under expected version BEFORE the gate; -race widens the read-then-append window); fixed by executing governed tool batches in model order (80bcf2b ToolsNodeConfig.ExecuteSequentially), verified -race -count=10 twice during debug and in this full sweep"},
+    {"package": "adapter/eino/einoflow", "status": "ok", "detail": "-race -short (cached from the identical-input leg), zero DATA RACE"},
+    {"package": "testkit/conformance", "status": "ok", "detail": "-race -short, cached clean, incl. legacy suite children"}
+  ],
+  "workspaceFloor": "task test:race exit 201. Failures: adapter/docker TestEgressAllowlist only (container DNS: 'wget: bad address example.com:80'), unrelated module untouched by this change; caller (parent integration) owns the full-workspace floor outcome including unrelated-module failures. Zero DATA RACE reports anywhere in the sweep.",
+  "releaseClaim": "None. Workspace race success is supplied for parent integration only; independent release verification stays with the parent milestone gates (task api:check, spec gate)."
+}

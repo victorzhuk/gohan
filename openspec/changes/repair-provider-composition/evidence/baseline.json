@@ -1,0 +1,109 @@
+{
+  "change": "repair-provider-composition",
+  "task": "0.1",
+  "capturedAt": "2026-11-08",
+  "status": "complete",
+  "provenance": "aggregate capture 6cb14a8..14e76b9. Each family block carries the revision (red commit), the literal command (string-identical to the frozen redRun/RED check line), and rowStatus for every row: fail = behavior-assertion failure, not compile/setup/infra. Flaky retry is not acceptance.",
+  "eino": {
+    "revision": "6cb14a8 (red) with test-side conflict resolution 9a9399a",
+    "command": "timeout 180s go test -json -short -timeout 120s -p 2 -parallel 2 ./adapter/eino ./adapter/eino/einoflow -run '^(TestEinoGovernedComposition|TestGraphPreviewCompletion)$'",
+    "rowStatus": "fail",
+    "testFiles": ["adapter/eino/governed_composition_test.go", "adapter/eino/einoflow/preview_completion_test.go"],
+    "redRecords": [
+      {"scenario": "runtime.eino-governed-call-identity", "status": "fail", "expected": "Send through gohan.NewForeignConversation suspends with types.Suspended{Reason: HumanApproval, Token non-empty} because the scripted backend call id call_book_1 reaches the governed ask gate through the shipped Runtime.Step internal agent; zero effects, gate decided call_book_1 under its own identity", "observed": "governed_composition_test.go:271: send ended suspended=false token=\"\", want a HumanApproval suspension carrying the ask token: the backend call id never reached the governed gate through the shipped foreign runtime"},
+      {"scenario": "TestGraphPreviewCompletion/generate-collector-folds-previews-out", "status": "fail", "expected": "ModelNode.Generate folds identity-only DeltaToolArgs previews out: exactly 2 schema.ToolCall entries (complete call_complete_1 ping {\"n\":\"1\"} then legacy call_legacy_1)", "observed": "preview_completion_test.go:32: Generate folded 4 tool calls, want 2: identity-only previews must never become executable calls — both call_prev_1 preview fragments leaked as executable ToolCalls (Function.Name ping, empty Arguments)"},
+      {"scenario": "TestGraphPreviewCompletion/stream-collector-folds-previews-out", "status": "fail", "expected": "ModelNode.Stream output carries no identity-only preview as a schema.ToolCall; complete call appears exactly once, legacy nil-Args call exactly once", "observed": "preview_completion_test.go:63: preview leaked into the schema message as {ID:call_prev_1 Function:{Name:ping Arguments:}}, leak reported twice, once per preview fragment"}
+    ],
+    "positiveControls": [
+      {"name": "stream complete-call control (call_complete_1 reaches schema message exactly once with ping {\"n\":\"1\"})", "status": "pass"},
+      {"name": "stream legacy nil-Args non-preview control (call_legacy_1 reaches schema message exactly once)", "status": "pass"},
+      {"name": "generate complete-call + legacy controls", "status": "inferred from the failing count-assertion dump (call_complete_1 and call_legacy_1 intact behind the count failure); re-proven green by the dedicated acceptance leaf run at task 2.1"}
+    ]
+  },
+  "anthropic": {
+    "revision": "e921805 (red); fixtures later isolated per sub-leaf at 9c8f9d6",
+    "command": "timeout 180s go test -json -short -timeout 120s -p 2 -parallel 2 ./adapter/anthropic -run '^TestProviderComposition$/^model[.](anthropic-complete-tool-blocks|provider-argument-preview-identity|forced-output-and-tool-truncation)$'",
+    "rowStatus": "fail",
+    "testFiles": ["adapter/anthropic/provider_composition_test.go"],
+    "redRecords": [
+      {"scenario": "model.anthropic-complete-tool-blocks", "status": "fail", "expected": "real endpoint receives assembled request; both content_block_stop boundaries consumed; exactly two complete calls with distinct IDs toolu_a/toolu_b and independent arguments execute once each while no effect runs during the fixture pause; terminal text completes the conversation", "observed": "provider_composition_test.go:400: recorded tool effects [], want exactly two complete calls executed once each with independent arguments {\"q\":\"go\"} and {\"lang\":\"en\"} from both content_block_stop boundaries"},
+      {"scenario": "model.provider-argument-preview-identity", "status": "fail", "expected": "ToolArgsDelta previews carry CallID/Name/fragment per fragment, concatenate to the full argument string; a whole-argument string yields exactly one identity-bearing preview", "observed": "provider_composition_test.go:453: streamed 0 argument previews, want one identity-bearing preview per fragment (4 fragments sent)"},
+      {"scenario": "model.forced-output-and-tool-truncation", "status": "fail", "expected": "valid {} completion executes exactly once; forced response stays text with no local tool execution; open-block EOF and max_tokens controls execute zero effects", "observed": "provider_composition_test.go:573: valid {} completion recorded effects [], want exactly one execution with {}"},
+      {"scenario": "model.forced-output-and-tool-truncation/block_stop_empty_args", "status": "fail", "expected": "explicit content_block_stop after empty argument bytes surfaces the public Generate error callback with zero tool effects", "observed": "provider_composition_test.go:606: explicit content_block_stop after empty argument bytes surfaced no error, want the public Generate error callback with a zero-effect outcome"},
+      {"scenario": "model.forced-output-and-tool-truncation/block_stop_incomplete_args", "status": "fail", "expected": "explicit content_block_stop after the incomplete prefix {\"q\": surfaces the public Generate error callback with zero tool effects", "observed": "provider_composition_test.go:617: explicit content_block_stop after the incomplete prefix {\"q\": surfaced no error"},
+      {"scenario": "model.forced-output-and-tool-truncation/block_stop_malformed_args", "status": "fail", "expected": "explicit content_block_stop after malformed bytes surfaces the public Generate error callback with zero tool effects", "observed": "provider_composition_test.go:628: explicit content_block_stop after malformed bytes { surfaced no error"}
+    ],
+    "positiveControls": [
+      {"name": "real endpoint receives the assembled request (stream, model, declared tools, user messages) on the native path", "status": "pass"},
+      {"name": "forced-schema response stays text with gohan_respond forced tool_choice, zero synthesized local tool execution, Done", "status": "pass"},
+      {"name": "open-block EOF truncation control: zero tool effects, conversation completes", "status": "pass"},
+      {"name": "max_tokens open-block truncation control: zero tool effects, conversation completes", "status": "pass"},
+      {"name": "invalid/abandoned fixtures record zero tool effects (empty, incomplete, malformed stops)", "status": "pass"}
+    ]
+  },
+  "openai": {
+    "revision": "0c532d6 (red); silent-cancel assertion aligned at 3f928f6",
+    "command": "timeout 180s go test -json -short -timeout 120s -p 2 -parallel 2 ./adapter/openai -run '^TestProviderComposition$/^model[.](provider-argument-preview-identity|forced-output-and-tool-truncation|openai-consumer-stop-final|openai-stream-error-final|openai-cache-details-absent|cancel-returns-promptly)$'",
+    "rowStatus": "fail",
+    "testFiles": ["adapter/openai/provider_composition_test.go"],
+    "redRecords": [
+      {"scenario": "model.provider-argument-preview-identity", "status": "fail", "expected": "every tool argument fragment yields ModelChunk{Kind:DeltaToolArgs, Delta:fragment, ToolUse:{ID,Name}} with empty Args; later identity-less fragments reuse the remembered per-index identity; exactly one complete call per completed batch", "observed": "provider_composition_test.go:514: streamed 0 identity-bearing DeltaToolArgs previews, want 4, one per argument fragment"},
+      {"scenario": "model.forced-output-and-tool-truncation/pending_length", "status": "fail", "expected": "length finish with pending calls yields FinishMaxTokens, no executable ToolUse, one usage report", "observed": "provider_composition_test.go:584: pending call completed with executable args; abandoned arguments must never execute"},
+      {"scenario": "model.forced-output-and-tool-truncation/pending_done", "status": "fail", "expected": "[DONE] with pending calls yields FinishMaxTokens without complete calls", "observed": "provider_composition_test.go:604: terminal pending_done ended with finish \"\", want \"max_tokens\""},
+      {"scenario": "model.forced-output-and-tool-truncation/pending_eof", "status": "fail", "expected": "clean EOF with an open call yields FinishMaxTokens without complete calls", "observed": "provider_composition_test.go:604: terminal pending_eof ended with finish \"\", want \"max_tokens\""},
+      {"scenario": "model.forced-output-and-tool-truncation/pending_stop", "status": "fail", "expected": "stop finish with pending calls is overridden to FinishMaxTokens, pending calls discarded", "observed": "provider_composition_test.go:604: terminal pending_stop ended with finish \"stop\", want \"max_tokens\""},
+      {"scenario": "model.forced-output-and-tool-truncation/pending_content_filter", "status": "fail", "expected": "content_filter finish yields FinishRefusal with pending calls discarded", "observed": "zero executable args check fired; finish/usage rows assert refusal terminal"},
+      {"scenario": "model.forced-output-and-tool-truncation/pending_error", "status": "fail", "expected": "finish_reason error yields exactly one ClassTransient ModelError, no completion, no later usage", "observed": "provider_composition_test.go:590: terminal pending_error produced no ModelError"},
+      {"scenario": "model.forced-output-and-tool-truncation/pending_unknown_finish", "status": "fail", "expected": "unrecognized finish reason yields exactly one ClassTransient ModelError", "observed": "provider_composition_test.go:590: terminal pending_unknown_finish produced no ModelError"},
+      {"scenario": "model.forced-output-and-tool-truncation/tool_calls_empty_args", "status": "fail", "expected": "finish tool_calls with empty pending arguments yields one ClassPermanent ModelError, no complete call, no usage", "observed": "provider_composition_test.go:628: invalid completion yielded no ModelError; the whole pending batch must be refused with one ClassPermanent error"},
+      {"scenario": "model.forced-output-and-tool-truncation/tool_calls_incomplete_args", "status": "fail", "expected": "finish tool_calls with incomplete {\"q\": arguments yields one ClassPermanent ModelError", "observed": "provider_composition_test.go:628: invalid completion yielded no ModelError"},
+      {"scenario": "model.forced-output-and-tool-truncation/tool_calls_malformed_args", "status": "fail", "expected": "finish tool_calls with {] arguments yields one ClassPermanent ModelError", "observed": "provider_composition_test.go:628: invalid completion yielded no ModelError"},
+      {"scenario": "model.forced-output-and-tool-truncation/tool_calls_valid_sibling_before_invalid", "status": "fail", "expected": "whole-batch validation: valid sibling completed before an invalid index must not complete any call", "observed": "provider_composition_test.go:628: invalid completion yielded no ModelError (valid sibling call currently emitted)"},
+      {"scenario": "model.openai-consumer-stop-final/reject_after_text", "status": "fail", "expected": "consumer returns false after a text chunk: no later callback, no panic, body closes once", "observed": "provider_composition_test.go:315: iteration panicked after the consumer stopped: range function continued iteration after function for loop body returned false (deferred estimated-usage yield after rejection)"},
+      {"scenario": "model.openai-consumer-stop-final/reject_after_reasoning", "status": "fail", "expected": "same finality for reasoning chunks", "observed": "provider_composition_test.go:315: same deferred-yield panic"},
+      {"scenario": "model.openai-consumer-stop-final/reject_after_preview", "status": "fail", "expected": "consumer can reject on an identity-bearing preview before usage", "observed": "provider_composition_test.go:716: stream never reached the rejection target after 1 callbacks (previews do not exist pre-fix)"},
+      {"scenario": "model.openai-consumer-stop-final/range_break_does_not_panic", "status": "fail", "expected": "ordinary range break must not panic", "observed": "provider_composition_test.go:315: range break triggers the deferred yield-after-false panic"},
+      {"scenario": "model.openai-consumer-stop-final/clean_done_reports_single_usage", "status": "fail", "expected": "finish without usage followed by a usage frame yields exactly one usage report with provider totals, no manufactured estimate", "observed": "provider_composition_test.go:754: streamed 2 usage reports, want exactly one final usage report"},
+      {"scenario": "model.openai-stream-error-final/decode_error_no_usage_after", "status": "fail", "expected": "malformed frame yields exactly one ModelError and nothing after it (2 callbacks total)", "observed": "provider_composition_test.go:788: 1 chunks yielded after the terminal error; :791: consumer received 3 callbacks"},
+      {"scenario": "model.openai-stream-error-final/read_error_no_usage_after", "status": "fail", "expected": "fixed read failure after known bytes yields exactly one ModelError, nothing after", "observed": "provider_composition_test.go:788: 1 chunks yielded after the terminal error; :791: 3 callbacks"},
+      {"scenario": "model.openai-cache-details-absent/absent_details_zero_cached", "status": "fail", "expected": "CacheAuto with nonzero totals and absent prompt_tokens_details reports exact totals, CachedInputTokens 0, Estimated false, no panic", "observed": "provider_composition_test.go:844: usage frame panicked: runtime error: invalid memory address or nil pointer dereference"},
+      {"scenario": "model.cancel-returns-promptly/silent_cancel", "status": "fail", "expected": "cancellation while the acquired body is blocked in Read yields exactly one errors.Is(err, context.Canceled) within the one-second read deadline (synctest), no success chunks, body closes once", "observed": "provider_composition_test.go:900: silent cancellation produced errors []; the iterator must report exactly one context.Canceled"},
+      {"scenario": "model.cancel-returns-promptly/cancel_after_accept", "status": "fail", "expected": "accepting callback cancels and continues: exactly one terminal context.Canceled next, then return", "observed": "provider_composition_test.go:953: cancellation after an accepting callback produced errors []"}
+    ],
+    "positiveControls": [
+      {"name": "tool_calls_valid_completion_control", "status": "pass"},
+      {"name": "forced_output_stays_text_control", "status": "pass"},
+      {"name": "reject_after_completion / reject_after_finish / reject_after_usage", "status": "pass"},
+      {"name": "clean_done_estimates_once_with_counts", "status": "pass"},
+      {"name": "clean_estimate_control", "status": "pass"},
+      {"name": "body_closes_once_on_every_exit (clean/decode/read/http500)", "status": "pass"},
+      {"name": "present_details_counted_control", "status": "pass"},
+      {"name": "cache_explicit_unchanged_control", "status": "pass"},
+      {"name": "cancel_before_generate", "status": "pass (one context.Canceled, no body acquired)"},
+      {"name": "cancel_with_rejection", "status": "pass (exactly one callback, one close)"},
+      {"name": "native zero-effect rows for every invalid/abandoned fixture (recording tool Call count 0, no ToolStarted events)", "status": "pass"}
+    ],
+    "notes": "Consumer-rejection reds captured via consumeGuarded goroutine isolation; panic reported as assertion Errorf naming the forbidden behavior. synctest used for silent_cancel determinism."
+  },
+  "fixtureBoundaries": {
+    "revision": "14e76b9",
+    "command": "timeout 180s go test -json -short -timeout 120s -p 2 -parallel 2 ./adapter/anthropic ./adapter/openai -run '^TestProviderFixtureBoundaries$'",
+    "rowStatus": "fail",
+    "testFiles": ["adapter/anthropic/fixture_boundaries_test.go", "adapter/openai/fixture_boundaries_test.go"],
+    "redRecords": [
+      {"scenario": "anthropic/provider tool calls", "status": "fail", "expected": "every tool index of the completed fixture carries its own content_block_start AND content_block_stop; the recording preserves two provider calls (srvtoolu_1, srvtoolu_2 / web_search) and usage counts (6 input, 3 output)", "observed": "fixture_boundaries_test.go:209: tool block index 0 has no content_block_stop — shipped fixture opens index 0 and 1 and closes neither"},
+      {"scenario": "anthropic/truncated tool call", "status": "fail", "expected": "the unfinished fixture keeps tool ID toolu_1 and name search, carries a genuinely incomplete JSON argument fragment, and no content_block_stop for index 0", "observed": "fixture_boundaries_test.go:291: truncated fixture argument fragment is valid JSON, want a genuinely unfinished fragment"},
+      {"scenario": "openai/truncated tool call", "status": "fail", "expected": "recording name 'truncated tool call' keeps identity call_1/search, argument fragment genuinely unfinished, finish reason length", "observed": "fixture_boundaries_test.go:172: recorded argument fragment is valid JSON, want a genuinely unfinished fragment"}
+    ],
+    "positiveControls": [
+      {"name": "anthropic provider_tool_calls Generate: one finish (stop), usage in 6/out 3, ProviderToolCalls{web_search:2}, zero executable tool args", "status": "pass (throwaway probe, not committed)"},
+      {"name": "anthropic truncated_tool_call with unfinished fragment: identity-only previews (toolu_1/search, empty Args), one finish max_tokens, zero executable args", "status": "pass (throwaway probe)"},
+      {"name": "openai truncated_tool_call Generate: one identity preview (call_1/search, empty Args), one finish max_tokens, one usage report, zero executable args", "status": "pass (throwaway probe)"}
+    ]
+  },
+  "baselineConformance": {
+    "command": "timeout 180s go test -json -short -timeout 120s -p 2 -parallel 2 ./adapter/anthropic ./adapter/openai ./adapter/eino ./adapter/eino/einoflow -run '^(TestModelConformance|TestConformance|TestGraphFlow)$'",
+    "result": "pass — zero existing failures across all four packages; nothing to reclassify",
+    "capturedAt": "revision e921805"
+  }
+}
