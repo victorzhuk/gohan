@@ -6,11 +6,17 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ### Changed
 
+- Docker snapshot publication returns immutable image IDs, while labelled legacy tagged references remain readable and removable.
+- The Docker allowlist test uses controlled peers instead of public DNS.
+
 - External `Resume` requires the optional `stores.CheckpointRuns` run-store surface; custom stores without it return `ErrCheckpointIncompatible` without consuming the token.
 - The recommended policy values `Build` applies moved to `std`, which owns them as `std.SunsetNoticeWindow`, `std.LatencyTimeouts`, `std.ControlWait` and `std.StreamBuffer`. Each value is unchanged and `core` keeps a mirrored default with the same value, so no caller has to pass an option; a parity test fails the moment one side drifts.
 - The cache outcome seam is canonical in `core/chains` (`chains.ExtraKey`, `chains.Outcome`, `chains.Mark`, `chains.OutcomeOf`). `std/cache` re-exports the four names, so existing importers compile and behave unchanged.
 
 ### Fixed
+
+- Docker network policy is established by a trusted namespace anchor before workload startup, without granting workloads network administration authority.
+- Failed Docker sandbox setup cleans up created workloads, anchors and private networks, with retryable errors if cleanup fails.
 
 - Anthropic completes tool blocks by content-block index, emits identity-only argument previews, rejects malformed explicit completions as protocol errors, reports unclosed tool blocks with the `max_tokens` truncation terminal, and ends decoding permanently after any terminal error.
 - OpenAI stream termination preserves terminal reasons, reports usage once, stops callbacks after consumer rejection, handles missing cache details and reports cancellation exactly once on every shape, including silent reads, final frames and mid-chunk exits; forced-schema turns never complete wire tool calls.

@@ -177,6 +177,16 @@ github.com/victorzhuk/gohan                 ← module A: core + std + testkit
 
 `ON DISK` marks a module that exists in this repository today; a bare milestone mark marks one the milestone table in `docs/overview.md` §12 schedules and the tree does not hold yet. `adapter/e2b` is blocked: no E2B credential, API URL or sandbox domain exists in the repository or the environment, so `m2-e2b-sandbox` is 0/28 with every live task blocked.
 
+**Docker sandbox boundary.** For networked workloads, the adapter creates a labelled stopped namespace anchor from the configured trusted base image, never from a restored snapshot. The anchor has a separate root filesystem and receives `NET_ADMIN` for policy setup, address resolution and counter reads. It receives no workload files, environment secrets or snapshot contents. The adapter creates the stopped workload in the anchor's network namespace, starts the anchor and establishes the complete policy before starting any workload process.
+
+The workload drops all capabilities, adds none and enables `no-new-privileges`. Its image entrypoint is overridden and inherited healthchecks are disabled, for fresh and restored workloads alike. Existing UID and file API semantics remain unchanged. Public `Workspace.Exec` cannot administer network policy or regain that authority. Private administration targets the anchor, never public `Workspace.Exec`, and each operation is bounded to ten seconds. Deny-all retains `NetworkMode: none` and requires no anchor.
+
+The workload, anchor and private network carry the private labels `gohan.sandbox.role` (`workload`, `anchor` or `network`) and `gohan.sandbox.owner`, with one immutable owner name for the group. New workload `ResourceRef` values encode both identities as `gohan-workload:v1:<full-container-id>:<owner-name>`. Close and setup-failure cleanup remove the workload, anchor and private network. Cleanup errors remain visible and retryable. Helpers associated with an existing workload, running or stopped, are never reclaimed as orphans.
+
+`Handles.Sweep` processes durable cleanup records under the existing owner and generation fence. A live lease prevents cleanup. The record retains the workload ID and immutable owner name in its original `ResourceRef`, so a fresh coordinator can retry `CloseByRef` after workload deletion without `Enumerate` or prior process state. A failed helper removal retains the record, and completion waits until the entire group is absent. Before a record exists, `Enumerate` and explicit `CloseByRef` recover unrecorded workloads and orphan helpers instead; `Sweep` does not discover them.
+
+Snapshot publication returns the immutable image ID from `ContainerCommit`. `Enumerate` and `CloseByRef` support labelled immutable IDs and legacy labelled tags. A later publication or a failed metadata compare-and-set cannot change content behind an earlier committed reference. Legacy tags remain readable and removable without retagging or removing another snapshot.
+
 Release rules for the multi-module repository:
 
 - Tags: `vX.Y.Z` for the root module; `adapter/<name>/vX.Y.Z` for each adapter; `examples/vX.Y.Z` never tagged (examples pin by pseudo-version in CI).
