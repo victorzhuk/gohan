@@ -94,6 +94,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		ctx, cancel = context.WithTimeout(ctx, t.cfg.timeout)
 		req = req.WithContext(ctx)
 	}
+	scheme := strings.ToLower(req.URL.Scheme)
 	base := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
 	release := func() {
 		base.CloseIdleConnections()
@@ -110,7 +111,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	port := req.URL.Port()
 	if port == "" {
 		port = "443"
-		if req.URL.Scheme == "http" {
+		if scheme == "http" {
 			port = "80"
 		}
 	}
@@ -140,7 +141,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 				return tlsConn, nil
 			}
 		}
-		if req.URL.Scheme == "https" {
+		if scheme == "https" {
 			base.TLSClientConfig.ServerName = req.URL.Hostname()
 		}
 		req = t.routingClone(ctx, req, pinned)
@@ -179,7 +180,7 @@ func (t *transport) routingClone(ctx context.Context, req *http.Request, pinned 
 	clone := req.Clone(ctx)
 	pu := *req.URL
 	pu.Host = pinned
-	if req.URL.Scheme == "http" {
+	if strings.EqualFold(req.URL.Scheme, "http") {
 		target := pu.EscapedPath()
 		if !strings.HasPrefix(target, "/") {
 			target = "/" + target

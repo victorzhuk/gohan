@@ -307,6 +307,67 @@ func TestEgressProxyPinning(t *testing.T) {
 		}
 	})
 
+	// Scheme casing must not bypass the Opaque pin: validateRedirect accepts
+	// schemes case-insensitively, so a hand-built "HTTP" scheme must never
+	// reach the proxy as hostname-routed traffic. The transport normalizes
+	// the scheme at RoundTrip entry; net/http's client may reject the raw
+	// capital scheme before the transport, which is an acceptable refusal
+	// under the same contract: pinned or refused, never hostname-routed.
+	t.Run("hand-built capital scheme stays pinned", func(t *testing.T) {
+		client := Client(policy, WithProxy(parseFixtureProxyURL(t, proxy)))
+		resetAll()
+		req := &http.Request{
+			Method: http.MethodGet,
+			URL:    &url.URL{Scheme: "HTTP", Host: "allowed.test", Path: "/case-leg"},
+			Header: make(http.Header),
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			if !strings.Contains(err.Error(), "unsupported protocol scheme") {
+				t.Fatalf("capital-scheme refusal reason = %v, want an unsupported-scheme rejection with zero dispatch", err)
+			}
+			if got := len(proxy.rawObservations()); got != 0 {
+				t.Fatalf("capital-scheme refusal reached the proxy %d times %q, want zero proxy connections (never hostname-routed)", got, proxy.rawObservations())
+			}
+			if got := proxy.originCount(denied.loopbackAddr()); got != 0 {
+				t.Fatalf("capital-scheme refusal caused %d denied-origin forward attempts, want 0", got)
+			}
+			return
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("capital-scheme response body read failed: %v", err)
+		}
+		if string(body) != proxyPinningAllowedMarker {
+			t.Fatalf("body = %q, want the allowed origin marker %q delivered via the checked destination (hostname routing reached a different origin)", body, proxyPinningAllowedMarker)
+		}
+		var obs rawObservation
+		matches := 0
+		for _, o := range proxy.rawObservations() {
+			if strings.Contains(o.Target, "/case-leg") {
+				obs = o
+				matches++
+			}
+		}
+		if matches != 1 {
+			t.Fatalf("proxy captured %d observations containing /case-leg (%q), want exactly one", matches, proxy.rawObservations())
+		}
+		parsed, err := url.Parse(obs.Target)
+		if err != nil {
+			t.Fatalf("proxy-observed absolute target %q does not parse: %v", obs.Target, err)
+		}
+		if parsed.Hostname() != "203.0.113.10" || parsed.Port() != "80" {
+			t.Fatalf("absolute request target = %q, want the checked destination authority 203.0.113.10:80", obs.Target)
+		}
+		if obs.Host != "allowed.test" {
+			t.Fatalf("raw Host header = %q, want the original authority allowed.test", obs.Host)
+		}
+		if got := proxy.originCount(denied.loopbackAddr()); got != 0 {
+			t.Fatalf("denied origin forward attempts = %d, want 0", got)
+		}
+	})
+
 	t.Run("relative redirect repins original hostname", func(t *testing.T) {
 		resetAll()
 		client := Client(policy, WithProxy(parseProxyURL(t, relayProxy.URL())))
@@ -534,6 +595,47 @@ func TestEgressProxyPinning(t *testing.T) {
 		}
 		if got := proxy.originCount(denied.loopbackAddr()); got != 0 {
 			t.Fatalf("denied origin forward attempts = %d, want 0", got)
+		}
+	})
+
+	// The destination literal exception must not extend to proxy addresses:
+	// under DenyPrivate a proxy endpoint inside a private range is refused
+	// before dispatch even when the destination itself is allow-listed
+	// verbatim.
+	t.Run("literal destination does not excuse loopback proxy", func(t *testing.T) {
+		resetAll()
+		destHost, destPort, err := net.SplitHostPort(allowed.loopbackAddr())
+		if err != nil {
+			t.Fatalf("allowed peer address %q does not split: %v", allowed.loopbackAddr(), err)
+		}
+		literalPolicy := policy
+		literalPolicy.PrivateRanges = types.DenyPrivate
+		literalPolicy.Allow = []string{destHost + ":" + destPort}
+		client := Client(literalPolicy, WithProxy(parseFixtureProxyURL(t, proxy)))
+		resp, err := client.Get("http://" + destHost + ":" + destPort + "/literal-proxy-denial")
+		if err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			t.Fatalf("loopback proxy under DenyPrivate succeeded with body %q, want refusal before dispatch", body)
+		}
+		var refused types.EgressDenied
+		if !errors.As(err, &refused) {
+			t.Fatalf("loopback proxy error = %T (%v), want types.EgressDenied", err, err)
+		}
+		if !strings.Contains(refused.Reason, "loopback") {
+			t.Fatalf("loopback proxy refusal reason = %q, want %q", refused.Reason, "loopback")
+		}
+		if got := dials.count(); got != 0 {
+			t.Fatalf("loopback proxy refusal caused %d dial invocations, want zero dispatch before refusal", got)
+		}
+		if got := len(proxy.rawObservations()); got != 0 {
+			t.Fatalf("loopback proxy refusal reached the proxy %d times, want zero proxy connections", got)
+		}
+		if got := proxy.originCount(allowed.loopbackAddr()); got != 0 {
+			t.Fatalf("allowed origin forward attempts = %d, want 0 (the proxy address denial fires despite the destination literal exception)", got)
+		}
+		if got := allowed.count(); got != 0 {
+			t.Fatalf("allowed peer requests = %d, want 0", got)
 		}
 	})
 }
