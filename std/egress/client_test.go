@@ -207,10 +207,11 @@ func TestEgressHTTPProxyChecked(t *testing.T) {
 		return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort("127.0.0.1", p))
 	}
 	p := types.EgressPolicy{Allow: []string{"target.test"}, Schemes: []string{"http"}, PrivateRanges: types.AllowPrivate}
-	_, err := Client(p, WithProxy(proxyURL)).Get("http://target.test/")
+	resp, err := Client(p, WithProxy(proxyURL)).Get("http://target.test/")
 	if err != nil {
 		t.Fatal(err)
 	}
+	_ = resp.Body.Close()
 	if dialed != net.JoinHostPort(host, port) {
 		t.Fatalf("dialed %q, expected proxy %s", dialed, net.JoinHostPort(host, port))
 	}
@@ -218,6 +219,11 @@ func TestEgressHTTPProxyChecked(t *testing.T) {
 
 func TestEgressUnsupportedProxyRefused(t *testing.T) {
 	resetNetworkFuncs(t)
+	dials := 0
+	dialAddress = func(context.Context, string, string) (net.Conn, error) {
+		dials++
+		return nil, errors.New("unexpected dial")
+	}
 	proxy, _ := url.Parse("socks5://proxy.test:1080")
 	resolveHost = func(context.Context, string) ([]net.IPAddr, error) {
 		return []net.IPAddr{{IP: net.ParseIP("203.0.113.4")}}, nil
@@ -226,6 +232,28 @@ func TestEgressUnsupportedProxyRefused(t *testing.T) {
 	assertDenied(t, err, "proxy scheme not supported")
 	if !errors.Is(err, ErrEgressProxyUnsupported) {
 		t.Fatalf("error %v does not name ErrEgressProxyUnsupported", err)
+	}
+	if dials != 0 {
+		t.Fatalf("dial count = %d, want zero dispatch before proxy-scheme refusal", dials)
+	}
+}
+
+func TestEgressProxyAddressDenied(t *testing.T) {
+	resetNetworkFuncs(t)
+	dials := 0
+	dialAddress = func(context.Context, string, string) (net.Conn, error) {
+		dials++
+		return nil, errors.New("unexpected dial")
+	}
+	resolveHost = func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("169.254.169.254")}}, nil
+	}
+	proxy, _ := url.Parse("http://proxy.test:8080")
+	p := types.EgressPolicy{Allow: []string{"target.test"}, Schemes: []string{"http"}}
+	_, err := Client(p, WithProxy(proxy)).Get("http://target.test/")
+	assertDenied(t, err, "link-local")
+	if dials != 0 {
+		t.Fatalf("dial count = %d, want zero dispatch on proxy-address denial", dials)
 	}
 }
 

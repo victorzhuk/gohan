@@ -106,6 +106,15 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		release()
 		return nil, err
 	}
+	original := req
+	port := req.URL.Port()
+	if port == "" {
+		port = "443"
+		if req.URL.Scheme == "http" {
+			port = "80"
+		}
+	}
+	pinned := net.JoinHostPort(ips[0].IP.String(), port)
 	if t.cfg.proxy != nil {
 		if t.cfg.proxy.Scheme != "http" && t.cfg.proxy.Scheme != "https" {
 			err := errors.Join(t.denied(req.Context(), req.URL, "proxy scheme not supported"), ErrEgressProxyUnsupported)
@@ -114,16 +123,28 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		base.Proxy = http.ProxyURL(t.cfg.proxy)
 		base.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-			return t.dialChecked(ctx, network, address, req.URL)
+			return t.dialChecked(ctx, network, address, original.URL)
 		}
-	} else {
-		port := req.URL.Port()
-		if port == "" {
-			port = "443"
-			if req.URL.Scheme == "http" {
-				port = "80"
+		if t.cfg.proxy.Scheme == "https" {
+			proxyName := t.cfg.proxy.Hostname()
+			base.DialTLSContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+				conn, err := t.dialChecked(ctx, network, address, original.URL)
+				if err != nil {
+					return nil, err
+				}
+				tlsConn := tls.Client(conn, &tls.Config{MinVersion: tls.VersionTLS12, ServerName: proxyName})
+				if err := tlsConn.HandshakeContext(ctx); err != nil {
+					_ = conn.Close()
+					return nil, err
+				}
+				return tlsConn, nil
 			}
 		}
+		if req.URL.Scheme == "https" {
+			base.TLSClientConfig.ServerName = req.URL.Hostname()
+		}
+		req = t.routingClone(ctx, req, pinned)
+	} else {
 		ip := ips[0].IP
 		base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return dialAddress(ctx, network, net.JoinHostPort(ip.String(), port))
@@ -131,26 +152,45 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	resp, err := base.RoundTrip(req)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(req.Context().Err(), context.DeadlineExceeded) {
-			err = t.denied(req.Context(), req.URL, "timeout")
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(original.Context().Err(), context.DeadlineExceeded) {
+			err = t.denied(original.Context(), original.URL, "timeout")
 		}
 		release()
 		return nil, err
 	}
+	resp.Request = original
 	if resp.ContentLength > t.policy.MaxBytes {
 		_ = resp.Body.Close()
 		release()
-		return nil, t.denied(req.Context(), req.URL, "size limit "+strconv.FormatInt(t.policy.MaxBytes, 10))
+		return nil, t.denied(original.Context(), original.URL, "size limit "+strconv.FormatInt(t.policy.MaxBytes, 10))
 	}
 	resp.Body = &limitedBody{
 		ReadCloser: resp.Body,
 		limit:      t.policy.MaxBytes,
 		release:    release,
 		deny: func() error {
-			return t.denied(req.Context(), req.URL, "size limit "+strconv.FormatInt(t.policy.MaxBytes, 10))
+			return t.denied(original.Context(), original.URL, "size limit "+strconv.FormatInt(t.policy.MaxBytes, 10))
 		},
 	}
 	return resp, nil
+}
+
+func (t *transport) routingClone(ctx context.Context, req *http.Request, pinned string) *http.Request {
+	clone := req.Clone(ctx)
+	pu := *req.URL
+	pu.Host = pinned
+	if req.URL.Scheme == "http" {
+		target := pu.EscapedPath()
+		if target == "" {
+			target = "/"
+		}
+		pu.Opaque = "http://" + pu.Host + target
+	}
+	clone.URL = &pu
+	if clone.Host == "" {
+		clone.Host = req.URL.Host
+	}
+	return clone
 }
 
 func (t *transport) validate(ctx context.Context, u *url.URL) error {

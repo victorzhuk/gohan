@@ -521,7 +521,7 @@ func testProxyTLSAuthorityPreserved(t *testing.T) {
 	if err == nil {
 		t.Fatal("request against the wrong-identity destination certificate succeeded, want hostname verification failure")
 	}
-	var hostnameErr *x509.HostnameError
+	var hostnameErr x509.HostnameError
 	if !errors.As(err, &hostnameErr) || !strings.Contains(err.Error(), tlsWrongIdentityName) {
 		t.Fatalf("wrong-identity error = %v, want x509 hostname verification failure naming %s", err, tlsWrongIdentityName)
 	}
