@@ -2,7 +2,10 @@ package docker
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -162,5 +165,145 @@ func TestDockerKilledPodCleanup(t *testing.T) {
 		if err != nil || len(recs) != 1 {
 			t.Fatalf("cleanup records after refused sweep = %d err %v, want 1", len(recs), err)
 		}
+	})
+}
+
+// casFaultMeta decorates only the SessionWorkspaceMeta writes: on the
+// second SetWorkspaceMeta it performs one competing valid metadata
+// update through the real store, then forwards the stale expected
+// generation, so the later publication loses a genuine CAS.
+type casFaultMeta struct {
+	*stores.MemorySessionLog
+
+	competing int
+}
+
+func (m *casFaultMeta) SetWorkspaceMeta(ctx context.Context, sessionID string, expectedGeneration int64, rec stores.WorkspaceMeta) (int64, error) {
+	m.competing++
+	if m.competing == 2 {
+		if _, err := m.MemorySessionLog.SetWorkspaceMeta(ctx, sessionID, expectedGeneration, stores.WorkspaceMeta{
+			Ref:        rec.Ref,
+			Generation: expectedGeneration + 1,
+			Owner:      rec.Owner,
+		}); err != nil {
+			return 0, fmt.Errorf("competing metadata update: %w", err)
+		}
+	}
+	return m.MemorySessionLog.SetWorkspaceMeta(ctx, sessionID, expectedGeneration, rec)
+}
+
+// TestSandboxSnapshotCAS proves a lost metadata generation CAS keeps the
+// earlier committed image and the winner's record: the store refuses the
+// stale write, the previous ref restores its original bytes and no prior
+// image is retagged or removed.
+func TestSandboxSnapshotCAS(t *testing.T) {
+	if testing.Short() {
+		t.Skip("gohan: CAS run needs a live daemon; skipped in short mode")
+	}
+	t.Run("sandbox.snapshot-cas-failure-keeps-content", func(t *testing.T) {
+		ctx := context.Background()
+		sb := newTestSandbox(t)
+
+		runs := stores.NewMemoryRuns()
+		meta := &casFaultMeta{MemorySessionLog: stores.NewMemorySessionLog(
+			stores.WithSessionPrincipals(types.PrincipalFrom),
+			stores.WithSessionWorkspaceOwnerGuard(runs),
+			stores.WithSessionLeases(runs),
+		)}
+		pod, err := sandbox.NewHandles(sb, types.SandboxPolicy{}, meta, sandbox.WithCleanupStore(meta))
+		if err != nil {
+			t.Fatalf("NewHandles: %v", err)
+		}
+
+		pctx := types.WithPrincipal(ctx, types.Principal{Tenant: "acme", Subject: "alice"})
+		if _, err := meta.Append(pctx, "s-cas", 0, types.Message{
+			Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: "start"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		lease, err := runs.Start(pctx, stores.Run{SessionID: "s-cas", RunID: "run-cas", Flow: "flights", Backend: "scripted"}, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		owner := types.WorkspaceOwner{RunID: "run-cas", LeaseGeneration: lease.Generation}
+		rctx := types.WithRunInfo(pctx, types.RunInfo{SessionID: "s-cas", RunID: "run-cas"})
+
+		w, err := pod.Acquire(rctx, "s-cas", owner)
+		if err != nil {
+			t.Fatalf("acquire: %v", err)
+		}
+		if err := w.Put(ctx, "/tmp/data.txt", strings.NewReader("alpha-bytes\n")); err != nil {
+			t.Fatalf("put A: %v", err)
+		}
+		snapA, err := pod.Publish(rctx, "s-cas", owner)
+		if err != nil {
+			t.Fatalf("publish A: %v", err)
+		}
+		inspA, err := sb.c.api.ImageInspect(ctx, string(snapA.Ref))
+		if err != nil {
+			t.Fatalf("inspect A: %v", err)
+		}
+		tagsA := slices.Clone(inspA.RepoTags)
+
+		if err := w.Put(ctx, "/tmp/data.txt", strings.NewReader("beta-bytes\n")); err != nil {
+			t.Fatalf("put B: %v", err)
+		}
+		before := labelledImageIDs(t, sb)
+		_, err = pod.Publish(rctx, "s-cas", owner)
+		if !errors.Is(err, types.ErrVersionConflict) {
+			t.Fatalf("stale publish error = %v, want types.ErrVersionConflict", err)
+		}
+		if meta.competing != 2 {
+			t.Fatalf("metadata writes = %d, want the competing update injected exactly once on the second write", meta.competing)
+		}
+
+		// The winner's metadata is preserved unchanged by the loser.
+		rec, ok, err := meta.WorkspaceMeta(rctx, "s-cas")
+		if err != nil || !ok {
+			t.Fatalf("workspace meta after conflict ok %v err %v, want the winner retained", ok, err)
+		}
+		if rec.Generation != 2 {
+			t.Fatalf("metadata generation = %d, want the winner's 2", rec.Generation)
+		}
+
+		// No prior image was retagged or removed: A keeps its exact ID
+		// and tags, and exactly one unpublished image appeared.
+		inspAfter, err := sb.c.api.ImageInspect(ctx, string(snapA.Ref))
+		if err != nil {
+			t.Fatalf("inspect A after conflict: %v", err)
+		}
+		if inspAfter.ID != inspA.ID {
+			t.Fatalf("ref %s now resolves to image %q, want the untouched prior commit %q", snapA.Ref, inspAfter.ID, inspA.ID)
+		}
+		if !slices.Equal(inspAfter.RepoTags, tagsA) {
+			t.Fatalf("A tags = %v, want the original %v", inspAfter.RepoTags, tagsA)
+		}
+		after := labelledImageIDs(t, sb)
+		var newIDs []string
+		for id := range after {
+			if !before[id] {
+				newIDs = append(newIDs, id)
+			}
+		}
+		if len(newIDs) != 1 || newIDs[0] == inspA.ID {
+			t.Fatalf("new labelled images after conflict = %v, want exactly the unpublished losing commit", newIDs)
+		}
+
+		// Restoring the earlier committed reference still yields A.
+		restA, err := sb.Open(ctx, snapA.Ref, types.SandboxPolicy{})
+		if err != nil {
+			t.Fatalf("restore A after conflict: %v", err)
+		}
+		if got := readFile(t, restA, "/tmp/data.txt"); got != "alpha-bytes\n" {
+			t.Fatalf("restored A after conflict = %q, want %q", got, "alpha-bytes\n")
+		}
+		if err := restA.Close(ctx); err != nil {
+			t.Fatalf("close restore: %v", err)
+		}
+
+		t.Cleanup(func() {
+			_, _ = sb.c.api.ImageRemove(ctx, newIDs[0], client.ImageRemoveOptions{})
+			_ = sb.CloseByRef(ctx, snapA.Ref)
+		})
 	})
 }

@@ -2,13 +2,16 @@ package docker
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -50,12 +53,12 @@ func readKeeper(t *testing.T, w types.Workspace) string {
 func TestSnapshotCommit(t *testing.T) {
 	sb, _, ref := snapshotWorkspace(t)
 
-	if !strings.HasPrefix(string(ref), snapshotPrefix+":") {
-		t.Fatalf("ref = %q, want the deterministic %s prefix", ref, snapshotPrefix)
-	}
 	insp, err := sb.c.api.ImageInspect(context.Background(), string(ref))
 	if err != nil {
 		t.Fatalf("inspect %s: %v", ref, err)
+	}
+	if insp.ID != string(ref) {
+		t.Fatalf("ref = %q, want the committed image ID %q", ref, insp.ID)
 	}
 	if insp.Config.Labels[LabelSnapshot] != "true" || insp.Config.Labels[LabelSandbox] != "true" {
 		t.Fatalf("snapshot labels = %v, want the sandbox and snapshot labels", insp.Config.Labels)
@@ -152,32 +155,296 @@ func TestSnapshotRetention(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 	for _, want := range []string{string(ref), string(second)} {
-		images, err := sb.c.api.ImageList(context.Background(),
-			imageListByRef(want))
-		if err != nil || len(images.Items) == 0 {
-			t.Fatalf("snapshot %s not retained after close: err %v", want, err)
+		if _, err := sb.c.api.ImageInspect(context.Background(), want); err != nil {
+			t.Fatalf("snapshot %s not retained after close: %v", want, err)
 		}
 	}
 
-	// An explicit ImageRemove removes exactly the named snapshot. The
-	// container using the image is closed first, as a reclaim would.
+	// An explicit ImageRemove is never forced: the parent snapshot ref
+	// has a dependent child image (second was committed from a workspace
+	// restored from ref), so Docker refuses the deletion and the sibling
+	// stays intact. The container using the image is closed first, as a
+	// reclaim would.
 	if err := fresh.Close(context.Background()); err != nil {
 		t.Fatalf("close fresh: %v", err)
+	}
+	if _, err := sb.c.api.ImageRemove(context.Background(), string(ref),
+		client.ImageRemoveOptions{}); err == nil {
+		t.Fatal("remove of a snapshot with a dependent child succeeded; want a non-forced conflict")
+	}
+	if _, err := sb.c.api.ImageInspect(context.Background(), string(second)); err != nil {
+		t.Fatalf("sibling snapshot %s wrongly removed by the refused removal: %v", second, err)
+	}
+	// Removing the leaf first makes the parent removable: each snapshot
+	// is removed exactly when explicitly named, never together.
+	if _, err := sb.c.api.ImageRemove(context.Background(), string(second),
+		client.ImageRemoveOptions{}); err != nil {
+		t.Fatalf("remove %s: %v", second, err)
+	}
+	if _, err := sb.c.api.ImageInspect(context.Background(), string(second)); err == nil {
+		t.Fatalf("removed snapshot %s still present", second)
+	}
+	if _, err := sb.c.api.ImageInspect(context.Background(), string(ref)); err != nil {
+		t.Fatalf("parent snapshot %s removed by the child's removal: %v", ref, err)
 	}
 	if _, err := sb.c.api.ImageRemove(context.Background(), string(ref),
 		client.ImageRemoveOptions{}); err != nil {
 		t.Fatalf("remove %s: %v", ref, err)
 	}
-	if images, err := sb.c.api.ImageList(context.Background(),
-		imageListByRef(string(ref))); err != nil || len(images.Items) != 0 {
-		t.Fatalf("removed snapshot still listed: err %v", err)
+	if _, err := sb.c.api.ImageInspect(context.Background(), string(ref)); err == nil {
+		t.Fatalf("removed snapshot %s still present", ref)
 	}
-	if images, err := sb.c.api.ImageList(context.Background(),
-		imageListByRef(string(second))); err != nil || len(images.Items) == 0 {
-		t.Fatalf("sibling snapshot wrongly removed: err %v", err)
+}
+
+// readFile reads one workspace file as a string.
+func readFile(t *testing.T, w types.Workspace, path string) string {
+	t.Helper()
+	r, err := w.Get(context.Background(), path)
+	if err != nil {
+		t.Fatalf("get %s: %v", path, err)
 	}
-	if _, err := sb.c.api.ImageRemove(context.Background(), string(second),
-		client.ImageRemoveOptions{}); err != nil {
-		t.Fatalf("cleanup remove %s: %v", second, err)
+	body, err := io.ReadAll(r)
+	_ = r.Close()
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
 	}
+	return string(body)
+}
+
+// labelledImageIDs lists every image carrying the snapshot label,
+// including untagged ones.
+func labelledImageIDs(t *testing.T, sb *Sandbox) map[string]bool {
+	t.Helper()
+	images, err := sb.c.api.ImageList(context.Background(), client.ImageListOptions{
+		All:     true,
+		Filters: client.Filters{}.Add("label", LabelSnapshot+"=true"),
+	})
+	if err != nil {
+		t.Fatalf("image list: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, img := range images.Items {
+		ids[img.ID] = true
+	}
+	return ids
+}
+
+func TestSandboxSnapshotIsolation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("gohan: snapshot isolation run needs a live daemon; skipped in short mode")
+	}
+	ctx := context.Background()
+	sb := newTestSandbox(t)
+
+	t.Run("sandbox.same-workspace-snapshots-immutable", func(t *testing.T) {
+		w, err := sb.Open(ctx, "", types.SandboxPolicy{})
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		if err := w.Put(ctx, "/tmp/data.txt", strings.NewReader("alpha-bytes\n")); err != nil {
+			t.Fatalf("put A: %v", err)
+		}
+		refA, err := w.Snapshot(ctx)
+		if err != nil {
+			t.Fatalf("snapshot A: %v", err)
+		}
+		if err := w.Put(ctx, "/tmp/data.txt", strings.NewReader("beta-bytes\n")); err != nil {
+			t.Fatalf("put B: %v", err)
+		}
+		refB, err := w.Snapshot(ctx)
+		if err != nil {
+			t.Fatalf("snapshot B: %v", err)
+		}
+
+		inspA, err := sb.c.api.ImageInspect(ctx, string(refA))
+		if err != nil {
+			t.Fatalf("inspect A: %v", err)
+		}
+		inspB, err := sb.c.api.ImageInspect(ctx, string(refB))
+		if err != nil {
+			t.Fatalf("inspect B: %v", err)
+		}
+		if string(refA) != inspA.ID {
+			t.Fatalf("ref A = %q, want the committed image ID %q", refA, inspA.ID)
+		}
+		if string(refB) != inspB.ID {
+			t.Fatalf("ref B = %q, want the committed image ID %q", refB, inspB.ID)
+		}
+		if refA == refB {
+			t.Fatalf("refs A and B are equal (%s), want two immutable image identities", refA)
+		}
+
+		restA, err := sb.Open(ctx, refA, types.SandboxPolicy{})
+		if err != nil {
+			t.Fatalf("restore A: %v", err)
+		}
+		restB, err := sb.Open(ctx, refB, types.SandboxPolicy{})
+		if err != nil {
+			t.Fatalf("restore B: %v", err)
+		}
+		if got := readFile(t, restA, "/tmp/data.txt"); got != "alpha-bytes\n" {
+			t.Fatalf("restored A = %q, want %q", got, "alpha-bytes\n")
+		}
+		if got := readFile(t, restB, "/tmp/data.txt"); got != "beta-bytes\n" {
+			t.Fatalf("restored B = %q, want %q", got, "beta-bytes\n")
+		}
+
+		// Closing the source and both restores keeps the snapshots:
+		// retention is explicit.
+		for _, cw := range []types.Workspace{w, restA, restB} {
+			if err := cw.Close(ctx); err != nil {
+				t.Fatalf("close: %v", err)
+			}
+		}
+		if _, err := sb.c.api.ImageInspect(ctx, string(refA)); err != nil {
+			t.Fatalf("snapshot A removed by close: %v", err)
+		}
+		if _, err := sb.c.api.ImageInspect(ctx, string(refB)); err != nil {
+			t.Fatalf("snapshot B removed by close: %v", err)
+		}
+
+		// Removing one snapshot preserves the independent sibling.
+		if err := sb.CloseByRef(ctx, refA); err != nil {
+			t.Fatalf("close snapshot A: %v", err)
+		}
+		if _, err := sb.c.api.ImageInspect(ctx, string(refA)); err == nil {
+			t.Fatal("closed snapshot A still present")
+		}
+		if _, err := sb.c.api.ImageInspect(ctx, string(refB)); err != nil {
+			t.Fatalf("sibling snapshot B wrongly removed: %v", err)
+		}
+		t.Cleanup(func() { _ = sb.CloseByRef(ctx, refB) })
+	})
+
+	t.Run("sandbox.legacy-snapshot-ref-readable", func(t *testing.T) {
+		w, err := sb.Open(ctx, "", types.SandboxPolicy{})
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		t.Cleanup(func() { _ = w.Close(ctx) })
+		if err := w.Put(ctx, "/tmp/data.txt", strings.NewReader("legacy-bytes\n")); err != nil {
+			t.Fatalf("put legacy: %v", err)
+		}
+		legacyTag := fmt.Sprintf("%s:legacy%d", snapshotPrefix, time.Now().UnixNano())
+		if _, err := sb.c.api.ContainerCommit(ctx, w.(*workspace).containerID, client.ContainerCommitOptions{
+			Reference: legacyTag,
+			NoPause:   true,
+			Config: &container.Config{
+				Labels: map[string]string{
+					LabelSandbox:  "true",
+					LabelSnapshot: "true",
+				},
+			},
+		}); err != nil {
+			t.Fatalf("commit legacy tag: %v", err)
+		}
+
+		if err := w.Put(ctx, "/tmp/data.txt", strings.NewReader("immutable-bytes\n")); err != nil {
+			t.Fatalf("put immutable: %v", err)
+		}
+		imgRef, err := w.Snapshot(ctx)
+		if err != nil {
+			t.Fatalf("snapshot immutable: %v", err)
+		}
+		inspImg, err := sb.c.api.ImageInspect(ctx, string(imgRef))
+		if err != nil {
+			t.Fatalf("inspect immutable: %v", err)
+		}
+
+		refs, err := sb.Enumerate(ctx)
+		if err != nil {
+			t.Fatalf("enumerate: %v", err)
+		}
+		count := func(want types.WorkspaceRef) int {
+			n := 0
+			for _, r := range refs {
+				if r == want {
+					n++
+				}
+			}
+			return n
+		}
+		if count(types.WorkspaceRef(legacyTag)) != 1 {
+			t.Fatalf("enumerate = %v, want the legacy ref %s exactly once", refs, legacyTag)
+		}
+		if count(imgRef) != 1 {
+			t.Fatalf("enumerate = %v, want the immutable ref %s exactly once", refs, imgRef)
+		}
+		if len(inspImg.RepoTags) != 0 {
+			t.Fatalf("immutable image carries tags %v, want none", inspImg.RepoTags)
+		}
+
+		// No migration or tag rewrite: the legacy tag keeps its target.
+		inspLegacy, err := sb.c.api.ImageInspect(ctx, legacyTag)
+		if err != nil {
+			t.Fatalf("inspect legacy: %v", err)
+		}
+		if !slices.Contains(inspLegacy.RepoTags, legacyTag) {
+			t.Fatalf("legacy tags = %v, want %s retained", inspLegacy.RepoTags, legacyTag)
+		}
+
+		restLegacy, err := sb.Open(ctx, types.WorkspaceRef(legacyTag), types.SandboxPolicy{})
+		if err != nil {
+			t.Fatalf("restore legacy: %v", err)
+		}
+		restImm, err := sb.Open(ctx, imgRef, types.SandboxPolicy{})
+		if err != nil {
+			t.Fatalf("restore immutable: %v", err)
+		}
+		if got := readFile(t, restLegacy, "/tmp/data.txt"); got != "legacy-bytes\n" {
+			t.Fatalf("legacy restored = %q, want %q", got, "legacy-bytes\n")
+		}
+		if got := readFile(t, restImm, "/tmp/data.txt"); got != "immutable-bytes\n" {
+			t.Fatalf("immutable restored = %q, want %q", got, "immutable-bytes\n")
+		}
+		if err := restLegacy.Close(ctx); err != nil {
+			t.Fatalf("close legacy restore: %v", err)
+		}
+		if err := restImm.Close(ctx); err != nil {
+			t.Fatalf("close immutable restore: %v", err)
+		}
+
+		// An unlabelled lookalike under the legacy prefix is refused
+		// before any destructive call.
+		lookTag := fmt.Sprintf("%s:lookalike%d", snapshotPrefix, time.Now().UnixNano())
+		if _, err := sb.c.api.ContainerCommit(ctx, w.(*workspace).containerID, client.ContainerCommitOptions{
+			Reference: lookTag,
+			NoPause:   true,
+		}); err != nil {
+			t.Fatalf("commit lookalike: %v", err)
+		}
+		t.Cleanup(func() { _, _ = sb.c.api.ImageRemove(ctx, lookTag, client.ImageRemoveOptions{}) })
+		if err := sb.CloseByRef(ctx, types.WorkspaceRef(lookTag)); err == nil {
+			t.Fatal("close by unlabelled prefix lookalike: want error")
+		}
+		if _, err := sb.c.api.ImageInspect(ctx, lookTag); err != nil {
+			t.Fatalf("lookalike %s removed by a prefix match: %v", lookTag, err)
+		}
+
+		// Removing one selected reference preserves the sibling snapshot
+		// and the live workspace.
+		if err := sb.CloseByRef(ctx, types.WorkspaceRef(legacyTag)); err != nil {
+			t.Fatalf("close legacy ref: %v", err)
+		}
+		if _, err := sb.c.api.ImageInspect(ctx, legacyTag); err == nil {
+			t.Fatal("closed legacy ref still present")
+		}
+		if _, err := sb.c.api.ImageInspect(ctx, string(imgRef)); err != nil {
+			t.Fatalf("sibling immutable snapshot wrongly removed: %v", err)
+		}
+		if _, err := w.Exec(ctx, types.ExecRequest{Argv: []string{"true"}}); err != nil {
+			t.Fatalf("live exec after legacy close: %v", err)
+		}
+		restImm2, err := sb.Open(ctx, imgRef, types.SandboxPolicy{})
+		if err != nil {
+			t.Fatalf("restore immutable after legacy close: %v", err)
+		}
+		if got := readFile(t, restImm2, "/tmp/data.txt"); got != "immutable-bytes\n" {
+			t.Fatalf("immutable after legacy close = %q, want %q", got, "immutable-bytes\n")
+		}
+		if err := restImm2.Close(ctx); err != nil {
+			t.Fatalf("close restore: %v", err)
+		}
+		t.Cleanup(func() { _ = sb.CloseByRef(ctx, imgRef) })
+	})
 }

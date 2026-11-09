@@ -54,13 +54,17 @@ func (s *Sandbox) Enumerate(ctx context.Context) ([]types.WorkspaceRef, error) {
 	if err != nil {
 		return nil, fmt.Errorf("docker: enumerate snapshot images: %w", err)
 	}
+	// One ref per image: a legacy gohan-snap tag keeps its tag, an
+	// untagged immutable image is emitted by its ID, never both.
 	for _, img := range images.Items {
+		ref := img.ID
 		for _, tag := range img.RepoTags {
 			if strings.HasPrefix(tag, snapshotPrefix+":") {
-				refs = append(refs, types.WorkspaceRef(tag))
+				ref = tag
 				break
 			}
 		}
+		refs = append(refs, types.WorkspaceRef(ref))
 	}
 	networks, err := s.ownedNetworks(ctx)
 	if err != nil {
@@ -141,11 +145,11 @@ func isContainerID(s string) bool {
 // workload-role containers are refused before any destructive API call.
 func (s *Sandbox) CloseByRef(ctx context.Context, ref types.WorkspaceRef) error {
 	r := string(ref)
-	if strings.HasPrefix(r, snapshotPrefix+":") {
-		if _, err := s.c.api.ImageRemove(ctx, r, client.ImageRemoveOptions{}); err != nil {
-			return fmt.Errorf("docker: close snapshot %s: %w", r, err)
+	if strings.HasPrefix(r, snapshotPrefix+":") || isContainerID(r) || strings.HasPrefix(r, "sha256:") {
+		handled, err := s.closeSnapshotImage(ctx, r)
+		if handled || err != nil {
+			return err
 		}
-		return nil
 	}
 	if id, owner, ok := parseWorkloadRef(r); ok {
 		return s.closeWorkloadGroup(ctx, id, owner)
@@ -154,6 +158,33 @@ func (s *Sandbox) CloseByRef(ctx context.Context, ref types.WorkspaceRef) error 
 		return s.closeRawResource(ctx, r)
 	}
 	return fmt.Errorf("docker: close %s: malformed workload reference", r)
+}
+
+// closeSnapshotImage removes one labelled snapshot image: a legacy
+// gohan-snap tag by that tag, an untagged immutable image by its ID.
+// Both sandbox and snapshot labels are required; the legacy prefix or a
+// bare ID never grants removal authority, so an unlabelled lookalike is
+// refused before any destructive call. The removal is never forced, so
+// Docker keeps an in-use image with its live user.
+func (s *Sandbox) closeSnapshotImage(ctx context.Context, r string) (bool, error) {
+	insp, err := s.c.api.ImageInspect(ctx, r)
+	if err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("docker: close snapshot %s: %w", r, err)
+	}
+	if insp.Config.Labels[LabelSandbox] != "true" || insp.Config.Labels[LabelSnapshot] != "true" {
+		return true, fmt.Errorf("docker: close %s: image lacks the sandbox and snapshot labels", r)
+	}
+	target := r
+	if !strings.HasPrefix(r, snapshotPrefix+":") {
+		target = insp.ID
+	}
+	if _, err := s.c.api.ImageRemove(ctx, target, client.ImageRemoveOptions{}); err != nil {
+		return true, fmt.Errorf("docker: close snapshot %s: %w", r, err)
+	}
+	return true, nil
 }
 
 // closeWorkloadGroup removes the workload, its associated anchor and the

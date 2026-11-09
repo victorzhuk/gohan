@@ -22,10 +22,6 @@ var containerRefRE = regexp.MustCompile(`^/(containers|networks)/([^/]+)$`)
 
 var _ types.SandboxResources = (*Sandbox)(nil)
 
-func imageListByRef(ref string) client.ImageListOptions {
-	return client.ImageListOptions{Filters: client.Filters{}.Add("reference", ref)}
-}
-
 func TestEnumerateCloseByRef(t *testing.T) {
 	ctx := context.Background()
 	sb := newTestSandbox(t)
@@ -108,6 +104,23 @@ func TestEnumerateCloseByRef(t *testing.T) {
 	// A ref outside the labels is refused, not guessed.
 	if err := sb.CloseByRef(ctx, "alpine:3.23"); err == nil {
 		t.Fatal("close by unlabelled ref: want error")
+	}
+
+	// An unlabelled prefix lookalike image is refused before any
+	// destructive call: the legacy prefix alone grants no authority.
+	lookTag := fmt.Sprintf("%s:lookalike%d", snapshotPrefix, time.Now().UnixNano())
+	if _, err := sb.c.api.ContainerCommit(ctx, live.(*workspace).containerID, client.ContainerCommitOptions{
+		Reference: lookTag,
+		NoPause:   true,
+	}); err != nil {
+		t.Fatalf("commit lookalike: %v", err)
+	}
+	t.Cleanup(func() { _, _ = sb.c.api.ImageRemove(ctx, lookTag, client.ImageRemoveOptions{}) })
+	if err := sb.CloseByRef(ctx, types.WorkspaceRef(lookTag)); err == nil {
+		t.Fatal("close by unlabelled prefix lookalike: want error")
+	}
+	if _, err := sb.c.api.ImageInspect(ctx, lookTag); err != nil {
+		t.Fatalf("lookalike %s removed by a prefix match: %v", lookTag, err)
 	}
 }
 
