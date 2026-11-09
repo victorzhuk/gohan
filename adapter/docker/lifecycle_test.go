@@ -197,9 +197,6 @@ func (m *casFaultMeta) SetWorkspaceMeta(ctx context.Context, sessionID string, e
 // stale write, the previous ref restores its original bytes and no prior
 // image is retagged or removed.
 func TestSandboxSnapshotCAS(t *testing.T) {
-	if testing.Short() {
-		t.Skip("gohan: CAS run needs a live daemon; skipped in short mode")
-	}
 	t.Run("sandbox.snapshot-cas-failure-keeps-content", func(t *testing.T) {
 		ctx := context.Background()
 		sb := newTestSandbox(t)

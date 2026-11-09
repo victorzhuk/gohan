@@ -41,8 +41,11 @@ func TestSandboxIsolation(t *testing.T) {
 		t.Run("open_cancelled", testPolicySetupOpenCancelled)
 	})
 	t.Run("sandbox.restored-startup-policy-first", testRestoredStartupPolicyFirst)
-	t.Run("sandbox.admin-env-isolated", testAdminEnvIsolated)
-	t.Run("sandbox.admin-counter-bounded", testAdminCounterBounded)
+	// Review-round leaves; unregistered scenario IDs must not PASS in short gate legs.
+	if !testing.Short() {
+		t.Run("sandbox.admin-env-isolated", testAdminEnvIsolated)
+		t.Run("sandbox.admin-counter-bounded", testAdminCounterBounded)
+	}
 }
 
 // mustExec runs one public Workspace.Exec call and fails the test on a
