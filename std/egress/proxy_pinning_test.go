@@ -263,6 +263,50 @@ func TestEgressProxyPinning(t *testing.T) {
 		}
 	})
 
+	t.Run("slash-less programmatic path stays pinned", func(t *testing.T) {
+		client := Client(policy, WithProxy(parseFixtureProxyURL(t, proxy)))
+		resetAll()
+		req, err := http.NewRequest(http.MethodGet, "http://allowed.test/pin-prog", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Programmatic url.URL construction can produce a slash-less
+		// EscapedPath; unless the assembled absolute target's path begins
+		// with '/', RFC 3986 authority parsing would read the checked
+		// IP:port as userinfo and route off the validated destination.
+		req.URL = &url.URL{Scheme: "http", Host: "allowed.test", Path: "@evil.com/x"}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("proxied request failed: %v (proxy-observed targets: %q)", err, proxy.rawObservations())
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("proxied response body read failed: %v", err)
+		}
+		if string(body) != proxyPinningAllowedMarker {
+			t.Fatalf("body = %q, want the allowed origin marker %q delivered via the checked destination", body, proxyPinningAllowedMarker)
+		}
+		var obs rawObservation
+		matches := 0
+		for _, o := range proxy.rawObservations() {
+			if strings.Contains(o.Target, "@evil.com/x") {
+				obs = o
+				matches++
+			}
+		}
+		if matches != 1 {
+			t.Fatalf("proxy captured %d observations containing @evil.com/x (%q), want exactly one", matches, proxy.rawObservations())
+		}
+		const wantPrefix = "http://203.0.113.10:80/"
+		if !strings.HasPrefix(obs.Target, wantPrefix) {
+			t.Fatalf("absolute request target = %q, want authority ending at the first '/' with prefix %q", obs.Target, wantPrefix)
+		}
+		if obs.Host != "allowed.test" {
+			t.Fatalf("raw Host header = %q, want the original authority allowed.test", obs.Host)
+		}
+	})
+
 	t.Run("relative redirect repins original hostname", func(t *testing.T) {
 		resetAll()
 		client := Client(policy, WithProxy(parseProxyURL(t, relayProxy.URL())))

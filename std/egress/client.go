@@ -181,8 +181,8 @@ func (t *transport) routingClone(ctx context.Context, req *http.Request, pinned 
 	pu.Host = pinned
 	if req.URL.Scheme == "http" {
 		target := pu.EscapedPath()
-		if target == "" {
-			target = "/"
+		if !strings.HasPrefix(target, "/") {
+			target = "/" + target
 		}
 		pu.Opaque = "http://" + pu.Host + target
 	}
