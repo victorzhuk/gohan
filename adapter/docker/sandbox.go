@@ -125,7 +125,7 @@ func (s *Sandbox) Open(ctx context.Context, ref types.WorkspaceRef, p types.Sand
 // Any failure unwinds every created resource with fresh bounded contexts
 // and surfaces both the setup and the cleanup errors.
 func (s *Sandbox) openEgressGroup(ctx context.Context, w *workspace, image string, p types.SandboxPolicy) error {
-	netName, netID, err := s.setupEgress(ctx, p, w.ownerName)
+	netName, netID, err := s.setupEgress(ctx, w.ownerName)
 	if err != nil {
 		return err
 	}

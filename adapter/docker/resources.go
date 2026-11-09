@@ -274,8 +274,13 @@ func (s *Sandbox) verifyGroupAbsent(ctx context.Context, workloadID, anchorID, o
 		if id == "" {
 			continue
 		}
-		if _, err := s.c.api.ContainerInspect(ctx, id, client.ContainerInspectOptions{}); err == nil {
+		_, err := s.c.api.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+		switch {
+		case err == nil:
 			errs = append(errs, fmt.Errorf("docker: close group %s: container %s still present", owner, id))
+		case isNotFound(err):
+		default:
+			errs = append(errs, fmt.Errorf("docker: close group %s: inspect %s: %w", owner, id, err))
 		}
 	}
 	networks, err := s.ownedNetworks(ctx)

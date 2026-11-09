@@ -418,8 +418,13 @@ func (w *workspace) Close(ctx context.Context) error {
 		if id == "" {
 			continue
 		}
-		if _, err := w.api.ContainerInspect(ctx, id, client.ContainerInspectOptions{}); err == nil {
+		_, err := w.api.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+		switch {
+		case err == nil:
 			errs = append(errs, fmt.Errorf("docker: close: container %s still present", id))
+		case isNotFound(err):
+		default:
+			errs = append(errs, fmt.Errorf("docker: close: inspect %s: %w", id, err))
 		}
 	}
 	return errors.Join(errs...)

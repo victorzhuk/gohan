@@ -28,11 +28,11 @@ const egressDenyChain = "GOHAN_EGRESS_DENY"
 const capNetAdmin = "NET_ADMIN"
 
 // setupEgress creates the labelled private bridge network of one
-// workload group. An empty Allow denies all egress including DNS
-// through NetworkMode "none" without any network; a non-empty Allow
-// returns the network's name and ID for the anchor and workload to
-// attach to.
-func (s *Sandbox) setupEgress(ctx context.Context, p types.SandboxPolicy, owner string) (string, string, error) {
+// workload group and returns its name and ID for the anchor and
+// workload to attach to. An empty Allow denies all egress including
+// DNS through NetworkMode "none" without any network; that deny-all
+// gate lives in the caller.
+func (s *Sandbox) setupEgress(ctx context.Context, owner string) (string, string, error) {
 	name := fmt.Sprintf("%s-%d", snapshotPrefix, time.Now().UnixNano())
 	created, err := s.c.api.NetworkCreate(ctx, name, client.NetworkCreateOptions{
 		Driver: "bridge",
