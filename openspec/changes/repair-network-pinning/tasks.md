@@ -4,7 +4,7 @@ Use the existing-service-strict public acceptance contract and limits in `design
 
 ## 0. Local pre-fix evidence
 
-- [ ] 0.1 Preserve existing egress baseline checks before local repairs. Record pre-fix behavior failures through public HTTP tool/egress boundaries for CGNAT and divergent proxy DNS. Include source revision, bounded command, scenario, expected behavior and failing assertion. Use controlled peers and allowed-traffic positive controls. Reject compilation, missing-command and infrastructure errors as reproductions. Supply this evidence to integration-owned parent 1.3.
+- [x] 0.1 Preserve existing egress baseline checks before local repairs. Record pre-fix behavior failures through public HTTP tool/egress boundaries for CGNAT and divergent proxy DNS. Include source revision, bounded command, scenario, expected behavior and failing assertion. Use controlled peers and allowed-traffic positive controls. Reject compilation, missing-command and infrastructure errors as reproductions. Supply this evidence to integration-owned parent 1.3.
 
 ## 1. Checked outbound destinations
 
