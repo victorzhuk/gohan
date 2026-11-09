@@ -205,8 +205,9 @@ type toolWireObservation struct {
 	host   string
 }
 
-// toolWireRecorder captures the request target and Host authority exactly as
-// the product HTTP server received them on the wire.
+// toolWireRecorder records the request target and Host authority as parsed
+// from requests the product HTTP server received; authority-split wire proof
+// lives in std/egress.
 type toolWireRecorder struct {
 	mu  sync.Mutex
 	raw []toolWireObservation
@@ -250,8 +251,22 @@ func startToolOrigin(t *testing.T, marker string) *toolOrigin {
 		_, _ = io.WriteString(w, marker)
 	}))
 	o.server.Start()
-	t.Cleanup(o.server.Close)
+	t.Cleanup(func() { closeToolServerBounded(t, o.server) })
 	return o
+}
+
+func closeToolServerBounded(t *testing.T, c interface{ Close() }) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		c.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(toolFixtureBound):
+		t.Fatalf("fixture server close exceeded %s bound", toolFixtureBound)
+	}
 }
 
 func (o *toolOrigin) loopbackAddr() string {
@@ -340,7 +355,7 @@ func startToolProxy(t *testing.T, routes map[string]string) *toolProxy {
 		outURL.Scheme = "http"
 		outURL.Host = origin
 		outReq.URL = &outURL
-		outReq.Host = u.Host
+		outReq.Host = r.Host
 		outReq.RequestURI = ""
 		resp, err := (&http.Client{Timeout: toolFixtureBound}).Do(outReq)
 		if err != nil {
@@ -355,7 +370,7 @@ func startToolProxy(t *testing.T, routes map[string]string) *toolProxy {
 		_, _ = io.Copy(w, resp.Body)
 	}))
 	p.server.Start()
-	t.Cleanup(p.server.Close)
+	t.Cleanup(func() { closeToolServerBounded(t, p.server) })
 	return p
 }
 
@@ -367,12 +382,6 @@ func (p *toolProxy) originCount(origin string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.counts[origin]
-}
-
-func (p *toolProxy) resetCounts() {
-	p.mu.Lock()
-	p.counts = make(map[string]int, len(p.routes))
-	p.mu.Unlock()
 }
 
 func (p *toolProxy) observations() []toolWireObservation {
@@ -428,13 +437,57 @@ func TestEgressProxyToolScenarios(t *testing.T) {
 			t.Fatalf("proxy forwarded to origin %d times, want 1", got)
 		}
 	})
+	t.Run("proxied-body-stall-bounded", func(t *testing.T) {
+		const marker = "stall-origin-marker-proxied"
+		var stallRequests int
+		var stallMu sync.Mutex
+		stall := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			stallMu.Lock()
+			stallRequests++
+			stallMu.Unlock()
+			w.Header().Set("X-Stall-Marker", marker)
+			w.WriteHeader(http.StatusOK)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			<-r.Context().Done()
+		}))
+		t.Cleanup(func() { closeToolServerBounded(t, stall) })
+		proxy := startToolProxy(t, map[string]string{"127.0.0.1": stall.Listener.Addr().String()})
+		proxyURL, err := url.Parse("http://" + proxy.loopbackAddr())
+		if err != nil {
+			t.Fatalf("parse proxy url: %v", err)
+		}
+		start := time.Now()
+		text, _, kind := runEgressScenarioFactory(t, proxyPolicy(1024), "http://127.0.0.1/", nil, func(p types.EgressPolicy) *http.Client {
+			return egress.Client(p, egress.WithProxy(proxyURL), egress.WithTimeout(300*time.Millisecond))
+		})
+		if elapsed := time.Since(start); elapsed > toolFixtureBound {
+			t.Fatalf("stalled body read took %v, not bounded by the policy deadline", elapsed)
+		}
+		if kind != types.Permanent {
+			t.Fatalf("failure kind = %v, want %v (text: %q)", kind, types.Permanent, text)
+		}
+		if !strings.Contains(text, "timeout") {
+			t.Fatalf("failure text does not name the timeout mapping: %q", text)
+		}
+		stallMu.Lock()
+		got := stallRequests
+		stallMu.Unlock()
+		if got != 1 {
+			t.Fatalf("stall origin received %d requests, want exactly 1 with headers delivered", got)
+		}
+		if got := proxy.originCount(stall.Listener.Addr().String()); got != 1 {
+			t.Fatalf("proxy forwarded to stall origin %d times, want 1", got)
+		}
+	})
 	t.Run("denied-destination-no-origin-requests", func(t *testing.T) {
-		policy := types.EgressPolicy{Allow: []string{"127.0.0.1"}, Schemes: []string{"http"}, PrivateRanges: types.DenyPrivate, MaxBytes: 1024}
+		policy := types.EgressPolicy{Allow: []string{"127.0.0.2"}, Schemes: []string{"http"}, PrivateRanges: types.DenyPrivate, MaxBytes: 1024}
 		allowed := startToolOrigin(t, "allowed-substitute-marker")
 		allowed.checkReady(t)
 		denied := startToolOrigin(t, "denied-peer-marker")
 		denied.checkReady(t)
-		text, _, kind := runEgressScenarioFactory(t, policy, "http://10.1.2.3:9/private", nil, func(p types.EgressPolicy) *http.Client {
+		text, _, kind := runEgressScenarioFactory(t, policy, "http://"+allowed.loopbackAddr()+"/private", nil, func(p types.EgressPolicy) *http.Client {
 			return egress.Client(p, egress.WithTimeout(10*time.Second))
 		})
 		allowed.refuseUnready(t)
@@ -442,7 +495,7 @@ func TestEgressProxyToolScenarios(t *testing.T) {
 		if kind != types.Permanent {
 			t.Fatalf("failure kind = %v, want %v", kind, types.Permanent)
 		}
-		if !strings.Contains(text, "private range") {
+		if !strings.Contains(text, "loopback") {
 			t.Fatalf("tool result %q does not carry the egress denial reason", text)
 		}
 		if got := allowed.count(); got != 0 {
