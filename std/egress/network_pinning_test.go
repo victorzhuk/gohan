@@ -65,25 +65,27 @@ func testCGNATDestinationDenied(t *testing.T) {
 	denied.resetCount()
 
 	dns := map[string][]net.IPAddr{
-		"ok.test":              {ipAddr("203.0.113.10")},
-		"cgnat-low.test":       {ipAddr("100.64.0.0")},
-		"cgnat-high.test":      {ipAddr("100.127.255.255")},
-		"cgnat-interior.test":  {ipAddr("172.16.5.5")},
-		"cgnat-mapped.test":    {ipAddr("::ffff:100.64.0.1")},
-		"nbr-below.test":       {ipAddr("100.63.255.255")},
-		"nbr-above.test":       {ipAddr("100.128.0.0")},
+		"ok.test":             {ipAddr("203.0.113.10")},
+		"cgnat-low.test":      {ipAddr("100.64.0.0")},
+		"cgnat-high.test":     {ipAddr("100.127.255.255")},
+		"cgnat-interior.test": {ipAddr("100.100.5.5")},
+		"cgnat-mapped.test":   {ipAddr("::ffff:100.64.0.1")},
+		"rfc1918.test":        {ipAddr("172.16.5.5")},
+		"nbr-below.test":      {ipAddr("100.63.255.255")},
+		"nbr-above.test":      {ipAddr("100.128.0.0")},
 	}
 	seam := dialSeamMapping{
-		"203.0.113.10":      allowed.loopbackAddr(),
-		"100.64.0.0":        allowed.loopbackAddr(),
-		"100.127.255.255":   allowed.loopbackAddr(),
-		"172.16.5.5":        allowed.loopbackAddr(),
-		"100.64.0.1":        allowed.loopbackAddr(),
-		"100.63.255.255":    allowed.loopbackAddr(),
-		"100.128.0.0":       allowed.loopbackAddr(),
-		"100.64.9.9":        allowed.loopbackAddr(),
+		"203.0.113.10":    allowed.loopbackAddr(),
+		"100.64.0.0":      allowed.loopbackAddr(),
+		"100.127.255.255": allowed.loopbackAddr(),
+		"100.100.5.5":     allowed.loopbackAddr(),
+		"100.64.0.1":      allowed.loopbackAddr(),
+		"172.16.5.5":      allowed.loopbackAddr(),
+		"100.63.255.255":  allowed.loopbackAddr(),
+		"100.128.0.0":     allowed.loopbackAddr(),
+		"100.64.9.9":      allowed.loopbackAddr(),
 	}
-	installControlledResolutionSerial(t, dns, seam)
+	dials := installCountingResolutionSerial(t, dns, seam)
 	client := Client(types.EgressPolicy{
 		Allow:         []string{"*.test", "100.64.9.9"},
 		Schemes:       []string{"http"},
@@ -114,9 +116,10 @@ func testCGNATDestinationDenied(t *testing.T) {
 	for _, tc := range []struct{ host, ip string }{
 		{"cgnat-low.test", "100.64.0.0"},
 		{"cgnat-high.test", "100.127.255.255"},
-		{"cgnat-interior.test", "172.16.5.5"},
+		{"cgnat-interior.test", "100.100.5.5"},
 		{"cgnat-mapped.test", "100.64.0.1"},
 	} {
+		dials.reset()
 		resp, err := client.Get("http://" + tc.host + "/cgnat-check")
 		if err == nil {
 			body, _ := io.ReadAll(resp.Body)
@@ -130,9 +133,36 @@ func testCGNATDestinationDenied(t *testing.T) {
 		if !strings.Contains(refused.Reason, "private range") {
 			t.Fatalf("denial reason for %s = %q, want it to contain %q", tc.host, refused.Reason, "private range")
 		}
+		if got := dials.count(); got != 0 {
+			t.Fatalf("refused CGNAT request to %s caused %d dial invocations, want zero dials before refusal (pre-dial refusal, not dial-then-close)", tc.host, got)
+		}
 		if allowed.count() != 0 || denied.count() != 0 {
 			t.Fatalf("refused CGNAT request to %s caused peer activity allowed=%d denied=%d, want zero destination dials", tc.host, allowed.count(), denied.count())
 		}
+	}
+
+	// Existing-private regression: an RFC1918 address is refused under
+	// DenyPrivate with the same pre-dial proof, named separately from the
+	// CGNAT interior cases.
+	dials.reset()
+	resp, err = client.Get("http://rfc1918.test/rfc1918-check")
+	if err == nil {
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("request to rfc1918.test resolving to 172.16.5.5 succeeded with body %q, want types.EgressDenied private-range refusal before any dial", body)
+	}
+	var rfcRefused types.EgressDenied
+	if !errors.As(err, &rfcRefused) {
+		t.Fatalf("error for rfc1918.test resolving to 172.16.5.5 is %T (%v), want types.EgressDenied", err, err)
+	}
+	if !strings.Contains(rfcRefused.Reason, "private range") {
+		t.Fatalf("denial reason for rfc1918.test = %q, want it to contain %q", rfcRefused.Reason, "private range")
+	}
+	if got := dials.count(); got != 0 {
+		t.Fatalf("refused RFC1918 request caused %d dial invocations, want zero dials before refusal", got)
+	}
+	if allowed.count() != 0 || denied.count() != 0 {
+		t.Fatalf("refused RFC1918 request caused peer activity allowed=%d denied=%d, want zero destination dials", allowed.count(), denied.count())
 	}
 
 	// The explicit literal allow exception stays effective inside the range.
@@ -152,6 +182,29 @@ func testCGNATDestinationDenied(t *testing.T) {
 		t.Fatalf("allowed literal peer count = %d, want 1", allowed.count())
 	}
 	allowed.resetCount()
+
+	// A CGNAT literal absent from the allow list is refused as a private
+	// range with zero dials: destination policy runs before dispatch.
+	dials.reset()
+	resp, err = client.Get("http://100.64.9.8/non-allowlisted")
+	if err == nil {
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("request to non-allowlisted CGNAT literal 100.64.9.8 succeeded with body %q, want types.EgressDenied private-range refusal", body)
+	}
+	var literalRefused types.EgressDenied
+	if !errors.As(err, &literalRefused) {
+		t.Fatalf("error for 100.64.9.8 is %T (%v), want types.EgressDenied", err, err)
+	}
+	if !strings.Contains(literalRefused.Reason, "private range") {
+		t.Fatalf("denial reason for 100.64.9.8 = %q, want it to contain %q", literalRefused.Reason, "private range")
+	}
+	if got := dials.count(); got != 0 {
+		t.Fatalf("refused literal 100.64.9.8 caused %d dial invocations, want zero dials before refusal", got)
+	}
+	if allowed.count() != 0 || denied.count() != 0 {
+		t.Fatalf("refused literal 100.64.9.8 caused peer activity allowed=%d denied=%d, want zero destination dials", allowed.count(), denied.count())
+	}
 
 	// Addresses outside 100.64.0.0/10 keep their prior allowed behavior.
 	for _, nbr := range []string{"nbr-below.test", "nbr-above.test"} {
@@ -214,6 +267,7 @@ func testProxyDestinationPinned(t *testing.T) {
 	allowed.resetCount()
 	denied.resetCount()
 	proxy.resetCounts()
+	proxy.resetObservations()
 
 	installControlledResolutionSerial(t, map[string][]net.IPAddr{
 		"allowed.test": {ipAddr("203.0.113.10")},
@@ -248,10 +302,15 @@ func testProxyDestinationPinned(t *testing.T) {
 	}
 
 	var productObs rawObservation
+	productMatches := 0
 	for _, o := range proxy.rawObservations() {
 		if strings.HasSuffix(o.Target, "/pinned") {
 			productObs = o
+			productMatches++
 		}
+	}
+	if productMatches != 1 {
+		t.Fatalf("proxy captured %d observations of the pinned product request, want exactly one", productMatches)
 	}
 	if productObs.Target == "" {
 		t.Fatalf("no raw request captured for the pinned product request; want an absolute target naming the checked IP 203.0.113.10:80")
@@ -276,6 +335,62 @@ func testProxyDestinationPinned(t *testing.T) {
 	}
 	if req.Host != "allowed.test" {
 		t.Fatalf("caller request Host mutated to %q, want allowed.test", req.Host)
+	}
+
+	// DenyPrivate proxied-path pin: a proxied request cannot skip destination
+	// policy. proxy.test reaches the proxy through the resolution seam, while
+	// the target hostname resolves to a CGNAT address that must be refused
+	// with zero dials, zero proxy connections, and zero forwarded origins.
+	dials := installCountingResolutionSerial(t, map[string][]net.IPAddr{
+		"proxy.test":        {ipAddr("203.0.113.50")},
+		"cgnat-target.test": {ipAddr("100.64.7.7")},
+	}, dialSeamMapping{
+		"203.0.113.50": loopbackHost(proxy.server.Listener.Addr().String()),
+	})
+	proxyPort, err := url.Parse(proxy.URL())
+	if err != nil {
+		t.Fatalf("fixture proxy URL parse failed: %v", err)
+	}
+	denyPrivateURL, err := url.Parse("http://proxy.test:" + proxyPort.Port())
+	if err != nil {
+		t.Fatalf("proxy URL rebuild for proxy.test failed: %v", err)
+	}
+	denyClient := Client(types.EgressPolicy{
+		Allow:         []string{"*.test"},
+		Schemes:       []string{"http"},
+		PrivateRanges: types.DenyPrivate,
+		Timeout:       10 * time.Second,
+	}, WithProxy(denyPrivateURL))
+	dials.reset()
+	allowed.resetCount()
+	denied.resetCount()
+	proxy.resetCounts()
+	proxy.resetObservations()
+	_, err = denyClient.Get("http://cgnat-target.test/proxied-refusal")
+	if err == nil {
+		t.Fatal("proxied request to cgnat-target.test resolving to 100.64.7.7 succeeded, want types.EgressDenied private-range refusal before dispatch")
+	}
+	var denyRefused types.EgressDenied
+	if !errors.As(err, &denyRefused) {
+		t.Fatalf("proxied error for cgnat-target.test is %T (%v), want types.EgressDenied", err, err)
+	}
+	if !strings.Contains(denyRefused.Reason, "private range") {
+		t.Fatalf("proxied denial reason for cgnat-target.test = %q, want it to contain %q", denyRefused.Reason, "private range")
+	}
+	if got := dials.count(); got != 0 {
+		t.Fatalf("proxied refusal caused %d dial invocations, want zero dials before refusal", got)
+	}
+	if got := len(proxy.rawObservations()); got != 0 {
+		t.Fatalf("proxied refusal reached the proxy %d times, want zero proxy connections", got)
+	}
+	if got := proxy.originCount(allowed.loopbackAddr()); got != 0 {
+		t.Fatalf("allowed-origin forward attempts = %d, want 0", got)
+	}
+	if got := proxy.originCount(denied.loopbackAddr()); got != 0 {
+		t.Fatalf("denied-origin forward attempts = %d, want 0", got)
+	}
+	if allowed.count() != 0 || denied.count() != 0 {
+		t.Fatalf("proxied refusal caused peer activity allowed=%d denied=%d, want zero", allowed.count(), denied.count())
 	}
 }
 
@@ -311,6 +426,8 @@ func testProxyTLSAuthorityPreserved(t *testing.T) {
 	wrongOrigin.resetCount()
 	denied.resetCount()
 	proxy.resetCounts()
+	origin.resetObservations()
+	wrongOrigin.resetObservations()
 
 	// Fixture-only control: hostname forwarding reaches the denied peer.
 	plainProxyClient := &http.Client{
@@ -335,6 +452,9 @@ func testProxyTLSAuthorityPreserved(t *testing.T) {
 	wrongOrigin.resetCount()
 	denied.resetCount()
 	proxy.resetCounts()
+	proxy.resetObservations()
+	origin.resetObservations()
+	wrongOrigin.resetObservations()
 
 	installControlledResolutionSerial(t, map[string][]net.IPAddr{
 		"allowed.test":  {ipAddr("203.0.113.20")},
@@ -353,48 +473,40 @@ func testProxyTLSAuthorityPreserved(t *testing.T) {
 
 	resp, err = client.Get("https://allowed.test/tls-pinned")
 	if err != nil {
-		t.Fatalf("pinned HTTPS request through the proxy failed: %v (want CONNECT to the checked destination 203.0.113.20:443 with original-host certificate verification)", err)
+		t.Fatalf("pinned HTTPS request through the proxy failed: %v (proxy-observed CONNECT authorities: %q; want CONNECT to the checked destination 203.0.113.20:443 with original-host certificate verification)", err, authorityTargets(proxy.rawObservations()))
 	}
 	body, err = io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if err != nil {
 		t.Fatalf("pinned HTTPS body read failed: %v", err)
 	}
+	connects := authorityTargets(proxy.rawObservations())
 	if string(body) != tlsAllowedMarker {
-		t.Fatalf("pinned HTTPS body = %q, want the allowed origin's unique marker %q delivered through the pinned destination", body, tlsAllowedMarker)
+		t.Fatalf("pinned HTTPS body = %q (proxy-observed CONNECT authorities: %q), want the allowed origin's unique marker %q delivered through the pinned destination", body, connects, tlsAllowedMarker)
 	}
 	if resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
-		t.Fatalf("no TLS connection state on the pinned response; want end-to-end TLS against the original host certificate")
+		t.Fatalf("no TLS connection state on the pinned response (proxy-observed CONNECT authorities: %q); want end-to-end TLS against the original host certificate", connects)
 	}
 	certNames := resp.TLS.PeerCertificates[0].DNSNames
 	if !containsString(certNames, tlsOriginName) || containsString(certNames, tlsWrongIdentityName) {
-		t.Fatalf("destination certificate DNS names = %v, want the origin's own distinct identity %s and not the proxy name %s", certNames, tlsOriginName, tlsWrongIdentityName)
+		t.Fatalf("destination certificate DNS names = %v (proxy-observed CONNECT authorities: %q), want the origin's own distinct identity %s and not the proxy name %s", certNames, connects, tlsOriginName, tlsWrongIdentityName)
 	}
 
-	var connectTarget string
-	for _, o := range proxy.rawObservations() {
-		if !strings.HasPrefix(o.Target, "http://") && !strings.HasPrefix(o.Target, "https://") {
-			connectTarget = o.Target
-		}
+	if len(connects) != 1 {
+		t.Fatalf("proxy observed %d CONNECT-style requests %q, want exactly one", len(connects), connects)
 	}
-	if connectTarget == "" {
-		t.Fatalf("no CONNECT authority observed at the proxy; want CONNECT to the checked destination 203.0.113.20:443")
-	}
+	connectTarget := connects[0]
 	if host, port, err := net.SplitHostPort(connectTarget); err != nil || host != "203.0.113.20" || port != "443" {
 		t.Fatalf("CONNECT authority = %q, want the checked destination 203.0.113.20:443 instead of the hostname", connectTarget)
 	}
 
 	originHosts := origin.hostsSeen()
 	originSNIs := origin.snisSeen()
-	firstHost := ""
-	if len(originHosts) > 0 {
-		firstHost = originHosts[0]
+	if len(originHosts) != 1 || originHosts[0] != tlsOriginName {
+		t.Fatalf("origin observed %d requests with Hosts %q; want exactly one product-side observation of the original authority %s", len(originHosts), originHosts, tlsOriginName)
 	}
-	if len(originHosts) == 0 || firstHost != tlsOriginName {
-		t.Fatalf("origin observed %d requests with first Host %q; want the original authority %s preserved end to end", len(originHosts), firstHost, tlsOriginName)
-	}
-	if !containsString(originSNIs, tlsOriginName) {
-		t.Fatalf("origin TLS server names = %v, want the original authority %s", originSNIs, tlsOriginName)
+	if len(originSNIs) != 1 || originSNIs[0] != tlsOriginName {
+		t.Fatalf("origin observed %d TLS server names %q; want exactly one product-side observation of %s", len(originSNIs), originSNIs, tlsOriginName)
 	}
 	if origin.count() != 1 {
 		t.Fatalf("allowed origin requests = %d, want 1", origin.count())
@@ -519,6 +631,27 @@ func (p *tlsFixturePeer) snisSeen() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]string(nil), p.snis...)
+}
+
+// resetObservations clears recorded Host and SNI observations alongside
+// resetCount so readiness traffic cannot satisfy product assertions.
+func (p *tlsFixturePeer) resetObservations() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.hosts = nil
+	p.snis = nil
+}
+
+// authorityTargets returns the observed CONNECT-style targets: observations
+// whose request target is neither an absolute http nor https URL.
+func authorityTargets(obs []rawObservation) []string {
+	var targets []string
+	for _, o := range obs {
+		if !strings.HasPrefix(o.Target, "http://") && !strings.HasPrefix(o.Target, "https://") {
+			targets = append(targets, o.Target)
+		}
+	}
+	return targets
 }
 
 func parseFixtureProxyURL(t *testing.T, fp *forwardingProxy) *url.URL {

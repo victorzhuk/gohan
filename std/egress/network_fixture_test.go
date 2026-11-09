@@ -61,6 +61,14 @@ func (o *rawObserver) count() int {
 	return len(o.seen)
 }
 
+// reset discards recorded observations so assertions see only the traffic of
+// the leg under test, never readiness or control traffic.
+func (o *rawObserver) reset() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.seen = nil
+}
+
 // observingListener feeds every connection's first request head into the
 // observer before net/http parses it, capturing the absolute request target
 // and the raw Host header as seen on the wire.
@@ -146,8 +154,8 @@ func parseRequestHead(head string) (target, host string) {
 }
 
 type controlledPeer struct {
-	server  *httptest.Server
-	marker  string
+	server   *httptest.Server
+	marker   string
 	requests atomic.Int32
 	ready    atomic.Bool
 	raw      rawObserver
@@ -213,6 +221,11 @@ func (p *controlledPeer) rawObservations() []rawObservation {
 	return p.raw.snapshot()
 }
 
+// resetObservations clears recorded wire observations alongside resetCount.
+func (p *controlledPeer) resetObservations() {
+	p.raw.reset()
+}
+
 type forwardingProxy struct {
 	server  *httptest.Server
 	routes  map[string]string
@@ -221,6 +234,7 @@ type forwardingProxy struct {
 	tracker *connTracker
 	raw     *rawObserver
 	client  *http.Client
+	relayWG sync.WaitGroup
 }
 
 // startForwardingProxySerial starts a real forwarding proxy. routes maps the
@@ -246,6 +260,16 @@ func startForwardingProxySerial(t *testing.T, routes map[string]string) *forward
 	t.Cleanup(func() {
 		fp.client.CloseIdleConnections()
 		closeBounded(t, fp.server, "forwarding proxy")
+		relayDone := make(chan struct{})
+		go func() {
+			fp.relayWG.Wait()
+			close(relayDone)
+		}()
+		select {
+		case <-relayDone:
+		case <-time.After(fixtureBoundedSeconds * time.Second):
+			t.Fatalf("forwarding proxy relay join exceeded %ds bound", fixtureBoundedSeconds)
+		}
 		fp.tracker.waitClosed(t)
 	})
 	return fp
@@ -285,6 +309,14 @@ func (fp *forwardingProxy) resetCounts() {
 	}
 }
 
+// resetObservations clears recorded proxy wire observations between legs.
+func (fp *forwardingProxy) resetObservations() {
+	fp.raw.reset()
+}
+
+// bumpOrigin counts forward ATTEMPTS per origin. It increments before the
+// outbound request, so a nonzero count does not imply a completed forward and
+// it is never a byte count.
 func (fp *forwardingProxy) bumpOrigin(origin string) {
 	fp.mu.Lock()
 	c, ok := fp.counts[origin]
@@ -376,8 +408,15 @@ func (fp *forwardingProxy) serveConnect(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	_, _ = io.WriteString(clientConn, "HTTP/1.1 200 Connection Established\r\n\r\n")
-	go relayBounded(clientConn, upstream)
-	go relayBounded(upstream, clientConn)
+	fp.relayWG.Add(2)
+	go func() {
+		defer fp.relayWG.Done()
+		relayBounded(clientConn, upstream)
+	}()
+	go func() {
+		defer fp.relayWG.Done()
+		relayBounded(upstream, clientConn)
+	}()
 }
 
 func loopbackHost(host string) string {
@@ -418,6 +457,35 @@ func installControlledResolutionSerial(t *testing.T, dns map[string][]net.IPAddr
 		}
 		return (&net.Dialer{}).DialContext(ctx, network, address)
 	}
+}
+
+// dialCounter counts product dial invocations through the installed dial
+// seam, proving a refusal happened before any dial rather than as a
+// dial-then-close.
+type dialCounter struct {
+	calls atomic.Int64
+}
+
+func (c *dialCounter) count() int64 {
+	return c.calls.Load()
+}
+
+func (c *dialCounter) reset() {
+	c.calls.Store(0)
+}
+
+// installCountingResolutionSerial installs the controlled resolution seam and
+// wraps dialAddress with an invocation counter. Requires serial use.
+func installCountingResolutionSerial(t *testing.T, dns map[string][]net.IPAddr, seam dialSeamMapping) *dialCounter {
+	t.Helper()
+	installControlledResolutionSerial(t, dns, seam)
+	counter := &dialCounter{}
+	prev := dialAddress
+	dialAddress = func(ctx context.Context, network, address string) (net.Conn, error) {
+		counter.calls.Add(1)
+		return prev(ctx, network, address)
+	}
+	return counter
 }
 
 type boundedCloser interface {
@@ -555,8 +623,9 @@ func inTLSFixtureSubprocess() bool {
 // TestNetworkFixtureControl proves the fixture family itself: both peers
 // health-check directly, the proxy hostname map forwards to the denied peer
 // independently of client resolution, raw wire observation captures the
-// absolute target and Host header, per-origin counters track real forwarded
-// bytes, counters reset after readiness controls, and cleanup stays bounded.
+// absolute target and Host header, per-origin counters track forward
+// attempts per origin, counters reset after readiness controls, and cleanup
+// stays bounded.
 func TestNetworkFixtureControl(t *testing.T) {
 	allowed := startControlledPeerSerial(t, "allowed-origin-marker-v1")
 	denied := startControlledPeerSerial(t, "denied-origin-marker-v2")
