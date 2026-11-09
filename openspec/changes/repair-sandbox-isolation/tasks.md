@@ -15,6 +15,6 @@ Use the existing-service-strict contract and limits in `design.md`.
 
 ## 2. Documentation and child acceptance
 
-- [ ] 2.1 Update existing sandbox architecture docs and changelog for the trusted setup boundary, immutable snapshots and helper cleanup. Supply this supporting evidence to the network child's primary acceptance of parent 7.7.
-- [ ] 2.2 Run all assigned public scenarios and enumeration/cleanup regressions within the design bounds. Include positive allowed-peer controls and injected failure cleanup.
-- [ ] 2.3 Supply relevant sandbox/store lifecycle race evidence for parent integration. Preserve frozen APIs and independently owned research-report edits.
+- [x] 2.1 Update existing sandbox architecture docs and changelog for the trusted setup boundary, immutable snapshots and helper cleanup. Supply this supporting evidence to the network child's primary acceptance of parent 7.7.
+- [x] 2.2 Run all assigned public scenarios and enumeration/cleanup regressions within the design bounds. Include positive allowed-peer controls and injected failure cleanup.
+- [x] 2.3 Supply relevant sandbox/store lifecycle race evidence for parent integration. Preserve frozen APIs and independently owned research-report edits.
