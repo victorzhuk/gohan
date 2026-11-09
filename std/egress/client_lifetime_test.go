@@ -410,7 +410,7 @@ func proxyOriginStub(t *testing.T, tracker *connTracker, origin string) *httptes
 			http.Error(w, "proxy forward failed: "+err.Error(), http.StatusBadGateway)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		for k, vs := range resp.Header {
 			for _, v := range vs {
 				w.Header().Add(k, v)
@@ -443,7 +443,7 @@ func abortingProxyOriginStub(t *testing.T, tracker *connTracker, origin string) 
 			http.Error(w, "proxy forward failed: "+err.Error(), http.StatusBadGateway)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		w.WriteHeader(resp.StatusCode)
 		w.(http.Flusher).Flush()
 		if _, err := io.Copy(w, resp.Body); err != nil {

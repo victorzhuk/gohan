@@ -55,12 +55,6 @@ func (o *rawObserver) snapshot() []rawObservation {
 	return out
 }
 
-func (o *rawObserver) count() int {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return len(o.seen)
-}
-
 // reset discards recorded observations so assertions see only the traffic of
 // the leg under test, never readiness or control traffic.
 func (o *rawObserver) reset() {
@@ -215,15 +209,6 @@ func (p *controlledPeer) refuseUnready(t *testing.T) {
 	if !p.ready.Load() {
 		t.Fatal("controlled peer refused: readiness check not established")
 	}
-}
-
-func (p *controlledPeer) rawObservations() []rawObservation {
-	return p.raw.snapshot()
-}
-
-// resetObservations clears recorded wire observations alongside resetCount.
-func (p *controlledPeer) resetObservations() {
-	p.raw.reset()
 }
 
 type forwardingProxy struct {

@@ -830,10 +830,6 @@ func (p *redirectPeer) loopbackAddr() string {
 	return p.server.Listener.Addr().String()
 }
 
-func (p *redirectPeer) count() int32 {
-	return p.requests.Load()
-}
-
 func (p *redirectPeer) authsSeen() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
