@@ -41,6 +41,10 @@ type fixtureResources struct {
 	hostNetID string
 	privNetID string
 	peers     []string
+	// workloadImage names the committed image carrying iptables, so a
+	// firewall-mutation attempt fails on capability, not on a missing
+	// binary.
+	workloadImage string
 }
 
 // NetworkFixture provisions controlled name resolution and live
@@ -51,15 +55,146 @@ func (f *Factory) NetworkFixture(t *testing.T) sandboxtest.NetworkFixture {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	fx, err := f.provisionFixture(ctx)
 	if err != nil {
+		f.mu.Unlock()
 		t.Fatalf("docker: provision network fixture: %v", err)
 	}
-	t.Cleanup(func() { f.dropFixture(fx) })
 	f.fx = fx
 	f.fxNetIDs = []string{fx.hostNetID, fx.privNetID}
+	f.mu.Unlock()
+	t.Cleanup(func() { f.dropFixtureChecked(t, fx) })
+	// Provision the trusted attack utility before the measured scenario:
+	// without iptables in the image a flush attempt fails on a missing
+	// binary and proves nothing about kernel authority.
+	fx.workloadImage, err = f.buildWorkloadImage(ctx)
+	if err != nil {
+		t.Fatalf("docker: build workload image: %v", err)
+	}
+	// Verify each hostname listener independently from the fixture side,
+	// before any policy assertion can mistake a dead peer for enforcement.
+	f.waitPeerReady(t, fx.peers[0], fixtureHostPort)
+	f.waitPeerReady(t, fx.peers[1], fixtureHostPort)
 	return sandboxtest.NetworkFixture{PrivateHost: fixturePrivAddr, PrivatePort: fixturePrivPort}
+}
+
+// WorkloadImage returns the iptables-provisioned image NetworkFixture
+// built. It is valid only after NetworkFixture.
+func (f *Factory) WorkloadImage() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fx.workloadImage
+}
+
+// buildWorkloadImage commits a copy of the base image with iptables
+// installed, tagged as a fixture-owned image.
+func (f *Factory) buildWorkloadImage(ctx context.Context) (string, error) {
+	tag := fmt.Sprintf("%sworkload-%d", fixtureNetNamePrefix, time.Now().UnixNano())
+	created, err := f.c.api.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
+			Image:  f.c.BaseImage(),
+			Cmd:    []string{"apk", "add", "--no-cache", "iptables"},
+			Labels: map[string]string{LabelSandbox: "true"},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("create workload build container: %w", err)
+	}
+	if _, err := f.c.api.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
+		_, _ = f.c.api.ContainerRemove(ctx, created.ID, client.ContainerRemoveOptions{Force: true})
+		return "", fmt.Errorf("start workload build container: %w", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		insp, err := f.c.api.ContainerInspect(ctx, created.ID, client.ContainerInspectOptions{})
+		if err != nil {
+			return "", fmt.Errorf("inspect workload build container: %w", err)
+		}
+		if st := insp.Container.State; st != nil && !st.Running {
+			if st.ExitCode != 0 {
+				return "", fmt.Errorf("apk add iptables exit %d", st.ExitCode)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("workload image build timed out")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if _, err := f.c.api.ContainerCommit(ctx, created.ID, client.ContainerCommitOptions{
+		Reference: tag,
+		NoPause:   true,
+	}); err != nil {
+		return "", fmt.Errorf("commit workload image: %w", err)
+	}
+	_, _ = f.c.api.ContainerRemove(ctx, created.ID, client.ContainerRemoveOptions{Force: true})
+	return tag, nil
+}
+
+// waitPeerReady probes one peer listener over its own loopback until a
+// full HTTP exchange with the expected status comes back, failing the
+// test when the peer never serves one.
+func (f *Factory) waitPeerReady(t *testing.T, id string, port int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		created, err := f.c.api.ExecCreate(ctx, id, client.ExecCreateOptions{
+			Cmd: []string{"sh", "-c", fmt.Sprintf(
+				"printf 'GET / HTTP/1.0\\r\\n\\r\\n' | nc -w 2 127.0.0.1 %d | grep -q 'HTTP/1.0 200'", port)},
+		})
+		if err == nil {
+			if _, err := f.c.api.ExecStart(ctx, created.ID, client.ExecStartOptions{Detach: true}); err == nil {
+				for {
+					insp, err := f.c.api.ExecInspect(ctx, created.ID, client.ExecInspectOptions{})
+					if err != nil {
+						break
+					}
+					if !insp.Running {
+						if insp.ExitCode == 0 {
+							return
+						}
+						break
+					}
+					if time.Now().After(deadline) {
+						break
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("fixture peer %s listener on port %d never answered a ready probe", id[:12], port)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// dropFixtureChecked removes the fixture-owned resources by their exact
+// recorded IDs and asserts every removal succeeded.
+func (f *Factory) dropFixtureChecked(t *testing.T, fx *fixtureResources) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, id := range fx.peers {
+		if _, err := f.c.api.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true}); err != nil {
+			t.Errorf("docker: remove fixture peer %s: %v", id, err)
+		}
+	}
+	for _, netID := range []string{fx.hostNetID, fx.privNetID} {
+		if netID == "" {
+			continue
+		}
+		if _, err := f.c.api.NetworkRemove(ctx, netID, client.NetworkRemoveOptions{}); err != nil {
+			t.Errorf("docker: remove fixture network %s: %v", netID, err)
+		}
+	}
+	if fx.workloadImage != "" {
+		if _, err := f.c.api.ImageRemove(ctx, fx.workloadImage, client.ImageRemoveOptions{}); err != nil {
+			t.Errorf("docker: remove workload image %s: %v", fx.workloadImage, err)
+		}
+	}
 }
 
 // provisionFixture creates the fixture network and its three listeners.

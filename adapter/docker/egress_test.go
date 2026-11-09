@@ -68,32 +68,71 @@ func TestEgressDenyAll(t *testing.T) {
 	}
 }
 
+// TestEgressAllowlist runs the normative allowlist case against the
+// controlled fixture peers: api.example.com resolves to the allowed
+// fixture listener, other.example.com to an equally healthy peer outside
+// the allowlist. No public resolver or internet listener takes part. It
+// then attempts an iptables flush through the public Workspace.Exec:
+// the attempt must fail and leave the allowed and denied outcomes
+// intact — this behavioral assertion stays red until the trusted-setup
+// chunk removes the workload's firewall authority.
 func TestEgressAllowlist(t *testing.T) {
-	sb := newTestSandbox(t)
+	f := newConformanceFactory(t)
+	f.NetworkFixture(t)
+	sb := f.Sandbox(t)
 	p := types.SandboxPolicy{Lifecycle: types.PerCall}
-	p.Egress.Allow = []string{"example.com:80"}
-	w, err := sb.Open(context.Background(), "", p)
+	p.Egress.Allow = []string{"api.example.com:443"}
+	w, err := sb.Open(context.Background(), types.WorkspaceRef(f.WorkloadImage()), p)
 	if err != nil {
 		t.Fatalf("open allowlisted: %v", err)
 	}
 	t.Cleanup(func() { _ = w.Close(context.Background()) })
 
-	res := dial(t, w, "example.com", "80")
+	res := dial(t, w, "api.example.com", "443")
 	if !reached(res) {
-		t.Fatalf("allowlisted dial not reached: exit %d stderr %s", res.ExitCode, res.Stderr)
+		t.Fatalf("allowlisted fixture peer not reached: exit %d stderr %s", res.ExitCode, res.Stderr)
 	}
 
-	sb.rec.Reset()
+	f.rec.Reset()
 	res = dial(t, w, "other.example.com", "443")
 	if res.ExitCode == 0 {
-		t.Fatal("non-allowlisted dial succeeded, want denial")
+		t.Fatal("non-allowlisted fixture peer dial succeeded, want denial")
 	}
-	if sb.rec.Denied() == 0 {
+	if f.rec.Denied() == 0 {
 		t.Fatal("denied observations = 0, want the refusal observed")
 	}
-	for _, k := range sb.rec.Kinds() {
+	for _, k := range f.rec.Kinds() {
 		if k != "egress_denied" {
 			t.Fatalf("observed kind = %q, want egress_denied only", k)
+		}
+	}
+
+	flush, err := w.Exec(context.Background(), types.ExecRequest{
+		Argv:    []string{"sh", "-c", "iptables -F"},
+		Timeout: 10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("exec iptables flush: %v", err)
+	}
+	if flush.ExitCode == 0 {
+		t.Fatal("workload iptables flush exited 0, want rejection of the firewall mutation")
+	}
+
+	res = dial(t, w, "api.example.com", "443")
+	if !reached(res) {
+		t.Fatalf("allowlisted fixture peer unreachable after flush attempt: exit %d stderr %s", res.ExitCode, res.Stderr)
+	}
+	f.rec.Reset()
+	res = dial(t, w, "other.example.com", "443")
+	if res.ExitCode == 0 {
+		t.Fatal("non-allowlisted fixture peer dial succeeded after flush attempt, want denial")
+	}
+	if f.rec.Denied() == 0 {
+		t.Fatal("denied observations after flush attempt = 0, want the refusal observed")
+	}
+	for _, k := range f.rec.Kinds() {
+		if k != "egress_denied" {
+			t.Fatalf("observed kind after flush attempt = %q, want egress_denied only", k)
 		}
 	}
 }
