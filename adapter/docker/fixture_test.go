@@ -93,7 +93,7 @@ func (f *Factory) buildWorkloadImage(ctx context.Context) (string, error) {
 	created, err := f.c.api.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
 			Image:  f.c.BaseImage(),
-			Cmd:    []string{"apk", "add", "--no-cache", "iptables"},
+			Cmd:    []string{"apk", "add", "--no-cache", "iptables", "libcap"},
 			Labels: map[string]string{LabelSandbox: "true"},
 		},
 	})
