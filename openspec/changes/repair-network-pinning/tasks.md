@@ -8,7 +8,7 @@ Use the existing-service-strict public acceptance contract and limits in `design
 
 ## 1. Checked outbound destinations
 
-- [ ] 1.1 Reject resolved CGNAT peers under `DenyPrivate`. Preserve explicit literal exceptions. Verify `tools.cgnat-destination-denied` at both range boundaries and existing allow/private cases. Parent 7.4.
+- [x] 1.1 Reject resolved CGNAT peers under `DenyPrivate`. Preserve explicit literal exceptions. Verify `tools.cgnat-destination-denied` at both range boundaries and existing allow/private cases. Parent 7.4.
 - [ ] 1.2 Pin validated proxy destinations. Preserve HTTP/TLS authority, proxy auth, redirects, per-response deadlines and release behavior. Refuse unsupported modes before dispatch. Verify `tools.proxy-destination-pinned` and `tools.proxy-tls-authority-preserved` with controlled divergent DNS. Parent 7.5.
 - [ ] 1.3 Integrate sandbox documentation evidence. Update existing sandbox/egress architecture docs and changelog. Verify explicit supersession of archived DNS-risk acceptance and documented helper cleanup without editing archived historical bytes. Parent 7.7.
 

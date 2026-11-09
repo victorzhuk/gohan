@@ -229,6 +229,276 @@ func TestEgressUnsupportedProxyRefused(t *testing.T) {
 	}
 }
 
+// TestEgressCGNATPolicy classifies CGNAT (100.64.0.0/10) destination-policy
+// behavior through the public Client.Get surface with an explicit
+// types.EgressPolicy. Serial globals: no t.Parallel while resolveHost and
+// dialAddress are swapped.
+func TestEgressCGNATPolicy(t *testing.T) {
+	resetNetworkFuncs(t)
+
+	t.Run("refusals", func(t *testing.T) { fillRefusals(t) })
+	t.Run("peer-reachability", func(t *testing.T) { fillPeerReachability(t) })
+	t.Run("characterization", func(t *testing.T) { fillCharacterization(t) })
+}
+
+func fillRefusals(t *testing.T) {
+	const host = "cgnat.test"
+	// Each case must refuse before any dial: the dial stub counts and fails.
+	cases := []struct {
+		name  string
+		allow []string
+		url   string
+		dns   map[string][]net.IPAddr
+		want  string
+	}{
+		{
+			name: "cgnat-first-address-100.64.0.0",
+			url:  "http://" + host + "/",
+			dns:  map[string][]net.IPAddr{host: {net.IPAddr{IP: net.ParseIP("100.64.0.0")}}},
+			want: "private range",
+		},
+		{
+			name: "cgnat-last-address-100.127.255.255",
+			url:  "http://" + host + "/",
+			dns:  map[string][]net.IPAddr{host: {net.IPAddr{IP: net.ParseIP("100.127.255.255")}}},
+			want: "private range",
+		},
+		{
+			name: "cgnat-interior-shared-address",
+			url:  "http://" + host + "/",
+			dns:  map[string][]net.IPAddr{host: {net.IPAddr{IP: net.ParseIP("100.70.1.2")}}},
+			want: "private range",
+		},
+		{
+			name: "ipv4-mapped-cgnat-answer",
+			url:  "http://" + host + "/",
+			dns:  map[string][]net.IPAddr{host: {net.IPAddr{IP: net.ParseIP("::ffff:100.64.0.1")}}},
+			want: "private range",
+		},
+		{
+			name: "mixed-answer-public-first",
+			url:  "http://" + host + "/",
+			dns: map[string][]net.IPAddr{host: {
+				{IP: net.ParseIP("203.0.113.50")}, {IP: net.ParseIP("100.64.0.1")},
+			}},
+			want: "private range",
+		},
+		{
+			name: "mixed-answer-cgnat-first",
+			url:  "http://" + host + "/",
+			dns: map[string][]net.IPAddr{host: {
+				{IP: net.ParseIP("100.64.0.1")}, {IP: net.ParseIP("203.0.113.50")},
+			}},
+			want: "private range",
+		},
+		{
+			name:  "literal-cgnat-wildcard-allow-only",
+			allow: []string{"*"},
+			url:   "http://100.64.9.9/",
+			dns:   map[string][]net.IPAddr{"100.64.9.9": {net.IPAddr{IP: net.ParseIP("100.64.9.9")}}},
+			want:  "private range",
+		},
+		{
+			name:  "literal-cgnat-exact-entry-wrong-port",
+			allow: []string{"100.64.9.9:9980"},
+			url:   "http://100.64.9.9:9981/",
+			want:  "private range",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dials := 0
+			resolveHost = func(_ context.Context, name string) ([]net.IPAddr, error) {
+				if addrs, ok := tc.dns[name]; ok {
+					return addrs, nil
+				}
+				return nil, &net.DNSError{Name: name, Err: "no such host", IsNotFound: true}
+			}
+			dialAddress = func(context.Context, string, string) (net.Conn, error) {
+				dials++
+				return nil, errors.New("unexpected dial")
+			}
+			allow := tc.allow
+			if allow == nil {
+				allow = []string{host}
+			}
+			p := types.EgressPolicy{Allow: allow, Schemes: []string{"http"}, PrivateRanges: types.DenyPrivate}
+			_, err := Client(p).Get(tc.url)
+			assertDenied(t, err, tc.want)
+			if dials != 0 {
+				t.Fatalf("dial count = %d, want 0", dials)
+			}
+		})
+	}
+}
+
+func fillPeerReachability(t *testing.T) {
+	t.Run("neighbor-lower-100.63.255.255-allowed", func(t *testing.T) {
+		peer := startControlledPeerSerial(t, "neighbor-low-ok")
+		peer.checkReady(t)
+		installControlledResolutionSerial(t,
+			map[string][]net.IPAddr{"neighbor.test": {net.IPAddr{IP: net.ParseIP("100.63.255.255")}}},
+			dialSeamMapping{"100.63.255.255": peer.loopbackAddr()})
+		resp, err := Client(policy("neighbor.test")).Get("http://neighbor.test/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != "neighbor-low-ok" {
+			t.Fatalf("peer body = %q, want marker", body)
+		}
+		if peer.count() == 0 {
+			t.Fatal("controlled peer request count = 0")
+		}
+	})
+
+	t.Run("neighbor-upper-100.128.0.0-allowed", func(t *testing.T) {
+		peer := startControlledPeerSerial(t, "neighbor-high-ok")
+		peer.checkReady(t)
+		installControlledResolutionSerial(t,
+			map[string][]net.IPAddr{"neighbor.test": {net.IPAddr{IP: net.ParseIP("100.128.0.0")}}},
+			dialSeamMapping{"100.128.0.0": peer.loopbackAddr()})
+		resp, err := Client(policy("neighbor.test")).Get("http://neighbor.test/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != "neighbor-high-ok" {
+			t.Fatalf("peer body = %q, want marker", body)
+		}
+		if peer.count() == 0 {
+			t.Fatal("controlled peer request count = 0")
+		}
+	})
+
+	t.Run("literal-cgnat-exact-allow-matching-port", func(t *testing.T) {
+		peer := startControlledPeerSerial(t, "literal-cgnat-ok")
+		peer.checkReady(t)
+		installControlledResolutionSerial(t,
+			map[string][]net.IPAddr{"100.64.9.9": {net.IPAddr{IP: net.ParseIP("100.64.9.9")}}},
+			dialSeamMapping{"100.64.9.9": peer.loopbackAddr()})
+		p := types.EgressPolicy{
+			Allow:         []string{"100.64.9.9:9981"},
+			Schemes:       []string{"http"},
+			PrivateRanges: types.DenyPrivate,
+		}
+		resp, err := Client(p).Get("http://100.64.9.9:9981/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != "literal-cgnat-ok" {
+			t.Fatalf("peer body = %q, want marker", body)
+		}
+		if peer.count() == 0 {
+			t.Fatal("controlled peer request count = 0")
+		}
+	})
+}
+
+func fillCharacterization(t *testing.T) {
+	t.Run("cgnat-hostname-under-AllowPrivate-passes", func(t *testing.T) {
+		// No new refusal: the existing AllowPrivate branch lets the request
+		// reach the dial; characterize the dial attempt, not a denial.
+		dials := 0
+		resolveHost = func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("100.70.3.4")}}, nil
+		}
+		dialAddress = func(context.Context, string, string) (net.Conn, error) {
+			dials++
+			return nil, errors.New("dial attempted")
+		}
+		p := types.EgressPolicy{Allow: []string{"cgnat.test"}, Schemes: []string{"http"}, PrivateRanges: types.AllowPrivate}
+		_, err := Client(p).Get("http://cgnat.test/")
+		var denied types.EgressDenied
+		if errors.As(err, &denied) {
+			t.Fatalf("AllowPrivate introduced EgressDenied: %v", denied)
+		}
+		if dials != 1 {
+			t.Fatalf("dial count = %d, want 1", dials)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		ip   string
+		want string
+	}{
+		{"loopback-denied", "127.0.0.1", "loopback"},
+		{"rfc1918-denied", "10.1.2.3", "private range"},
+		{"ipv6-ula-denied", "fd00::1", "private range"},
+		{"link-local-denied", "169.254.1.1", "link-local"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetNetworkFuncs(t)
+			dials := 0
+			resolveHost = func(context.Context, string) ([]net.IPAddr, error) {
+				return []net.IPAddr{{IP: net.ParseIP(tc.ip)}}, nil
+			}
+			dialAddress = func(context.Context, string, string) (net.Conn, error) {
+				dials++
+				return nil, errors.New("unexpected dial")
+			}
+			_, err := Client(policy("priv.test")).Get("http://priv.test/")
+			assertDenied(t, err, tc.want)
+			if dials != 0 {
+				t.Fatalf("dial count = %d, want 0", dials)
+			}
+		})
+	}
+
+	t.Run("link-local-under-AllowPrivate-still-denied", func(t *testing.T) {
+		dials := 0
+		resolveHost = func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("169.254.1.1")}}, nil
+		}
+		dialAddress = func(context.Context, string, string) (net.Conn, error) {
+			dials++
+			return nil, errors.New("unexpected dial")
+		}
+		p := types.EgressPolicy{Allow: []string{"priv.test"}, Schemes: []string{"http"}, PrivateRanges: types.AllowPrivate}
+		_, err := Client(p).Get("http://priv.test/")
+		assertDenied(t, err, "link-local")
+		if dials != 0 {
+			t.Fatalf("dial count = %d, want 0", dials)
+		}
+	})
+
+	t.Run("empty-and-failed-resolution-host-not-allowed", func(t *testing.T) {
+		dials := 0
+		dialAddress = func(context.Context, string, string) (net.Conn, error) {
+			dials++
+			return nil, errors.New("unexpected dial")
+		}
+		resolveHost = func(context.Context, string) ([]net.IPAddr, error) {
+			return nil, nil
+		}
+		_, err := Client(policy("empty.test")).Get("http://empty.test/")
+		assertDenied(t, err, "host not allowed")
+
+		resolveHost = func(context.Context, string) ([]net.IPAddr, error) {
+			return nil, &net.DNSError{Name: "failed.test", Err: "resolver failure", IsTemporary: true}
+		}
+		_, err = Client(policy("failed.test")).Get("http://failed.test/")
+		assertDenied(t, err, "host not allowed")
+		if dials != 0 {
+			t.Fatalf("dial count = %d, want 0", dials)
+		}
+	})
+}
+
 func resetNetworkFuncs(t *testing.T) {
 	oldResolve, oldDial := resolveHost, dialAddress
 	t.Cleanup(func() {

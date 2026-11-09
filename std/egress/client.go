@@ -250,6 +250,9 @@ func deniedAddress(ip net.IP, ranges types.PrivateRanges) bool {
 	if ranges == types.AllowPrivate {
 		return false
 	}
+	if b := ip.To4(); b != nil && b[0] == 100 && b[1] >= 64 && b[1] <= 127 {
+		return true
+	}
 	return ip.IsPrivate() || ip.IsLoopback() || ip.IsUnspecified() || ip.IsMulticast()
 }
 
