@@ -29,6 +29,10 @@ Before `v1` a port may still change, but every growth is expressed as an optiona
 - Exported value structs in core (`RunLimits`, `Caps`, `Usage`, `ModelProfile`, `ToolSpec`, …) are documented as *not comparable, keyed literals only*: fields may be added when the zero value preserves behaviour, and a field of non-comparable type may be added at any time.
 - Sentinel errors and error types are part of the API: their identity is stable; their messages are not.
 
+### Egress proxy routing correction (security)
+
+`Client`, `WithProxy` and `Option` keep their exact signatures. Both `http` and `https` proxy schemes remain supported. A supported proxy route now connects to the destination address the client policy validated; proxies that reject IP-destination request targets fail explicitly, and `ErrEgressProxyUnsupported` remains the error for an unsupported proxy mode. Rolling back to the previous proxy-side-DNS source reopens the proxy-DNS and CGNAT destination vulnerabilities; it is not a security-preserving fallback (ADR-0170, `docs/adr/0170-governed-call-authority-and-runtime-repair-baseline.md`).
+
 ## Approval and journal fingerprint transition
 
 An ordinary approval receipt authorizes only its recorded session, run, argument generation, call ID, tool and complete arguments. It is not a reusable session grant. A scoped approval uses a subject-keyed, time-bounded grant instead. Resume checks eligibility and current policy, including scopes, exclusions, separation and each recorded quorum vote; an ineligible decision leaves the token pending.

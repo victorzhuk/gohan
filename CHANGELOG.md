@@ -17,6 +17,8 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 - Docker network policy is established by a trusted namespace anchor before workload startup, without granting workloads network administration authority.
 - Failed Docker sandbox setup cleans up created workloads, anchors and private networks, with retryable errors if cleanup fails.
+- `DenyPrivate` now refuses resolved destinations in the shared-address range `100.64.0.0/10` before dialing; the exact literal allow exception is retained.
+- Proxied egress routes are pinned to the client-validated destination: supported `http` and `https` proxies connect to the checked address, proxy DNS can no longer substitute a denied destination, separate proxy and destination TLS authorities are preserved, and unsupported proxy modes fail before dispatch with `ErrEgressProxyUnsupported`. This routing correction supersedes the earlier response-lifetime repair, which recorded proxy and checked-dial behaviour as unchanged; that claim held for the lifetime fix alone and did not cover proxy-destination selection.
 
 - Anthropic completes tool blocks by content-block index, emits identity-only argument previews, rejects malformed explicit completions as protocol errors, reports unclosed tool blocks with the `max_tokens` truncation terminal, and ends decoding permanently after any terminal error.
 - OpenAI stream termination preserves terminal reasons, reports usage once, stops callbacks after consumer rejection, handles missing cache details and reports cancellation exactly once on every shape, including silent reads, final frames and mid-chunk exits; forced-schema turns never complete wire tool calls.
