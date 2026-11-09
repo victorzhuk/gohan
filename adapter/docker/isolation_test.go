@@ -35,7 +35,11 @@ var startPathRE = regexp.MustCompile(`^/containers/([^/]+)/start$`)
 // and orders policy before workload start.
 func TestSandboxIsolation(t *testing.T) {
 	t.Run("sandbox.firewall-authority-isolated", testFirewallAuthorityIsolated)
-	t.Run("sandbox.policy-setup-failure-cleanup", testPolicySetupFailureCleanup)
+	t.Run("sandbox.policy-setup-failure-cleanup", func(t *testing.T) {
+		testPolicySetupFailureCleanup(t)
+		t.Run("admin_timeout", testPolicySetupAdminTimeout)
+		t.Run("open_cancelled", testPolicySetupOpenCancelled)
+	})
 	t.Run("sandbox.restored-startup-policy-first", testRestoredStartupPolicyFirst)
 }
 
@@ -173,6 +177,9 @@ type faultRule struct {
 	name  string
 	armed bool
 	hits  int
+	// delay slows the matched request instead of failing it, for
+	// deadline and cancellation coverage.
+	delay time.Duration
 	match func(tr *sandboxTransport, method, path string, body []byte) bool
 }
 
@@ -204,6 +211,25 @@ func (t *sandboxTransport) hits(name string) int {
 		}
 	}
 	return n
+}
+
+// armDelay registers a one-shot slow forwarding rule: the matched
+// request is delayed by d and then forwarded unchanged.
+func (t *sandboxTransport) armDelay(name string, d time.Duration, match func(tr *sandboxTransport, method, path string, body []byte) bool) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.rules = append(t.rules, &faultRule{name: name, armed: true, delay: d, match: match})
+	return name
+}
+
+// reset clears the per-attempt request log and created-resource capture
+// so a following open starts from an empty inventory window.
+func (t *sandboxTransport) reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.log = nil
+	t.containers = map[string]string{}
+	t.networks = nil
 }
 
 func (t *sandboxTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -240,6 +266,11 @@ func (t *sandboxTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		if r.armed && r.match(t, method, path, body) {
 			r.armed = false
 			r.hits++
+			if r.delay > 0 {
+				t.mu.Unlock()
+				time.Sleep(r.delay)
+				return t.base.RoundTrip(req)
+			}
 			t.mu.Unlock()
 			return nil, fmt.Errorf("injected fault %s", r.name)
 		}
@@ -548,6 +579,52 @@ func testPolicySetupFailureCleanup(t *testing.T) {
 	}
 }
 
+// testPolicySetupAdminTimeout proves the ten-second administration bound
+// is independent of Open's own context: a slow administration call makes
+// the trusted setup fail closed and unwind every created resource.
+func testPolicySetupAdminTimeout(t *testing.T) {
+	f := newConformanceFactory(t)
+	tr := newSandboxTransport()
+	sb := decoratedSandbox(t, f, tr)
+	tr.armDelay("slow_admin", 12*time.Second, func(_ *sandboxTransport, method, path string, _ []byte) bool {
+		return method == "POST" && strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/exec")
+	})
+	p := types.SandboxPolicy{Lifecycle: types.PerCall}
+	p.Egress.Allow = []string{"example.com:80"}
+	w, err := sb.Open(context.Background(), "", p)
+	if hits := tr.hits("slow_admin"); hits != 1 {
+		t.Fatalf("slow administration call consumed %d times, want exactly once", hits)
+	}
+	if err == nil || w != nil {
+		t.Fatalf("open past the administration bound returned workspace=%v err=%v, want nil workspace and an error", w, err)
+	}
+	assertInventoryClean(t, f, tr)
+}
+
+// testPolicySetupOpenCancelled proves a cancelled Open context fails the
+// trusted setup and that the unwind still removes every created resource
+// under its own fresh bounded contexts.
+func testPolicySetupOpenCancelled(t *testing.T) {
+	f := newConformanceFactory(t)
+	tr := newSandboxTransport()
+	sb := decoratedSandbox(t, f, tr)
+	tr.armDelay("slow_admin", 15*time.Second, func(_ *sandboxTransport, method, path string, _ []byte) bool {
+		return method == "POST" && strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/exec")
+	})
+	p := types.SandboxPolicy{Lifecycle: types.PerCall}
+	p.Egress.Allow = []string{"example.com:80"}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	w, err := sb.Open(ctx, "", p)
+	if hits := tr.hits("slow_admin"); hits != 1 {
+		t.Fatalf("slow administration call consumed %d times, want exactly once", hits)
+	}
+	if err == nil || w != nil {
+		t.Fatalf("cancelled open returned workspace=%v err=%v, want nil workspace and an error", w, err)
+	}
+	assertInventoryClean(t, f, tr)
+}
+
 // testRestoredStartupPolicyFirst builds malicious restored content
 // through public Put/Exec and Snapshot, replaces the idle startup
 // executable and adds an inherited healthcheck through Docker commit
@@ -722,9 +799,7 @@ func testRestoredStartupPolicyFirst(t *testing.T) {
 	}
 
 	// Deny-all creates no anchor and keeps NetworkMode none.
-	tr.mu.Lock()
-	tr.log = nil
-	tr.mu.Unlock()
+	tr.reset()
 	dw, err := rsb.Open(ctx, malRef, types.SandboxPolicy{Lifecycle: types.PerCall})
 	if err != nil {
 		t.Fatalf("open deny-all restored workspace: %v", err)

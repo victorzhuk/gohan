@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -21,25 +23,105 @@ import (
 type workspace struct {
 	api         *client.Client
 	containerID string
-	policy      types.SandboxPolicy
-	rec         *Recorder
-	netID       string
+	// ownerName and anchorID are immutable after Open: ownerName
+	// identifies the never-reused workload group the encoded
+	// ResourceRef carries, anchorID the trusted helper whose network
+	// namespace the workload shares.
+	ownerName string
+	anchorID  string
+	policy    types.SandboxPolicy
+	rec       *Recorder
+	netID     string
 
 	// egressAllowIPs are the resolved addresses the chain permits;
 	// chainReady marks the chain installed, denySeen the LOG rule's
-	// counter already reported.
+	// counter already reported. egressMu serializes the counter
+	// read-modify-write across concurrent Exec calls.
 	egressAllowIPs []string
 	chainReady     bool
 	denySeen       uint64
+	egressMu       sync.Mutex
 
 	mu  sync.Mutex
 	env map[string]string
 }
 
 // ResourceRef is the types.WorkspaceResource identity the cleanup record
-// persists and CloseByRef removes: the container id, never a snapshot tag.
+// persists and CloseByRef removes: a versioned encoding of the full
+// container ID and the immutable owner name, so the anchor and the
+// private network stay recoverable after the workload container is
+// deleted.
 func (w *workspace) ResourceRef() types.WorkspaceRef {
-	return types.WorkspaceRef(w.containerID)
+	return types.WorkspaceRef(workloadRefPrefix + w.containerID + ":" + w.ownerName)
+}
+
+// setChainReady records complete policy installation.
+func (w *workspace) setChainReady(ready bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.chainReady = ready
+}
+
+// chainReadyIs reports the installed state.
+func (w *workspace) chainReadyIs() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.chainReady
+}
+
+// createWorkload creates the stopped workload container: no
+// capabilities, no-new-privileges, an explicit idle entrypoint and a
+// disabled inherited healthcheck. mode is "none" for deny-all policies
+// or "container:<anchor-id>" for the shared trusted namespace.
+func (w *workspace) createWorkload(ctx context.Context, image string, p types.SandboxPolicy, mode container.NetworkMode, netID string) error {
+	labels := map[string]string{
+		LabelSandbox: "true",
+		labelRole:    roleWorkload,
+		labelOwner:   w.ownerName,
+	}
+	if netID != "" {
+		labels[labelNetwork] = netID
+	}
+	cfg := &container.Config{
+		Image:       image,
+		Entrypoint:  []string{"sleep", "infinity"},
+		Healthcheck: &container.HealthConfig{Test: []string{"NONE"}},
+		Labels:      labels,
+	}
+	host := &container.HostConfig{
+		Resources:   resources(p),
+		NetworkMode: mode,
+		CapDrop:     []string{"ALL"},
+		SecurityOpt: []string{"no-new-privileges"},
+	}
+	created, err := w.api.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config:     cfg,
+		HostConfig: host,
+	})
+	if err != nil {
+		return err
+	}
+	w.containerID = created.ID
+	return nil
+}
+
+// unwindGroup removes every created group resource after a failed Open,
+// each removal under a fresh bounded context so a cancelled or expired
+// setup context cannot strand partial resources.
+func (w *workspace) unwindGroup() error {
+	ctx, cancel := context.WithTimeout(context.Background(), adminTimeout)
+	defer cancel()
+	var errs []error
+	if err := removeContainer(ctx, w.api, w.containerID, true); err != nil {
+		errs = append(errs, err)
+	}
+	if err := removeContainer(ctx, w.api, w.anchorID, true); err != nil {
+		errs = append(errs, err)
+	}
+	if err := removeNetwork(ctx, w.api, w.netID); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 // execTokenEnv tags each exec's environment so the process group can be
@@ -70,6 +152,30 @@ func (w *workspace) Exec(ctx context.Context, req types.ExecRequest) (types.Exec
 }
 
 func (w *workspace) exec(ctx context.Context, req types.ExecRequest) (types.ExecResult, error) {
+	return w.execIn(ctx, w.containerID, req)
+}
+
+// adminExec executes one command inside the trusted anchor and returns
+// the raw result; the only path policy installation takes.
+func (w *workspace) adminExec(ctx context.Context, argv ...string) (types.ExecResult, error) {
+	return w.execIn(ctx, w.anchorID, types.ExecRequest{Argv: argv})
+}
+
+// adminRun executes one command inside the trusted anchor. It is the
+// only path policy installation and counter observation take; the
+// public Exec surface never administers the firewall.
+func (w *workspace) adminRun(ctx context.Context, argv ...string) ([]byte, error) {
+	res, err := w.execIn(ctx, w.anchorID, types.ExecRequest{Argv: argv})
+	if err != nil {
+		return nil, err
+	}
+	if res.ExitCode != 0 {
+		return res.Stdout, fmt.Errorf("exit %d: %s", res.ExitCode, res.Stderr)
+	}
+	return res.Stdout, nil
+}
+
+func (w *workspace) execIn(ctx context.Context, containerID string, req types.ExecRequest) (types.ExecResult, error) {
 	start := time.Now()
 	timeout := req.Timeout
 	if timeout == 0 {
@@ -83,8 +189,8 @@ func (w *workspace) exec(ctx context.Context, req types.ExecRequest) (types.Exec
 	if len(req.Argv) == 0 {
 		return types.ExecResult{}, fmt.Errorf("docker: exec: empty argv")
 	}
-	token := fmt.Sprintf("%s-%d", w.containerID[:12], time.Now().UnixNano())
-	created, err := w.api.ExecCreate(ctx, w.containerID, client.ExecCreateOptions{
+	token := fmt.Sprintf("%s-%d", containerID[:12], time.Now().UnixNano())
+	created, err := w.api.ExecCreate(ctx, containerID, client.ExecCreateOptions{
 		Cmd:          req.Argv,
 		WorkingDir:   req.Cwd,
 		Env:          append(w.envList(), execTokenEnv+"="+token),
@@ -291,19 +397,28 @@ func (w *workspace) run(ctx context.Context, argv ...string) ([]byte, error) {
 	return res.Stdout, nil
 }
 
-// Close removes the container this workspace opened and its per-workspace
-// egress network.
+// Close removes the workload container, its trusted anchor and the
+// private network through the same group cleanup CloseByRef uses:
+// missing members are idempotent and cleanup failures surface as
+// errors.
 func (w *workspace) Close(ctx context.Context) error {
-	if _, err := w.api.ContainerRemove(ctx, w.containerID, client.ContainerRemoveOptions{
-		Force:         true,
-		RemoveVolumes: true,
-	}); err != nil {
-		return fmt.Errorf("docker: close container %s: %w", w.containerID, err)
+	var errs []error
+	if err := removeContainer(ctx, w.api, w.containerID, true); err != nil {
+		errs = append(errs, err)
 	}
-	if w.netID != "" && w.netID != "none" {
-		if _, err := w.api.NetworkRemove(ctx, w.netID, client.NetworkRemoveOptions{}); err != nil {
-			return fmt.Errorf("docker: close network %s: %w", w.netID, err)
+	if err := removeContainer(ctx, w.api, w.anchorID, true); err != nil {
+		errs = append(errs, err)
+	}
+	if err := removeNetwork(ctx, w.api, w.netID); err != nil {
+		errs = append(errs, err)
+	}
+	for _, id := range []string{w.containerID, w.anchorID} {
+		if id == "" {
+			continue
+		}
+		if _, err := w.api.ContainerInspect(ctx, id, client.ContainerInspectOptions{}); err == nil {
+			errs = append(errs, fmt.Errorf("docker: close: container %s still present", id))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }

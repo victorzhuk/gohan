@@ -31,18 +31,20 @@ const capNetAdmin = "NET_ADMIN"
 // "none". A non-empty Allow returns a per-workspace bridge network the
 // container attaches to, plus the NET_ADMIN capability the egress chain
 // needs.
-func (s *Sandbox) setupEgress(ctx context.Context, p types.SandboxPolicy) (string, bool, error) {
-	if len(p.Egress.Allow) == 0 {
-		return "none", false, nil
-	}
+func (s *Sandbox) setupEgress(ctx context.Context, p types.SandboxPolicy, owner string) (string, string, error) {
 	name := fmt.Sprintf("%s-%d", snapshotPrefix, time.Now().UnixNano())
-	if _, err := s.c.api.NetworkCreate(ctx, name, client.NetworkCreateOptions{
+	created, err := s.c.api.NetworkCreate(ctx, name, client.NetworkCreateOptions{
 		Driver: "bridge",
-		Labels: map[string]string{LabelSandbox: "true"},
-	}); err != nil {
-		return "", false, fmt.Errorf("docker: create egress network: %w", err)
+		Labels: map[string]string{
+			LabelSandbox: "true",
+			labelRole:    roleNetwork,
+			labelOwner:   owner,
+		},
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("docker: create egress network: %w", err)
 	}
-	return name, true, nil
+	return name, created.ID, nil
 }
 
 // attachEgress points the container at the per-workspace network and,
@@ -58,22 +60,33 @@ func attachEgress(host *container.HostConfig, netName string, fxNetIDs []string)
 	return &network.NetworkingConfig{EndpointsConfig: endpoints}
 }
 
-// installEgressChain builds the default-deny egress chain inside the
-// container (D4). Docker's embedded DNS on 127.0.0.11 rides loopback and
-// stays reachable; each allowlisted host is resolved once and permitted
-// by address; under AllowPrivate the private ranges pass, under
-// DenyPrivate they fall to the default deny, matching std/egress. The
+// installEgressChain builds the default-deny egress chain in the
+// anchor's network namespace, which the workload shares (D4). Docker's
+// embedded DNS on 127.0.0.11 rides loopback and stays reachable; each
+// allowlisted host is resolved once and permitted by address; under
+// AllowPrivate the private ranges pass, under DenyPrivate they fall to
+// the default deny, matching std/egress. The whole installation runs
+// through the private administration runner against the anchor only and
+// is bounded by adminTimeout independently of the workload policy. The
 // chain needs the iptables binary, installed through the still-open
 // network before the deny rules land.
 func (w *workspace) installEgressChain(ctx context.Context) error {
-	if _, err := w.run(ctx, "command", "-v", "iptables"); err != nil {
-		if _, err := w.run(ctx, "apk", "add", "--no-cache", "iptables"); err != nil {
+	actx, cancel := context.WithTimeout(ctx, adminTimeout)
+	defer cancel()
+	out, err := w.adminExec(actx, "sh", "-c", "command -v iptables")
+	if err != nil {
+		// An administration transport failure fails the setup closed;
+		// only a missing binary (non-zero exit) installs it.
+		return fmt.Errorf("docker: probe iptables: %w", err)
+	}
+	if out.ExitCode != 0 {
+		if res, err := w.adminExec(actx, "apk", "add", "--no-cache", "iptables"); err != nil || res.ExitCode != 0 {
 			return fmt.Errorf("docker: install iptables: %w", err)
 		}
 	}
-	w.egressAllowIPs = w.resolveAllowInside(ctx)
+	w.egressAllowIPs = w.resolveAllowInside(actx)
 	for _, cmd := range w.egressRules() {
-		if _, err := w.run(ctx, "sh", "-c", cmd); err != nil {
+		if _, err := w.adminRun(actx, "sh", "-c", cmd); err != nil {
 			return fmt.Errorf("docker: egress rule %q: %w", cmd, err)
 		}
 	}
@@ -130,15 +143,12 @@ func (w *workspace) resolveAllowInside(ctx context.Context) []string {
 			continue
 		}
 		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		out, err := w.exec(rctx, types.ExecRequest{
-			Argv:    []string{"nslookup", host},
-			Timeout: 5 * time.Second,
-		})
+		out, err := w.adminRun(rctx, "nslookup", host)
 		cancel()
-		if err != nil || out.ExitCode != 0 {
+		if err != nil {
 			continue
 		}
-		for _, line := range strings.Split(string(out.Stdout), "\n") {
+		for _, line := range strings.Split(string(out), "\n") {
 			fields := strings.Fields(line)
 			if len(fields) == 0 || !strings.HasPrefix(fields[0], "Address") {
 				continue
@@ -198,10 +208,16 @@ func (w *workspace) observeEgress(ctx context.Context, res types.ExecResult) {
 		}
 		return
 	}
-	if !w.chainReady {
+	if !w.chainReadyIs() {
 		return
 	}
-	out, err := w.run(ctx, "iptables", "-L", egressDenyChain, "-vnx")
+	// The observation runs against the anchor, which owns the network
+	// namespace the workload shares; the dedicated egress mutex
+	// serializes the counter read-modify-write across concurrent Exec
+	// calls without blocking the exec environment.
+	w.egressMu.Lock()
+	defer w.egressMu.Unlock()
+	out, err := w.adminRun(ctx, "iptables", "-L", egressDenyChain, "-vnx")
 	if err != nil {
 		// The observation cannot be read; record nothing rather than a
 		// false clean result. Acceptance fails on the missing count.

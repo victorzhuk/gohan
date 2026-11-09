@@ -9,9 +9,9 @@ Use the existing-service-strict contract and limits in `design.md`.
 ## 1. Sandbox authority and snapshots
 
 - [x] 1.1 Add controlled Docker attack and setup-failure scenarios through Sandbox and Workspace APIs. Ensure capability regain or firewall mutation cannot count as policy enforcement. Parent 7.1.
-- [ ] 1.2 Establish policy in a labelled trusted namespace anchor before workload startup. Keep administration/counter reads outside workload Exec. Drop capabilities, enable `no-new-privileges` and disable inherited healthchecks. Verify `sandbox.firewall-authority-isolated`, `sandbox.policy-setup-failure-cleanup` and `sandbox.restored-startup-policy-first`. Include a tampered restored executable and unchanged UID/file behavior. Parent 7.2.
+- [x] 1.2 Establish policy in a labelled trusted namespace anchor before workload startup. Keep administration/counter reads outside workload Exec. Drop capabilities, enable `no-new-privileges` and disable inherited healthchecks. Verify `sandbox.firewall-authority-isolated`, `sandbox.policy-setup-failure-cleanup` and `sandbox.restored-startup-policy-first`. Include a tampered restored executable and unchanged UID/file behavior. Parent 7.2.
 - [ ] 1.3 Publish immutable image IDs. Support labelled immutable/legacy resources in enumeration and cleanup. Verify `sandbox.same-workspace-snapshots-immutable`, `sandbox.snapshot-cas-failure-keeps-content` and `sandbox.legacy-snapshot-ref-readable`. Parent 7.3.
-- [ ] 1.4 Replace public DNS in the standalone Docker allowlist test with existing isolated fixtures. Verify allowed and denied outcomes without public resolvers or internet listeners. Parent 7.6.
+- [x] 1.4 Replace public DNS in the standalone Docker allowlist test with existing isolated fixtures. Verify allowed and denied outcomes without public resolvers or internet listeners. Parent 7.6.
 
 ## 2. Documentation and child acceptance
 

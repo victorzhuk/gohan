@@ -2,12 +2,15 @@ package docker
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -18,6 +21,37 @@ const (
 	// LabelSnapshot marks committed snapshot images.
 	LabelSnapshot = "gohan.sandbox.snapshot"
 )
+
+// Ownership labels bind every container and network of one workload
+// group: the role separates workload, anchor and network resources, the
+// owner names the never-reused group and the network label records the
+// private network identity on both containers.
+const (
+	labelRole    = "gohan.sandbox.role"
+	labelOwner   = "gohan.sandbox.owner"
+	labelNetwork = "gohan.sandbox.network"
+)
+
+const (
+	roleWorkload = "workload"
+	roleAnchor   = "anchor"
+	roleNetwork  = "network"
+)
+
+// workloadRefPrefix is the versioned encoded identity a workload
+// ResourceRef carries: prefix, full container ID, immutable owner name.
+const workloadRefPrefix = "gohan-workload:v1:"
+
+// adminTimeout bounds the complete trusted policy installation
+// independently of the workload's own execution policy.
+const adminTimeout = 10 * time.Second
+
+// newOwnerName mints one never-reused workload group identity.
+func newOwnerName() string {
+	var b [8]byte
+	_, _ = crand.Read(b[:])
+	return fmt.Sprintf("%d-%s", time.Now().UnixNano(), hex.EncodeToString(b[:]))
+}
 
 // Sandbox opens Docker workspaces under a policy.
 type Sandbox struct {
@@ -55,62 +89,99 @@ func (s *Sandbox) Open(ctx context.Context, ref types.WorkspaceRef, p types.Sand
 			return nil, fmt.Errorf("docker: snapshot %q not found: %w", ref, err)
 		}
 	}
-	cfg := &container.Config{
-		Image:  image,
-		Cmd:    []string{"sleep", "infinity"},
-		Labels: map[string]string{LabelSandbox: "true"},
+	w := &workspace{
+		api:       s.c.api,
+		policy:    p,
+		rec:       s.rec,
+		ownerName: newOwnerName(),
+		env:       map[string]string{},
 	}
-	netName, capped, err := s.setupEgress(ctx, p)
-	if err != nil {
+	if len(p.Egress.Allow) == 0 {
+		// Deny-all needs no firewall: NetworkMode none with no anchor,
+		// no capabilities and no inherited startup surface.
+		if err := w.createWorkload(ctx, image, p, "none", ""); err != nil {
+			return nil, err
+		}
+		if _, err := s.c.api.ContainerStart(ctx, w.containerID, client.ContainerStartOptions{}); err != nil {
+			_ = w.unwindGroup()
+			return nil, fmt.Errorf("docker: start container %s: %w", w.containerID, err)
+		}
+		return w, nil
+	}
+	if err := s.openEgressGroup(ctx, w, image, p); err != nil {
 		return nil, err
 	}
-	var netCfg *network.NetworkingConfig
-	host := &container.HostConfig{Resources: resources(p)}
-	if capped {
-		netCfg = attachEgress(host, netName, s.fxNetIDs)
-		host.CapAdd = append(host.CapAdd, capNetAdmin)
-	} else {
-		host.NetworkMode = "none"
+	return w, nil
+}
+
+// openEgressGroup runs the trusted setup: a labelled private network, a
+// NET_ADMIN anchor from the configured base image and the workload
+// sharing the anchor's network namespace. Both containers exist stopped
+// and associated before the anchor starts; the complete policy installs
+// through a private ten-second-bounded administration runner against the
+// anchor only, and the workload starts only after the chain is ready.
+// Any failure unwinds every created resource with fresh bounded contexts
+// and surfaces both the setup and the cleanup errors.
+func (s *Sandbox) openEgressGroup(ctx context.Context, w *workspace, image string, p types.SandboxPolicy) error {
+	netName, netID, err := s.setupEgress(ctx, p, w.ownerName)
+	if err != nil {
+		return err
 	}
+	w.netID = netName
+	unwind := func(setupErr error) error {
+		return errors.Join(setupErr, w.unwindGroup())
+	}
+	anchor, err := s.createAnchor(ctx, w, netName, netID, p)
+	if err != nil {
+		return unwind(fmt.Errorf("docker: create anchor: %w", err))
+	}
+	w.anchorID = anchor.ID
+	if err := w.createWorkload(ctx, image, p, container.NetworkMode("container:"+anchor.ID), netID); err != nil {
+		return unwind(fmt.Errorf("docker: create workload from %s: %w", image, err))
+	}
+	if _, err := s.c.api.ContainerStart(ctx, anchor.ID, client.ContainerStartOptions{}); err != nil {
+		return unwind(fmt.Errorf("docker: start anchor %s: %w", anchor.ID, err))
+	}
+	if err := w.installEgressChain(ctx); err != nil {
+		return unwind(err)
+	}
+	w.setChainReady(true)
+	if _, err := s.c.api.ContainerStart(ctx, w.containerID, client.ContainerStartOptions{}); err != nil {
+		return unwind(fmt.Errorf("docker: start container %s: %w", w.containerID, err))
+	}
+	return nil
+}
+
+// createAnchor builds the stopped trusted helper: an idle container from
+// the configured base image (never from a restored snapshot or the
+// workload image) carrying NET_ADMIN, attached to the private network
+// and any fixture networks.
+func (s *Sandbox) createAnchor(ctx context.Context, w *workspace, netName, netID string, p types.SandboxPolicy) (client.ContainerCreateResult, error) {
+	cfg := &container.Config{
+		Image:       s.c.BaseImage(),
+		Entrypoint:  []string{"sleep", "infinity"},
+		Healthcheck: &container.HealthConfig{Test: []string{"NONE"}},
+		Labels: map[string]string{
+			LabelSandbox: "true",
+			labelRole:    roleAnchor,
+			labelOwner:   w.ownerName,
+			labelNetwork: netID,
+		},
+	}
+	host := &container.HostConfig{
+		Resources: resources(p),
+		CapAdd:    []string{capNetAdmin},
+	}
+	netCfg := attachEgress(host, netName, s.fxNetIDs)
 	created, err := s.c.api.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config:           cfg,
 		HostConfig:       host,
 		NetworkingConfig: netCfg,
 	})
 	if err != nil {
-		s.dropEgressNetwork(ctx, netName)
-		return nil, fmt.Errorf("docker: create container from %s: %w", image, err)
+		return client.ContainerCreateResult{}, err
 	}
-	w := &workspace{
-		api:         s.c.api,
-		containerID: created.ID,
-		policy:      p,
-		rec:         s.rec,
-		netID:       netName,
-		env:         map[string]string{},
-	}
-	if _, err := s.c.api.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
-		_, _ = s.c.api.ContainerRemove(ctx, created.ID, client.ContainerRemoveOptions{Force: true})
-		s.dropEgressNetwork(ctx, netName)
-		return nil, fmt.Errorf("docker: start container %s: %w", created.ID, err)
-	}
-	if capped {
-		if err := w.installEgressChain(ctx); err != nil {
-			_, _ = s.c.api.ContainerRemove(ctx, created.ID, client.ContainerRemoveOptions{Force: true})
-			s.dropEgressNetwork(ctx, netName)
-			return nil, err
-		}
-		w.chainReady = true
-	}
-	return w, nil
-}
-
-// dropEgressNetwork removes a per-workspace network after its container
-// failed to start.
-func (s *Sandbox) dropEgressNetwork(ctx context.Context, netName string) {
-	if netName != "" && netName != "none" {
-		_, _ = s.c.api.NetworkRemove(ctx, netName, client.NetworkRemoveOptions{})
-	}
+	return created, nil
 }
 
 // resources maps the policy's CPU and Memory strings onto HostConfig

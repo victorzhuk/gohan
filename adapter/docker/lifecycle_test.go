@@ -24,6 +24,12 @@ func TestDockerKilledPodCleanup(t *testing.T) {
 	sb := newTestSandbox(t)
 	ctx := context.Background()
 
+	// Allowed egress runs every acquired workspace through the trusted
+	// anchor lifecycle under the real Acquire, Publish and Sweep
+	// sequence.
+	lifecyclePolicy := types.SandboxPolicy{}
+	lifecyclePolicy.Egress.Allow = []string{"example.com:80"}
+
 	// newLifecycleStore builds the shared durable authority of the two
 	// pods: one runs store whose clock the test advances and the session
 	// log wired with the same guard instance.
@@ -41,7 +47,7 @@ func TestDockerKilledPodCleanup(t *testing.T) {
 
 	newPod := func(t *testing.T, log *stores.MemorySessionLog) *sandbox.Handles {
 		t.Helper()
-		h, err := sandbox.NewHandles(sb, types.SandboxPolicy{}, log, sandbox.WithCleanupStore(log))
+		h, err := sandbox.NewHandles(sb, lifecyclePolicy, log, sandbox.WithCleanupStore(log))
 		if err != nil {
 			t.Fatalf("NewHandles: %v", err)
 		}

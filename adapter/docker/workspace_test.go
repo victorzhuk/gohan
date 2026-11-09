@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/moby/moby/client"
@@ -120,6 +121,63 @@ func TestClose(t *testing.T) {
 	}
 	if _, err := w.Exec(ctx, types.ExecRequest{Argv: []string{"true"}}); err == nil {
 		t.Fatal("exec after Close: want error")
+	}
+}
+
+// TestSandboxUIDFiles preserves the UID and file semantics across the
+// trusted-setup cutover: fresh and restored workspaces keep the image's
+// user identity and exact file content through Put, Get, Exec and
+// Snapshot.
+func TestSandboxUIDFiles(t *testing.T) {
+	ctx := context.Background()
+	sb := newTestSandbox(t)
+	w, err := sb.Open(ctx, "", types.SandboxPolicy{})
+	if err != nil {
+		t.Fatalf("open fresh: %v", err)
+	}
+	const data = "uid parity payload\n"
+	if err := w.Put(ctx, "/data/note", strings.NewReader(data)); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	uidFresh, err := w.Exec(ctx, types.ExecRequest{Argv: []string{"sh", "-c", "stat -c %u /data/note"}})
+	if err != nil || uidFresh.ExitCode != 0 {
+		t.Fatalf("stat fresh note: %+v err %v", uidFresh, err)
+	}
+	ref, err := w.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("close fresh: %v", err)
+	}
+
+	restored, err := sb.Open(ctx, ref, types.SandboxPolicy{})
+	if err != nil {
+		t.Fatalf("open restored: %v", err)
+	}
+	t.Cleanup(func() { _ = restored.Close(ctx) })
+	uidRestored, err := restored.Exec(ctx, types.ExecRequest{Argv: []string{"sh", "-c", "stat -c %u /data/note"}})
+	if err != nil || uidRestored.ExitCode != 0 {
+		t.Fatalf("stat restored note: %+v err %v", uidRestored, err)
+	}
+	if strings.TrimSpace(string(uidRestored.Stdout)) != strings.TrimSpace(string(uidFresh.Stdout)) {
+		t.Fatalf("restored note uid %q differs from fresh %q", strings.TrimSpace(string(uidRestored.Stdout)), strings.TrimSpace(string(uidFresh.Stdout)))
+	}
+	rc, err := restored.Get(ctx, "/data/note")
+	if err != nil {
+		t.Fatalf("get restored note: %v", err)
+	}
+	body, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		t.Fatalf("read restored note: %v", err)
+	}
+	if string(body) != data {
+		t.Fatalf("restored note %q, want %q", body, data)
+	}
+	res, err := restored.Exec(ctx, types.ExecRequest{Argv: []string{"cat", "/data/note"}})
+	if err != nil || string(res.Stdout) != data {
+		t.Fatalf("cat restored note = %+v err %v", res, err)
 	}
 }
 
