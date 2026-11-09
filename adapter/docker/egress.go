@@ -22,15 +22,16 @@ const egressChain = "GOHAN_EGRESS"
 
 const egressDenyChain = "GOHAN_EGRESS_DENY"
 
-// capNetAdmin lets the adapter install the egress chain inside the
-// container's own network namespace; no other capability is added.
+// capNetAdmin is the only capability the anchor keeps from the dropped
+// ALL set: iptables needs it to install the egress chain inside the
+// anchor's network namespace, which the workload shares.
 const capNetAdmin = "NET_ADMIN"
 
-// setupEgress enforces the policy at the container network layer (D4).
-// An empty Allow denies all egress including DNS through NetworkMode
-// "none". A non-empty Allow returns a per-workspace bridge network the
-// container attaches to, plus the NET_ADMIN capability the egress chain
-// needs.
+// setupEgress creates the labelled private bridge network of one
+// workload group. An empty Allow denies all egress including DNS
+// through NetworkMode "none" without any network; a non-empty Allow
+// returns the network's name and ID for the anchor and workload to
+// attach to.
 func (s *Sandbox) setupEgress(ctx context.Context, p types.SandboxPolicy, owner string) (string, string, error) {
 	name := fmt.Sprintf("%s-%d", snapshotPrefix, time.Now().UnixNano())
 	created, err := s.c.api.NetworkCreate(ctx, name, client.NetworkCreateOptions{
@@ -67,26 +68,25 @@ func attachEgress(host *container.HostConfig, netName string, fxNetIDs []string)
 // AllowPrivate the private ranges pass, under DenyPrivate they fall to
 // the default deny, matching std/egress. The whole installation runs
 // through the private administration runner against the anchor only and
-// is bounded by adminTimeout independently of the workload policy. The
-// chain needs the iptables binary, installed through the still-open
-// network before the deny rules land.
+// is bounded by a fresh adminTimeout per administration operation,
+// independently of the workload policy. The chain needs the iptables
+// binary, installed through the still-open network before the deny
+// rules land.
 func (w *workspace) installEgressChain(ctx context.Context) error {
-	actx, cancel := context.WithTimeout(ctx, adminTimeout)
-	defer cancel()
-	out, err := w.adminExec(actx, "sh", "-c", "command -v iptables")
+	out, err := w.adminExec(ctx, "sh", "-c", "command -v iptables")
 	if err != nil {
 		// An administration transport failure fails the setup closed;
 		// only a missing binary (non-zero exit) installs it.
 		return fmt.Errorf("docker: probe iptables: %w", err)
 	}
 	if out.ExitCode != 0 {
-		if res, err := w.adminExec(actx, "apk", "add", "--no-cache", "iptables"); err != nil || res.ExitCode != 0 {
+		if res, err := w.adminExec(ctx, "apk", "add", "--no-cache", "iptables"); err != nil || res.ExitCode != 0 {
 			return fmt.Errorf("docker: install iptables: %w", err)
 		}
 	}
-	w.egressAllowIPs = w.resolveAllowInside(actx)
+	w.egressAllowIPs = w.resolveAllowInside(ctx)
 	for _, cmd := range w.egressRules() {
-		if _, err := w.adminRun(actx, "sh", "-c", cmd); err != nil {
+		if _, err := w.adminRun(ctx, "sh", "-c", cmd); err != nil {
 			return fmt.Errorf("docker: egress rule %q: %w", cmd, err)
 		}
 	}
@@ -217,10 +217,28 @@ func (w *workspace) observeEgress(ctx context.Context, res types.ExecResult) {
 	// calls without blocking the exec environment.
 	w.egressMu.Lock()
 	defer w.egressMu.Unlock()
-	out, err := w.adminRun(ctx, "iptables", "-L", egressDenyChain, "-vnx")
-	if err != nil {
-		// The observation cannot be read; record nothing rather than a
-		// false clean result. Acceptance fails on the missing count.
+	// The read runs in its own goroutine with a wall-clock guard: a
+	// transport that cannot be interrupted by context cancellation
+	// must never hold the public Exec past the fresh ten-second
+	// administration bound. A stalled read records nothing rather than
+	// a false clean result or a fabricated denial.
+	type counterRead struct {
+		out []byte
+		err error
+	}
+	ch := make(chan counterRead, 1)
+	go func() {
+		out, err := w.adminRun(ctx, "iptables", "-L", egressDenyChain, "-vnx")
+		ch <- counterRead{out: out, err: err}
+	}()
+	var out []byte
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return
+		}
+		out = r.out
+	case <-time.After(adminTimeout):
 		return
 	}
 	var dropped uint64

@@ -46,11 +46,13 @@ const workloadRefPrefix = "gohan-workload:v1:"
 // independently of the workload's own execution policy.
 const adminTimeout = 10 * time.Second
 
-// newOwnerName mints one never-reused workload group identity.
+// newOwnerName mints one never-reused workload group identity: the
+// "gohan-workload-" prefix over 32 lowercase hex digits of 16
+// crypto/rand bytes, the shape parseWorkloadRef enforces.
 func newOwnerName() string {
-	var b [8]byte
+	var b [16]byte
 	_, _ = crand.Read(b[:])
-	return fmt.Sprintf("%d-%s", time.Now().UnixNano(), hex.EncodeToString(b[:]))
+	return "gohan-workload-" + hex.EncodeToString(b[:])
 }
 
 // Sandbox opens Docker workspaces under a policy.
@@ -170,6 +172,7 @@ func (s *Sandbox) createAnchor(ctx context.Context, w *workspace, netName, netID
 	}
 	host := &container.HostConfig{
 		Resources: resources(p),
+		CapDrop:   []string{"ALL"},
 		CapAdd:    []string{capNetAdmin},
 	}
 	netCfg := attachEgress(host, netName, s.fxNetIDs)

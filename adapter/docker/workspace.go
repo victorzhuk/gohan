@@ -156,16 +156,22 @@ func (w *workspace) exec(ctx context.Context, req types.ExecRequest) (types.Exec
 }
 
 // adminExec executes one command inside the trusted anchor and returns
-// the raw result; the only path policy installation takes.
+// the raw result; the only path policy installation takes. Each
+// administration operation carries its own fresh ten-second maximum,
+// independent of the workload's execution policy.
 func (w *workspace) adminExec(ctx context.Context, argv ...string) (types.ExecResult, error) {
-	return w.execIn(ctx, w.anchorID, types.ExecRequest{Argv: argv})
+	actx, cancel := context.WithTimeout(ctx, adminTimeout)
+	defer cancel()
+	return w.execIn(actx, w.anchorID, types.ExecRequest{Argv: argv})
 }
 
 // adminRun executes one command inside the trusted anchor. It is the
 // only path policy installation and counter observation take; the
-// public Exec surface never administers the firewall.
+// public Exec surface never administers the firewall. The fresh
+// ten-second maximum is per operation, so a stalled administration
+// read never holds a public Exec past the bound.
 func (w *workspace) adminRun(ctx context.Context, argv ...string) ([]byte, error) {
-	res, err := w.execIn(ctx, w.anchorID, types.ExecRequest{Argv: argv})
+	res, err := w.adminExec(ctx, argv...)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +184,10 @@ func (w *workspace) adminRun(ctx context.Context, argv ...string) ([]byte, error
 func (w *workspace) execIn(ctx context.Context, containerID string, req types.ExecRequest) (types.ExecResult, error) {
 	start := time.Now()
 	timeout := req.Timeout
-	if timeout == 0 {
+	// Administration against the anchor is bounded by adminExec's
+	// fresh ten-second maximum, never by the workload's execution
+	// policy.
+	if timeout == 0 && containerID != w.anchorID {
 		timeout = w.policy.MaxExecTime
 	}
 	if timeout > 0 {
@@ -190,10 +199,16 @@ func (w *workspace) execIn(ctx context.Context, containerID string, req types.Ex
 		return types.ExecResult{}, fmt.Errorf("docker: exec: empty argv")
 	}
 	token := fmt.Sprintf("%s-%d", containerID[:12], time.Now().UnixNano())
+	// The anchor receives only the exec token: workload environment
+	// values, including resolved secrets, never reach administration.
+	env := []string{execTokenEnv + "=" + token}
+	if containerID != w.anchorID {
+		env = append(w.envList(), execTokenEnv+"="+token)
+	}
 	created, err := w.api.ExecCreate(ctx, containerID, client.ExecCreateOptions{
 		Cmd:          req.Argv,
 		WorkingDir:   req.Cwd,
-		Env:          append(w.envList(), execTokenEnv+"="+token),
+		Env:          env,
 		AttachStdout: true,
 		AttachStderr: true,
 		AttachStdin:  len(req.Stdin) > 0,
@@ -382,19 +397,6 @@ func (w *workspace) SetEnv(_ context.Context, env map[string]string) error {
 		w.env[k] = v
 	}
 	return nil
-}
-
-// run executes one adapter command inside the container and fails on a
-// non-zero exit. It bypasses the egress observation wrapper.
-func (w *workspace) run(ctx context.Context, argv ...string) ([]byte, error) {
-	res, err := w.exec(ctx, types.ExecRequest{Argv: argv})
-	if err != nil {
-		return nil, err
-	}
-	if res.ExitCode != 0 {
-		return res.Stdout, fmt.Errorf("exit %d: %s", res.ExitCode, res.Stderr)
-	}
-	return res.Stdout, nil
 }
 
 // Close removes the workload container, its trusted anchor and the

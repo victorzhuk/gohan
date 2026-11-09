@@ -41,6 +41,8 @@ func TestSandboxIsolation(t *testing.T) {
 		t.Run("open_cancelled", testPolicySetupOpenCancelled)
 	})
 	t.Run("sandbox.restored-startup-policy-first", testRestoredStartupPolicyFirst)
+	t.Run("sandbox.admin-env-isolated", testAdminEnvIsolated)
+	t.Run("sandbox.admin-counter-bounded", testAdminCounterBounded)
 }
 
 // mustExec runs one public Workspace.Exec call and fails the test on a
@@ -666,6 +668,21 @@ func testRestoredStartupPolicyFirst(t *testing.T) {
 		t.Fatalf("put markers dir: %v", err)
 	}
 
+	// The real startup executable is replaced with one that proves
+	// itself and probes the denied peer only on success, so policy
+	// enforcement is observable at the first workload execution of a
+	// restored workspace.
+	startup := "#!/bin/sh\n" +
+		": > /markers/startup\n" +
+		"if wget -q -T 2 -O /dev/null http://other.example.com:443/; then : > /markers/reached; fi\n" +
+		"exec /bin/busybox sleep infinity\n"
+	if err := src.Put(ctx, "/bin/sleep", strings.NewReader(startup)); err != nil {
+		t.Fatalf("put startup executable: %v", err)
+	}
+	if res := mustExec(t, src, 10*time.Second, "chmod", "755", "/bin/sleep"); res.ExitCode != 0 {
+		t.Fatalf("chmod startup executable: exit %d stderr %s", res.ExitCode, res.Stderr)
+	}
+
 	// Positive execution controls: each marker command really creates
 	// its marker file before absence can mean anything. The control
 	// runs in the source workspace; the markers are removed before the
@@ -754,11 +771,16 @@ func testRestoredStartupPolicyFirst(t *testing.T) {
 	// healthchecks; none of the inherited markers may exist, which also
 	// proves the malicious entrypoint never contacted the denied peer.
 	time.Sleep(3 * time.Second)
-	for _, marker := range []string{"/markers/entrypoint", "/markers/healthcheck", "/markers/contacted"} {
+	for _, marker := range []string{"/markers/entrypoint", "/markers/healthcheck", "/markers/contacted", "/markers/reached"} {
 		res := mustExec(t, w, 10*time.Second, "test", "-f", marker)
 		if res.ExitCode == 0 {
 			t.Fatalf("inherited startup artifact executed: %s exists", marker)
 		}
+	}
+	// Positive control: the replaced startup executable really ran, so
+	// the absence of /markers/reached means denial, not silence.
+	if res := mustExec(t, w, 10*time.Second, "test", "-f", "/markers/startup"); res.ExitCode != 0 {
+		t.Fatalf("replaced startup executable did not run: /markers/startup missing after open")
 	}
 
 	// Positive startup control: the restored workload process runs and
@@ -827,5 +849,111 @@ func testRestoredStartupPolicyFirst(t *testing.T) {
 	}
 	if dinsp.Container.HostConfig == nil || string(dinsp.Container.HostConfig.NetworkMode) != "none" {
 		t.Fatalf("deny-all workload network mode %v, want none", dinsp.Container.HostConfig.NetworkMode)
+	}
+}
+
+// testAdminEnvIsolated proves the sentinel a public Exec injects through
+// SetEnv reaches the workload exec environment but never the trusted
+// anchor's: the anchor administration environment is workload-independent.
+func testAdminEnvIsolated(t *testing.T) {
+	f := newConformanceFactory(t)
+	f.NetworkFixture(t)
+	ctx := context.Background()
+	p := types.SandboxPolicy{Lifecycle: types.PerCall}
+	p.Egress.Allow = []string{"api.example.com:443"}
+
+	tr := newSandboxTransport()
+	sb := decoratedSandbox(t, f, tr)
+	w, err := sb.Open(ctx, "", p)
+	if err != nil {
+		t.Fatalf("open workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close(ctx) })
+	ws := w.(*workspace)
+
+	const sentinel = "leak-probe-7f3a"
+	var anchorBody, workloadBody []byte
+	tr.armDelay("tap_anchor_env", time.Millisecond, func(_ *sandboxTransport, method, path string, body []byte) bool {
+		if method == "POST" && path == "/containers/"+ws.anchorID+"/exec" && bytes.Contains(body, []byte("iptables")) {
+			anchorBody = append([]byte(nil), body...)
+			return true
+		}
+		return false
+	})
+	tr.armDelay("tap_workload_env", time.Millisecond, func(_ *sandboxTransport, method, path string, body []byte) bool {
+		if method == "POST" && path == "/containers/"+ws.containerID+"/exec" {
+			workloadBody = append([]byte(nil), body...)
+			return true
+		}
+		return false
+	})
+
+	if err := w.SetEnv(ctx, map[string]string{"GOHAN_REVIEW_SECRET": sentinel}); err != nil {
+		t.Fatalf("set env: %v", err)
+	}
+	if res := mustExec(t, w, 10*time.Second, "true"); res.ExitCode != 0 {
+		t.Fatalf("sentinel exec failed: exit %d stderr %s", res.ExitCode, res.Stderr)
+	}
+	if tr.hits("tap_workload_env") != 1 {
+		t.Fatalf("workload exec create captured %d times, want exactly once", tr.hits("tap_workload_env"))
+	}
+	if tr.hits("tap_anchor_env") != 1 {
+		t.Fatalf("anchor counter-read exec create captured %d times, want exactly once", tr.hits("tap_anchor_env"))
+	}
+	if !bytes.Contains(workloadBody, []byte(sentinel)) {
+		t.Fatalf("workload exec body lost the SetEnv sentinel; the capture is invalid")
+	}
+	if bytes.Contains(anchorBody, []byte(sentinel)) {
+		t.Fatalf("anchor exec body carries the workload SetEnv sentinel; anchor administration must not receive workload environment values")
+	}
+}
+
+// testAdminCounterBounded proves the fresh ten-second administration
+// bound on the egress counter read is independent of the workload's
+// MaxExecTime: a stalled anchor counter read must not hold the public
+// Exec past the bound, and the failed read must fabricate no denial.
+func testAdminCounterBounded(t *testing.T) {
+	f := newConformanceFactory(t)
+	f.NetworkFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	p := types.SandboxPolicy{Lifecycle: types.PerCall}
+	p.Egress.Allow = []string{"api.example.com:443"}
+
+	tr := newSandboxTransport()
+	sb := decoratedSandbox(t, f, tr)
+	w, err := sb.Open(ctx, "", p)
+	if err != nil {
+		t.Fatalf("open workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer ccancel()
+		_ = w.Close(cctx)
+	})
+	ws := w.(*workspace)
+
+	tr.armDelay("slow_counter_read", 20*time.Second, func(_ *sandboxTransport, method, path string, body []byte) bool {
+		return method == "POST" && path == "/containers/"+ws.anchorID+"/exec" &&
+			bytes.Contains(body, []byte(`"iptables","-L","`+egressDenyChain+`"`))
+	})
+	f.rec.Reset()
+	start := time.Now()
+	res, err := w.Exec(ctx, types.ExecRequest{Argv: []string{"true"}})
+	elapsed := time.Since(start)
+	if tr.hits("slow_counter_read") != 1 {
+		t.Fatalf("anchor counter read delayed %d times, want exactly once; the scenario never exercised the stalled observation", tr.hits("slow_counter_read"))
+	}
+	if err != nil {
+		t.Fatalf("public exec with stalled anchor counter read: %v", err)
+	}
+	if elapsed > 13*time.Second {
+		t.Fatalf("public exec returned after %s with a stalled anchor counter read; the fresh ten-second administration bound must fire independent of the workload MaxExecTime", elapsed)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("public exec itself failed under the stalled counter read: exit %d stderr %s", res.ExitCode, res.Stderr)
+	}
+	if n := f.rec.Denied(); n != 0 {
+		t.Fatalf("failed counter read fabricated %d egress_denied observations, want none", n)
 	}
 }

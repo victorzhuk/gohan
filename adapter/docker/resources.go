@@ -2,7 +2,9 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/moby/moby/api/types/network"
@@ -83,9 +85,13 @@ func (s *Sandbox) Enumerate(ctx context.Context) ([]types.WorkspaceRef, error) {
 }
 
 // networkEmpty reports whether the network has no attached containers.
+// A network that disappeared concurrently counts as empty.
 func (s *Sandbox) networkEmpty(ctx context.Context, id string) (bool, error) {
 	insp, err := s.c.api.NetworkInspect(ctx, id, client.NetworkInspectOptions{})
 	if err != nil {
+		if isNotFound(err) {
+			return true, nil
+		}
 		return false, fmt.Errorf("docker: inspect network %s: %w", id, err)
 	}
 	return len(insp.Network.Containers) == 0, nil
@@ -108,15 +114,22 @@ func encodeWorkloadRef(id, owner string) types.WorkspaceRef {
 	return types.WorkspaceRef(workloadRefPrefix + id + ":" + owner)
 }
 
+// ownerNamePattern matches the frozen ownership seam newOwnerName
+// mints: the "gohan-workload-" prefix over exactly 32 lowercase hex
+// digits.
+var ownerNamePattern = regexp.MustCompile(`^gohan-workload-[0-9a-f]{32}$`)
+
 // parseWorkloadRef strictly decodes the versioned encoding. It never
-// reinterprets another ref shape as a workload identity.
+// reinterprets another ref shape as a workload identity: the container
+// ID must be a full 64-lowercase-hex Docker ID and the owner must
+// match the frozen ownership seam.
 func parseWorkloadRef(ref string) (id, owner string, ok bool) {
 	rest, found := strings.CutPrefix(ref, workloadRefPrefix)
 	if !found {
 		return "", "", false
 	}
 	id, owner, found = strings.Cut(rest, ":")
-	if !found || id == "" || owner == "" || strings.Contains(owner, ":") {
+	if !found || !isContainerID(id) || !ownerNamePattern.MatchString(owner) {
 		return "", "", false
 	}
 	return id, owner, true
@@ -201,6 +214,7 @@ func (s *Sandbox) closeWorkloadGroup(ctx context.Context, workloadID, owner stri
 		return fmt.Errorf("docker: close group %s: list containers: %w", owner, err)
 	}
 	anchorID := ""
+	workloadPresent := false
 	var removals []error
 	for _, c := range containers.Items {
 		switch {
@@ -208,14 +222,26 @@ func (s *Sandbox) closeWorkloadGroup(ctx context.Context, workloadID, owner stri
 			if c.ID != workloadID {
 				return fmt.Errorf("docker: close group %s: extant workload %s contradicts encoded identity %s", owner, c.ID, workloadID)
 			}
+			workloadPresent = true
 		case c.Labels[labelRole] == roleAnchor && c.Labels[labelOwner] == owner:
 			anchorID = c.ID
 		case c.ID == workloadID:
 			return fmt.Errorf("docker: close group %s: workload %s carries owner %q, want %s", workloadID, c.ID, c.Labels[labelOwner], owner)
 		}
 	}
-	if err := removeContainer(ctx, s.c.api, workloadID, true); err != nil {
-		removals = append(removals, err)
+	if workloadPresent {
+		if err := removeContainer(ctx, s.c.api, workloadID, true); err != nil {
+			removals = append(removals, err)
+		}
+	} else {
+		// The encoded identity may name the workload only after the
+		// labelled scan matched it or the container is already absent;
+		// an unlabelled foreign container is never force-removed.
+		if _, err := s.c.api.ContainerInspect(ctx, workloadID, client.ContainerInspectOptions{}); err == nil {
+			return fmt.Errorf("docker: close group %s: workload %s exists without the sandbox workload role and owner; refusing removal", owner, workloadID)
+		} else if !isNotFound(err) {
+			removals = append(removals, fmt.Errorf("docker: close group %s: inspect workload %s: %w", owner, workloadID, err))
+		}
 	}
 	if anchorID != "" {
 		if err := removeContainer(ctx, s.c.api, anchorID, true); err != nil {
@@ -237,7 +263,7 @@ func (s *Sandbox) closeWorkloadGroup(ctx context.Context, workloadID, owner stri
 	if err := s.verifyGroupAbsent(ctx, workloadID, anchorID, owner); err != nil {
 		removals = append(removals, err)
 	}
-	return firstErr(removals)
+	return errors.Join(removals...)
 }
 
 // verifyGroupAbsent reports success only when the whole selected group
@@ -261,7 +287,7 @@ func (s *Sandbox) verifyGroupAbsent(ctx context.Context, workloadID, anchorID, o
 			errs = append(errs, fmt.Errorf("docker: close group %s: network %s still present", owner, n.ID))
 		}
 	}
-	return firstErr(errs)
+	return errors.Join(errs...)
 }
 
 // closeRawResource routes a raw 64-hex ID: legacy containers without the
@@ -308,21 +334,38 @@ func (s *Sandbox) closeRawResource(ctx context.Context, id string) error {
 		return fmt.Errorf("docker: close %s: raw IDs are refused for workload-role containers; use the encoded resource ref", id)
 	case roleAnchor:
 		owner := labels[labelOwner]
-		containers, err := s.c.api.ContainerList(ctx, client.ContainerListOptions{
-			All:     true,
-			Filters: client.Filters{}.Add("label", LabelSandbox+"=true"),
-		})
+		serves, err := s.ownerHasWorkload(ctx, owner)
 		if err != nil {
-			return fmt.Errorf("docker: close anchor %s: list containers: %w", id, err)
+			return err
 		}
-		for _, c := range containers.Items {
-			if c.Labels[labelRole] == roleWorkload && c.Labels[labelOwner] == owner {
-				return fmt.Errorf("docker: close anchor %s: anchor serves existing workload owner %s", id, owner)
-			}
+		if serves {
+			return fmt.Errorf("docker: close anchor %s: anchor serves existing workload owner %s", id, owner)
 		}
 		// Non-forced: a concurrent start prevents the removal.
 		if err := removeContainer(ctx, s.c.api, id, false); err != nil {
-			return err
+			// A running anchor refuses the non-forced removal; a
+			// leaked running orphan is reclaimable only after the
+			// owner still serves no workload, then stop and remove.
+			insp, ierr := s.c.api.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+			if ierr != nil || !insp.Container.State.Running {
+				return err
+			}
+			serves, werr := s.ownerHasWorkload(ctx, owner)
+			if werr != nil {
+				return werr
+			}
+			if serves {
+				return fmt.Errorf("docker: close anchor %s: anchor serves existing workload owner %s", id, owner)
+			}
+			sctx, scancel := context.WithTimeout(context.Background(), adminTimeout)
+			if _, err := s.c.api.ContainerStop(sctx, id, client.ContainerStopOptions{}); err != nil && !isNotFound(err) {
+				scancel()
+				return fmt.Errorf("docker: close anchor %s: stop: %w", id, err)
+			}
+			scancel()
+			if err := removeContainer(ctx, s.c.api, id, true); err != nil {
+				return err
+			}
 		}
 		networks, err := s.ownedNetworks(ctx)
 		if err != nil {
@@ -355,6 +398,24 @@ func (s *Sandbox) closeRawResource(ctx context.Context, id string) error {
 		return fmt.Errorf("docker: close container %s: %w", id, err)
 	}
 	return nil
+}
+
+// ownerHasWorkload reports whether a labelled workload container with
+// this owner exists.
+func (s *Sandbox) ownerHasWorkload(ctx context.Context, owner string) (bool, error) {
+	containers, err := s.c.api.ContainerList(ctx, client.ContainerListOptions{
+		All:     true,
+		Filters: client.Filters{}.Add("label", LabelSandbox+"=true"),
+	})
+	if err != nil {
+		return false, fmt.Errorf("docker: list containers for owner %s: %w", owner, err)
+	}
+	for _, c := range containers.Items {
+		if c.Labels[labelRole] == roleWorkload && c.Labels[labelOwner] == owner {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // removeContainer removes one container; an already absent container is
@@ -391,13 +452,4 @@ func isNotFound(err error) bool {
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "no such") ||
 		strings.Contains(strings.ToLower(err.Error()), "not found")
-}
-
-func firstErr(errs []error) error {
-	for _, err := range errs {
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }

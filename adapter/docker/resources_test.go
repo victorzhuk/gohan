@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -244,6 +245,22 @@ func TestSandboxAnchorRecovery(t *testing.T) {
 		sb := decoratedSandbox(t, f, tr)
 		base := f.c.BaseImage()
 
+		// Only the attempt's own new anchor counts: the baseline
+		// inventory is diffed, not the daemon's global anchor count.
+		// It is captured BEFORE the open: the crashed attempt's
+		// surviving anchor must stay outside the baseline.
+		before, err := f.c.api.ContainerList(ctx, client.ContainerListOptions{
+			All:     true,
+			Filters: client.Filters{}.Add("label", labelRole+"="+roleAnchor),
+		})
+		if err != nil {
+			t.Fatalf("list baseline anchors: %v", err)
+		}
+		baseline := map[string]bool{}
+		for _, c := range before.Items {
+			baseline[c.ID] = true
+		}
+
 		// The daemon stream dies after the anchor exists and the normal
 		// unwind loses its anchor removal, the crashed-pod shape.
 		tr.arm("create_workload", func(_ *sandboxTransport, method, path string, body []byte) bool {
@@ -283,11 +300,23 @@ func TestSandboxAnchorRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatalf("list anchors: %v", err)
 		}
-		if len(anchors.Items) != 1 {
-			t.Fatalf("crashed open left %d anchors, want the one unassociated anchor", len(anchors.Items))
+		created := tr.createdContainers()
+		for _, c := range anchors.Items {
+			if baseline[c.ID] {
+				continue
+			}
+			if anchorID != "" {
+				t.Fatalf("crashed open left new anchors %s and %s, want exactly one", anchorID, c.ID)
+			}
+			if created[c.ID] != base {
+				t.Fatalf("new anchor %s was not created by this attempt from base image %s", c.ID, base)
+			}
+			anchorID = c.ID
+			owner = c.Labels[labelOwner]
 		}
-		anchorID = anchors.Items[0].ID
-		owner = anchors.Items[0].Labels[labelOwner]
+		if anchorID == "" {
+			t.Fatalf("crashed open left no new anchor; baseline %v, anchors %v", baseline, anchors.Items)
+		}
 
 		refs, err := fresh.Enumerate(ctx)
 		if err != nil {
@@ -482,6 +511,8 @@ func TestSandboxAnchorRecovery(t *testing.T) {
 			"gohan-workload:v1",
 			"gohan-workload:v1::owner",
 			"gohan-workload:v1:" + ws.containerID,
+			"gohan-workload:v1:zzz:yyy",
+			"gohan-workload:v1:gohan-snap-" + fmt.Sprintf("%d", time.Now().UnixNano()) + ":owner",
 			"alpine:3.23",
 		} {
 			if err := sb.CloseByRef(ctx, types.WorkspaceRef(bad)); err == nil {
@@ -496,6 +527,27 @@ func TestSandboxAnchorRecovery(t *testing.T) {
 		}
 		if _, err := sb.c.api.ContainerInspect(ctx, ws.containerID, client.ContainerInspectOptions{}); err != nil {
 			t.Fatalf("mismatched-owner refusal removed the workload: %v", err)
+		}
+
+		// An encoded ref naming an unlabelled foreign container is
+		// refused without any destructive call.
+		foreign, err := sb.c.api.ContainerCreate(ctx, client.ContainerCreateOptions{
+			Config: &container.Config{Image: sb.c.BaseImage(), Cmd: []string{"true"}},
+		})
+		if err != nil {
+			t.Fatalf("create unlabelled container: %v", err)
+		}
+		t.Cleanup(func() {
+			_, _ = sb.c.api.ContainerRemove(context.Background(), foreign.ID,
+				client.ContainerRemoveOptions{Force: true})
+		})
+		foreignOwner := "gohan-workload-" + strings.Repeat("a", 32)
+		foreignRef := types.WorkspaceRef(workloadRefPrefix + foreign.ID + ":" + foreignOwner)
+		if err := sb.CloseByRef(ctx, foreignRef); err == nil {
+			t.Fatal("close encoded ref of unlabelled foreign container: want error")
+		}
+		if _, err := sb.c.api.ContainerInspect(ctx, foreign.ID, client.ContainerInspectOptions{}); err != nil {
+			t.Fatalf("unlabelled foreign container removed by a ref match: %v", err)
 		}
 
 		// A completely absent group closes idempotently.
