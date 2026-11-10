@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/cloudwego/eino v0.9.1
-	github.com/victorzhuk/gohan v0.1.0
+	github.com/victorzhuk/gohan v0.2.0
 )
 
 require (
