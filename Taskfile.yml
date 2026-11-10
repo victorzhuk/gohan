@@ -68,6 +68,14 @@ tasks:
           go run ./tools/apicheck -dir "$dir" -tag "$tag"
         done
 
+  # adapters:verify is verification-only: it checks isolated copies of every
+  # adapter module (no replace directives, clean go mod tidy, build, short
+  # conformance tests) and creates no git tag and no publication.
+  adapters:verify:
+    desc: Verify release readiness of every adapter module from isolated copies (no tag, no publication)
+    cmds:
+      - go run ./tools/adapterverify {{.CLI_ARGS}}
+
   lint:
     desc: Run golangci-lint (extra flags after --)
     cmds:
