@@ -15,9 +15,9 @@ import (
 var adapterModules = []string{"anthropic", "docker", "eino", "openai", "otel", "postgres"}
 
 var (
-	requireLineRe  = regexp.MustCompile(`^\s*(?:require\s+)?github\.com/victorzhuk/gohan (v\S+)$`)
-	replaceRe      = regexp.MustCompile(`^\s*replace\s`)
-	goSumEntry     = "github.com/victorzhuk/gohan v0.2.0 h1:"
+	requireLineRe = regexp.MustCompile(`^\s*(?:require\s+)?github\.com/victorzhuk/gohan (v\S+)$`)
+	replaceRe     = regexp.MustCompile(`^\s*replace\s`)
+	goSumEntry    = "github.com/victorzhuk/gohan v0.2.0 h1:"
 )
 
 func TestAdapterPublishedRequirements(t *testing.T) {
@@ -50,7 +50,9 @@ func TestAdapterPublishedRequirements(t *testing.T) {
 			if err := scanner.Err(); err != nil {
 				t.Fatal(err)
 			}
-			gomod.Close()
+			if err := gomod.Close(); err != nil {
+				t.Errorf("close go.mod: %v", err)
+			}
 
 			if required != "v0.2.0" {
 				t.Errorf("go.mod requires github.com/victorzhuk/gohan %s, want v0.2.0", required)
@@ -73,7 +75,9 @@ func TestAdapterPublishedRequirements(t *testing.T) {
 			if err := scanner.Err(); err != nil {
 				t.Fatal(err)
 			}
-			gosum.Close()
+			if err := gosum.Close(); err != nil {
+				t.Errorf("close go.sum: %v", err)
+			}
 
 			if !sumFound {
 				t.Errorf("go.sum lacks %q entry", goSumEntry)

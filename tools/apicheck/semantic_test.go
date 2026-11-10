@@ -87,14 +87,14 @@ func TestSemanticCompatibility(t *testing.T) {
 
 	t.Run("imported type identity change is breaking", func(t *testing.T) {
 		base := writeTree(t, map[string]string{
-			"go.mod":        mod,
-			"api.go":        "package m\n\nimport \"example.com/m/alpha\"\n\nfunc Make() alpha.Coder { return alpha.Coder{Name: \"x\"} }\n",
+			"go.mod":         mod,
+			"api.go":         "package m\n\nimport \"example.com/m/alpha\"\n\nfunc Make() alpha.Coder { return alpha.Coder{Name: \"x\"} }\n",
 			"alpha/alpha.go": "package alpha\n\ntype Coder struct {\n\tName string\n}\n",
 			"beta/beta.go":   "package beta\n\ntype Coder struct {\n\tTitle string\n}\n",
 		})
 		head := writeTree(t, map[string]string{
-			"go.mod":        mod,
-			"api.go":        "package m\n\nimport \"example.com/m/beta\"\n\nfunc Make() beta.Coder { return beta.Coder{Title: \"x\"} }\n",
+			"go.mod":         mod,
+			"api.go":         "package m\n\nimport \"example.com/m/beta\"\n\nfunc Make() beta.Coder { return beta.Coder{Title: \"x\"} }\n",
 			"alpha/alpha.go": "package alpha\n\ntype Coder struct {\n\tName string\n}\n",
 			"beta/beta.go":   "package beta\n\ntype Coder struct {\n\tTitle string\n}\n",
 		})

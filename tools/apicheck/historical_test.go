@@ -80,7 +80,11 @@ func writeProxyModule(t *testing.T, proxyDir, module, version string, files map[
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("close zip: %v", err)
+		}
+	}()
 	zw := zip.NewWriter(f)
 	prefix := module + "@" + version
 	for _, name := range []string{"go.mod", "go.sum"} {

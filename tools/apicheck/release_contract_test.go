@@ -87,7 +87,7 @@ func writeFixtureModule(t *testing.T, withReplace bool) string {
 		gomod += "\nreplace github.com/victorzhuk/gohan => ../../\n"
 	}
 	files := map[string]string{
-		"go.mod": gomod,
+		"go.mod":  gomod,
 		"main.go": "package main\n\nfunc main() {}\n",
 	}
 	for name, content := range files {
