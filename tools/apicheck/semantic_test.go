@@ -112,6 +112,33 @@ func TestSemanticCompatibility(t *testing.T) {
 		}
 	})
 
+	t.Run("alias-retargeted imported identity is breaking", func(t *testing.T) {
+		base := writeTree(t, map[string]string{
+			"go.mod":       mod,
+			"api.go":       "package m\n\nimport adep \"example.com/m/a/dep\"\n\ntype Value = adep.Value\n\nfunc Make() Value { return Value{Payload: \"x\"} }\n",
+			"a/dep/dep.go": "package dep\n\ntype Value struct {\n\tPayload string\n}\n",
+			"b/dep/dep.go": "package dep\n\ntype Value struct {\n\tPayload string\n}\n",
+		})
+		head := writeTree(t, map[string]string{
+			"go.mod":       mod,
+			"api.go":       "package m\n\nimport bdep \"example.com/m/b/dep\"\n\ntype Value = bdep.Value\n\nfunc Make() Value { return Value{Payload: \"x\"} }\n",
+			"a/dep/dep.go": "package dep\n\ntype Value struct {\n\tPayload string\n}\n",
+			"b/dep/dep.go": "package dep\n\ntype Value struct {\n\tPayload string\n}\n",
+		})
+		compileTree(t, base)
+		compileTree(t, head)
+		got, err := diffTrees(base, head)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) == 0 {
+			t.Fatalf("alias Value retargeted from example.com/m/a/dep.Value to example.com/m/b/dep.Value reported as compatible; want a break naming both imported identities")
+		}
+		if !mentionsBreak(got, "example.com/m/a/dep.Value") || !mentionsBreak(got, "example.com/m/b/dep.Value") {
+			t.Fatalf("break naming alias identity change example.com/m/a/dep.Value -> example.com/m/b/dep.Value not reported; got %v", got)
+		}
+	})
+
 	t.Run("additive keyed struct growth is compatible", func(t *testing.T) {
 		base := writeTree(t, map[string]string{
 			"go.mod": mod,
