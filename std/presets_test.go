@@ -127,7 +127,9 @@ func TestBatchAndAgenticPrompts(t *testing.T) {
 func fakeSpend(n int) types.ModelFunc {
 	return func(ctx context.Context, _ types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
 		return func(yield func(types.ModelChunk, error) bool) {
-			yield(types.ModelChunk{Kind: types.DeltaText, Delta: "x", Usage: &types.Usage{InputTokens: n}}, nil)
+			if !yield(types.ModelChunk{Kind: types.DeltaText, Delta: "x", Usage: &types.Usage{InputTokens: n}}, nil) {
+				return
+			}
 		}
 	}
 }

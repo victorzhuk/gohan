@@ -358,7 +358,9 @@ func TestStreamStall(t *testing.T) {
 		defer cancel()
 		g := NewStallGuard(0, StallPreempt, cancel)
 		base := func(yield func(types.Event, error) bool) {
-			yield(types.TextDelta{Delta: "a"}, nil)
+			if !yield(types.TextDelta{Delta: "a"}, nil) {
+				return
+			}
 		}
 		n := 0
 		for ev, err := range g.Watch(ctx, base) {
@@ -535,7 +537,10 @@ func TestStreamStall(t *testing.T) {
 			defer close(streamDone)
 			n := 0
 			for _, err := range conv.Send(ctx, "sess-1", userMsg("hi")) {
-				_ = err
+				if err != nil {
+					t.Errorf("stream: %v", err)
+					return
+				}
 				n++
 				if n == 1 {
 					// The consumer walks away: retention stops, the run
@@ -723,7 +728,10 @@ func TestStreamStall(t *testing.T) {
 			defer close(streamDone)
 			n := 0
 			for _, err := range conv.Send(ctx, "sess-1", userMsg("hi")) {
-				_ = err
+				if err != nil {
+					t.Errorf("stream: %v", err)
+					return
+				}
 				n++
 				if n == 1 {
 					return

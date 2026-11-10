@@ -268,7 +268,9 @@ func TestStreamPreviews(t *testing.T) {
 		var seqs []int64
 		var argRecords []types.ToolArgsDelta
 		for ev, err := range log.Read(context.Background(), "r1", 0) {
-			_ = err
+			if err != nil {
+				t.Fatalf("Read: %v", err)
+			}
 			seqs = append(seqs, ev.Meta.Seq)
 			if d, ok := ev.Payload.(types.ToolArgsDelta); ok {
 				argRecords = append(argRecords, d)
@@ -316,7 +318,9 @@ func TestStreamPreviews(t *testing.T) {
 		}
 		perCall := map[string]int{}
 		for ev, err := range log.Read(context.Background(), "r1", 0) {
-			_ = err
+			if err != nil {
+				t.Fatalf("Read: %v", err)
+			}
 			if d, ok := ev.Payload.(types.ToolArgsDelta); ok {
 				perCall[d.CallID]++
 			}

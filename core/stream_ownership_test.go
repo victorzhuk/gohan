@@ -118,7 +118,9 @@ func TestDriveStopsEffectWorkWhenConsumerStops(t *testing.T) {
 	rt := &emitRT{observeCancel: true}
 	consumed := 0
 	for _, err := range Drive(context.Background(), rt, runtime.AgentRun{}) {
-		_ = err
+		if err != nil {
+			t.Fatalf("Drive: %v", err)
+		}
 		consumed++
 		if consumed == 1 {
 			break
