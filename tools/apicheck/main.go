@@ -215,9 +215,14 @@ type breakage string
 // symbol is one exported package-level object loaded from export data. A
 // struct type keeps its exported field types separately, so additive keyed
 // field growth is recognised as compatible while a removal or retype of a
-// base field still breaks.
+// base field still breaks. identity carries the package-path-qualified
+// canonical form of the symbol's own type shape; the field-wise growth
+// comparison may only merge symbols whose identity matches, and identity is
+// a string, so baseline and candidate graphs compare without pointer
+// equality.
 type symbol struct {
 	render   string
+	identity string
 	fields   map[string]string
 	isStruct bool
 }
@@ -258,10 +263,15 @@ func diffTrees(baseDir, headDir string) ([]breakage, error) {
 }
 
 // breaking reports whether one symbol change cannot survive source
-// compatibility. Two struct types compare field-wise: every exported field
-// present in base must survive with the same type in head; fields added in
-// head are keyed-literal-compatible growth.
+// compatibility. A change of the canonical named identity always breaks:
+// alpha.Coder and beta.Coder are different types however equal their shapes
+// are. Two struct types of one identity compare field-wise: every exported
+// field present in base must survive with the same type in head; fields
+// added in head are keyed-literal-compatible growth.
 func breaking(base, head *symbol) bool {
+	if base.identity != head.identity {
+		return true
+	}
 	if base.isStruct && head.isStruct {
 		for name, t := range base.fields {
 			if head.fields[name] != t {
@@ -291,6 +301,7 @@ func loadPackages(dir string) (map[string]map[string]*symbol, error) {
 	if len(units) == 0 {
 		return nil, fmt.Errorf("no Go packages found in %s", dir)
 	}
+	setUnitPaths(units, modPath)
 	var ext types.Importer
 	if externalImports(units, modPath) {
 		exports, err := exportData(dir)
@@ -370,6 +381,19 @@ func parseUnits(fset *token.FileSet, dir string) map[string]*unit {
 		return nil
 	})
 	return units
+}
+
+// setUnitPaths gives every parsed unit its full import path under the module
+// before type checking starts. Without it every package of the tree is
+// registered with an empty path, so the qualifier collapses cross-package
+// types to their bare names and alpha.Coder renders exactly like beta.Coder.
+func setUnitPaths(units map[string]*unit, modPath string) {
+	if modPath == "" {
+		return
+	}
+	for key, u := range units {
+		u.path = path.Join(modPath, key)
+	}
 }
 
 // externalImports reports whether the tree imports anything outside its own
@@ -521,7 +545,7 @@ func packageSymbols(pkg *types.Package) map[string]*symbol {
 			if !ok || sig.Recv() != nil {
 				continue
 			}
-			syms["func "+name] = &symbol{render: signatureString(sig, types.RelativeTo(pkg))}
+			syms["func "+name] = &symbol{render: signatureString(sig, types.RelativeTo(pkg)), identity: signatureIdentity(sig, "")}
 		case *types.TypeName:
 			t := o.Type()
 			if named, ok := t.(*types.Named); ok && !o.IsAlias() {
@@ -534,15 +558,15 @@ func packageSymbols(pkg *types.Package) map[string]*symbol {
 						continue
 					}
 					key := "method (" + recvString(sig.Recv().Type(), pkg) + ") " + m.Name()
-					syms[key] = &symbol{render: signatureString(sig, types.RelativeTo(pkg))}
+					syms[key] = &symbol{render: signatureString(sig, types.RelativeTo(pkg)), identity: signatureIdentity(sig, canonicalType(sig.Recv().Type()))}
 				}
 				t = named.Underlying()
 			}
-			syms["type "+name] = shapeSymbol(t, types.RelativeTo(pkg))
+			syms["type "+name] = shapeSymbol(t, types.RelativeTo(pkg), o)
 		case *types.Const:
-			syms["const "+name] = &symbol{render: types.TypeString(o.Type(), types.RelativeTo(pkg))}
+			syms["const "+name] = &symbol{render: types.TypeString(o.Type(), types.RelativeTo(pkg)), identity: canonicalType(o.Type())}
 		case *types.Var:
-			syms["var "+name] = &symbol{render: types.TypeString(o.Type(), types.RelativeTo(pkg))}
+			syms["var "+name] = &symbol{render: types.TypeString(o.Type(), types.RelativeTo(pkg)), identity: canonicalType(o.Type())}
 		}
 	}
 	return syms
@@ -550,17 +574,91 @@ func packageSymbols(pkg *types.Package) map[string]*symbol {
 
 // shapeSymbol renders the comparison shape of a type: structs and interfaces
 // expand their members, aliases and other shapes render as the type itself,
-// so an imported type identity change cannot pass as a textual match.
-func shapeSymbol(shape types.Type, q types.Qualifier) *symbol {
+// so an imported type identity change cannot pass as a textual match. The
+// symbol carries the canonical identity of the shape: a named type declares
+// its own package-path-qualified name, so a change of the imported type a
+// symbol refers to breaks even when the two shapes are field-for-field
+// equal.
+func shapeSymbol(shape types.Type, q types.Qualifier, self *types.TypeName) *symbol {
+	identity := canonicalType(shape)
+	if self != nil && !self.IsAlias() && identity != "" {
+		identity = canonicalName(self)
+	}
 	switch t := shape.(type) {
 	case *types.Struct:
 		render, fields := structShape(t, q)
-		return &symbol{render: render, fields: fields, isStruct: true}
+		return &symbol{render: render, identity: identity, fields: fields, isStruct: true}
 	case *types.Interface:
-		return &symbol{render: interfaceShape(t, q)}
+		render, id := interfaceShape(t, q)
+		return &symbol{render: render, identity: identity + id}
 	default:
-		return &symbol{render: types.TypeString(shape, q)}
+		return &symbol{render: types.TypeString(shape, q), identity: identity}
 	}
+}
+
+// canonicalType renders the package-path-qualified canonical form of a type
+// for cross-graph identity comparison. Named types contribute
+// "path/to/pkg.Name", so two same-named types from different packages never
+// collide; structural wrappers preserve their element types; shapes with no
+// named type reduce to the empty string and fall back to the rendered
+// comparison. Strings are graph-independent, so baseline and candidate
+// sessions compare by value, never by pointer.
+func canonicalType(t types.Type) string {
+	switch u := t.(type) {
+	case *types.Named:
+		return canonicalName(u.Obj())
+	case *types.Alias:
+		return ""
+	case *types.Pointer:
+		return "*" + canonicalType(u.Elem())
+	case *types.Slice:
+		return "[]" + canonicalType(u.Elem())
+	case *types.Array:
+		return fmt.Sprintf("[%d]%s", u.Len(), canonicalType(u.Elem()))
+	case *types.Map:
+		return "map[" + canonicalType(u.Key()) + "]" + canonicalType(u.Elem())
+	case *types.Chan:
+		dir := "chan "
+		switch u.Dir() {
+		case types.SendOnly:
+			dir = "chan<- "
+		case types.RecvOnly:
+			dir = "<-chan "
+		}
+		return dir + canonicalType(u.Elem())
+	case *types.Signature:
+		return signatureIdentity(u, "")
+	}
+	return ""
+}
+
+// canonicalName renders the package-path-qualified name of a named type or
+// alias; builtin and uninstantiated scope objects have no package and
+// contribute the empty string, which equals trivially across graphs.
+func canonicalName(obj *types.TypeName) string {
+	pkg := obj.Pkg()
+	if pkg == nil || pkg.Path() == "" {
+		return ""
+	}
+	return pkg.Path() + "." + obj.Name()
+}
+
+// signatureIdentity renders the canonical parameter and result sequence of a
+// signature, prefixed by the canonical receiver. A signature that mentions
+// no named type has the empty identity and is compared by its render alone.
+func signatureIdentity(sig *types.Signature, recv string) string {
+	if recv == "" && sig.Params().Len() == 0 && sig.Results().Len() == 0 {
+		return ""
+	}
+	return recv + " (" + tupleIdentity(sig.Params()) + ")(" + tupleIdentity(sig.Results()) + ")"
+}
+
+func tupleIdentity(t *types.Tuple) string {
+	parts := make([]string, 0, t.Len())
+	for i := range t.Len() {
+		parts = append(parts, canonicalType(t.At(i).Type()))
+	}
+	return strings.Join(parts, ",")
 }
 
 // signatureString renders a signature as "func(params)(results)" with
@@ -612,20 +710,25 @@ func tparamNames(list *types.TypeParamList) string {
 }
 
 // structShape renders an exported-field shape sorted by field text and
-// returns the per-field type map used for the compatible-growth comparison.
+// returns the per-field canonical type map used for the compatible-growth
+// comparison.
 func structShape(st *types.Struct, q types.Qualifier) (string, map[string]string) {
 	parts := make([]string, 0, st.NumFields())
 	fields := make(map[string]string, st.NumFields())
 	for i := range st.NumFields() {
 		f := st.Field(i)
 		rendered := types.TypeString(f.Type(), q)
+		canonical := canonicalType(f.Type())
+		if canonical == "" {
+			canonical = rendered
+		}
 		if f.Embedded() {
-			fields[rendered] = rendered
+			fields[rendered] = canonical
 		} else {
 			if !f.Exported() {
 				continue
 			}
-			fields[f.Name()] = rendered
+			fields[f.Name()] = canonical
 			rendered = f.Name() + " " + rendered
 		}
 		parts = append(parts, rendered)
@@ -634,11 +737,12 @@ func structShape(st *types.Struct, q types.Qualifier) (string, map[string]string
 	return "struct{" + strings.Join(parts, ";") + "}", fields
 }
 
-// interfaceShape renders the explicitly declared methods sorted by name;
-// embedded interfaces contribute no textual member, matching their
-// structural satisfaction by implementers.
-func interfaceShape(it *types.Interface, q types.Qualifier) string {
+// interfaceShape renders the explicitly declared methods sorted by name and
+// the matching canonical identity sequence; embedded interfaces contribute
+// no textual member, matching their structural satisfaction by implementers.
+func interfaceShape(it *types.Interface, q types.Qualifier) (string, string) {
 	parts := make([]string, 0, it.NumExplicitMethods())
+	ids := make([]string, 0, it.NumExplicitMethods())
 	for i := range it.NumExplicitMethods() {
 		m := it.ExplicitMethod(i)
 		sig, ok := m.Type().(*types.Signature)
@@ -646,9 +750,15 @@ func interfaceShape(it *types.Interface, q types.Qualifier) string {
 			continue
 		}
 		parts = append(parts, m.Name()+" "+signatureString(sig, q))
+		id := signatureIdentity(sig, "")
+		if recv := sig.Recv(); recv != nil {
+			id = signatureIdentity(sig, canonicalType(recv.Type()))
+		}
+		ids = append(ids, m.Name()+" "+id)
 	}
 	sort.Strings(parts)
-	return "interface{" + strings.Join(parts, ";") + "}"
+	sort.Strings(ids)
+	return "interface{" + strings.Join(parts, ";") + "}", strings.Join(ids, ";")
 }
 
 func sortedKeys[V any](m map[string]V) []string {
