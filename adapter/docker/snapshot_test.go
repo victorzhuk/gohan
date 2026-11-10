@@ -230,9 +230,6 @@ func labelledImageIDs(t *testing.T, sb *Sandbox) map[string]bool {
 }
 
 func TestSandboxSnapshotIsolation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("gohan: snapshot isolation run needs a live daemon; skipped in short mode")
-	}
 	ctx := context.Background()
 	sb := newTestSandbox(t)
 
