@@ -250,6 +250,7 @@ func hasDurableCompaction(history []types.Message) bool {
 // caller cannot read the id from the iterator.
 type capturingRuns struct {
 	stores.Runs
+	stores.CheckpointRuns
 	mu sync.Mutex
 	id string
 }
@@ -307,7 +308,8 @@ func ComposeDetached(ctx context.Context, topic string) (DetachedReport, error) 
 	}
 	sessions := storeStack.SessionLog
 	log := stores.NewMemoryEventLog()
-	runs := &capturingRuns{Runs: stores.NewMemoryRuns()}
+	memRuns := stores.NewMemoryRuns()
+	runs := &capturingRuns{Runs: memRuns, CheckpointRuns: memRuns}
 	checkpoints := stores.NewMemoryCheckpoints()
 	conv, err := gohan.NewNativeConversation(stack, "research_report",
 		gohan.WithConversationRuns(runs),

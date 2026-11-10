@@ -86,12 +86,13 @@ type Trip struct {
 // journal, event log — and wires the governed stack and conversation
 // over them.
 func NewTrip(flags *LiveFlags) *Trip {
+	runs := stores.NewMemoryRuns()
 	t := &Trip{
 		rt:       &travelTools{},
 		flags:    flags,
 		sessions: stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom)),
-		runs:     stores.NewMemoryRuns(),
-		cps:      stores.NewMemoryCheckpoints(stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom)),
+		runs:     runs,
+		cps:      stores.NewMemoryCheckpoints(stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom), stores.WithMemoryCheckpointRuns(runs)),
 		journal:  stores.NewMemoryJournal(),
 		events:   stores.NewMemoryEventLog(),
 	}
