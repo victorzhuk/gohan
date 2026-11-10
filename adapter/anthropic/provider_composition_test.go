@@ -407,10 +407,15 @@ func TestProviderComposition(t *testing.T) {
 			if !ok || p.CallID == "" {
 				return
 			}
-			if n := len(recorder.effects()); n != 0 {
-				t.Errorf("effect executed while the fixture paused before completion: %d effects", n)
-			}
-			once.Do(func() { close(release) })
+			// Only the first preview is guaranteed to reach the consumer
+			// while the fixture still pauses; later previews may arrive after
+			// effects because core buffers events asynchronously.
+			once.Do(func() {
+				if n := len(recorder.effects()); n != 0 {
+					t.Errorf("effect executed while the fixture paused before completion: %d effects", n)
+				}
+				close(release)
+			})
 		})
 
 		compAssertAssembled(t, fx.request(t, 0), "search")
