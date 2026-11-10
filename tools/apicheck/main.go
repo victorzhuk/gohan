@@ -251,6 +251,9 @@ func diffTrees(baseDir, headDir string) ([]breakage, error) {
 		for _, name := range sortedKeys(base[p]) {
 			got, ok := syms[name]
 			if !ok {
+				if methodSurvivesOnPointer(name, base[p][name], syms) {
+					continue
+				}
 				out = append(out, breakage(fmt.Sprintf("%s: %s: removed", p, name)))
 				continue
 			}
@@ -260,6 +263,28 @@ func diffTrees(baseDir, headDir string) ([]breakage, error) {
 		}
 	}
 	return out, nil
+}
+
+// methodSurvivesOnPointer reports whether a base method absent from head by
+// declaration stays callable on the pointer method set. Moving an unchanged
+// method from *T to T preserves the *T method set and adds it to T, which is
+// compatible; only the reverse move removes the method from T's method set.
+func methodSurvivesOnPointer(name string, base *symbol, head map[string]*symbol) bool {
+	i := strings.Index(name, ") ")
+	if !strings.HasPrefix(name, "method (*") || i < 0 {
+		return false
+	}
+	typeName := strings.TrimPrefix(name[:i], "method (*")
+	valueName := "method (" + typeName + ") " + name[i+2:]
+	got, ok := head[valueName]
+	return ok && callableIdentity(base.identity) == callableIdentity(got.identity)
+}
+
+func callableIdentity(identity string) string {
+	if i := strings.Index(identity, " ("); i >= 0 {
+		return identity[i:]
+	}
+	return identity
 }
 
 // breaking reports whether one symbol change cannot survive source
@@ -284,10 +309,9 @@ func breaking(base, head *symbol) bool {
 }
 
 // loadPackages type-checks the module tree rooted at dir and maps relative
-// import path to the package's exported symbols. Walk and parse errors fail
-// the comparison; type-check errors stay tolerated so a tree whose declared
-// surface is under comparison still yields its exported objects even where
-// it does not build. Module-internal imports resolve
+// import path to the package's exported symbols. Walk, parse and type-check
+// errors fail the comparison: an unrelated load error is never tolerated.
+// Module-internal imports resolve
 // from the same tree, external imports from export data built by
 // `go list -deps -export` against the module's own manifest.
 func loadPackages(dir string) (map[string]map[string]*symbol, error) {
@@ -331,7 +355,11 @@ func loadPackages(dir string) (map[string]map[string]*symbol, error) {
 	}
 	pkgs := map[string]map[string]*symbol{}
 	for _, key := range sortedKeys(units) {
-		pkgs[key] = packageSymbols(l.check(key))
+		pkg, err := l.check(key)
+		if err != nil {
+			return nil, err
+		}
+		pkgs[key] = packageSymbols(pkg)
 	}
 	return pkgs, nil
 }
@@ -451,27 +479,30 @@ type loader struct {
 	doing   map[string]bool
 }
 
-func (l *loader) check(key string) *types.Package {
+func (l *loader) check(key string) (*types.Package, error) {
 	if p, ok := l.done[key]; ok {
-		return p
+		return p, nil
 	}
 	u := l.units[key]
 	if l.doing[key] {
-		return types.NewPackage(u.path, "")
+		return types.NewPackage(u.path, ""), nil
 	}
 	l.doing[key] = true
 	defer delete(l.doing, key)
 	conf := &types.Config{Importer: importerFunc(l.importFor)}
-	pkg, _ := conf.Check(u.path, l.fset, u.files, nil)
+	pkg, err := conf.Check(u.path, l.fset, u.files, nil)
+	if err != nil {
+		return nil, err
+	}
 	l.done[key] = pkg
-	return pkg
+	return pkg, nil
 }
 
 func (l *loader) importFor(p string) (*types.Package, error) {
 	if l.modPath != "" {
 		if key, ok := moduleRel(l.modPath, p); ok {
 			if _, ok := l.units[key]; ok {
-				return l.check(key), nil
+				return l.check(key)
 			}
 		}
 	}

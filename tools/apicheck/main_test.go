@@ -30,7 +30,7 @@ func writeTree(t *testing.T, files map[string]string) string {
 func TestDiffTrees(t *testing.T) {
 	base := map[string]string{
 		"go.mod":       "module example.com/m\n\ngo 1.27\n",
-		"api.go":       "package m\n\ntype Store interface {\n\tGet(key string) (string, error)\n}\n\ntype Options struct {\n\tSize int\n}\n\nfunc New(opts Options) (*Store, error) { return nil, nil }\n\nfunc (s *Store) Flush(n int) error { return nil }\n\nconst MaxSize = 10\n",
+		"api.go":       "package m\n\ntype Store interface {\n\tGet(key string) (string, error)\n}\n\ntype Options struct {\n\tSize int\n}\n\ntype Client struct{}\n\nfunc New(opts Options) (*Store, error) { return nil, nil }\n\nfunc (c *Client) Flush(n int) error { return nil }\n\nconst MaxSize = 10\n",
 		"util/util.go": "package util\n\nfunc Help() {}\n",
 	}
 	write := func(m map[string]string, name, body string) map[string]string {
@@ -63,7 +63,7 @@ func TestDiffTrees(t *testing.T) {
 		},
 		{
 			name: "additive growth",
-			head: write(base, "extra.go", "package m\n\ntype Client struct{}\n\nfunc (c *Client) Ping() {}\n\nconst MinSize = 1\n"),
+			head: write(base, "extra.go", "package m\n\ntype Session struct{}\n\nfunc (s *Session) Ping() {}\n\nconst MinSize = 1\n"),
 		},
 		{
 			name: "func signature changed",
@@ -86,9 +86,8 @@ func TestDiffTrees(t *testing.T) {
 			want: []string{"type Options: changed from struct{Size int}"},
 		},
 		{
-			name: "method receiver widened to pointer",
-			head: write(base, "api.go", strings.Replace(base["api.go"], "func (s *Store) Flush", "func (s Store) Flush", 1)),
-			want: []string{"method (*Store) Flush: removed"},
+			name: "pointer-to-value-receiver-compatible",
+			head: write(base, "api.go", strings.Replace(base["api.go"], "func (c *Client) Flush", "func (c Client) Flush", 1)),
 		},
 		{
 			name: "parameter rename is compatible",
@@ -101,7 +100,7 @@ func TestDiffTrees(t *testing.T) {
 		{
 			name: "method signature still reported",
 			head: write(base, "api.go", strings.Replace(base["api.go"], "Flush(n int) error", "Flush(n int64) error", 1)),
-			want: []string{"method (*Store) Flush: changed from func(int)(error) to func(int64)(error)"},
+			want: []string{"method (*Client) Flush: changed from func(int)(error) to func(int64)(error)"},
 		},
 		{
 			name: "arity change still reported",
@@ -131,6 +130,17 @@ func TestDiffTrees(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("value-to-pointer-receiver-incompatible", func(t *testing.T) {
+		valueBase := write(base, "api.go", strings.Replace(base["api.go"], "func (c *Client) Flush", "func (c Client) Flush", 1))
+		got, err := diffTrees(writeTree(t, valueBase), writeTree(t, base))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || !strings.Contains(string(got[0]), "method (Client) Flush: removed") {
+			t.Fatalf("diffTrees() = %v, want method (Client) Flush: removed", got)
+		}
+	})
 }
 
 func TestDiffTreesUnexportedChangeCompatible(t *testing.T) {
