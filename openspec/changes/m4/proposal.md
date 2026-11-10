@@ -8,4 +8,6 @@ Stub: scope only; tasks are written when the previous milestone's M-review close
 
 ## Exit
 
+The minimum online evaluation slice is now ordered before the remaining milestone work through `production-online-evaluation`. That change owns bounded sampling, calibration, unscored outcomes and durable result provenance. Full shadow orchestration, datasets and other evals scope remain here. See `openspec/changes/IMPLEMENTATION_ORDER.md`.
+
 See the milestone table in `docs/overview.md`.
