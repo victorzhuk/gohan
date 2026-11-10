@@ -109,7 +109,7 @@ The v1-candidate declaration is a shape decision, not a passed gate. Read it as 
 
 - **The gate is not fully exercisable.** `task api:check` does not compare `api/gohan.yaml` with a generated `adapter/httpapi` server; neither artifact exists yet. See [compatibility](docs/design/compatibility.md).
 - **A module with no tag is skipped, not compared.** `api:check` prints that it skipped a module and exits 0. An untagged module therefore reports no incompatibility, which is weaker evidence than a clean diff.
-- **Workspace success is not release verification.** `task adapters:verify` checks isolated adapter copies with `GOWORK=off` and rejects replacements. It runs independently of the examples workspace and creates no tag or publication.
+- **Workspace success is not release verification.** `task adapters:verify` checks the published dependency contract and runs full conformance on isolated adapter copies with `GOWORK=off`. Required conformance entry points must pass; missing prerequisites fail verification. CI's `release-verify` job needs Docker for PostgreSQL testcontainers and Docker sandbox conformance. The task runs independently of the examples workspace and creates no tag or publication.
 
 ## A note on exactly-once
 

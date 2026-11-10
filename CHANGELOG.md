@@ -6,7 +6,7 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ### Added
 
-- `task adapters:verify` and CI release verification check isolated adapters without tagging or publishing.
+- `task adapters:verify` and CI release verification run full adapter conformance and check isolated published dependencies without tagging or publishing.
 
 ### Changed
 

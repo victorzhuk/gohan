@@ -193,7 +193,7 @@ Release rules for the multi-module repository:
 
 - Tags: `vX.Y.Z` for the root module and `adapter/<name>/vX.Y.Z` for each adapter. Examples are a development workspace consumer, not a release module.
 - Published root identity is `v0.2.0`; the six adapters require it. Adapter first-publication identity is `v0.1.0`, with `adapter/otel` next at `v0.1.1`. ADR-0173 records the retired local `v1.0.0` drafts.
-- `task adapters:verify` verifies isolated copies with `GOWORK=off`, rejects manifest replacements, checks tidy cleanliness, builds and runs short tests including conformance. CI's `release-verify` job invokes it. The task creates no tag or publication; workspace replacements cannot satisfy its verdict.
+- `task adapters:verify` checks isolated copies with `GOWORK=off`, verifies the published dependency contract, builds and runs full conformance with required passing test events. CI's `release-verify` job invokes it and needs Docker for PostgreSQL testcontainers and Docker sandbox conformance. The task creates no tag or publication; workspace replacements cannot satisfy its verdict.
 - `task examples:test` checks examples in the development workspace, separately from release verification.
 - Promotion to a separate repository (ADR-0069) is a `git subtree split` plus an import-path change; nothing in core references adapter paths.
 
