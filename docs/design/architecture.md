@@ -191,10 +191,10 @@ Snapshot publication returns the immutable image ID from `ContainerCommit`. `Enu
 
 Release rules for the multi-module repository:
 
-- Tags: `vX.Y.Z` for the root module; `adapter/<name>/vX.Y.Z` for each adapter; `examples/vX.Y.Z` never tagged (examples pin by pseudo-version in CI).
-- A released adapter `go.mod` requires a published root version; `replace` directives are rejected by the release task. `go.work` at the repo root is for development and is excluded from release verification.
-- CI: per-module jobs with path filters; a matrix job runs `testkit/conformance` and `testkit/storetest` for every adapter against the root version it requires; adapters needing provider secrets run live tests in a scheduled workflow, never on PRs.
-- Dependency updates are grouped per module. A `task release:adapter -- <name>` verifies `go mod tidy` cleanliness, runs the module's conformance, and tags.
+- Tags: `vX.Y.Z` for the root module and `adapter/<name>/vX.Y.Z` for each adapter. Examples are a development workspace consumer, not a release module.
+- Published root identity is `v0.2.0`; the six adapters require it. Adapter first-publication identity is `v0.1.0`, with `adapter/otel` next at `v0.1.1`. ADR-0173 records the retired local `v1.0.0` drafts.
+- `task adapters:verify` verifies isolated copies with `GOWORK=off`, rejects manifest replacements, checks tidy cleanliness, builds and runs short tests including conformance. CI's `release-verify` job invokes it. The task creates no tag or publication; workspace replacements cannot satisfy its verdict.
+- `task examples:test` checks examples in the development workspace, separately from release verification.
 - Promotion to a separate repository (ADR-0069) is a `git subtree split` plus an import-path change; nothing in core references adapter paths.
 
 Rules:

@@ -63,15 +63,9 @@ Not in the workspace. `docs/design/architecture.md` §4.3 is the normative mappi
 
 ## Modules
 
-In `go.work` today — three modules, all `go 1.27.1`:
+`go.work` contains the root module, six adapter modules and `examples/`. Core and std are in the root module and have only standard-library dependencies. Each adapter has its own module and third-party dependencies.
 
-| Module | Path | Holds |
-|---|---|---|
-| `github.com/victorzhuk/gohan` | `.` | `core` (driver), `core/types`, `core/stores`, `core/runtime`, `std`, `testkit`. Root dependencies: stdlib only. |
-| `github.com/victorzhuk/gohan/adapter/otel` | `adapter/otel` | OTel exporter; requires the published root version, no local `replace`. |
-| `github.com/victorzhuk/gohan/examples` | `examples` | `quickstart`, `excursions`, `kafka-refunds`, `temporal-travel`, `camunda-invoice`. Offline fixtures and a scripted model. |
-
-Every future `adapter/<name>` is its own module with its own version and its own third-party dependencies. Core and std never import a third-party dependency.
+The published root is `v0.2.0`, which all six adapters require. Adapter first-publication identity is `v0.1.0`; the already-published `adapter/otel/v0.1.0` is followed by `v0.1.1`. ADR-0173 records the retired local `v1.0.0` drafts. Examples remain a development workspace consumer.
 
 ## Task targets
 
@@ -82,9 +76,10 @@ task spec           # spec:types, then spec:gate
 task spec:types     # regenerate docs/design/types.md; fails on duplicate or undefined identifiers
 task spec:coverage  # scenarios without a subtest, and subtests named like an unregistered ID
 task spec:gate      # coverage gate across every module in the workspace (GATE overrides the milestone)
-task api:check      # apidiff of every module against its last tag
+task api:check      # compare tagged module APIs with their latest tags
+task adapters:verify # verify isolated adapters without tagging or publishing
 task lint           # golangci-lint v2.14.0; depguard enforces the core budget rule
-task test           # go test -timeout 2m -short over root, adapter/otel, examples
+task test           # short tests across root, adapters and examples
 task examples:test  # the examples module only
 task test:race      # -race, -timeout 10m
 task tools:test     # the Python gate tools' own unittest suite
@@ -112,9 +107,9 @@ A scenario ID is the exact subtest name that covers it. `task spec:coverage` rep
 
 The v1-candidate declaration is a shape decision, not a passed gate. Read it as pending review in three specific ways.
 
-- **The gate is not fully exercisable.** `task api:check` implements the apidiff-per-module half only. The second clause — diffing `api/gohan.yaml` against a generated `adapter/httpapi` server — cannot run, because neither artifact exists yet. Both land in M4; the gap is recorded in [the M0.5 review](docs/design/api-review-m0-5.md), not silently dropped.
-- **A module with no tag is skipped, not compared.** `api:check` prints that it skipped a module and exits 0. An untagged module therefore reports no incompatibility, which is weaker evidence than a clean diff. A passing run is not proof of compatibility.
-- **The root module stays `v0.x`.** `v1.0.0` is not tagged; it waits on M2's exit criteria per the policy above. Breaking changes remain possible while the module is `v0.x`, each listed under *Breaking* in [CHANGELOG.md](CHANGELOG.md).
+- **The gate is not fully exercisable.** `task api:check` does not compare `api/gohan.yaml` with a generated `adapter/httpapi` server; neither artifact exists yet. See [compatibility](docs/design/compatibility.md).
+- **A module with no tag is skipped, not compared.** `api:check` prints that it skipped a module and exits 0. An untagged module therefore reports no incompatibility, which is weaker evidence than a clean diff.
+- **Workspace success is not release verification.** `task adapters:verify` checks isolated adapter copies with `GOWORK=off` and rejects replacements. It runs independently of the examples workspace and creates no tag or publication.
 
 ## A note on exactly-once
 

@@ -6,8 +6,12 @@ Normative process for `github.com/victorzhuk/gohan` and the `adapter/*` modules 
 
 - The root module is `v0.x` through M2 and is tagged `v1.0.0` when M2's exit criteria pass. Within `v0`, breaking changes are allowed but every one is listed in the changelog under *Breaking*.
 - Each adapter is its own module and its own version line (`adapter/openai/v0.4.0`). An adapter reaches `v1.0.0` when its conformance suite passes against core `v1`. An adapter's `go.mod` requires the lowest core version its conformance suite ran against.
-- Release order is core, then adapters. `examples/` pins exact versions of everything. `go.work` is for development only and is never committed as the source of truth for versions.
+- Release order is core, then adapters. `examples/` is a development workspace consumer. `go.work` is not the source of truth for released versions.
 - Major bumps are reserved for overhauls, never for a single removal.
+
+Published root identity is `v0.2.0`. All six landed adapters require that version. Their first-publication identity is `v0.1.0`, except that the already-published `adapter/otel/v0.1.0` is followed by `v0.1.1`. ADR-0173 retires the seven unpublished local `v1.0.0` drafts and supersedes the M2 per-module tag plan below for publication identity only.
+
+`examples/` remains a development workspace consumer, not a release baseline. Its workspace dependencies do not establish an independent release verdict.
 
 ## Ports and handles
 
@@ -48,7 +52,11 @@ Drain old side-effect workers before transferring ownership to the new fingerpri
 
 ## Gate
 
-- `task api:check` runs `apidiff` for every module against its last tag and diffs `api/gohan.yaml` against the generated `adapter/httpapi` server; the document is versioned with the root module. CI fails on an incompatible change in any module at `v1` or later and only reports for `v0` modules.
+- `task api:check` compares each tagged root or adapter module with its latest tag using separate, module-aware `go/types` graphs. It reports generic method removals and inferred variable type changes, and permits additive fields under the keyed-struct rule. Incompatibilities are reported without failing for `v0` and fail at `v1` or later. Untagged modules are skipped.
+- The compatibility contract requires detection of package-path-qualified imported type identity changes. Unrelated load errors must fail comparison.
+- Only the verified published `adapter/otel/v0.1.0` baseline may receive a historical correction. Its tag and root `v0.1.0` must peel to the same release commit. The correction changes root `v0.0.0` and its workspace replacement to published root `v0.1.0` in a temporary comparison copy, prints the exception and changes no other dependencies.
+- `task adapters:verify` checks isolated copies with `GOWORK=off`, rejects manifest replacements, checks `go mod tidy -diff`, builds and runs short tests including conformance. CI's `release-verify` job invokes the same task. It creates no tag or publication, and the historical comparison correction does not apply to it.
+- The planned `api/gohan.yaml` comparison against the generated `adapter/httpapi` server is not implemented.
 - `task spec:types` records the kind of every interface; after the freeze tag it fails when a port's method set changes (not yet implemented — the generator reads the capability specs, not the shipped packages; the gap is recorded under *v1-candidate* below).
 
 ## v1-candidate (M0.5)
@@ -58,7 +66,7 @@ Core types and ports are declared **v1-candidate** in `docs/design/api-review-m0
 - The port method sets, the handle shapes (`Conversation`, `Flow[In, Out]`), the sentinel and typed error set, and the optional-interface growth pattern are fixed in shape and intended to survive into `v1.0.0`. Ports grow only through new optional interfaces whose absent-assertion behaviour the introducing spec states.
 - The root module is **not** tagged `v1.0.0` here. It stays `v0.x` until M2's exit criteria pass; until then breaking changes remain possible and are listed under *Breaking* in `CHANGELOG.md`.
 - Illustrative-tier types may still change before the freeze; v1-candidate covers the normative tier's shape and the process.
-- One gate clause is not yet exercisable: the `api/gohan.yaml` diff against the generated `adapter/httpapi` server. Neither artifact exists in M0 (both are M4, with `adapter/httpapi` per `docs/design/architecture.md` §5); `task api:check` currently implements only the apidiff-per-module half. The gap is recorded in `docs/design/api-review-m0-5.md` and is open work for M4, not a silent omission.
+- The `api/gohan.yaml` diff against the generated `adapter/httpapi` server remains unavailable. Neither artifact exists in M0 (both are M4, with `adapter/httpapi` per `docs/design/architecture.md` §5); the gap is recorded in `docs/design/api-review-m0-5.md`.
 - The `spec:types` port-method-set clause is unimplemented for the same reason stated plainly: the generator reads `openspec/specs/*/spec.md`, so it records declared intent and observes neither shipped method sets nor a change to one. No gate would fail today if a frozen port grew or lost a method.
 
 ## M2 freeze
@@ -80,6 +88,8 @@ M2's exit criteria pass, so the shapes recorded as v1-candidate above are frozen
 Every row names a `core/...` file:line that ships its method set. Growth beyond these sets arrives only as a new optional interface reached by type assertion (`WorkspaceLister`, `SandboxResources`, `SandboxHandles`, `stores.SessionWorkspaceMeta`), as the section above records, never as a new method on a frozen port.
 
 ### Per-module `v1.0.0` tag plan
+
+This table and the transcript below record the retired local drafts, not published release identity. See ADR-0173 for the superseding identity.
 
 `task api:check` visits `.` and `adapter/*` (`Taskfile.yml:53-69`). Release order is root, then adapters; each adapter's precondition is its conformance suite green against core `v1`. The current-baseline cell is the tag `task api:check` prints for that module before the freeze.
 

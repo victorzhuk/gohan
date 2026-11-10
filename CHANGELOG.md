@@ -4,7 +4,15 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ## [Unreleased]
 
+### Added
+
+- `task adapters:verify` and CI release verification check isolated adapters without tagging or publishing.
+
 ### Changed
+
+- All six adapters require the published root `v0.2.0`.
+- API comparison uses separate module-aware `go/types` graphs and corrects the verified historical OTel baseline in a temporary copy.
+- Temporal travel and research report examples wire the optional checkpoint-runs surface for resume and recovery.
 
 - Docker snapshot publication returns immutable image IDs, while labelled legacy tagged references remain readable and removable.
 - The Docker allowlist test uses controlled peers instead of public DNS.
@@ -14,6 +22,8 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 - The cache outcome seam is canonical in `core/chains` (`chains.ExtraKey`, `chains.Outcome`, `chains.Mark`, `chains.OutcomeOf`). `std/cache` re-exports the four names, so existing importers compile and behave unchanged.
 
 ### Fixed
+
+- Stream, shutdown and benchmark tests handle iterator errors instead of silently discarding them.
 
 - Docker network policy is established by a trusted namespace anchor before workload startup, without granting workloads network administration authority.
 - Failed Docker sandbox setup cleans up created workloads, anchors and private networks, with retryable errors if cleanup fails.
