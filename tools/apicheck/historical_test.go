@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -222,10 +223,27 @@ func writeFixtureRepo(t *testing.T, rootAtSecondCommit bool) (repoDir, proxyDir,
 
 func proxyEnv(t *testing.T, proxy string) []string {
 	t.Helper()
+	// Isolate the module cache like the release-contract fixture env: a
+	// shared cache holding the real published github.com/victorzhuk/gohan
+	// release would satisfy the corrected v0.1.0 requirement without the
+	// stub proxy, and the real module root ships no `gohan` package.
+	modCache := t.TempDir()
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(modCache, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				return os.Chmod(path, 0o755)
+			}
+			return os.Chmod(path, 0o644)
+		})
+	})
 	return append(os.Environ(),
 		"GOWORK=off",
 		"GOPROXY="+proxy,
 		"GOSUMDB=off",
+		"GOMODCACHE="+modCache,
 	)
 }
 
