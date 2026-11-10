@@ -20,3 +20,4 @@ Root `v0.2.0` is published (tag → 3baeb4fe0e36655238c1c293ad9084cb22893edc; co
 - Adapters publish for the first time at `v0.1.0` pinning root `v0.2.0`; `adapter/otel` is already published at `v0.1.0` and its next release is `v0.1.1`.
 - Root `v0.2.0` was published by owner ruling (a driver act at 3baeb4fe0e36655238c1c293ad9084cb22893edc); the repair-release-verification change's machinery publishes nothing.
 - The seven local draft tags are deleted locally (`git tag -d`); no remote tag is touched and no history rewrite occurs.
+- The plan appendix names `TestAPICheckCLI`; that harness is permanently substituted: semantic mutations are asserted through the inline comparison fixtures plus built-checker execution in `TestHistoricalBaselineCLI`, and the full CLI path is exercised end-to-end by `task api:check` against published tags.
