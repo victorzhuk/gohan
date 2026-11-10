@@ -1,0 +1,114 @@
+{
+  "change": "repair-release-verification",
+  "purpose": "Task 0.1 pre-fix behavior evidence and task 2.3 parent-integration delivery: families, review closure, lane escalation, final floor",
+  "revision_pre_fix": "3baeb4fe0e36655238c1c293ad9084cb22893edc",
+  "families": {
+    "declared_dependency_conformance": {
+      "command": "timeout 180s go test -json -timeout 120s -p 2 -parallel 2 ./tools/apicheck -run '^TestAdapterPublishedRequirements$'",
+      "revision": "3baeb4fe0e36655238c1c293ad9084cb22893edc",
+      "rowStatus": "red_before_green_after",
+      "pre_fix_rows": [
+        {"scenario": "adapter manifests declare published root v0.2.0", "status": "FAIL", "expected": "require github.com/victorzhuk/gohan v0.2.0 in all six adapters", "observed": "all six declared v0.1.0; adapter/anthropic and adapter/openai had no gohan v0.1.0 go.sum entry"},
+        {"scenario": "independent GOWORK=off compilation of adapters against declared root", "status": "FAIL", "expected": "clean compile", "observed": "adapter/postgres GOWORK=off build against published v0.1.0: undefined types.HandoffContext, types.WorkspaceRef, types.WorkspaceOwner, gohan.EraseReport, stores.ErasedSessions, stores.ModelCompletion, stores.RecordEnvelope, too many errors"}
+      ],
+      "after_fix_rows": [
+        {"scenario": "TestAdapterPublishedRequirements six subtests", "status": "PASS", "observed": "commit 7069d1f; all six adapters build clean GOWORK=off against published root v0.2.0 (separate pin evidence: pin-red-before.json)"}
+      ],
+      "separately_identified": "dependency availability and lint diagnostics kept out of behavior rows: published-root availability was the open blocker until owner ruling cut v0.2.0 at 3baeb4f (proxy Origin.Hash confirmed); scoped golangci-lint reported 0 iterator findings before and after (project config default=standard+depguard does not surface this class)"
+    },
+    "semantic_apicheck_fixtures": {
+      "command": "timeout 180s go test -json -timeout 120s -p 2 -parallel 2 ./tools/apicheck -run '^(TestSemanticCompatibility|TestAPICheckCLI|TestDiffTrees|TestDiffTreesUnexportedChangeCompatible|TestReportBreaks)$'",
+      "revision": "3baeb4fe0e36655238c1c293ad9084cb22893edc",
+      "rowStatus": "red_before_green_after",
+      "pre_fix_rows": [
+        {"scenario": "generic method removal -> breaking", "status": "FAIL", "expected": "break naming method Get on generic receiver Box[T]", "observed": "reported compatible; diffTrees collects no methods on generic receivers", "fixture": "tools/apicheck/semantic_test.go:58"},
+        {"scenario": "inferred variable type change -> breaking", "status": "FAIL", "expected": "break naming var Threshold int -> int64", "observed": "reported compatible; inferred types render <none> both sides", "fixture": "tools/apicheck/semantic_test.go:81"},
+        {"scenario": "additive keyed-struct growth -> accepted", "status": "FAIL", "expected": "no break", "observed": "false break '.: type Event: changed from struct{Kind string} to struct{At string;Kind string}'", "fixture": "tools/apicheck/semantic_test.go"}
+      ],
+      "after_fix_rows": [
+        {"scenario": "TestSemanticCompatibility all 6 subtests (incl. alias-retargeted fixture from review round)", "status": "PASS", "source": "AliasModFix -json suite at d66052a; floor LEG2 race sweep of ./tools/apicheck uncached 1.087s"}
+      ],
+      "already_green_rows": [
+        {"scenario": "imported type identity change -> breaking", "status": "PASS", "observed": "current checker catches func Make change alpha.Coder -> beta.Coder textually; kept as regression guard"}
+      ],
+      "notes": "TestAPICheckCLI named in the plan appendix does not exist and is not instantiated; permanent substitution recorded in ADR 0173 (inline fixtures + built-checker TestHistoricalBaselineCLI + end-to-end task api:check). All reds were compatibility assertions, not compile or fixture-load errors; fixture compile gate green before assertions."
+    },
+    "historical_baseline_exception": {
+      "command": "timeout 180s go test -json -timeout 120s -p 2 -parallel=2 ./tools/apicheck -run '^(TestHistoricalBaselineCLI|TestDiffTrees|TestDiffTreesUnexportedChangeCompatible|TestReportBreaks|TestAdapterPublishedRequirements|TestReleaseTaskContract|TestReleaseVerificationCLI)$'",
+      "revision": "07e61e4 fixture landing",
+      "rowStatus": "red_before_green_after",
+      "pre_fix_rows": [
+        {"scenario": "verified-correction", "status": "FAIL", "expected": "output carries verified release commit, original v0.0.0 requirement, corrected v0.1.0 requirement, applied-exception evidence", "observed": "checker prints only 'exported API compatible'"},
+        {"scenario": "mismatched-commit-refused", "status": "FAIL", "expected": "non-zero refusal on peeled-commit mismatch", "observed": "accepted with exit 0; no pair verification exists"},
+        {"scenario": "unrelated-load-error", "status": "FAIL", "expected": "fail on unserved import", "observed": "accepted with exit 0; textual loader never resolves imports"}
+      ],
+      "after_fix_rows": [
+        {"scenario": "TestHistoricalBaselineCLI all 3 subtests", "status": "PASS", "source": "AliasModFix -json suite at d66052a (isolated GOMODCACHE); api:check on the default host cache independently printed the verified same-peel correction and v0.0.0 -> v0.1.0 evidence"}
+      ],
+      "cache_crossover": "historical fixtures synthesize gohan@v0.1.0 for the real module path; the genuine published v0.1.0 cannot coexist with that synthesis in one module cache. Fixture legs run with isolated GOMODCACHE, api:check leg runs first on the default cache; ordering recorded in the floor evidence and required by procedure."
+    },
+    "iterator_errors": {
+      "command": "timeout 180s go test -json -timeout 120s -p 2 -parallel 2 ./core ./core/stores ./std ./testkit/conformance ./testkit/gohantest ./testkit/storetest -run '^(TestDriveStopsEffectWorkWhenConsumerStops|TestStreamPreviews|TestStreamStall|TestMemoryCompactionSinkAppend|TestPromptMiddleware|TestScriptedModel|TestEventLog)$'",
+      "rowStatus": "reconciled",
+      "reconciliation": "authoring claimed fourteen existing unchecked iterator errors; exhaustive scan (repair-time) found eleven live sites: seven in the admission file set (fixed in d04f450) plus four in core/chain_benchmark_test.go:117/138/204 and core/shutdown_test.go:265 (fixed in 6ce75f3). Remaining authoring count was already handled by integrated sibling repairs or counted candidate audit sites rather than confirmed errors. No site left unchecked in scope; research-report ownership boundary untouched (zero findings fell inside it)",
+      "post_fix_rows": [
+        {"scenario": "seven named tests green after fixes", "status": "PASS"},
+        {"scenario": "scoped golangci-lint clean, nolint-free", "status": "PASS", "observed": "0 issues before and after on ./core ./core/stores ./std ./testkit/..."}
+      ]
+    }
+  },
+  "review_closure": {
+    "lenses": ["general", "quality", "architecture", "qa"],
+    "exclusions_stated": ["security (no trust-boundary code beyond verifier hardening, covered by general/arch)", "performance (tooling only)", "ux (no user surface)"],
+    "high_resolved": "adapters:verify passed without required full conformance (docker skip under -short, postgres full tag excluded) -> closed by 4c5ac12: non-short conformance execution, -json required-entry enforcement (absent/skipped => FAIL), published-dependency contract on the isolated copy, aggregate deadline with worker caps; postgres container leg observed executing (13.037s) in the final floor",
+    "medium_resolved": ["alias-mediated imported type identity missed (canonicalType collapsed *types.Alias) -> red fixture 3ffec77, fix d66052a", "exportData -mod=mod could rewrite live manifests -> mod-mode threading in d66052a; LIVE_TREE_UNTOUCHED proven", "type-check error tolerance -> strictness landed with the plan-assigned one-time fixture repair 4db16b2 (13/13 DiffTrees rows green)", "Taskfile CLI_ARGS now forwarded to both lint legs (floor output shows --concurrency 2 on the examples leg)", "weak no-root positive fixture -> gohanProxyFile fixture family in 4c5ac12"],
+    "lane_escalation": "adapter/anthropic TestProviderComposition/model.anthropic-complete-tool-blocks failed full-mode: frozen lane hook asserted zero effects on every preview although only the first is guaranteed during the pause; production and verifier exonerated; driver reproduction GOMAXPROCS=1 -count=2 => 6 violations; debugger worst-case proof 50/50 unfixed vs 50/50 fixed; amendment b3309ee scopes the assertion to the first delivered preview, preserving lane intent (post-run effect-count assertions intact)"
+  },
+  "final_floor": {
+    "command": "task api:check -> task test:race (isolated GOMODCACHE) -> task adapters:verify -> task lint -- --concurrency 2 -> task examples:test",
+    "deviations_recorded": ["api:check runs FIRST on the default module cache (fixture-cache crossover, see historical_baseline_exception)", "test:race leg uses GOMODCACHE isolation under scratch", "examples leg reused cached results legitimately: no input change since its fresh uncached execution of research-report and temporal-travel post-wiring"],
+    "results": {
+      "api_check": "exit 0: root compatible with v0.2.0; adapter/otel vs adapter/otel/v0.1.0 with printed historical exception (same peel 4ce59f7, v0.0.0 -> v0.1.0); five adapters 'no tag yet, skipped'",
+      "test_race": "all packages ok; adapter/anthropic re-executed fresh post-amendment (1.048s)",
+      "adapters_verify": "exit 0; all six modules PASS with required conformance entries observed as pass events, postgres testcontainers cycled and terminated cleanly",
+      "lint": "0 issues on both legs with --concurrency 2",
+      "examples_test": "all 7 packages ok"
+    },
+    "outcome": "FLOOR_FINAL_GREEN",
+    "retained_logs": ["artifact 367 (failed first sweep, anthropic defect evidence)", "floor-final-2 service log (legs 2-3)", "scratch semantic-red.json, historical-red.json, alias-red.json, pin-red-before.json"]
+  },
+  "commits_landed": {
+    "c165338": "test(apicheck): pin semantic API compatibility expectations (red fixtures)",
+    "07e61e4": "test(apicheck): pin historical baseline exception expectations (red fixtures)",
+    "7069d1f": "fix(adapters): pin published root v0.2.0 in module manifests",
+    "d04f450": "fix(core,std): surface unchecked iterator errors in stream tests",
+    "6ce75f3": "fix(core): surface unchecked iterator errors in bench and shutdown tests",
+    "181e3b0": "build(ci): add verification-only adapters:verify task",
+    "8003ca6": "fix(examples): wire optional checkpoint-runs surface in two examples",
+    "908a46d": "docs(openspec): baseline the release-verification repair child (amendment + ADR 0173)",
+    "a09d637": "fix(apicheck): compare APIs with module-aware type information",
+    "ec2cb34": "fix(apicheck): qualify imported type identity by package path",
+    "5f46d81": "docs(design): record published identity and verification flow",
+    "c205110": "fix(apicheck): bound the historical exception to the published otel pair",
+    "4199963": "fix(apicheck): clear lint findings in test helpers",
+    "4c5ac12": "feat(ci): enforce full conformance in adapters:verify",
+    "4db16b2": "fix(apicheck): fail comparison on type-check errors",
+    "079bd37": "docs(design): align release gate prose with full conformance",
+    "3bb5b33": "docs: shipped-adapter scope and coverage inventory corrections",
+    "ca272ff": "docs: record cli substitution and iterator reconciliation",
+    "3ffec77": "test(apicheck): pin alias identity regression",
+    "d66052a": "fix(apicheck): resolve alias identity and protect live manifests",
+    "b3309ee": "test(anthropic): scope paused-effect check to first preview (lane amendment, driver-verified escalation)"
+  },
+  "amendment_record": {
+    "ruling": "owner 2026-11-10: published root v0.2.0 (tag 58543a5 -> commit 3baeb4f, proxy-confirmed); adapters first-publish v0.1.0 (otel next v0.1.1); seven local v1.0.0 draft tags retired and deleted locally (ADR 0173 preserves names + peeled commit 00075cd)",
+    "scope": "ADR 0173; spec delta requirement 1 identity + requirement 3 re-scoped to published adapter/otel/v0.1.0 pair (root v0.0.0+replace -> v0.1.0, same-peel 4ce59f7); tasks 1.1/1.4/2.1/2.2 wording; design body + plan appendix (25 identity ops); proposal identity; requirement 3 body trimmed under the 500-char strict gate with correction detail moved into the scenario",
+    "incident": "an execution child flattened design.md to its JSON line, dropping the fenced markdown body; body rebuilt verbatim from session-held original plus approved edit blocks; final state: 101 lines, line 100 JSON parses, openspec validate --strict exit 0, zero leftover v1.0.0 fragments; the change dir was untracked so git could not restore it"
+  },
+  "parent_flags": [
+    "repair-runtime-safety-contracts decision 11 and tasks 8.1/8.4 still carry the retired v1.0.0 identity wording; parent-owner session reconciles (this child delivered 8.1-8.6 evidence under the amended identity)",
+    "pre-existing errcheck findings outside the change: adapter/anthropic/anthropic.go:84 and compact.go:99 (resp.Body.Close unchecked); not surfaced by task lint's leg set; provider-composition lane production",
+    "AGENTS.md spec:coverage line still claims three modules while Taskfile.yml pipes eight streams"
+  ],
+  "claims_boundary": "No publication, no tag creation by change machinery, no M2 completion claim, no parent broad-gate claim from these subset checks. examples/test is workspace-consumer evidence, not a released-root compatibility claim."
+}
