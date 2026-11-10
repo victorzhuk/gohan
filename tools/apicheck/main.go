@@ -79,10 +79,12 @@ func run(args []string) error {
 	if cleanup != nil {
 		defer cleanup()
 	}
+	baseModMode := modModeReadOnly
 	if corrected != "" {
 		base = corrected
+		baseModMode = modModeMod
 	}
-	breaks, err := diffTrees(base, head)
+	breaks, err := compareTrees(base, baseModMode, head, modModeReadOnly)
 	if err != nil {
 		return err
 	}
@@ -227,15 +229,29 @@ type symbol struct {
 	isStruct bool
 }
 
+// modMode constants select the go list module mode. -mod=mod is permitted
+// only on a disposable corrected baseline copy that must gain a go.sum
+// entry; -mod=readonly keeps every other load from rewriting go.mod/go.sum.
+const (
+	modModeMod      = "-mod=mod"
+	modModeReadOnly = "-mod=readonly"
+)
+
 // diffTrees loads both module graphs in separate type-checking sessions and
 // reports every exported symbol that was removed or whose type changed.
 // Symbols added in head are compatible growth and are not reported.
 func diffTrees(baseDir, headDir string) ([]breakage, error) {
-	base, err := loadPackages(baseDir)
+	return compareTrees(baseDir, modModeReadOnly, headDir, modModeReadOnly)
+}
+
+// compareTrees loads both trees with the go list module modes the caller
+// selects and diffs their exported symbols.
+func compareTrees(baseDir, baseModMode, headDir, headModMode string) ([]breakage, error) {
+	base, err := loadPackages(baseDir, baseModMode)
 	if err != nil {
 		return nil, fmt.Errorf("load base %s: %w", baseDir, err)
 	}
-	head, err := loadPackages(headDir)
+	head, err := loadPackages(headDir, headModMode)
 	if err != nil {
 		return nil, fmt.Errorf("load head %s: %w", headDir, err)
 	}
@@ -258,7 +274,14 @@ func diffTrees(baseDir, headDir string) ([]breakage, error) {
 				continue
 			}
 			if breaking(base[p][name], got) {
-				out = append(out, breakage(fmt.Sprintf("%s: %s: changed from %s to %s", p, name, base[p][name].render, got.render)))
+				text := fmt.Sprintf("%s: %s: changed from %s to %s", p, name, base[p][name].render, got.render)
+				// Identical renders hide an alias retarget: name both
+				// canonical identities so the break names the real change.
+				// A visible render change already names the difference.
+				if base[p][name].render == got.render && base[p][name].identity != "" && got.identity != "" {
+					text += fmt.Sprintf(" (identity changed from %s to %s)", base[p][name].identity, got.identity)
+				}
+				out = append(out, breakage(text))
 			}
 		}
 	}
@@ -313,8 +336,9 @@ func breaking(base, head *symbol) bool {
 // errors fail the comparison: an unrelated load error is never tolerated.
 // Module-internal imports resolve
 // from the same tree, external imports from export data built by
-// `go list -deps -export` against the module's own manifest.
-func loadPackages(dir string) (map[string]map[string]*symbol, error) {
+// `go list -deps -export` against the module's own manifest. modMode is the
+// go list module mode passed to exportData.
+func loadPackages(dir, modMode string) (map[string]map[string]*symbol, error) {
 	modPath := ""
 	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 		if p, err := modulePath(dir); err == nil {
@@ -332,7 +356,7 @@ func loadPackages(dir string) (map[string]map[string]*symbol, error) {
 	setUnitPaths(units, modPath)
 	var ext types.Importer
 	if externalImports(units, modPath) {
-		exports, err := exportData(dir)
+		exports, err := exportData(dir, modMode)
 		if err != nil {
 			return nil, err
 		}
@@ -517,9 +541,11 @@ type importerFunc func(string) (*types.Package, error)
 func (f importerFunc) Import(p string) (*types.Package, error) { return f(p) }
 
 // exportData builds the module at dir and returns import path to export
-// data file for every package in its dependency graph.
-func exportData(dir string) (map[string]string, error) {
-	cmd := exec.Command("go", "list", "-mod=mod", "-deps", "-export", "-json", "./...")
+// data file for every package in its dependency graph. modMode selects the
+// go list module mode: -mod=mod is allowed only for a disposable corrected
+// copy that must update go.sum; -mod=readonly protects the live manifest.
+func exportData(dir, modMode string) (map[string]string, error) {
+	cmd := exec.Command("go", "list", modMode, "-deps", "-export", "-json", "./...")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	var stderr strings.Builder
@@ -642,7 +668,7 @@ func canonicalType(t types.Type) string {
 	case *types.Named:
 		return canonicalName(u.Obj())
 	case *types.Alias:
-		return ""
+		return canonicalType(types.Unalias(u))
 	case *types.Pointer:
 		return "*" + canonicalType(u.Elem())
 	case *types.Slice:
