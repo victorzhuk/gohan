@@ -114,7 +114,9 @@ func BenchmarkModelChain(b *testing.B) {
 	req := types.ModelRequest{}
 	for range 3 {
 		for _, err := range call(ctx, req) {
-			_ = err
+			if err != nil {
+				b.Fatal(err)
+			}
 		}
 	}
 	b.ReportAllocs()
@@ -135,7 +137,9 @@ func BenchmarkModelCall_Raw(b *testing.B) {
 	req := types.ModelRequest{}
 	for range 3 {
 		for _, err := range rawModelCall(ctx, req) {
-			_ = err
+			if err != nil {
+				b.Fatal(err)
+			}
 		}
 	}
 	b.ReportAllocs()

@@ -262,7 +262,10 @@ func TestConversationShutdownAdmission(t *testing.T) {
 		go func() {
 			defer close(drained)
 			for _, err := range conv.Send(ctx, "sess-1", userMsg("hi")) {
-				_ = err
+				if err != nil {
+					// Expected: forced shutdown aborts the in-flight run.
+					continue
+				}
 			}
 		}()
 		select {
