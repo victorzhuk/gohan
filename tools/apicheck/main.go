@@ -284,10 +284,11 @@ func breaking(base, head *symbol) bool {
 }
 
 // loadPackages type-checks the module tree rooted at dir and maps relative
-// import path to the package's exported symbols. Type checking tolerates
-// errors, so a tree whose declared surface is under comparison still yields
-// its exported objects even where it does not build. Module-internal imports
-// resolve from the same tree, external imports from export data built by
+// import path to the package's exported symbols. Walk and parse errors fail
+// the comparison; type-check errors stay tolerated so a tree whose declared
+// surface is under comparison still yields its exported objects even where
+// it does not build. Module-internal imports resolve
+// from the same tree, external imports from export data built by
 // `go list -deps -export` against the module's own manifest.
 func loadPackages(dir string) (map[string]map[string]*symbol, error) {
 	modPath := ""
@@ -297,7 +298,10 @@ func loadPackages(dir string) (map[string]map[string]*symbol, error) {
 		}
 	}
 	fset := token.NewFileSet()
-	units := parseUnits(fset, dir)
+	units, err := parseUnits(fset, dir)
+	if err != nil {
+		return nil, err
+	}
 	if len(units) == 0 {
 		return nil, fmt.Errorf("no Go packages found in %s", dir)
 	}
@@ -342,9 +346,9 @@ type unit struct {
 // parseUnits walks the module tree and parses every package file, using the
 // same traversal rules as the comparison: testdata, dot- and underscore
 // directories and nested modules are skipped, test files are ignored.
-func parseUnits(fset *token.FileSet, dir string) map[string]*unit {
+func parseUnits(fset *token.FileSet, dir string) (map[string]*unit, error) {
 	units := map[string]*unit{}
-	_ = filepath.WalkDir(dir, func(d string, e os.DirEntry, err error) error {
+	err := filepath.WalkDir(dir, func(d string, e os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -380,7 +384,10 @@ func parseUnits(fset *token.FileSet, dir string) map[string]*unit {
 		u.files = append(u.files, file)
 		return nil
 	})
-	return units
+	if err != nil {
+		return nil, err
+	}
+	return units, nil
 }
 
 // setUnitPaths gives every parsed unit its full import path under the module
@@ -433,8 +440,8 @@ func importsOf(files []*ast.File) bool {
 }
 
 // loader type-checks the parsed units of one tree in one session. A cycle
-// yields a fresh placeholder package, and any resolution failure is recorded
-// by the tolerant config instead of aborting the comparison.
+// yields a fresh placeholder package, and type-check errors are tolerated
+// so the declared surface is still extracted.
 type loader struct {
 	fset    *token.FileSet
 	modPath string
@@ -454,11 +461,7 @@ func (l *loader) check(key string) *types.Package {
 	}
 	l.doing[key] = true
 	defer delete(l.doing, key)
-	conf := &types.Config{Error: func(e error) {
-		if os.Getenv("APICHECK_DEBUG") != "" {
-			fmt.Fprintln(os.Stderr, "DEBUG check", key, e)
-		}
-	}, Importer: importerFunc(l.importFor)}
+	conf := &types.Config{Importer: importerFunc(l.importFor)}
 	pkg, _ := conf.Check(u.path, l.fset, u.files, nil)
 	l.done[key] = pkg
 	return pkg
@@ -770,6 +773,17 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
+// The historical baseline exception is bound to one published pair: the
+// adapter/otel/v0.1.0 tag whose module is github.com/victorzhuk/gohan/adapter/otel
+// and the root v0.1.0 release commit of github.com/victorzhuk/gohan. No
+// other tag, module path or requirement receives a correction.
+const (
+	historicalAdapterTag    = "adapter/otel/v0.1.0"
+	historicalAdapterModule = "github.com/victorzhuk/gohan/adapter/otel"
+	historicalRootModule    = "github.com/victorzhuk/gohan"
+	historicalRootTag       = "v0.1.0"
+)
+
 // baselineFixup records one verified historical baseline correction: the
 // only manifest edit the comparison may ever apply, and always in a
 // temporary copy of the baseline module.
@@ -782,8 +796,11 @@ type baselineFixup struct {
 
 // correctBaseline detects the published historical pattern in the baseline
 // manifest: a root requirement pinned v0.0.0 plus the workspace replacement
-// `replace M => ../..`. When the comparison tag and the root tag of the same
-// version peel to the same release commit, it copies the baseline module to
+// `replace M => ../..`. The exception applies only to the published pair —
+// tag adapter/otel/v0.1.0, baseline module
+// github.com/victorzhuk/gohan/adapter/otel, required root module
+// github.com/victorzhuk/gohan with root tag v0.1.0 — and when the two tags
+// peel to the same release commit, it copies the baseline module to
 // a temporary directory, corrects only that requirement to the root tag
 // version and drops exactly that replacement. Every other situation leaves
 // the baseline untouched; a peeled-commit mismatch is refused outright.
@@ -818,9 +835,19 @@ func correctBaseline(root, base, tag string) (string, *baselineFixup, func(), er
 	if from == "" {
 		return "", nil, nil, nil
 	}
+	if tag != historicalAdapterTag || replaceLeft != historicalRootModule {
+		return "", nil, nil, fmt.Errorf("baseline requires %s %s with a workspace replacement but tag %s is outside the published historical exception %s: refusing baseline correction", replaceLeft, from, tag, historicalAdapterTag)
+	}
+	mod, err := modulePath(base)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	if mod != historicalAdapterModule {
+		return "", nil, nil, fmt.Errorf("baseline module %s is outside the published historical exception %s: refusing baseline correction", mod, historicalAdapterModule)
+	}
 	rootTag := path.Base(tag)
-	if !strings.HasPrefix(rootTag, "v") || rootTag == from {
-		return "", nil, nil, fmt.Errorf("baseline requires %s %s with a workspace replacement but tag %s names no root release: refusing baseline correction", replaceLeft, from, tag)
+	if rootTag != historicalRootTag {
+		return "", nil, nil, fmt.Errorf("baseline requires %s %s with a workspace replacement but tag %s names no published root release %s: refusing baseline correction", replaceLeft, from, tag, historicalRootTag)
 	}
 	commit, err := gitOut(root, "rev-parse", tag+"^{commit}")
 	if err != nil {
@@ -845,10 +872,6 @@ func correctBaseline(root, base, tag string) (string, *baselineFixup, func(), er
 	if err := rewriteManifest(filepath.Join(dir, "go.mod"), replaceLeft, from, rootTag); err != nil {
 		cleanup()
 		return "", nil, nil, err
-	}
-	if os.Getenv("APICHECK_DEBUG") != "" {
-		body, _ := os.ReadFile(filepath.Join(dir, "go.mod"))
-		fmt.Fprintf(os.Stderr, "DEBUG corrected go.mod:\n%s\n", body)
 	}
 	fixup := &baselineFixup{
 		requireModule: replaceLeft,
