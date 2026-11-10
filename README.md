@@ -52,12 +52,10 @@ Current boundaries: `std/flow.Extract` and `Classify` do more than a bare model 
 
 ## What is planned
 
-Not in the workspace. `docs/design/architecture.md` §4.3 is the normative mapping.
+The `openai`, `anthropic`, `postgres`, `eino`, `docker` and `otel` adapters have shipped; see [Modules](#modules). The planned adapters below are not in the workspace. `docs/design/architecture.md` §4.3 is the normative mapping.
 
 | Milestone | Adapters |
 |---|---|
-| M1 | `openai` (incl. vLLM and OpenAI-compatible gateways), `anthropic`, `postgres` (all store ports, `CompleteTx`) |
-| M2 | `eino` (runtime, graph flows, model/tool bridges), `docker` (sandbox) |
 | M3 | `adkgo` (runtime, workflow flows), `mcp` (client and server), `redis` (limiter, event log) |
 | M4 | `agui` (transport), `jev` (decider), `cel` and `lispico` (expression/definition front-ends), `langfuse`, `openfeature`, `httpapi` |
 

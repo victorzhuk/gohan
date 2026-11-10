@@ -68,9 +68,8 @@ tasks:
           timeout 180s go run -p 2 ./tools/apicheck -dir "$dir" -tag "$tag"
         done
 
-  # adapters:verify is verification-only: it checks isolated copies of every
-  # adapter module (no replace directives, clean go mod tidy, build, short
-  # conformance tests) and creates no git tag and no publication.
+  # adapters:verify checks isolated copies of every adapter module, including
+  # full conformance tests, and creates no git tag and no publication.
   adapters:verify:
     desc: Verify release readiness of every adapter module from isolated copies (no tag, no publication)
     cmds:
