@@ -3852,5 +3852,25 @@
     "capability": "recovery",
     "origin": "repair-runtime-safety-contracts",
     "title": "recovered redaction continues the session tenant map"
+  },
+  "telemetry.export-acceptance": {
+    "capability": "telemetry",
+    "origin": "telemetry-export-contracts",
+    "title": "partial export acknowledgement"
+  },
+  "telemetry.export-lifecycle": {
+    "capability": "telemetry",
+    "origin": "telemetry-export-contracts",
+    "title": "bounded pipeline closure"
+  },
+  "telemetry.export-signal-fidelity": {
+    "capability": "telemetry",
+    "origin": "telemetry-export-contracts",
+    "title": "equivalent destinations"
+  },
+  "telemetry.export-bounds-privacy": {
+    "capability": "telemetry",
+    "origin": "telemetry-export-contracts",
+    "title": "admission rejects unsafe growth"
   }
 }

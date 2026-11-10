@@ -57,7 +57,13 @@ ERR_NAME = re.compile(r'^(Err(?!or)[A-Z]\w*|[A-Z]\w{2,}Error)$')
 # the waivers that never become a client-facing Problem: they surface as the
 # model-visible Failed/Permanent tool result instead.
 typed_errors = {n for n, _, _ in rows['type'] if ERR_NAME.match(n)}
-waivers = {'SuspendError', 'ToolError', 'ToolArgsError'}
+# Telemetry delivery-path errors stay waived too: the export pipeline is opt-in
+# infrastructure and these surface via diagnostics/slog, never a client-facing Problem.
+waivers = {'SuspendError', 'ToolError', 'ToolArgsError',
+           'ExportError', 'ErrExportUnsupportedSignal', 'ErrIncompatibleReplay',
+           'ErrUnknownDestination', 'ErrExportQueueFull', 'ErrInstrumentLimit',
+           'ErrInstrumentConflict', 'ErrDimensionLimit', 'ErrSeriesLimit',
+           'ErrExportShutdown'}
 missing_rows = sorted((typed_errors | {n for n, _, _ in rows['error']}) - catalog_refs - waivers)
 uncatalogued = sorted(n for n, _, _ in rows['error'] if n not in catalog_refs)
 # Each table row's Source column must name something, and every Err/Error
@@ -94,7 +100,7 @@ for p in sorted((root / 'openspec/specs').glob('*/spec.md')):
             for w in re.findall(r'\b([A-Z][A-Za-z0-9]+)\b', body):
                 if w not in builtin and w not in defined and not re.match(r'^(Err|Kind|Stop|Finish|Slot|Stage|Origin|Awaiting|Entity|Verdict|Affinity|Granularity|Content|Compaction|Share|Fail|Collect|Per|Reject|Escalate|ToolChoice)', w):
                     undefined[w].add(cap)
-undefined = {k: v for k, v in undefined.items() if not re.match(r'^(New|Read|Write|Put|Get|List|Load|Open|Close|Exec|Snapshot|Call|Spec|Decide|Generate|Profile|Compile|Eval|Cost|Project|Compact|Schedule|Redact|Rehydrate|Detect|Bool|String|Int|Assemble|Provide|Reserve|Complete|Append|Consume|Start|Step|Heartbeat|Suspend|Resuming|Finish|ByOperation|Stale|Reclaim|Purge|PendingInput|ConsumeIf|UpdatePending|Peek|ResumeReady|ByFingerprint|Emit||Invoke|Resume|Send|Name|Granularity|Version|ID|Verify|Explain|EraseSubject|Parse|Resource|Credentials|Expire|Key|Cmd|Option|Gate|Cancel|Delete|Entries|Forget|AllowUntrustedMemory|Count|Estimate|Upload|PutFeedback|Feedback|ProviderKey|Validate|Signal|Drain|Steer|Retention|Maintain|Notify|Notices|AckNotice|StartSpan|Record|Health|NewHandler|Request|Handler|ActiveRun|AppendCompaction|AppendCompactionAudit|AppendCompactionEvent|Find|RunForSession|ValidateCompactionFallback|Acquire|Publish|Release|Sweep|SetWorkspaceMeta|WithWorkspaceOwner)$', k)}
+undefined = {k: v for k, v in undefined.items() if not re.match(r'^(New|Read|Write|Put|Get|List|Load|Open|Close|Exec|Snapshot|Call|Spec|Decide|Generate|Profile|Compile|Eval|Cost|Export|Project|Compact|Schedule|Redact|Rehydrate|Detect|Bool|String|Int|Assemble|Provide|Reserve|Complete|Append|Consume|Start|Step|Heartbeat|Suspend|Resuming|Finish|ByOperation|Stale|Reclaim|Purge|PendingInput|ConsumeIf|UpdatePending|Peek|ResumeReady|ByFingerprint|Emit||Invoke|Resume|Send|Name|Granularity|Version|ID|Verify|Explain|EraseSubject|Parse|Resource|Credentials|Expire|Key|Cmd|Option|Gate|Cancel|Delete|Entries|Forget|AllowUntrustedMemory|Count|Estimate|Upload|PutFeedback|Feedback|ProviderKey|Validate|Signal|Drain|Steer|Retention|Maintain|Notify|Notices|AckNotice|StartSpan|Record|Health|NewHandler|Request|Handler|ActiveRun|AppendCompaction|AppendCompactionAudit|AppendCompactionEvent|Find|RunForSession|ValidateCompactionFallback|Acquire|Publish|Release|Report|Sweep|SetWorkspaceMeta|WithWorkspaceOwner)$', k)}
 out_undef = ['## Undefined identifiers', '', ('none' if not undefined else '\n'.join(f'- `{k}`: used in {", ".join(sorted(v))}' for k, v in sorted(undefined.items()))), '']
 out += ['## Duplicate definitions', '', ('none' if not d else '\n'.join(f'- `{k}`: {", ".join(sorted(set(v)))}' for k, v in sorted(d.items()))), '']
 out += out_undef

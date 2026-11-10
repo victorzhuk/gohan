@@ -134,14 +134,14 @@ github.com/victorzhuk/gohan                 ← module A: core + std + testkit
                                               Drive/DriveResume, Recover, Inspect, Explain, NewTool and type
                                               aliases for the vocabulary below. Zero default middleware,
                                               zero prompt text.
-    types/       package types                value types and their enums, and the ports
+    types/       package types                value types and ports, including portable telemetry export records and lifecycle
     stores/ chains/ guards/ permission/ suspension/ streams/   ports, enums and their packages
     runtime/     package runtime              Stepper, Runtime, State, Status, native runtime
     flowdef/     package flowdef              definition model (M4); Lang/ExprLang ports
   std/           package std                  Interactive(), Agentic(), Batch() presets; ToolChain(), ModelChain();
                                               DefaultPrompts; explain HTTP handler
     permission/  guard/  structured/  route/  limit/ (local)  retry/  notes/  outputs/  tool/exec/  tool/http/  egress/  keys/  notify/
-    toolsearch/  telemetry/ (GenAI, Langfuse conventions)
+    toolsearch/  telemetry/ (GenAI, Langfuse conventions; bounded export delivery and admission policy)
     context/ (projections, Summarize)  sandbox/ (tool set, policy)  skills/ (SkillSource, meta-tools)
     taint/ (policy, matcher)  state/ (shared state, JSON Patch)  cache/  tokens/ (Heuristic estimator)
     flow/        recipes: Extract, Classify, Route, MapReduce, Pipeline, RAG, Judge/Refine; Compile(flowdef)
@@ -156,7 +156,7 @@ github.com/victorzhuk/gohan                 ← module A: core + std + testkit
     docker/      Sandbox (dev)                                                ON DISK     docker client
     eino/        runtime, graph flows, Model/Tool bridges         ON DISK     github.com/cloudwego/eino
     openai/      Model + Decider (OpenAI, vLLM, OpenAI-compatible gateways)   ON DISK
-    otel/        telemetry export (GenAI spans)                    ON DISK
+    otel/        telemetry: borrowed providers or owned export pipeline        ON DISK
     postgres/    SessionLog, Checkpoints, Journal, Runs, AuditLog, OutputStore; CompleteTx   ON DISK  pgx, sqlc, goose
     adkgo/       runtime, workflow flows, Model/Tool bridges      M3          google.golang.org/adk
     mcp/         client + server (2026-07-28)                      M3          official go-sdk
@@ -176,6 +176,8 @@ github.com/victorzhuk/gohan                 ← module A: core + std + testkit
 ```
 
 `ON DISK` marks a module that exists in this repository today; a bare milestone mark marks one the milestone table in `docs/overview.md` §12 schedules and the tree does not hold yet. `adapter/e2b` is blocked: no E2B credential, API URL or sandbox domain exists in the repository or the environment, so `m2-e2b-sandbox` is 0/28 with every live task blocked.
+
+Telemetry export keeps records and destination, sink and optional lifecycle ports in `core/types`. `std/telemetry` owns bounded delivery and admission policy; `adapter/otel` translates SDK signals. `otel.New` borrows caller-owned providers, while `otel.NewExportPipeline` owns its providers and exposes flush and shutdown (ADR-0174).
 
 **Docker sandbox boundary.** For networked workloads, the adapter creates a labelled stopped namespace anchor from the configured trusted base image, never from a restored snapshot. The anchor has a separate root filesystem and receives `NET_ADMIN` for policy setup, address resolution and counter reads. It receives no workload files, environment secrets or snapshot contents. The adapter creates the stopped workload in the anchor's network namespace, starts the anchor and establishes the complete policy before starting any workload process.
 

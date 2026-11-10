@@ -7,7 +7,9 @@ package otel
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -18,10 +20,27 @@ import (
 
 // Telemetry emits gohan's spans and metrics onto a real tracer and meter.
 type Telemetry struct {
-	tracer   trace.Tracer
-	meter    metric.Meter
-	counters sync.Map // name -> metric.Int64Counter
-	hists    sync.Map // name -> metric.Float64Histogram
+	tracer    trace.Tracer
+	meter     metric.Meter
+	diag      types.Diagnostics
+	limits    types.ExportLimits
+	claimed   sync.Map // name -> claimed instrument name
+	instCount atomic.Int64
+	counters  sync.Map // name -> metric.Int64Counter
+	hists     sync.Map // name -> metric.Float64Histogram
+	gauges    sync.Map // name -> metric.Float64Gauge
+}
+
+// warnDiagnostics forwards export diagnostics to slog at Warn, the default
+// diagnostics path; the logging contract reserves Error for store failures.
+type warnDiagnostics struct{ logger *slog.Logger }
+
+func (w warnDiagnostics) Report(_ context.Context, d types.ExportDiagnostic) {
+	args := []any{"kind", d.Kind, "name", d.Name, "dropped", d.Dropped}
+	if d.Err != nil {
+		args = append(args, "err", d.Err)
+	}
+	w.logger.Warn("gohan: telemetry export diagnostic", args...)
 }
 
 // New returns the port backed by the given providers.
@@ -29,6 +48,7 @@ func New(tp trace.TracerProvider, mp metric.MeterProvider) *Telemetry {
 	return &Telemetry{
 		tracer: tp.Tracer("github.com/victorzhuk/gohan"),
 		meter:  mp.Meter("github.com/victorzhuk/gohan"),
+		diag:   types.BoundedDiagnostics(warnDiagnostics{logger: slog.Default()}),
 	}
 }
 
@@ -61,12 +81,33 @@ func (t *Telemetry) Record(ctx context.Context, name string, v float64, attrs ..
 	h.Record(ctx, v, metric.WithAttributes(mapAttrs(attrs)...))
 }
 
+// Gauge observes v on the float gauge named name, creating it on first use.
+func (t *Telemetry) Gauge(ctx context.Context, name string, v float64, attrs ...types.Attr) {
+	g, ok := t.gauge(name)
+	if !ok {
+		return
+	}
+	g.Record(ctx, v, metric.WithAttributes(mapAttrs(attrs)...))
+}
+
 func (t *Telemetry) counter(name string) (metric.Int64Counter, bool) {
 	if c, ok := t.counters.Load(name); ok {
 		return c.(metric.Int64Counter), true
 	}
-	c, err := t.meter.Int64Counter(name)
+	unit, desc, ok := t.claim(name)
+	if !ok {
+		return nil, false
+	}
+	var opts []metric.Int64CounterOption
+	if unit != "" {
+		opts = append(opts, metric.WithUnit(unit))
+	}
+	if desc != "" {
+		opts = append(opts, metric.WithDescription(desc))
+	}
+	c, err := t.meter.Int64Counter(name, opts...)
 	if err != nil {
+		t.reportRejected(name, err)
 		return nil, false
 	}
 	actual, _ := t.counters.LoadOrStore(name, c)
@@ -77,12 +118,65 @@ func (t *Telemetry) histogram(name string) (metric.Float64Histogram, bool) {
 	if h, ok := t.hists.Load(name); ok {
 		return h.(metric.Float64Histogram), true
 	}
-	h, err := t.meter.Float64Histogram(name)
+	unit, desc, ok := t.claim(name)
+	if !ok {
+		return nil, false
+	}
+	var opts []metric.Float64HistogramOption
+	if unit != "" {
+		opts = append(opts, metric.WithUnit(unit))
+	}
+	if desc != "" {
+		opts = append(opts, metric.WithDescription(desc))
+	}
+	h, err := t.meter.Float64Histogram(name, opts...)
 	if err != nil {
+		t.reportRejected(name, err)
 		return nil, false
 	}
 	actual, _ := t.hists.LoadOrStore(name, h)
 	return actual.(metric.Float64Histogram), true
+}
+
+func (t *Telemetry) gauge(name string) (metric.Float64Gauge, bool) {
+	if g, ok := t.gauges.Load(name); ok {
+		return g.(metric.Float64Gauge), true
+	}
+	unit, desc, ok := t.claim(name)
+	if !ok {
+		return nil, false
+	}
+	var opts []metric.Float64GaugeOption
+	if unit != "" {
+		opts = append(opts, metric.WithUnit(unit))
+	}
+	if desc != "" {
+		opts = append(opts, metric.WithDescription(desc))
+	}
+	g, err := t.meter.Float64Gauge(name, opts...)
+	if err != nil {
+		t.reportRejected(name, err)
+		return nil, false
+	}
+	actual, _ := t.gauges.LoadOrStore(name, g)
+	return actual.(metric.Float64Gauge), true
+}
+
+// claim admits one distinct instrument name under the instrument limit and
+// returns the declared unit and description, empty for borrowed telemetry.
+func (t *Telemetry) claim(name string) (unit, desc string, ok bool) {
+	if t.meter == nil {
+		return "", "", false
+	}
+	if !claimName(&t.claimed, &t.instCount, instrumentLimit(t.limits), name) {
+		t.reportRejected(name, types.ErrInstrumentLimit)
+		return "", "", false
+	}
+	return "", "", true
+}
+
+func (t *Telemetry) reportRejected(name string, err error) {
+	t.diag.Report(context.Background(), types.ExportDiagnostic{Kind: types.DiagInstrumentRejected, Name: name, Err: err})
 }
 
 // mapAttrs translates the floor's Attr onto OpenTelemetry attributes. The

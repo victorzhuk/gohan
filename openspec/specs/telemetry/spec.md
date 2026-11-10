@@ -137,6 +137,284 @@ Metrics:
 
 Spans and metrics come from the governed chains, so all backends produce the same tree.
 
+### 6.16a Portable telemetry export
+
+Instrumentation stays as declared above. Export is a separate, opt-in contract: dependency-free records and ports in `core/types`, delivery policy in `std/telemetry`, SDK translation in `adapter/otel` (ADR-0174). The frozen `Telemetry` methods never change; export attaches through new ports and optional interfaces discovered by type assertion. Borrowed providers (`otel.New`) stay owned by their caller and are never closed by gohan. Owned pipelines report context-bounded flush and shutdown outcomes with unresolved-work counts. Remote acceptance never implies local durability; stable IDs permit deduplication, never exactly-once aggregation.
+
+Records (version, stable ID, resource identity, signal kind, typed payload; completed spans cross SDK export boundaries, never replayed `StartSpan`):
+
+```go
+type ExportSignalKind string
+
+const (
+	SignalSpan   ExportSignalKind = "span"
+	SignalMetric ExportSignalKind = "metric"
+)
+
+type RecordID string
+
+const CurrentExportSchemaVersion = 1
+
+type ResourceIdentity struct {
+	Name  string `json:"name"`
+	Attrs []Attr `json:"attrs,omitempty"`
+}
+
+type Source struct {
+	Name      string `json:"name"`
+	Version   string `json:"version,omitempty"`
+	SchemaURL string `json:"schema_url,omitempty"`
+}
+
+type SpanOutcome string
+
+const (
+	SpanUnset SpanOutcome = "unset"
+	SpanOK    SpanOutcome = "ok"
+	SpanError SpanOutcome = "error"
+)
+
+type SpanRecord struct {
+	TraceID  string      `json:"trace_id"`
+	SpanID   string      `json:"span_id"`
+	ParentID string      `json:"parent_id,omitempty"`
+	Name     string      `json:"name"`
+	Start    time.Time   `json:"start"`
+	End      time.Time   `json:"end"`
+	Attrs    []Attr      `json:"attrs,omitempty"`
+	Outcome  SpanOutcome `json:"outcome"`
+	Source   Source      `json:"source"`
+}
+
+type InstrumentKind string
+
+const (
+	InstrumentCounter   InstrumentKind = "counter"
+	InstrumentGauge     InstrumentKind = "gauge"
+	InstrumentHistogram InstrumentKind = "histogram"
+)
+
+type Temporality string
+
+const (
+	TemporalityCumulative Temporality = "cumulative"
+	TemporalityDelta      Temporality = "delta"
+)
+
+type Instrument struct {
+	Name        string         `json:"name"`
+	Kind        InstrumentKind `json:"kind"`
+	Unit        string         `json:"unit,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Boundaries  []float64      `json:"boundaries,omitempty"`
+}
+
+type HistogramValue struct {
+	Count        uint64    `json:"count"`
+	Bounds       []float64 `json:"bounds"`
+	BucketCounts []uint64  `json:"bucket_counts"`
+	Sum          float64   `json:"sum"`
+	Min          *float64  `json:"min,omitempty"`
+	Max          *float64  `json:"max,omitempty"`
+}
+
+type MetricValue struct {
+	Int       *int64          `json:"int,omitempty"`
+	Float     *float64        `json:"float,omitempty"`
+	Histogram *HistogramValue `json:"histogram,omitempty"`
+}
+
+type MetricRecord struct {
+	Instrument  Instrument  `json:"instrument"`
+	Source      Source      `json:"source"`
+	Time        time.Time   `json:"time"`
+	Start       time.Time   `json:"start,omitempty"`
+	Temporality Temporality `json:"temporality"`
+	Dimensions  []Attr      `json:"dimensions,omitempty"`
+	Value       MetricValue `json:"value"`
+}
+
+type ExportRecord struct {
+	SchemaVersion int              `json:"schema_version"`
+	ID            RecordID         `json:"id"`
+	Resource      ResourceIdentity `json:"resource"`
+	Signal        ExportSignalKind `json:"signal"`
+	Span          *SpanRecord      `json:"span,omitempty"`
+	Metric        *MetricRecord    `json:"metric,omitempty"`
+}
+
+func (a Attr) MarshalJSON() ([]byte, error)
+func (a *Attr) UnmarshalJSON(data []byte) error
+```
+
+`Attr` serializes as `{"key":...,"kind":...,"value":...}` with frozen kind literals `string`, `int64`, `float64`, `bool`; decoding validates kind against the value's JSON type. Wire field names are snake_case; times are RFC 3339 with nanoseconds; readers reject unknown `schema_version` values.
+
+Per-record outcomes and ports. A record with no outcome row when a delivery attempt returns is unresolved, not ambiguous, and is retried with its ID unchanged:
+
+```go
+type OutcomeStatus string
+
+const (
+	OutcomeAccepted  OutcomeStatus = "accepted"
+	OutcomeRetryable OutcomeStatus = "retryable"
+	OutcomePermanent OutcomeStatus = "permanent"
+	OutcomeAmbiguous OutcomeStatus = "ambiguous"
+)
+
+type RecordOutcome struct {
+	ID      RecordID      `json:"id"`
+	Status  OutcomeStatus `json:"status"`
+	Message string        `json:"message,omitempty"`
+}
+
+type ReplaySemantics string
+
+const (
+	ReplayNone      ReplaySemantics = "none"
+	ReplayDedupByID ReplaySemantics = "dedup_by_id"
+)
+
+type DestinationCapabilities struct {
+	Signals     []ExportSignalKind `json:"signals"`
+	Replay      ReplaySemantics    `json:"replay"`
+	Temporality Temporality        `json:"temporality"`
+}
+
+type ExportDestination interface {
+	Name() string
+	Capabilities() DestinationCapabilities
+	Export(ctx context.Context, recs []ExportRecord) ([]RecordOutcome, error)
+}
+
+type RecordSink interface {
+	Ingest(ctx context.Context, dest string, recs []ExportRecord) error
+	Flush(ctx context.Context) (UnresolvedWork, error)
+	Shutdown(ctx context.Context) (UnresolvedWork, error)
+}
+
+type TelemetryLifecycle interface {
+	Flush(ctx context.Context) (UnresolvedWork, error)
+	Shutdown(ctx context.Context) (UnresolvedWork, error)
+}
+
+type GaugeTelemetry interface {
+	Gauge(ctx context.Context, name string, v float64, attrs ...Attr)
+}
+
+type UnresolvedWork struct {
+	Records       int64            `json:"records"`
+	ByDestination map[string]int64 `json:"by_destination,omitempty"`
+}
+
+type ExportLimits struct {
+	MaxQueueDepth      int
+	MaxInstruments     int
+	MaxDimensionValues int
+	MaxSeries          int
+}
+
+const (
+	DefaultMaxQueueDepth      = 2048
+	DefaultMaxInstruments     = 256
+	DefaultMaxDimensionValues = 1024
+	DefaultMaxSeries          = 10000
+)
+```
+
+Delivery state machine per record and destination: `accepted` advances; `permanent` advances and reports a drop; `ambiguous` advances and reports possible remote duplication; `retryable` retains the record; an absent outcome row or a cancelled attempt retains the record unresolved with its ID unchanged. Redaction and metric filtering run before serialization and before queue admission: the content-key policy follows `ContentMapping` (off by default), an optional `Redactor` round-trips surviving string attribute values, forbidden identity labels drop from metric dimensions under either spelling, and the bounds below refuse the whole admission atomically. Diagnostics take an independent path and never re-enter the pipeline as records; each `(kind, name)` key is reported at most once per cycle plus one final growth report.
+
+```go
+type DiagnosticKind string
+
+const (
+	DiagInstrumentRejected DiagnosticKind = "instrument_rejected"
+	DiagGaugeUnsupported   DiagnosticKind = "gauge_unsupported"
+	DiagAdmissionRejected  DiagnosticKind = "admission_rejected"
+	DiagDeliveryDropped    DiagnosticKind = "delivery_dropped"
+	DiagDeliveryAmbiguous  DiagnosticKind = "delivery_ambiguous"
+)
+
+type ExportDiagnostic struct {
+	Kind    DiagnosticKind
+	Name    string
+	Err     error
+	Dropped int64
+}
+
+type Diagnostics interface {
+	Report(ctx context.Context, d ExportDiagnostic)
+}
+
+func BoundedDiagnostics(inner Diagnostics) Diagnostics
+
+var (
+	ErrExportUnsupportedSignal = errors.New("gohan: destination does not support this signal")
+	ErrIncompatibleReplay      = errors.New("gohan: destination replay semantics below the requirement")
+	ErrUnknownDestination      = errors.New("gohan: export destination not configured")
+	ErrExportQueueFull         = errors.New("gohan: export queue is full")
+	ErrInstrumentLimit         = errors.New("gohan: instrument limit reached")
+	ErrInstrumentConflict      = errors.New("gohan: conflicting instrument declarations")
+	ErrDimensionLimit          = errors.New("gohan: dimension value limit reached")
+	ErrSeriesLimit             = errors.New("gohan: series limit reached")
+	ErrExportShutdown          = errors.New("gohan: export pipeline is shut down")
+)
+
+type ExportError struct {
+	Destination string
+	Err         error
+}
+
+func (e *ExportError) Error() string
+func (e *ExportError) Unwrap() error
+```
+
+`std/telemetry` ships the delivery engine: one bounded queue and one worker per destination, configuration validated before admission (unsupported signals, replay below the requirement, duplicate destination names), delivery attempts bounded by the caller's context at flush and shutdown:
+
+```go
+type Pipeline struct{ /* unexported */ }
+
+type ExportOption func(*exportConfig)
+
+func NewPipeline(dests []ExportDestination, opts ...ExportOption) (*Pipeline, error)
+
+func (p *Pipeline) Ingest(ctx context.Context, dest string, recs []ExportRecord) error
+func (p *Pipeline) Flush(ctx context.Context) (UnresolvedWork, error)
+func (p *Pipeline) Shutdown(ctx context.Context) (UnresolvedWork, error)
+
+func WithExportSignals(sigs ...ExportSignalKind) ExportOption
+func WithExportBounds(l ExportLimits) ExportOption
+func WithExportDiagnostics(d Diagnostics) ExportOption
+func WithRequiredReplay(r ReplaySemantics) ExportOption
+func WithRedactor(r Redactor, p RedactionPolicy) ExportOption
+func WithContentCapture(c ContentMapping) ExportOption
+func DirectDelivery() ExportOption
+func WithDiagnostics(d Diagnostics) Option
+```
+
+The `Metrics` forwarder forwards gauge observations when the wrapped sink implements `GaugeTelemetry`; without that support it drops the observation and reports `DiagGaugeUnsupported` through the configured diagnostics (default: bounded reports over the run logger at warn level, never error). The `Decorate` wrapper applies the convention and forwards when its inner sink implements `GaugeTelemetry`; without that support it drops the observation silently, and the diagnostic belongs to the layer holding the diagnostics.
+
+`adapter/otel` translates completed SDK signals once per destination: completed spans fan out to every span-capable destination through one span exporter; each metric-capable destination gets its own reader honoring the destination's declared temporality; declared instruments apply unit, description and histogram boundaries at instrument creation (boundaries must be strictly increasing; conflicting duplicate descriptors fail construction; the SDK default aggregation applies otherwise):
+
+```go
+func WithDiagnostics(d Diagnostics) Option
+func WithExportBounds(b ExportLimits) Option
+func WithSignals(sigs ...ExportSignalKind) Option
+func WithInstruments(insts ...Instrument) Option
+func WithResourceName(name string) Option
+
+type ExportPipeline struct{ /* unexported */ }
+
+func NewExportPipeline(sink RecordSink, dests []ExportDestination, opts ...Option) (*ExportPipeline, error)
+
+func (p *ExportPipeline) StartSpan(ctx context.Context, name string, attrs ...Attr) (context.Context, func(...Attr))
+func (p *ExportPipeline) Count(ctx context.Context, name string, n int64, attrs ...Attr)
+func (p *ExportPipeline) Record(ctx context.Context, name string, v float64, attrs ...Attr)
+func (p *ExportPipeline) Gauge(ctx context.Context, name string, v float64, attrs ...Attr)
+func (p *ExportPipeline) Flush(ctx context.Context) (UnresolvedWork, error)
+func (p *ExportPipeline) Shutdown(ctx context.Context) (UnresolvedWork, error)
+```
+
+Instrument creation failures on any path report `DiagInstrumentRejected` instead of dropping silently; the distinct-name count is bounded by `ExportLimits.MaxInstruments`.
 
 ## Requirements
 
@@ -202,3 +480,35 @@ ID: `telemetry.feedback-metric-labels`
 ID: `telemetry.replay-strictness`
 - WHEN a cassette was recorded with `Version: v1` and the profile now pins `v2`
 - THEN `Strict` replay fails naming the version mismatch; `ByTurn` replays with a warning
+
+### Requirement: Export acceptance is explicit
+Exporters MUST distinguish accepted, retryable, permanent and ambiguous results per record. Cancellation MUST leave unacknowledged records unresolved.
+
+#### Scenario: Partial export acknowledgement
+ID: `telemetry.export-acceptance`
+- **WHEN** a batch is partially accepted before its response is interrupted
+- **THEN** only acknowledged records advance and unresolved records retain their IDs
+
+### Requirement: Telemetry lifecycle has an owner
+Pipelines MUST distinguish borrowed and owned resources. Flush and shutdown MUST honor context deadlines and report unresolved work.
+
+#### Scenario: Bounded pipeline closure
+ID: `telemetry.export-lifecycle`
+- **WHEN** pipeline closure reaches its deadline with a blocked exporter and borrowed providers
+- **THEN** it reports unresolved work without closing borrowed providers or leaking workers
+
+### Requirement: Export preserves signal semantics
+Export MUST preserve ancestry, timestamps, schema identity, metric kind, unit and temporality. Unsupported signals MUST fail configuration.
+
+#### Scenario: Equivalent destinations
+ID: `telemetry.export-signal-fidelity`
+- **WHEN** completed spans and gauge, counter and histogram observations reach two supported destinations
+- **THEN** original ancestry and timestamps match and instrument semantics remain equivalent
+
+### Requirement: Export admission is bounded and private
+Pipelines MUST bound queues, instruments, dimension values and total series. Redaction MUST precede serialization. Diagnostics MUST avoid recursive export.
+
+#### Scenario: Admission rejects unsafe growth
+ID: `telemetry.export-bounds-privacy`
+- **WHEN** producers submit secret-bearing content, unbounded dimensions and a failing instrument registration
+- **THEN** forbidden content reaches no serialized output and bounded independent diagnostics report rejection

@@ -38,3 +38,13 @@ func (d decorated) Count(ctx context.Context, name string, n int64, attrs ...typ
 func (d decorated) Record(ctx context.Context, name string, v float64, attrs ...types.Attr) {
 	d.sink.Record(ctx, name, v, d.convention.ApplyAttrs(attrs...)...)
 }
+
+// Gauge applies the convention and forwards when the inner sink implements
+// types.GaugeTelemetry; absent inner support the observation drops.
+func (d decorated) Gauge(ctx context.Context, name string, v float64, attrs ...types.Attr) {
+	g, ok := d.sink.(types.GaugeTelemetry)
+	if !ok {
+		return
+	}
+	g.Gauge(ctx, name, v, d.convention.ApplyAttrs(attrs...)...)
+}

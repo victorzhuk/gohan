@@ -7,6 +7,9 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 ### Added
 
 - `task adapters:verify` and CI release verification run full adapter conformance and check isolated published dependencies without tagging or publishing.
+- Portable telemetry export records, destination and sink ports, optional lifecycle and gauge interfaces, and bounded diagnostics in `core/types`.
+- Bounded per-destination telemetry delivery, admission policy and outcome handling in `std/telemetry`.
+- An owned `adapter/otel` export pipeline, gauge support and diagnostics for rejected instruments; caller-provided providers remain borrowed.
 
 ### Changed
 

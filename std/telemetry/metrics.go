@@ -62,6 +62,14 @@ var forbiddenLabels = map[string]bool{
 	"session_id": true, "run_id": true, "subject": true, "approver": true,
 }
 
+// renamedIdentity holds the convention rename targets of the identity
+// labels: the export dimension filter drops them like their canonical
+// spellings, since Decorate renames before Count ingests.
+var renamedIdentity = map[string]bool{
+	"gen_ai.conversation.id": true,
+	"langfuse.session.id":    true,
+}
+
 // labelCanonical maps the canonical gohan.* spellings a caller may hand in
 // to the bare registration vocabulary. A canonical identity key never maps:
 // the forbidden check runs on both spellings before this table is read.
@@ -90,6 +98,7 @@ type Metrics struct {
 	release    string
 	variant    string
 	tenant     bool
+	diag       types.Diagnostics
 	registered map[string]Metric
 }
 
@@ -100,6 +109,7 @@ type settings struct {
 	release string
 	variant string
 	tenant  bool
+	diag    types.Diagnostics
 }
 
 // WithRelease stamps every emission with the given release.
@@ -112,6 +122,10 @@ func WithVariant(v string) Option { return func(s *settings) { s.variant = v } }
 // it a metric carrying tenant fails Build.
 func WithTenantLabel() Option { return func(s *settings) { s.tenant = true } }
 
+// WithDiagnostics routes gauge-unsupported reports to d instead of the
+// slog default.
+func WithDiagnostics(d types.Diagnostics) Option { return func(s *settings) { s.diag = d } }
+
 // Build validates the metric registrations against the label allow-list
 // and returns the forwarder. The error names the metric and the offending
 // label, so a rejected registration is readable at the call site.
@@ -123,7 +137,10 @@ func Build(tel types.Telemetry, metrics []Metric, opts ...Option) (*Metrics, err
 	for _, opt := range opts {
 		opt(&st)
 	}
-	m := &Metrics{tel: tel, release: st.release, variant: st.variant, tenant: st.tenant, registered: make(map[string]Metric, len(metrics))}
+	m := &Metrics{tel: tel, release: st.release, variant: st.variant, tenant: st.tenant, diag: st.diag, registered: make(map[string]Metric, len(metrics))}
+	if m.diag == nil {
+		m.diag = defaultDiagnostics()
+	}
 	for _, metric := range metrics {
 		if err := validateLabels(metric, st.tenant); err != nil {
 			return nil, err
@@ -164,6 +181,17 @@ func (m *Metrics) Count(ctx context.Context, name string, n int64, attrs ...type
 		return
 	}
 	m.tel.Count(ctx, name, n, out...)
+}
+
+// Gauge forwards a gauge observation when the wrapped sink implements
+// types.GaugeTelemetry. Otherwise the observation is dropped and
+// types.DiagGaugeUnsupported is reported under the diagnostic budget.
+func (m *Metrics) Gauge(ctx context.Context, name string, v float64, attrs ...types.Attr) {
+	if g, ok := m.tel.(types.GaugeTelemetry); ok {
+		g.Gauge(ctx, name, v, m.emit(name, attrs)...)
+		return
+	}
+	m.diag.Report(ctx, types.ExportDiagnostic{Kind: types.DiagGaugeUnsupported, Name: name})
 }
 
 // Record enforces the registration the same way Count does.

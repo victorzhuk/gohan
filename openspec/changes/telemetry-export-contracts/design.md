@@ -29,3 +29,15 @@ Risk depth: existing-service-strict. Metric duplication and queue saturation req
 ## Migration Plan
 
 Depends on repair-release-verification. Opt in at the composition root. Disable admission and drain owned queues to roll back. Update existing architecture, testing and compatibility documents with implementation.
+
+## Residual risks
+
+Acceptance boundary: the four scenario IDs bind as exact-ID public subtests in `std/telemetry` and `adapter/otel`; duplicate-ID binding across packages is legal because the coverage gate collapses subtest segments into a set.
+
+Unit-level tests beyond acceptance coverage are justified by these named residual risks: the redactor never observes content-key values (admission order); all four forbidden identity keys drop under both spellings; malformed-record refusals (empty ID, wrong schema version, payload-signal mismatch, unknown signal); fail-closed redaction when the redactor fails; the retryable backlog counts toward the queue bound; `Attr` wire kind literals, mismatch errors and the `ExportRecord` wire shape; the bounded diagnostics cycle budget; the pipeline post-shutdown refusal (the adapter lifecycle subtest binds only the owned-pipeline-to-sink propagation because the adapter module cannot import `std/telemetry`).
+
+Process crash tests are not applicable: direct mode makes no crash-durability promise and owned pipelines keep no persistent state in this change; durable acknowledgement and offline replay belong to the later local WAL change.
+
+Content capture is key-based over an enumerated vocabulary (`gohan.content.*` plus the GenAI and Langfuse preset message spellings); producers emitting secret-bearing values under other key spellings need a configured `Redactor`, because the default policy cannot classify keys it does not know. Diagnostics non-recursion is a contract on `Diagnostics.Report` implementations (a report must not emit telemetry or enqueue records); the runtime bound covers report volume, not re-entry by a misbehaving sink.
+
+Recorded deviation: skeleton 2.3 "timestamps match to the nanosecond" binds as emission-window containment. The SDK stamps spans with its own clock inside `StartSpan` and the end call, so exact equality against caller-side captures is unobservable; nanosecond precision survives serialization and is proven by the JSON round-trip equality check.

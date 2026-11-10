@@ -18,6 +18,13 @@
 - Independent adapter release verification uses `task adapters:verify`, also run by CI's `release-verify` job. It copies each adapter outside the workspace with `GOWORK=off`, requires a direct root `v0.2.0` dependency, rejects replacements and module-graph errors, checks `go mod tidy -diff`, downloads and verifies dependencies, and checks that copied manifests remain byte-identical. It builds and runs non-short tests, including Docker sandbox conformance, PostgreSQL store conformance with `-tags full` and testcontainers, provider model conformance, Eino conformance and OTel exporter tests. The `go test -json` stream must contain a passing event for each required entry point: an absent or skipped entry fails verification. Missing prerequisites also fail with `release verification incomplete`. The default aggregate deadline is 20 minutes; full test legs use `-timeout 10m`, `-p 2` and `-parallel 2`. CI needs Docker for the service-backed tests. The task does not tag or publish. A workspace pass cannot replace this verdict.
 - `task examples:test` checks examples as a development workspace consumer, separately from adapter release verification. The API comparison contract requires separate module-aware type graphs, imported-type identity detection and failure on unrelated load errors; see `docs/design/compatibility.md`.
 
+### Telemetry export acceptance
+
+- `telemetry.export-acceptance` in `std/telemetry` covers partial acknowledgements, same-ID retries, cancellation, and permanent and ambiguous outcomes.
+- `telemetry.export-lifecycle` in `adapter/otel` covers bounded flush and shutdown, unresolved work, repeated shutdown, post-shutdown refusal, and worker cleanup. It also checks that borrowed providers remain usable and do not expose `TelemetryLifecycle`, unlike the owned pipeline.
+- `telemetry.export-signal-fidelity` in `adapter/otel` covers span ancestry, timestamps and outcomes, metric instrument semantics, and destination rejection. Its rejection cases also live in `std/telemetry`.
+- `telemetry.export-bounds-privacy` covers instrument limits in `adapter/otel` and admission bounds, content filtering, redaction and forbidden identity dimensions in `std/telemetry`.
+
 
 ## Testkit shapes (illustrative tier — testkit is not a capability; names may change in task 29)
 
