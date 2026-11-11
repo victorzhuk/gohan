@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"iter"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,13 +12,48 @@ import (
 	"github.com/victorzhuk/gohan/core/types"
 )
 
-// scoredEval is a deterministic in-process judge that always scores 0.8.
-type scoredEval struct{}
+// scriptedJudgeModel is a model judge whose every call yields one final
+// text chunk carrying the score and once-at-end usage priced by the
+// profile.
+type scriptedJudgeModel struct {
+	delta string
+	usage types.Usage
+	price types.Pricing
 
-func (scoredEval) Dimension() string { return types.EvalQuality }
-func (scoredEval) Version() string   { return "scored-eval-v1" }
-func (scoredEval) Evaluate(ev Evidence) types.EvalDimensionResult {
-	return types.EvalDimensionResult{Status: types.EvalScored, Score: 0.8}
+	mu    sync.Mutex
+	calls int
+}
+
+func (m *scriptedJudgeModel) Profile() types.ModelProfile {
+	return types.ModelProfile{Name: "scripted-judge", Version: "scripted-v1", Pricing: m.price}
+}
+
+func (m *scriptedJudgeModel) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
+}
+
+func (m *scriptedJudgeModel) Generate(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+	return func(yield func(types.ModelChunk, error) bool) {
+		m.mu.Lock()
+		m.calls++
+		m.mu.Unlock()
+		u := m.usage
+		yield(types.ModelChunk{Kind: types.DeltaText, Delta: m.delta, Finish: types.FinishStop, Usage: &u}, nil)
+	}
+}
+
+// passRedactor satisfies the redactor-presence gate without changing the
+// evidence: it returns the blocks untouched.
+type passRedactor struct{}
+
+func (passRedactor) Redact(ctx context.Context, blocks []types.Block, p types.RedactionPolicy) ([]types.Block, types.RedactionMap, error) {
+	return blocks, types.RedactionMap{}, nil
+}
+
+func (passRedactor) Rehydrate(ctx context.Context, blocks []types.Block, m types.RedactionMap) ([]types.Block, error) {
+	return blocks, nil
 }
 
 // settleSink counts settled jobs: every Ingest is one settled job.
@@ -85,7 +121,8 @@ func (m *failJudgeModel) Generate(ctx context.Context, req types.ModelRequest) i
 	}
 }
 
-// evalBudget is one completion whose settled job costs perJobTokens tokens.
+// evalBudget is one completion whose settled job costs perJobTokens tokens:
+// 10 input + 20 output at Pricing{Input: 0.001, Output: 0.0005}.
 var evalBudget = struct {
 	perJobTokens int64
 	perJobCost   float64
@@ -97,13 +134,25 @@ func liveWorkers(o *Online) int {
 	return o.live
 }
 
+func scriptedJudge() (*scriptedJudgeModel, Judge) {
+	m := &scriptedJudgeModel{
+		delta: "0.8",
+		usage: types.Usage{InputTokens: 10, OutputTokens: 20},
+		price: types.Pricing{Input: 0.001, Output: 0.0005},
+	}
+	return m, NewJudge(types.EvalQuality, m, "scripted-v1",
+		Rubric{Version: "rub-v1", Instruction: "score"}, WithRepeat(1))
+}
+
 func TestBudget(t *testing.T) {
 	t.Run("budget exactly-once under concurrent admission", func(t *testing.T) {
 		const k = 3
 		const extra = 5
 		const n = k + extra
+		m, judge := scriptedJudge()
 		rec := &settleSink{settled: make(chan struct{}, n)}
-		eng, err := NewOnline(1, []Judge{{Dimension: types.EvalQuality, Evaluator: scoredEval{}}}, WithSink(rec, "dest-eval"))
+		eng, err := NewOnline(1, []Judge{judge}, WithSink(rec, "dest-eval"),
+			WithRedactor(passRedactor{}, types.RedactionPolicy{}))
 		if err != nil {
 			t.Fatalf("NewOnline: %v", err)
 		}
@@ -115,7 +164,8 @@ func TestBudget(t *testing.T) {
 		}
 
 		// Wave 1: k concurrent offers while the window spend is zero — all
-		// k are admitted and settle, consuming exactly the whole budget.
+		// k are admitted and settle, consuming exactly the whole budget
+		// with exactly one judge call each.
 		var mu sync.Mutex
 		var firstErr error
 		var wg sync.WaitGroup
@@ -145,6 +195,17 @@ func TestBudget(t *testing.T) {
 		if got := len(rec.snapshot()); got != k {
 			t.Fatalf("settled records = %d, want exactly %d admitted", got, k)
 		}
+		if calls := m.callCount(); calls != k {
+			t.Fatalf("judge calls = %d, want exactly one per settled job (%d)", calls, k)
+		}
+		for i, r := range rec.snapshot() {
+			if r.Eval.Tokens != evalBudget.perJobTokens {
+				t.Fatalf("record %d Eval.Tokens = %d, want %d (one call per job, charged once)", i, r.Eval.Tokens, evalBudget.perJobTokens)
+			}
+			if diff := r.Eval.Cost - evalBudget.perJobCost; diff < -1e-9 || diff > 1e-9 {
+				t.Fatalf("record %d Eval.Cost = %v, want %v within 1e-9", i, r.Eval.Cost, evalBudget.perJobCost)
+			}
+		}
 		if r := eng.Rates(); r.Eligible != k || r.Evaluated != k || r.Skipped != 0 || r.Unknown != 0 {
 			t.Fatalf("rates after wave 1 = %+v, want %d eligible, %d evaluated, 0 skipped, 0 unknown", r, k, k)
 		}
@@ -160,6 +221,9 @@ func TestBudget(t *testing.T) {
 		if got := len(rec.snapshot()); got != k {
 			t.Fatalf("records after refusal = %d, want %d", got, k)
 		}
+		if calls := m.callCount(); calls != k {
+			t.Fatalf("judge calls after refusal = %d, want %d (refused offers never call the judge)", calls, k)
+		}
 		eng.mu.Lock()
 		spent := eng.tokensUsed
 		eng.mu.Unlock()
@@ -171,12 +235,83 @@ func TestBudget(t *testing.T) {
 		}
 	})
 
+	t.Run("concurrent burst admits under budget and drains on shutdown", func(t *testing.T) {
+		const workers = 2
+		const queueCap = 4
+		const offers = 16
+		const tokenBudget = int64(180)
+		_, judge := scriptedJudge()
+		rec := &settleSink{settled: make(chan struct{}, offers)}
+		eng, err := NewOnline(1, []Judge{judge}, WithSink(rec, "dest-eval"),
+			WithRedactor(passRedactor{}, types.RedactionPolicy{}))
+		if err != nil {
+			t.Fatalf("NewOnline: %v", err)
+		}
+		eng.Limits = OnlineLimits{
+			Workers:       workers,
+			QueueCapacity: queueCap,
+			JobDeadline:   time.Hour,
+			TokenBudget:   tokenBudget,
+			CostBudget:    1e9,
+		}
+
+		// 16 concurrent offers race the 2 workers and 4 queue slots. Every
+		// offer either lands in flight or is skipped; the token budget caps
+		// in-flight work at 180/30 = 6 settled jobs.
+		var mu sync.Mutex
+		var firstErr error
+		var wg sync.WaitGroup
+		for i := range offers {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				if err := eng.Evaluate(context.Background(), evalCompletion("b"+string(rune('a'+i)))); err != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					mu.Unlock()
+				}
+			}(i)
+		}
+		wg.Wait()
+		if firstErr != nil {
+			t.Fatalf("Evaluate returned error on the admission path: %v", firstErr)
+		}
+
+		// Shutdown drains every admitted job still pending in the queue.
+		if err := eng.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+		if live := liveWorkers(eng); live != 0 {
+			t.Fatalf("live workers after Shutdown = %d, want 0", live)
+		}
+		recs := rec.snapshot()
+		if len(recs) > 6 {
+			t.Fatalf("settled records = %d, want at most 6 (2 running + 4 queued under the 180-token budget)", len(recs))
+		}
+		r := eng.Rates()
+		if int(r.Skipped) != offers-len(recs) {
+			t.Fatalf("rates = %+v, want Skipped=%d (every offer either settles or is skipped)", r, offers-len(recs))
+		}
+		eng.mu.Lock()
+		spent := eng.tokensUsed
+		eng.mu.Unlock()
+		if spent != evalBudget.perJobTokens*int64(len(recs)) {
+			t.Fatalf("window spend = %d tokens, want exactly %d (30 per settled record)", spent, evalBudget.perJobTokens*int64(len(recs)))
+		}
+		if spent > tokenBudget {
+			t.Fatalf("window spend %d exceeds budget %d", spent, tokenBudget)
+		}
+	})
+
 	t.Run("queue capacity boundary", func(t *testing.T) {
 		const c = 3
 		gate := make(chan struct{})
 		m := &gateJudgeModel{gate: gate, entered: make(chan struct{})}
 		rec := &settleSink{settled: make(chan struct{}, c+2)}
-		eng, err := NewOnline(1, []Judge{NewJudge(types.EvalQuality, m, "judge-v1", Rubric{Version: "rub-v1", Instruction: "score"})}, WithSink(rec, "dest-eval"))
+		eng, err := NewOnline(1, []Judge{NewJudge(types.EvalQuality, m, "judge-v1", Rubric{Version: "rub-v1", Instruction: "score"})}, WithSink(rec, "dest-eval"),
+			WithRedactor(passRedactor{}, types.RedactionPolicy{}))
 		if err != nil {
 			t.Fatalf("NewOnline: %v", err)
 		}
@@ -234,7 +369,8 @@ func TestBudget(t *testing.T) {
 		const maxRetries = 2
 		m := &failJudgeModel{}
 		rec := &settleSink{settled: make(chan struct{}, 1)}
-		eng, err := NewOnline(1, []Judge{NewJudge(types.EvalQuality, m, "fail-v1", Rubric{Version: "rub-v1", Instruction: "score"})}, WithSink(rec, "dest-eval"))
+		eng, err := NewOnline(1, []Judge{NewJudge(types.EvalQuality, m, "fail-v1", Rubric{Version: "rub-v1", Instruction: "score"}, WithRepeat(1))}, WithSink(rec, "dest-eval"),
+			WithRedactor(passRedactor{}, types.RedactionPolicy{}))
 		if err != nil {
 			t.Fatalf("NewOnline: %v", err)
 		}
@@ -243,7 +379,11 @@ func TestBudget(t *testing.T) {
 		if err := eng.Evaluate(context.Background(), evalCompletion("r0")); err != nil {
 			t.Fatalf("Evaluate: %v", err)
 		}
-		<-rec.settled
+		select {
+		case <-rec.settled:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("job never settled: want judge retries bounded at 1+MaxRetries=%d calls before the unscored judge_failed settle", 1+maxRetries)
+		}
 		if err := eng.Shutdown(context.Background()); err != nil {
 			t.Fatalf("Shutdown: %v", err)
 		}
@@ -262,8 +402,11 @@ func TestBudget(t *testing.T) {
 		if r.Status != types.EvalUnscored || r.ErrorCategory != types.EvalErrJudgeFailed {
 			t.Fatalf("result = %+v, want unscored/judge_failed after exhausting retries", r)
 		}
-		if r.Reason == "" {
-			t.Fatal("unscored result carries no reason")
+		if r.Reason != "judge call failed after retries" {
+			t.Fatalf("reason = %q, want the static bounded message %q", r.Reason, "judge call failed after retries")
+		}
+		if strings.Contains(r.Reason, "unavailable") {
+			t.Fatalf("reason %q leaks raw judge error text", r.Reason)
 		}
 		if eng.Rates().Failed != 1 {
 			t.Fatalf("rates = %+v, want Failed=1 for an all-unscored admitted job", eng.Rates())
@@ -275,7 +418,8 @@ func TestBudget(t *testing.T) {
 			gate := make(chan struct{})
 			m := &gateJudgeModel{gate: gate, entered: make(chan struct{})}
 			rec := &settleSink{settled: make(chan struct{}, 1)}
-			eng, err := NewOnline(1, []Judge{NewJudge(types.EvalQuality, m, "judge-v1", Rubric{Version: "rub-v1", Instruction: "score"})}, WithSink(rec, "dest-eval"))
+			eng, err := NewOnline(1, []Judge{NewJudge(types.EvalQuality, m, "judge-v1", Rubric{Version: "rub-v1", Instruction: "score"})}, WithSink(rec, "dest-eval"),
+				WithRedactor(passRedactor{}, types.RedactionPolicy{}))
 			if err != nil {
 				t.Fatalf("NewOnline: %v", err)
 			}
@@ -316,7 +460,8 @@ func TestBudget(t *testing.T) {
 			gate := make(chan struct{})
 			m := &gateJudgeModel{gate: gate, entered: make(chan struct{})}
 			rec := &settleSink{settled: make(chan struct{}, 1)}
-			eng, err := NewOnline(1, []Judge{NewJudge(types.EvalQuality, m, "judge-v1", Rubric{Version: "rub-v1", Instruction: "score"})}, WithSink(rec, "dest-eval"))
+			eng, err := NewOnline(1, []Judge{NewJudge(types.EvalQuality, m, "judge-v1", Rubric{Version: "rub-v1", Instruction: "score"})}, WithSink(rec, "dest-eval"),
+				WithRedactor(passRedactor{}, types.RedactionPolicy{}))
 			if err != nil {
 				t.Fatalf("NewOnline: %v", err)
 			}
