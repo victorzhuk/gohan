@@ -708,8 +708,8 @@ type recordPair struct {
 type captureSink struct {
 	inner types.RecordSink
 
-	mu   sync.Mutex
-	ids  []recordPair
+	mu  sync.Mutex
+	ids []recordPair
 }
 
 func (s *captureSink) Ingest(ctx context.Context, dest string, recs []types.ExportRecord) error {
