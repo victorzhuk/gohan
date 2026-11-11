@@ -109,7 +109,7 @@ func evalSeamSend(t *testing.T, conv Conversation, sessionID string) types.Done 
 }
 
 func TestLifecycleEvaluation(t *testing.T) {
-	t.Run("seam.evaluate-once-per-terminal-completion", func(t *testing.T) {
+	t.Run("evaluate once per terminal completion", func(t *testing.T) {
 		hook := newEvalSeamHook()
 		done := evalSeamSend(t, evalSeamConv(t, evalSeamStack(t, hook, true)), "s-eval")
 
@@ -142,7 +142,7 @@ func TestLifecycleEvaluation(t *testing.T) {
 		}
 	})
 
-	t.Run("seam.admission-nonblocking", func(t *testing.T) {
+	t.Run("admission nonblocking", func(t *testing.T) {
 		hook := newEvalSeamHook()
 		// Admission hands the completion to the engine and returns; the
 		// admitted job is consumed only after the turn finished. The Done
@@ -164,7 +164,7 @@ func TestLifecycleEvaluation(t *testing.T) {
 		}
 	})
 
-	t.Run("seam.evaluator-error-never-fails-done", func(t *testing.T) {
+	t.Run("evaluator error never fails done", func(t *testing.T) {
 		hook := newEvalSeamHook()
 		hook.err = errors.New("gohan/evals: admission exploded")
 		conv := evalSeamConv(t, evalSeamStack(t, hook, true))
@@ -186,7 +186,7 @@ func TestLifecycleEvaluation(t *testing.T) {
 		}
 	})
 
-	t.Run("seam.no-evaluator-behaves-unchanged", func(t *testing.T) {
+	t.Run("no evaluator behaves unchanged", func(t *testing.T) {
 		hook := newEvalSeamHook()
 		done := evalSeamSend(t, evalSeamConv(t, evalSeamStack(t, hook, false)), "s-none")
 		if done.Reason != types.StopCompleted {
