@@ -9,10 +9,10 @@ Risk depth: existing-service-strict. No skipped, flaky or infrastructure-failed 
 
 ## 2. Behavior
 
-- [ ] 2.1 Implement and prove `release.online-bounded` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
-- [ ] 2.2 Implement and prove `release.online-unscored` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
-- [ ] 2.3 Implement and prove `release.online-provenance` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
-- [ ] 2.4 Implement and prove `release.online-calibration` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
+- [x] 2.1 Implement and prove `release.online-bounded` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
+- [x] 2.2 Implement and prove `release.online-unscored` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
+- [x] 2.3 Implement and prove `release.online-provenance` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
+- [x] 2.4 Implement and prove `release.online-calibration` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
 
 ## 3. Integration
 
