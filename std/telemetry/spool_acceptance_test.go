@@ -530,6 +530,180 @@ func TestWalAcceptance(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("telemetry.wal-content-erasure", func(t *testing.T) {
+		ctx := t.Context()
+		cfg := walConfig(1<<20, 1<<20)
+		const attr = "wal.actor"
+		rule := telemetry.SubjectErasure{Attr: attr, Values: []string{"alice", "bob"}}
+		failed := func(d *scriptDest) { d.script(nil, errors.New("no delivery")) }
+
+		t.Run("in-process erasure removes subjects and reports counts", func(t *testing.T) {
+			dir := t.TempDir()
+			d1, d2 := newScriptDest("s1"), newScriptDest("s2")
+			failed(d1)
+			failed(d2)
+			s := walOpenDests(t, dir, nil, cfg, d1, d2)
+			for _, rec := range []types.ExportRecord{
+				walKeepSpan("p1"),
+				walSubjectSpan("alice3", attr, "alice", 0),
+				walSubjectMetric("bob3", attr, "bob"),
+				walKeepSpan("p2"),
+			} {
+				dest := "s1"
+				if strings.HasPrefix(string(rec.ID), "b") || string(rec.ID) == "p2" {
+					dest = "s2"
+				}
+				if err := s.Append(ctx, dest, []types.ExportRecord{rec}); err != nil {
+					t.Fatalf("Append %s: %v", rec.ID, err)
+				}
+			}
+			want := map[string]walFrame{}
+			for _, f := range readWalFrames(t, dir, "s1") {
+				want[string(f.rec.ID)] = f
+			}
+			for _, f := range readWalFrames(t, dir, "s2") {
+				want[string(f.rec.ID)] = f
+			}
+			var removedBytes int64
+			for _, id := range []string{"alice3", "bob3"} {
+				removedBytes += spoolHeaderSize + int64(len(walJSON(want[id].rec)))
+			}
+
+			res, err := s.EraseSubjects(ctx, rule)
+			if err != nil {
+				t.Fatalf("EraseSubjects: %v", err)
+			}
+			if res.Records != 2 || res.Bytes != removedBytes {
+				t.Fatalf("erasure result = %+v, want 2 records and %d bytes", res, removedBytes)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "erasure.json")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("tombstone survived completion: %v", err)
+			}
+			got := map[string]uint64{}
+			for _, f := range readWalFrames(t, dir, "s1") {
+				got[string(f.rec.ID)] = f.seq
+			}
+			for _, f := range readWalFrames(t, dir, "s2") {
+				got[string(f.rec.ID)] = f.seq
+			}
+			if len(got) != 2 || got["p1"] != want["p1"].seq || got["p2"] != want["p2"].seq {
+				t.Fatalf("surviving frames = %v, want p1 seq %d and p2 seq %d with sequences preserved", got, want["p1"].seq, want["p2"].seq)
+			}
+			d1.script([]types.RecordOutcome{{ID: "p1", Status: types.OutcomeAccepted}}, nil)
+			d2.script([]types.RecordOutcome{{ID: "p2", Status: types.OutcomeAccepted}}, nil)
+			if _, err := s.Flush(ctx); err != nil {
+				t.Fatalf("Flush: %v", err)
+			}
+			walAssertAttempts(t, [][][]string{d1.allAttempts(), d2.allAttempts()}, []string{"p1", "p2"})
+			if _, err := s.Shutdown(ctx); err != nil {
+				t.Fatalf("Shutdown: %v", err)
+			}
+		})
+
+		t.Run("interrupted erasure completes at open without replay", func(t *testing.T) {
+			dir := t.TempDir()
+			d1, d2 := newScriptDest("sink1"), newScriptDest("sink2")
+			d1.script(nil, errors.New("no delivery"))
+			d2.script([]types.RecordOutcome{{ID: "alice2", Status: types.OutcomeAccepted}}, nil)
+			d2.script(nil, errors.New("no delivery"))
+			s := walOpenDests(t, dir, nil, cfg, d1, d2)
+			for _, rec := range []types.ExportRecord{
+				walKeepSpan("k1"),
+				walSubjectSpan("alice1", attr, "alice", 0),
+				walSubjectMetric("bob1", attr, "bob"),
+				walSubjectSpan("k2", attr, "carol", 1),
+			} {
+				if err := s.Append(ctx, "sink1", []types.ExportRecord{rec}); err != nil {
+					t.Fatalf("Append sink1 %s: %v", rec.ID, err)
+				}
+			}
+			for _, rec := range []types.ExportRecord{
+				walSubjectSpan("alice2", attr, "alice", 0),
+				walKeepSpan("k3"),
+				walSubjectSpan("bob2", attr, "bob", 1),
+			} {
+				if err := s.Append(ctx, "sink2", []types.ExportRecord{rec}); err != nil {
+					t.Fatalf("Append sink2 %s: %v", rec.ID, err)
+				}
+			}
+			if _, err := s.Flush(ctx); err != nil {
+				t.Fatalf("Flush: %v", err)
+			}
+			before := map[string]walFrame{}
+			for _, f := range readWalFrames(t, dir, "sink1") {
+				before[string(f.rec.ID)] = f
+			}
+			for _, f := range readWalFrames(t, dir, "sink2") {
+				before[string(f.rec.ID)] = f
+			}
+			if _, err := s.Shutdown(ctx); err != nil {
+				t.Fatalf("Shutdown: %v", err)
+			}
+			var wantAcked int64
+			for _, d := range s.Health().Destinations {
+				if d.Name == "sink2" {
+					wantAcked = d.Cursor.Acked
+				}
+			}
+
+			failedD1, failedD2 := newScriptDest("sink1"), newScriptDest("sink2")
+			failed(failedD1)
+			failed(failedD2)
+			s2 := walOpenDests(t, dir, nil, cfg, failedD1, failedD2)
+			walWriteTombstone(t, dir, rule)
+			if _, err := s2.Shutdown(ctx); err != nil {
+				t.Fatalf("Shutdown with tombstone: %v", err)
+			}
+			walDropFrames(t, dir, "sink1", map[string]bool{"alice1": true, "bob1": true})
+
+			okD1, okD2 := newScriptDest("sink1"), newScriptDest("sink2")
+			okD1.script([]types.RecordOutcome{
+				{ID: "k1", Status: types.OutcomeAccepted},
+				{ID: "k2", Status: types.OutcomeAccepted},
+			}, nil)
+			okD2.script([]types.RecordOutcome{{ID: "k3", Status: types.OutcomeAccepted}}, nil)
+			s3 := walOpenDests(t, dir, nil, cfg, okD1, okD2)
+			if _, err := os.Stat(filepath.Join(dir, "erasure.json")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("open left the tombstone in place: %v", err)
+			}
+			h := s3.Health()
+			byName := map[string]telemetry.DestinationHealth{}
+			for _, d := range h.Destinations {
+				byName[d.Name] = d
+			}
+			if byName["sink2"].Cursor.Acked != wantAcked {
+				t.Fatalf("sink2 cursor after recovery = %d, want %d", byName["sink2"].Cursor.Acked, wantAcked)
+			}
+			got := map[string]uint64{}
+			for _, dest := range []string{"sink1", "sink2"} {
+				for _, f := range readWalFrames(t, dir, dest) {
+					got[string(f.rec.ID)] = f.seq
+				}
+			}
+			for _, id := range []string{"k1", "k2", "k3"} {
+				if got[id] != before[id].seq {
+					t.Fatalf("survivor %s seq = %d, want %d with sequences never renumbered", id, got[id], before[id].seq)
+				}
+			}
+			if len(got) != 3 {
+				t.Fatalf("surviving frames = %v, want exactly k1 k2 k3", got)
+			}
+			if _, err := s3.Flush(ctx); err != nil {
+				t.Fatalf("post-recovery Flush: %v", err)
+			}
+			walAssertAttempts(t, [][][]string{okD1.allAttempts(), okD2.allAttempts()}, []string{"k1", "k2", "k3"})
+			if frames := readWalFrames(t, dir, "sink1"); len(frames) != 0 {
+				t.Fatalf("sink1 kept %d frames after delivery", len(frames))
+			}
+			if frames := readWalFrames(t, dir, "sink2"); len(frames) != 0 {
+				t.Fatalf("sink2 kept %d frames after delivery", len(frames))
+			}
+			if _, err := s3.Shutdown(ctx); err != nil {
+				t.Fatalf("Shutdown: %v", err)
+			}
+		})
+	})
 }
 
 func populate(t *testing.T, dir string, frames []walFrame) {

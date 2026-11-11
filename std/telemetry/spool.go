@@ -135,6 +135,22 @@ func OpenSpool(dir string, dests []types.ExportDestination, cfg SpoolConfig, opt
 		s.dests[name] = st
 		s.dds[name] = newDestDelivery(destIfc[name], st, acked)
 	}
+	rule, hasTombstone, err := loadErasure(dir)
+	if err != nil {
+		s.sc.diag.Report(context.Background(), types.ExportDiagnostic{Kind: DiagSpoolCorrupt, Err: err})
+		lock.Close()
+		return nil, err
+	}
+	if hasTombstone {
+		if _, err := s.compactErasure(context.Background(), rule); err != nil {
+			lock.Close()
+			return nil, fmt.Errorf("gohan/telemetry: open spool %s: complete interrupted erasure: %w", dir, err)
+		}
+		if err := clearErasureTombstone(dir); err != nil {
+			lock.Close()
+			return nil, err
+		}
+	}
 	for _, dd := range s.dds {
 		go s.workDest(dd)
 	}
@@ -199,6 +215,17 @@ type Spool struct {
 	rejected int64
 	corrupt  CorruptionReport
 	shutdown bool
+	erasure  *SubjectErasure
+}
+
+type SubjectErasure struct {
+	Attr   string   `json:"attr"`   // attribute key identifying the subject
+	Values []string `json:"values"` // matching string values are erased
+}
+
+type ErasureResult struct {
+	Records int64 `json:"records"`
+	Bytes   int64 `json:"bytes"`
 }
 
 type CorruptionKind string

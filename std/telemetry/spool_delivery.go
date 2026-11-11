@@ -139,7 +139,13 @@ func (s *Spool) deliverPass(ctx context.Context, dd *destDelivery) {
 		}
 		n := min(len(dd.st.pending), DefaultSpoolBatchRecords)
 		batch := append([]spoolRec(nil), dd.st.pending[:n]...)
+		if m := s.firstErasureMatch(batch); m >= 0 {
+			batch = batch[:m]
+		}
 		dd.mu.Unlock()
+		if len(batch) == 0 {
+			break
+		}
 
 		actx, cancel := context.WithTimeout(ctx, s.cfg.RequestDeadline)
 		outcomes, xerr := dd.dest.Export(actx, spoolRecBodies(batch))
