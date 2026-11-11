@@ -9,11 +9,11 @@ Risk depth: existing-service-strict. No skipped, flaky or infrastructure-failed 
 
 ## 2. Behavior
 
-- [ ] 2.1 Implement and prove `telemetry.wal-durable-restart` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
-- [ ] 2.2 Implement and prove `telemetry.wal-corruption` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
-- [ ] 2.3 Implement and prove `telemetry.wal-destination-cursors` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
-- [ ] 2.4 Implement and prove `telemetry.wal-capacity-ownership` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
-- [ ] 2.5 Implement and prove `telemetry.wal-content-erasure` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
+- [x] 2.1 Implement and prove `telemetry.wal-durable-restart` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
+- [x] 2.2 Implement and prove `telemetry.wal-corruption` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
+- [x] 2.3 Implement and prove `telemetry.wal-destination-cursors` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
+- [x] 2.4 Implement and prove `telemetry.wal-capacity-ownership` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
+- [x] 2.5 Implement and prove `telemetry.wal-content-erasure` with an exact-ID public acceptance subtest and every delta assertion. Update existing architecture/testing guidance for the behavior.
 
 ## 3. Integration
 
