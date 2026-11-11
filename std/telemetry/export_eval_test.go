@@ -24,7 +24,7 @@ func evalRecordFixture(id types.RecordID, signal types.ExportSignalKind) types.E
 }
 
 func TestValidateEvalRecord(t *testing.T) {
-	t.Run("telemetry.eval-export-record-validation", func(t *testing.T) {
+	t.Run("eval export record validation", func(t *testing.T) {
 		t.Run("accepts eval signal with eval payload", func(t *testing.T) {
 			rec := evalRecordFixture("rec-eval-ok", types.SignalEval)
 			if err := validateRecord(&rec); err != nil {
