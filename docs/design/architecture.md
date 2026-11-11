@@ -142,6 +142,7 @@ github.com/victorzhuk/gohan                 ← module A: core + std + testkit
                                               DefaultPrompts; explain HTTP handler
     permission/  guard/  structured/  route/  limit/ (local)  retry/  notes/  outputs/  tool/exec/  tool/http/  egress/  keys/  notify/
     toolsearch/  telemetry/ (GenAI, Langfuse conventions; bounded export delivery and admission policy)
+    evals/       bounded online evaluation, judge calibration and provenance export
     context/ (projections, Summarize)  sandbox/ (tool set, policy)  skills/ (SkillSource, meta-tools)
     taint/ (policy, matcher)  state/ (shared state, JSON Patch)  cache/  tokens/ (Heuristic estimator)
     flow/        recipes: Extract, Classify, Route, MapReduce, Pipeline, RAG, Judge/Refine; Compile(flowdef)
@@ -177,7 +178,7 @@ github.com/victorzhuk/gohan                 ← module A: core + std + testkit
 
 `ON DISK` marks a module that exists in this repository today; a bare milestone mark marks one the milestone table in `docs/overview.md` §12 schedules and the tree does not hold yet. `adapter/e2b` is blocked: no E2B credential, API URL or sandbox domain exists in the repository or the environment, so `m2-e2b-sandbox` is 0/28 with every live task blocked.
 
-Telemetry export keeps records and destination, sink and optional lifecycle ports in `core/types`. `std/telemetry` owns bounded delivery and admission policy; `adapter/otel` translates SDK signals. `otel.New` borrows caller-owned providers, while `otel.NewExportPipeline` owns its providers and exposes flush and shutdown (ADR-0174). The opt-in durable local spool in `std/telemetry` owns delivery without wrapping `Pipeline` (ADR-0175). On Linux local filesystems it uses exclusive flock ownership, syncs before durable acknowledgement, delivers at least once with per-destination durable cursors, and supports crash-safe subject erasure. `adapter/otel` reaches it through `SpoolSink`, which promises bounded admission only; critical callers use explicit `Append`.
+Telemetry export keeps records, including evaluation signals, and destination, sink and optional lifecycle ports in `core/types`. `std/telemetry` owns bounded delivery and admission policy; `adapter/otel` translates SDK signals. `otel.New` borrows caller-owned providers, while `otel.NewExportPipeline` owns its providers and exposes flush and shutdown (ADR-0174). The opt-in durable local spool in `std/telemetry` owns delivery without wrapping `Pipeline` (ADR-0175). On Linux local filesystems it uses exclusive flock ownership, syncs before durable acknowledgement, delivers at least once with per-destination durable cursors, and supports crash-safe subject erasure. `adapter/otel` reaches it through `SpoolSink`, which promises bounded admission only; critical callers use explicit `Append`.
 
 **Docker sandbox boundary.** For networked workloads, the adapter creates a labelled stopped namespace anchor from the configured trusted base image, never from a restored snapshot. The anchor has a separate root filesystem and receives `NET_ADMIN` for policy setup, address resolution and counter reads. It receives no workload files, environment secrets or snapshot contents. The adapter creates the stopped workload in the anchor's network namespace, starts the anchor and establishes the complete policy before starting any workload process.
 

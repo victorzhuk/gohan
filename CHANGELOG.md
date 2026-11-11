@@ -11,6 +11,9 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 - Bounded per-destination telemetry delivery, admission policy and outcome handling in `std/telemetry`.
 - An owned `adapter/otel` export pipeline, gauge support and diagnostics for rejected instruments; caller-provided providers remain borrowed.
 - An opt-in durable local telemetry spool in `std/telemetry` with sync-before-acknowledgement appends, restart replay, per-destination cursors, corruption recovery, capacity and erasure guarantees; `adapter/otel` integrates through `SpoolSink`.
+- Bounded online evaluation in `std/evals` admits work without waiting for judges, with queue, worker, deadline, retry and token/cost budget limits.
+- Explicit unscored evaluation outcomes never pass required gates; provenance records can export through the durable telemetry spool with stable identities across replay.
+- A judge calibration gate in `std/evals` checks versioned human-labelled sets and per-class criteria before model-backed judge activation.
 
 ### Changed
 

@@ -27,6 +27,11 @@
 - `telemetry.wal-corruption` and `telemetry.wal-capacity-ownership` in `std/telemetry` cover tail repair versus interior corruption rejection, exclusive flock ownership, atomic quota refusal without eviction, and reopen recoverability.
 - `telemetry.wal-durable-restart`, `telemetry.wal-destination-cursors` and `telemetry.wal-content-erasure` in `std/telemetry` cover restart replay with stable IDs, divergent per-destination cursors, and crash-safe subject erasure.
 
+### Online evaluation acceptance
+
+- `TestReleaseOnline` in `std/evals` binds the exact IDs `release.online-bounded`, `release.online-unscored`, `release.online-provenance` and `release.online-calibration`. Deadline legs use `synctest`; focused tests must cover budget accounting, queue and worker bounds, retries and shutdown races under `-race`.
+- The provenance fixture admits an evaluation to a spool with an unavailable destination, shuts it down, then reopens the same directory with a healthy destination. Replay must preserve both the export record ID and evaluation ID.
+
 
 ## Testkit shapes (illustrative tier — testkit is not a capability; names may change in task 29)
 
