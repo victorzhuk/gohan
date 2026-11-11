@@ -1,14 +1,17 @@
 package telemetry
 
 import (
+	"cmp"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -116,15 +119,24 @@ func OpenSpool(dir string, dests []types.ExportDestination, cfg SpoolConfig, opt
 		sc:    sc,
 		lock:  lock,
 		dests: make(map[string]*spoolStream, len(names)),
+		dds:   make(map[string]*destDelivery, len(names)),
+	}
+	destIfc := make(map[string]types.ExportDestination, len(dests))
+	for _, dest := range dests {
+		destIfc[dest.Name()] = dest
 	}
 	for _, name := range names {
-		st, err := s.recoverStream(name)
+		st, acked, err := s.recoverStream(name)
 		if err != nil {
 			s.sc.diag.Report(context.Background(), types.ExportDiagnostic{Kind: DiagSpoolCorrupt, Name: name, Err: err})
 			lock.Close()
 			return nil, err
 		}
 		s.dests[name] = st
+		s.dds[name] = newDestDelivery(destIfc[name], st, acked)
+	}
+	for _, dd := range s.dds {
+		go s.workDest(dd)
 	}
 	return s, nil
 }
@@ -164,7 +176,7 @@ type spoolStream struct {
 	size int64
 	next int
 
-	firstPending time.Time
+	pending []spoolRec
 }
 
 type admittedRec struct {
@@ -178,6 +190,7 @@ type Spool struct {
 	sc    spoolConfig
 	lock  *os.File
 	dests map[string]*spoolStream
+	dds   map[string]*destDelivery
 
 	mu       sync.Mutex
 	seq      uint64
@@ -412,7 +425,7 @@ func (s *Spool) writeRecords(ctx context.Context, st *spoolStream, recs []types.
 	defer st.mu.Unlock()
 	boundary := st.size
 	created := false
-	for _, body := range bodies {
+	for i, body := range bodies {
 		framed := int64(spoolHeaderSize + len(body))
 		if st.f != nil && st.size > 0 && st.size+framed > s.cfg.SegmentBytes {
 			if err := st.roll(); err != nil {
@@ -435,9 +448,7 @@ func (s *Spool) writeRecords(ctx context.Context, st *spoolStream, recs []types.
 			return st.rollback(boundary, err)
 		}
 		st.size += framed
-		if st.firstPending.IsZero() {
-			st.firstPending = time.Now()
-		}
+		st.pending = append(st.pending, spoolRec{seq: s.seq, rec: recs[i], bytes: framed, at: time.Now()})
 	}
 	if err := st.f.Sync(); err != nil {
 		return st.rollback(boundary, err)
@@ -496,43 +507,9 @@ func (st *spoolStream) rollback(boundary int64, werr error) error {
 	return werr
 }
 
-// Shutdown persists admitted records, releases the exclusive lock and is
-// idempotent. Undelivered records stay durable for the next open.
-func (s *Spool) Shutdown(ctx context.Context) (types.UnresolvedWork, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.shutdown {
-		return types.UnresolvedWork{}, nil
-	}
-	work := types.UnresolvedWork{}
-	var errs []error
-	if len(s.admitted) > 0 {
-		byDest := make(map[string][]types.ExportRecord, len(s.dests))
-		for _, a := range s.admitted {
-			byDest[a.dest] = append(byDest[a.dest], a.rec)
-		}
-		for dest, recs := range byDest {
-			if err := s.writeRecords(ctx, s.dests[dest], recs); err != nil {
-				s.rejected++
-				work.Records += int64(len(recs))
-				work.ByDestination[dest] = int64(len(recs))
-				errs = append(errs, err)
-			}
-		}
-		s.admitted = nil
-	}
-	s.shutdown = true
-	syscall.Flock(int(s.lock.Fd()), syscall.LOCK_UN)
-	if err := s.lock.Close(); err != nil {
-		errs = append(errs, fmt.Errorf("close spool lock: %w", err))
-	}
-	return work, errors.Join(errs...)
-}
-
 // Health snapshots the spool locally; it never enqueues records.
 func (s *Spool) Health() SpoolHealth {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	h := SpoolHealth{
 		PendingBytes:    s.pending,
 		AdmissionQueued: int64(len(s.admitted)),
@@ -540,15 +517,32 @@ func (s *Spool) Health() SpoolHealth {
 		Corruption:      s.corrupt,
 		Destinations:    make([]DestinationHealth, 0, len(s.dests)),
 	}
+	s.mu.Unlock()
 	var oldest time.Time
-	for _, st := range s.dests {
-		h.Destinations = append(h.Destinations, DestinationHealth{Name: st.name})
-		if st.firstPending.IsZero() {
-			continue
+	for _, name := range slices.Sorted(maps.Keys(s.dests)) {
+		dd := s.dds[name]
+		dh := DestinationHealth{Name: name}
+		if dd != nil {
+			dd.mu.Lock()
+			dh.Cursor = DestinationCursor{Name: name, Acked: dd.acked}
+			dh.Retries = dd.retries
+			dh.Parked = sortedIDs(dd.parked)
+			dh.Expired = int64(len(dd.expired))
+			dd.mu.Unlock()
 		}
-		if oldest.IsZero() || st.firstPending.Before(oldest) {
-			oldest = st.firstPending
+		st := s.dests[name]
+		st.mu.Lock()
+		dh.Pending = int64(len(st.pending))
+		for _, r := range st.pending {
+			if oldest.IsZero() || r.at.Before(oldest) {
+				oldest = r.at
+			}
+			if age := time.Since(r.at); age > dh.Lag {
+				dh.Lag = age
+			}
 		}
+		st.mu.Unlock()
+		h.Destinations = append(h.Destinations, dh)
 	}
 	if !oldest.IsZero() {
 		h.OldestPendingAge = time.Since(oldest)
@@ -558,116 +552,129 @@ func (s *Spool) Health() SpoolHealth {
 
 // recoverStream replays the destination's segment files, verifies every
 // record, repairs an incomplete final record and fails open on any
-// interior corruption.
-func (s *Spool) recoverStream(name string) (*spoolStream, error) {
+// interior corruption. Pending records are the sequence range above the
+// durable cursor.
+func (s *Spool) recoverStream(name string) (*spoolStream, int64, error) {
 	dir := filepath.Join(s.dir, name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("open stream dir: %w", err)
+		return nil, 0, fmt.Errorf("open stream dir: %w", err)
 	}
+	acked, _ := loadCursor(dir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("read stream dir: %w", err)
+		return nil, 0, fmt.Errorf("read stream dir: %w", err)
 	}
 	var segs []string
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasPrefix(e.Name(), "seg-") {
+		if e.IsDir() || (!strings.HasPrefix(e.Name(), "seg-") && !strings.HasPrefix(e.Name(), "tmpseg-")) {
 			continue
 		}
 		segs = append(segs, e.Name())
 	}
 	sort.Strings(segs)
 	st := &spoolStream{name: name, dir: dir, next: len(segs)}
-	var bytes int64
+	var recs []spoolRec
 	for i, seg := range segs {
 		path := filepath.Join(dir, seg)
-		n, maxSeq, repaired, err := scanSegment(path, i == len(segs)-1)
+		at, serr := os.Stat(path)
+		if serr != nil {
+			return nil, 0, fmt.Errorf("stat segment: %w", serr)
+		}
+		_, maxSeq, repaired, segRecs, err := scanSegment(path, i == len(segs)-1)
 		if repaired > 0 {
 			s.corrupt.RepairedTails++
 			s.corrupt.RepairedBytes += repaired
 			s.sc.diag.Report(context.Background(), types.ExportDiagnostic{Kind: DiagSpoolRepaired, Name: name, Dropped: repaired})
 		}
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		bytes += n
+		for _, r := range segRecs {
+			r.at = at.ModTime()
+			recs = append(recs, r)
+		}
 		if maxSeq > s.seq {
 			s.seq = maxSeq
 		}
 	}
-	s.pending += bytes
-	if len(segs) > 0 {
-		if info, err := os.Stat(filepath.Join(dir, segs[0])); err == nil {
-			st.firstPending = info.ModTime()
+	slices.SortFunc(recs, func(a, b spoolRec) int { return cmp.Compare(a.seq, b.seq) })
+	var bytes int64
+	for _, r := range recs {
+		if int64(r.seq) > acked {
+			st.pending = append(st.pending, r)
+			bytes += r.bytes
 		}
 	}
-	return st, nil
+	s.pending += bytes
+	return st, acked, nil
 }
 
 // scanSegment verifies one segment file. A truncated final record is
 // repaired in place and its lost byte count returned; any interior
 // checksum, framing or version failure fails the open with a
 // *CorruptionError and is never skipped.
-func scanSegment(path string, final bool) (bytes int64, maxSeq uint64, repaired int64, err error) {
+func scanSegment(path string, final bool) (bytes int64, maxSeq uint64, repaired int64, recs []spoolRec, err error) {
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("open segment: %w", err)
+		return 0, 0, 0, nil, fmt.Errorf("open segment: %w", err)
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("stat segment: %w", err)
+		return 0, 0, 0, nil, fmt.Errorf("stat segment: %w", err)
 	}
 	size := info.Size()
 	table := crc32.MakeTable(crc32.Castagnoli)
 	offset := int64(0)
 	for {
 		if offset == size {
-			return offset, maxSeq, 0, nil
+			return offset, maxSeq, 0, recs, nil
 		}
 		header := make([]byte, spoolHeaderSize)
 		n, rerr := f.ReadAt(header, offset)
 		if n < spoolHeaderSize {
 			if final {
 				lost, terr := repairTail(f, offset, size)
-				return offset, maxSeq, lost, terr
+				return offset, maxSeq, lost, recs, terr
 			}
-			return 0, 0, 0, corruptErr(CorruptionFraming, path, offset, rerr)
+			return 0, 0, 0, nil, corruptErr(CorruptionFraming, path, offset, rerr)
 		}
 		if rerr != nil {
-			return 0, 0, 0, rerr
+			return 0, 0, 0, nil, rerr
 		}
 		version := binary.LittleEndian.Uint32(header[0:4])
 		seq := binary.LittleEndian.Uint64(header[4:12])
 		bodyLen := int64(binary.LittleEndian.Uint32(header[12:16]))
 		crc := binary.LittleEndian.Uint32(header[16:20])
 		if version != CurrentSpoolRecordVersion {
-			return 0, 0, 0, corruptErr(CorruptionVersion, path, offset, fmt.Errorf("envelope version %d, want %d", version, CurrentSpoolRecordVersion))
+			return 0, 0, 0, nil, corruptErr(CorruptionVersion, path, offset, fmt.Errorf("envelope version %d, want %d", version, CurrentSpoolRecordVersion))
 		}
 		body := make([]byte, bodyLen)
 		n, rerr = f.ReadAt(body, offset+spoolHeaderSize)
 		if int64(n) < bodyLen {
 			if final {
 				lost, terr := repairTail(f, offset, size)
-				return offset, maxSeq, lost, terr
+				return offset, maxSeq, lost, recs, terr
 			}
-			return 0, 0, 0, corruptErr(CorruptionFraming, path, offset, fmt.Errorf("body length %d exceeds segment size", bodyLen))
+			return 0, 0, 0, nil, corruptErr(CorruptionFraming, path, offset, fmt.Errorf("body length %d exceeds segment size", bodyLen))
 		}
 		if rerr != nil {
-			return 0, 0, 0, rerr
+			return 0, 0, 0, nil, rerr
 		}
 		if crc32.Checksum(body, table) != crc {
-			return 0, 0, 0, corruptErr(CorruptionChecksum, path, offset, fmt.Errorf("crc %08x mismatch", crc))
+			return 0, 0, 0, nil, corruptErr(CorruptionChecksum, path, offset, fmt.Errorf("crc %08x mismatch", crc))
 		}
 		var rec types.ExportRecord
 		if uerr := json.Unmarshal(body, &rec); uerr != nil {
-			return 0, 0, 0, corruptErr(CorruptionFraming, path, offset, fmt.Errorf("decode body: %w", uerr))
+			return 0, 0, 0, nil, corruptErr(CorruptionFraming, path, offset, fmt.Errorf("decode body: %w", uerr))
 		}
 		if rec.SchemaVersion != types.CurrentExportSchemaVersion {
-			return 0, 0, 0, corruptErr(CorruptionVersion, path, offset, fmt.Errorf("schema version %d, want %d", rec.SchemaVersion, types.CurrentExportSchemaVersion))
+			return 0, 0, 0, nil, corruptErr(CorruptionVersion, path, offset, fmt.Errorf("schema version %d, want %d", rec.SchemaVersion, types.CurrentExportSchemaVersion))
 		}
 		if seq > maxSeq {
 			maxSeq = seq
 		}
+		recs = append(recs, spoolRec{seq: seq, rec: rec, bytes: spoolHeaderSize + bodyLen})
 		offset += spoolHeaderSize + bodyLen
 	}
 }

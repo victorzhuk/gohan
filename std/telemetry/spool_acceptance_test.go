@@ -61,7 +61,9 @@ func walConfig(quota, seg int64) telemetry.SpoolConfig {
 }
 
 func walDest() types.ExportDestination {
-	return newScriptDest("wal")
+	d := newScriptDest("wal")
+	d.script(nil, errors.New("no delivery"))
+	return d
 }
 
 func walOpen(t *testing.T, dir string, diag *spoolDiags, cfg telemetry.SpoolConfig) *telemetry.Spool {
@@ -365,6 +367,169 @@ func TestWalAcceptance(t *testing.T) {
 			t.Fatalf("pending bytes after reopen = %d, want %d", h3.PendingBytes, pending)
 		}
 	})
+
+	t.Run("telemetry.wal-durable-restart", func(t *testing.T) {
+		ctx := t.Context()
+		dir := t.TempDir()
+		dest := newScriptDest("wal")
+		dest.script(nil, errors.New("transient"))
+		cfg := walConfig(1<<20, 1<<20)
+		s := walOpenDests(t, dir, nil, cfg, dest)
+		for _, id := range []string{"a1", "a2", "a3"} {
+			if err := s.Append(ctx, "wal", []types.ExportRecord{spanRecord(id)}); err != nil {
+				t.Fatalf("Append %s: %v", id, err)
+			}
+		}
+		want := readWalFrames(t, dir, "wal")
+		if len(want) != 3 {
+			t.Fatalf("synced %d frames, want 3", len(want))
+		}
+
+		work, err := s.Shutdown(ctx)
+		if err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+		if work.Records != 3 {
+			t.Fatalf("shutdown unresolved = %d, want 3", work.Records)
+		}
+
+		s2 := walOpenDests(t, dir, nil, cfg, dest)
+		defer s2.Shutdown(ctx)
+		dest.script(acceptAll(want), nil)
+		f, err := s2.Flush(ctx)
+		if err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+		if f.Synced != 0 {
+			t.Fatalf("flush synced = %d, want 0", f.Synced)
+		}
+		if f.Delivered["wal"] != 3 {
+			t.Fatalf("flush delivered = %v, want 3 for wal", f.Delivered)
+		}
+		if f.Undelivered.Records != 0 {
+			t.Fatalf("flush undelivered = %+v, want none", f.Undelivered)
+		}
+		att := dest.allAttempts()
+		if len(att) < 4 {
+			t.Fatalf("attempts after restart = %v, want a post-restart delivery", att)
+		}
+		for _, ids := range att[3:] {
+			if strings.Join(ids, ",") != "a1,a2,a3" {
+				t.Fatalf("restarted attempt = %v, want [a1 a2 a3] unchanged", ids)
+			}
+		}
+		h := s2.Health()
+		dh := h.Destinations[0]
+		if dh.Cursor.Acked != 3 || dh.Pending != 0 {
+			t.Fatalf("health after restart = %+v, want cursor 3 pending 0", dh)
+		}
+		if frames := readWalFrames(t, dir, "wal"); len(frames) != 0 {
+			t.Fatalf("acknowledged prefix not reclaimed: %d frames left", len(frames))
+		}
+	})
+
+	t.Run("telemetry.wal-destination-cursors", func(t *testing.T) {
+		ctx := t.Context()
+		dir := t.TempDir()
+		d1 := newScriptDest("sink1")
+		d2 := newScriptDest("sink2")
+		d1.script([]types.RecordOutcome{
+			{ID: "b1", Status: types.OutcomeAccepted},
+			{ID: "b2", Status: types.OutcomeAccepted},
+		}, nil)
+		d2.script(nil, errors.New("transient"))
+		diag := &spoolDiags{}
+		cfg := walConfig(1<<20, 1<<20)
+		s := walOpenDests(t, dir, diag, cfg, d1, d2)
+		for _, id := range []string{"b1", "b2"} {
+			if err := s.Append(ctx, "sink1", []types.ExportRecord{spanRecord(id)}); err != nil {
+				t.Fatalf("Append sink1 %s: %v", id, err)
+			}
+		}
+		for _, id := range []string{"c1", "c2"} {
+			if err := s.Append(ctx, "sink2", []types.ExportRecord{spanRecord(id)}); err != nil {
+				t.Fatalf("Append sink2 %s: %v", id, err)
+			}
+		}
+
+		f, err := s.Flush(ctx)
+		if err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+		if f.Delivered["sink1"] != 2 {
+			t.Fatalf("flush delivered = %v, want 2 for sink1", f.Delivered)
+		}
+		if f.Delivered["sink2"] != 0 {
+			t.Fatalf("flush delivered sink2 = %v, want 0", f.Delivered)
+		}
+		if f.Undelivered.ByDestination["sink2"] != 2 {
+			t.Fatalf("flush undelivered = %+v, want 2 for sink2", f.Undelivered)
+		}
+		if frames := readWalFrames(t, dir, "sink1"); len(frames) != 0 {
+			t.Fatalf("acknowledged sink1 prefix not reclaimed: %d frames", len(frames))
+		}
+		if _, err := s.Shutdown(ctx); err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+
+		d2.script([]types.RecordOutcome{
+			{ID: "c1", Status: types.OutcomeAccepted},
+			{ID: "c2", Status: types.OutcomeAmbiguous},
+		}, nil)
+		s2 := walOpenDests(t, dir, diag, cfg, d1, d2)
+		f2, err := s2.Flush(ctx)
+		if err != nil {
+			t.Fatalf("reopen Flush: %v", err)
+		}
+		if got := d1.allAttempts(); len(got) != 1 || strings.Join(got[0], ",") != "b1,b2" {
+			t.Fatalf("sink1 attempts after restart = %v, acknowledged prefix re-delivered", got)
+		}
+		if f2.Delivered["sink2"] != 1 {
+			t.Fatalf("reopen delivered = %v, want 1 for sink2", f2.Delivered)
+		}
+		if f2.Undelivered.ByDestination["sink2"] != 1 {
+			t.Fatalf("reopen undelivered = %+v, want the ambiguous record", f2.Undelivered)
+		}
+		if amb := diag.ofKind(types.DiagDeliveryAmbiguous); len(amb) == 0 {
+			t.Fatal("missing delivery_ambiguous diagnostic")
+		}
+		h := s2.Health()
+		byName := map[string]telemetry.DestinationHealth{}
+		for _, dh := range h.Destinations {
+			byName[dh.Name] = dh
+		}
+		if byName["sink1"].Cursor.Acked != 2 || byName["sink1"].Pending != 0 {
+			t.Fatalf("sink1 cursor = %+v, want acked 2 pending 0", byName["sink1"].Cursor)
+		}
+		if byName["sink2"].Cursor.Acked != 3 || byName["sink2"].Pending != 1 {
+			t.Fatalf("sink2 cursor = %+v, want acked 3 pending 1", byName["sink2"].Cursor)
+		}
+		if _, err := s2.Shutdown(ctx); err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+
+		s3 := walOpenDests(t, dir, nil, cfg, d1, d2)
+		defer s3.Shutdown(ctx)
+		d2.script([]types.RecordOutcome{{ID: "c2", Status: types.OutcomeAccepted}}, nil)
+		f3, err := s3.Flush(ctx)
+		if err != nil {
+			t.Fatalf("final Flush: %v", err)
+		}
+		if f3.Delivered["sink2"] != 1 {
+			t.Fatalf("final delivered = %v, want 1 for sink2", f3.Delivered)
+		}
+		att := d2.allAttempts()
+		last := att[len(att)-1]
+		if len(last) != 1 || last[0] != "c2" {
+			t.Fatalf("replayed attempt = %v, want unresolved record with unchanged id c2", last)
+		}
+		h3 := s3.Health()
+		for _, dh := range h3.Destinations {
+			if dh.Pending != 0 || dh.Cursor.Acked == 0 {
+				t.Fatalf("final health %s = %+v, want drained stream", dh.Name, dh)
+			}
+		}
+	})
 }
 
 func populate(t *testing.T, dir string, frames []walFrame) {
@@ -378,4 +543,25 @@ func populate(t *testing.T, dir string, frames []walFrame) {
 	if _, err := s.Shutdown(t.Context()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
+}
+
+func walOpenDests(t *testing.T, dir string, diag *spoolDiags, cfg telemetry.SpoolConfig, dests ...types.ExportDestination) *telemetry.Spool {
+	t.Helper()
+	opts := []telemetry.SpoolOption{}
+	if diag != nil {
+		opts = append(opts, telemetry.WithSpoolDiagnostics(diag))
+	}
+	s, err := telemetry.OpenSpool(dir, dests, cfg, opts...)
+	if err != nil {
+		t.Fatalf("OpenSpool: %v", err)
+	}
+	return s
+}
+
+func acceptAll(frames []walFrame) []types.RecordOutcome {
+	out := make([]types.RecordOutcome, 0, len(frames))
+	for _, fr := range frames {
+		out = append(out, types.RecordOutcome{ID: fr.rec.ID, Status: types.OutcomeAccepted})
+	}
+	return out
 }
