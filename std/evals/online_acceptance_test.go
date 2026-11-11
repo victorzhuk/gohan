@@ -364,8 +364,16 @@ func TestReleaseOnline(t *testing.T) {
 		if err := eng.Shutdown(shutdownCtx); err != nil {
 			t.Fatalf("Shutdown engine: %v", err)
 		}
-		if _, err := spool.Flush(shutdownCtx); err == nil {
-			t.Errorf("Flush against the outage destination succeeded; want the record parked pending")
+		flush, err := spool.Flush(shutdownCtx)
+		if err != nil {
+			t.Errorf("Flush against the outage destination: %v; parked records report undelivered work, Flush does not fail", err)
+		}
+		pairs := capture.pairs()
+		if flush.Undelivered.Records != int64(len(pairs)) {
+			t.Errorf("Flush undelivered records = %d; want the %d parked eval records reported", flush.Undelivered.Records, len(pairs))
+		}
+		if flush.Undelivered.ByDestination["dest-eval"] != int64(len(pairs)) {
+			t.Errorf("Flush undelivered for dest-eval = %d; want %d parked for the outage destination", flush.Undelivered.ByDestination["dest-eval"], len(pairs))
 		}
 		if _, err := spool.Shutdown(shutdownCtx); err != nil {
 			t.Fatalf("Shutdown spool: %v", err)
@@ -397,7 +405,6 @@ func TestReleaseOnline(t *testing.T) {
 		if len(delivered) == 0 {
 			t.Fatalf("no record delivered after spool restart; the pending eval record must replay")
 		}
-		pairs := capture.pairs()
 		if len(pairs) == 0 {
 			t.Fatalf("no eval record was ingested into the spool; one settled job must mint one record")
 		}
@@ -510,8 +517,8 @@ func TestReleaseOnline(t *testing.T) {
 			if attrs["judge"] == "" {
 				t.Error("score metric carries no judge label")
 			}
-			if attrs["release"] != "rel-1" || attrs["variant"] != "control" {
-				t.Errorf("score metric stamps release=%q variant=%q; want the wired rel-1/control", attrs["release"], attrs["variant"])
+			if attrs[types.KeyRelease] != "rel-1" || attrs[types.KeyVariant] != "control" {
+				t.Errorf("score metric stamps release=%q variant=%q; want the wired rel-1/control", attrs[types.KeyRelease], attrs[types.KeyVariant])
 			}
 			for _, forbidden := range []string{"run_id", "session_id", "subject"} {
 				if _, ok := attrs[forbidden]; ok {
@@ -750,12 +757,12 @@ func (d *outcomeDest) Capabilities() types.DestinationCapabilities {
 }
 
 func (d *outcomeDest) Export(ctx context.Context, recs []types.ExportRecord) ([]types.RecordOutcome, error) {
-	d.mu.Lock()
-	d.got = append(d.got, recs...)
-	d.mu.Unlock()
 	if d.fail {
 		return nil, errors.New("destination outage")
 	}
+	d.mu.Lock()
+	d.got = append(d.got, recs...)
+	d.mu.Unlock()
 	out := make([]types.RecordOutcome, len(recs))
 	for i, r := range recs {
 		out[i] = types.RecordOutcome{ID: r.ID, Status: types.OutcomeAccepted}
