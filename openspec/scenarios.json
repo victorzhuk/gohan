@@ -1474,6 +1474,30 @@
     "title": "online sampling off the request path",
     "deferred_to": "M3"
   },
+  "release.online-bounded": {
+    "capability": "release",
+    "origin": "ADR-0176",
+    "title": "judges exceed capacity",
+    "deferred_to": "M4"
+  },
+  "release.online-unscored": {
+    "capability": "release",
+    "origin": "ADR-0176",
+    "title": "evidence is unavailable",
+    "deferred_to": "M4"
+  },
+  "release.online-provenance": {
+    "capability": "release",
+    "origin": "ADR-0176",
+    "title": "result export resumes",
+    "deferred_to": "M4"
+  },
+  "release.online-calibration": {
+    "capability": "release",
+    "origin": "ADR-0176",
+    "title": "judge version changes",
+    "deferred_to": "M4"
+  },
   "taint.substring-match": {
     "capability": "taint",
     "origin": "ADR-0097",
