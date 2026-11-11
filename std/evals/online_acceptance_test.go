@@ -252,9 +252,9 @@ func TestReleaseOnline(t *testing.T) {
 			}
 
 			type want struct {
-				status    types.EvalStatus
-				category  types.EvalErrorCategory
-				wantTrue  bool // category must match
+				status   types.EvalStatus
+				category types.EvalErrorCategory
+				wantTrue bool // category must match
 			}
 			expected := map[string]want{
 				types.EvalFaithfulness:  {status: types.EvalUnscored, category: types.EvalErrMissingEvidence, wantTrue: true},
