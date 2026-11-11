@@ -29,6 +29,9 @@ const (
 	MetricCostPerRun = "gohan.cost.per_run"
 
 	MetricFeedback = "gohan.feedback"
+
+	MetricEvalScore    = "gohan.eval.score"
+	MetricEvalUnstable = "gohan.eval.unstable"
 )
 
 // DefaultMetrics are the metric registrations the std presets carry. A

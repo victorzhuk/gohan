@@ -137,6 +137,7 @@ type config struct {
 	tenant             types.Tenant
 	native             []NativeSpec
 	consolidator       func(ConsolidationWiring) MemoryConsolidator
+	evaluator          RunEvaluator
 	sunsetWindow       time.Duration
 	sunsetWarnOnly     bool
 	titleProfile       string

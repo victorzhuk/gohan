@@ -16,6 +16,7 @@ type ExportSignalKind string
 const (
 	SignalSpan   ExportSignalKind = "span"
 	SignalMetric ExportSignalKind = "metric"
+	SignalEval   ExportSignalKind = "eval"
 )
 
 // RecordID is one record's stable identity. Producers mint it once with the
@@ -128,7 +129,7 @@ type MetricRecord struct {
 }
 
 // ExportRecord is one completed signal record crossing the export boundary.
-// Exactly one of Span or Metric is non-nil and matches Signal.
+// Exactly one of Span, Metric and Eval is non-nil and matches Signal.
 type ExportRecord struct {
 	SchemaVersion int              `json:"schema_version"`
 	ID            RecordID         `json:"id"`
@@ -136,6 +137,7 @@ type ExportRecord struct {
 	Signal        ExportSignalKind `json:"signal"`
 	Span          *SpanRecord      `json:"span,omitempty"`
 	Metric        *MetricRecord    `json:"metric,omitempty"`
+	Eval          *EvalRecord      `json:"eval,omitempty"`
 }
 
 // MarshalJSON encodes Attr as {"key":...,"kind":...,"value":...}. kind is
