@@ -419,7 +419,7 @@ func TestReleaseOnline(t *testing.T) {
 		})
 	})
 
-	t.Run("release.online-timeout-self-settle", func(t *testing.T) {
+	t.Run("timeout self settle", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			rec := &sinkRecorder{}
 			gate := make(chan struct{})
