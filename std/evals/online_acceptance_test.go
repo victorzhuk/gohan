@@ -2,6 +2,7 @@ package evals
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"sync"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	gohan "github.com/victorzhuk/gohan/core"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std/telemetry"
 )
 
 // sinkRecorder is a types.RecordSink that keeps every ingested record.
@@ -316,6 +318,504 @@ func TestReleaseOnline(t *testing.T) {
 			}
 		})
 	})
+
+	t.Run("release.online-provenance", func(t *testing.T) {
+		dir := t.TempDir()
+		outage := &outcomeDest{
+			name:    "dest-eval",
+			signals: []types.ExportSignalKind{types.SignalSpan, types.SignalMetric, types.SignalEval},
+			fail:    true,
+		}
+		spoolCfg := telemetry.SpoolConfig{
+			ByteQuota:       1 << 20,
+			SegmentBytes:    64 << 10,
+			MaxPendingAge:   time.Hour,
+			Retry:           telemetry.RetryPolicy{MaxAttempts: 1, Backoff: time.Millisecond, MaxBackoff: time.Millisecond},
+			Workers:         1,
+			RequestDeadline: time.Second,
+		}
+		spool, err := telemetry.OpenSpool(dir, []types.ExportDestination{outage}, spoolCfg)
+		if err != nil {
+			t.Fatalf("OpenSpool: %v", err)
+		}
+
+		tel := &telRecorder{}
+		met, err := telemetry.Build(tel, Metrics(), telemetry.WithRelease("rel-1"), telemetry.WithVariant("control"))
+		if err != nil {
+			t.Fatalf("telemetry.Build: %v", err)
+		}
+
+		judge := NewJudge(types.EvalQuality, &fixedModel{version: "judge-v1", delta: "0.8"}, "judge-v1",
+			Rubric{Version: "rub-v1", Instruction: "score quality"}, WithRepeat(DefaultJudgeRepeat))
+		capture := &captureSink{inner: telemetry.SpoolSink(spool)}
+		eng, err := NewOnline(1, []Judge{judge}, WithSink(capture, "dest-eval"), WithMetrics(met))
+		if err != nil {
+			t.Fatalf("NewOnline: %v", err)
+		}
+
+		comp := evalCompletionWithDone("sp1")
+		if err := eng.Evaluate(context.Background(), comp); err != nil {
+			t.Fatalf("Evaluate: %v", err)
+		}
+		// Outage leg: the engine shuts down, the destination refuses every
+		// delivery attempt, so the admitted record stays durable pending.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := eng.Shutdown(shutdownCtx); err != nil {
+			t.Fatalf("Shutdown engine: %v", err)
+		}
+		if _, err := spool.Flush(shutdownCtx); err == nil {
+			t.Errorf("Flush against the outage destination succeeded; want the record parked pending")
+		}
+		if _, err := spool.Shutdown(shutdownCtx); err != nil {
+			t.Fatalf("Shutdown spool: %v", err)
+		}
+		if len(outage.delivered()) != 0 {
+			t.Errorf("%d records delivered to the outage destination; the record must stay pending", len(outage.delivered()))
+		}
+
+		// Restart leg: reopen the same spool directory with a healthy
+		// destination; the record must replay with identical identity.
+		good := &outcomeDest{
+			name:    "dest-eval",
+			signals: []types.ExportSignalKind{types.SignalSpan, types.SignalMetric, types.SignalEval},
+		}
+		spool2, err := telemetry.OpenSpool(dir, []types.ExportDestination{good}, spoolCfg)
+		if err != nil {
+			t.Fatalf("reopen OpenSpool: %v", err)
+		}
+		flushCtx, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel2()
+		if _, err := spool2.Flush(flushCtx); err != nil {
+			t.Fatalf("Flush after restart: %v", err)
+		}
+		if _, err := spool2.Shutdown(flushCtx); err != nil {
+			t.Fatalf("Shutdown reopened spool: %v", err)
+		}
+
+		delivered := good.delivered()
+		if len(delivered) == 0 {
+			t.Fatalf("no record delivered after spool restart; the pending eval record must replay")
+		}
+		pairs := capture.pairs()
+		if len(pairs) == 0 {
+			t.Fatalf("no eval record was ingested into the spool; one settled job must mint one record")
+		}
+		byID := map[types.RecordID]string{}
+		for _, p := range pairs {
+			byID[p.recordID] = p.evaluationID
+		}
+		for _, r := range delivered {
+			if r.Signal != types.SignalEval || r.Eval == nil {
+				t.Errorf("delivered record %s carries signal %q; want eval with an eval payload", r.ID, r.Signal)
+				continue
+			}
+			wantEvalID, ok := byID[r.ID]
+			if !ok {
+				t.Errorf("delivered record ID %s was never ingested; replay must preserve ExportRecord.ID", r.ID)
+				continue
+			}
+			if r.Eval.EvaluationID != wantEvalID {
+				t.Errorf("delivered EvaluationID = %q; want the identical admission identity %q across the outage and restart", r.Eval.EvaluationID, wantEvalID)
+			}
+
+			ev := r.Eval
+			if ev.ReleaseID != "rel-1" {
+				t.Errorf("EvalRecord.ReleaseID = %q; want %q", ev.ReleaseID, "rel-1")
+			}
+			if ev.Variant != "control" {
+				t.Errorf("EvalRecord.Variant = %q; want %q", ev.Variant, "control")
+			}
+			if ev.Flow != comp.Info.Flow {
+				t.Errorf("EvalRecord.Flow = %q; want %q", ev.Flow, comp.Info.Flow)
+			}
+			if ev.RunID != comp.Info.RunID {
+				t.Errorf("EvalRecord.RunID = %q; want %q", ev.RunID, comp.Info.RunID)
+			}
+			if len(ev.Results) == 0 {
+				t.Error("EvalRecord carries no Results; each configured dimension settles as an independent named result")
+			} else {
+				seen := map[string]bool{}
+				for _, res := range ev.Results {
+					if seen[res.Dimension] {
+						t.Errorf("two results for dimension %s in one record; per-dimension results stay independent", res.Dimension)
+					}
+					seen[res.Dimension] = true
+					if res.Status != types.EvalScored {
+						t.Errorf("%s result status = %q; want scored with an independent per-dimension score", res.Dimension, res.Status)
+						continue
+					}
+					if res.Median != 0.8 {
+						t.Errorf("%s result median = %v; want the judged median 0.8", res.Dimension, res.Median)
+					}
+					if res.Rubric != "rub-v1" {
+						t.Errorf("%s result rubric version = %q; want %q carried per result", res.Dimension, res.Rubric, "rub-v1")
+					}
+					if res.Model != "judge-v1" {
+						t.Errorf("%s result model version = %q; want %q carried per result", res.Dimension, res.Model, "judge-v1")
+					}
+					if len(res.Judgements) != DefaultJudgeRepeat {
+						t.Errorf("%s result preserves %d judgements; want all %d repeated judgements", res.Dimension, len(res.Judgements), DefaultJudgeRepeat)
+					}
+				}
+			}
+			if ev.Sampling.Probability != 1 {
+				t.Errorf("Sampling.Probability = %v; want the admission probability 1", ev.Sampling.Probability)
+			}
+			if ev.Sampling.Reason != ReasonSampled {
+				t.Errorf("Sampling.Reason = %q; want %q", ev.Sampling.Reason, ReasonSampled)
+			}
+			if ev.Sampling.Policy != SelectionUniform {
+				t.Errorf("Sampling.Policy = %q; want %q", ev.Sampling.Policy, SelectionUniform)
+			}
+			var haveRunOutput, haveHistory bool
+			for _, e := range ev.Evidence {
+				switch e.Kind {
+				case types.EvidenceRunOutput:
+					haveRunOutput = e.Ref == comp.Info.RunID
+				case types.EvidenceHistoryVersion:
+					haveHistory = e.Ref == "7"
+				}
+			}
+			if !haveRunOutput {
+				t.Errorf("Evidence lacks a run_output ref naming %q; the record carries evidence references", comp.Info.RunID)
+			}
+			if !haveHistory {
+				t.Errorf("Evidence lacks a history_version ref naming version 7; the record carries evidence references")
+			}
+			if ev.StartedAt.IsZero() || ev.CompletedAt.IsZero() {
+				t.Error("StartedAt or CompletedAt zero; the record carries both timestamps")
+			} else if ev.CompletedAt.Before(ev.StartedAt) {
+				t.Errorf("CompletedAt %v before StartedAt %v", ev.CompletedAt, ev.StartedAt)
+			}
+			if ev.Tokens != 30 {
+				t.Errorf("EvalRecord.Tokens = %d; want the run usage 30", ev.Tokens)
+			}
+			if ev.Cost != 0.02 {
+				t.Errorf("EvalRecord.Cost = %v; want the run cost 0.02", ev.Cost)
+			}
+		}
+
+		// Metric provenance: the score emission names flow and judge (plus
+		// the wired release/variant stamps) and never an identity label.
+		points := tel.named(telemetry.MetricEvalScore)
+		if len(points) == 0 {
+			t.Errorf("no %s points recorded; every scored dimension emits the score metric", telemetry.MetricEvalScore)
+		}
+		for _, p := range points {
+			attrs := attrMap(p.attrs)
+			if attrs["flow"] != comp.Info.Flow {
+				t.Errorf("score metric flow label = %q; want %q", attrs["flow"], comp.Info.Flow)
+			}
+			if attrs["judge"] == "" {
+				t.Error("score metric carries no judge label")
+			}
+			if attrs["release"] != "rel-1" || attrs["variant"] != "control" {
+				t.Errorf("score metric stamps release=%q variant=%q; want the wired rel-1/control", attrs["release"], attrs["variant"])
+			}
+			for _, forbidden := range []string{"run_id", "session_id", "subject"} {
+				if _, ok := attrs[forbidden]; ok {
+					t.Errorf("score metric carries forbidden identity label %q", forbidden)
+				}
+			}
+		}
+
+		// A destination that does not declare SignalEval fails a pipeline
+		// requiring eval before any record is admitted.
+		plain := &outcomeDest{
+			name:    "dest-plain",
+			signals: []types.ExportSignalKind{types.SignalSpan, types.SignalMetric},
+		}
+		_, err = telemetry.NewPipeline([]types.ExportDestination{plain},
+			telemetry.WithExportSignals(types.SignalSpan, types.SignalMetric, types.SignalEval))
+		if !errors.Is(err, types.ErrExportUnsupportedSignal) {
+			t.Errorf("NewPipeline over a destination without SignalEval: err = %v; want types.ErrExportUnsupportedSignal", err)
+		}
+	})
+
+	t.Run("release.online-calibration", func(t *testing.T) {
+		set := CalibrationSet{
+			Version: "cal-set-v1",
+			Labels: []CalibratedLabel{
+				{
+					ID:    "l1",
+					Class: "easy",
+					Evidence: Evidence{History: stores.History{
+						Messages: []types.Message{
+							evalMessage(types.RoleUser, types.OriginUser, "Say hello."),
+							evalMessage(types.RoleAssistant, types.OriginModel, "Hello!"),
+						},
+						Version: 3,
+					}},
+					Expected: map[string]float64{types.EvalQuality: 0.8},
+				},
+				{
+					ID:    "l2",
+					Class: "hard",
+					Evidence: Evidence{History: stores.History{
+						Messages: []types.Message{
+							evalMessage(types.RoleUser, types.OriginUser, "What is 2+2?"),
+							evalMessage(types.RoleAssistant, types.OriginModel, "4."),
+						},
+						Version: 5,
+					}},
+					Expected: map[string]float64{types.EvalQuality: 0.8},
+				},
+			},
+		}
+		criteria := AcceptanceCriteria{
+			MinAgreement:  0.5,
+			Tolerance:     DefaultCalibrationTolerance,
+			MaxClassError: map[string]float64{"easy": 0.2, "hard": 0.2},
+		}
+		gate := CalibrationGate{Set: set, Criteria: criteria}
+
+		judge := NewJudge(types.EvalQuality, &fixedModel{version: "judge-v1", delta: "0.8"}, "judge-v1",
+			Rubric{Version: "rub-v1", Instruction: "score quality"})
+
+		// (1) A passing review grants an approval covering the fingerprint.
+		appr, err := gate.Review(context.Background(), judge)
+		if err != nil {
+			t.Fatalf("Review over the versioned labelled set: %v", err)
+		}
+		if appr.Fingerprint != judge.Fingerprint() {
+			t.Errorf("approval fingerprint = %q; want the judge fingerprint %q it was reviewed under", appr.Fingerprint, judge.Fingerprint())
+		}
+		if appr.SetVersion != "cal-set-v1" {
+			t.Errorf("approval SetVersion = %q; want the reviewed set version cal-set-v1", appr.SetVersion)
+		}
+
+		rec := &sinkRecorder{}
+		eng, err := NewOnline(1, []Judge{judge}, WithSink(rec, "dest-eval"))
+		if err != nil {
+			t.Fatalf("NewOnline: %v", err)
+		}
+		if err := eng.Activate(appr); err != nil {
+			t.Fatalf("Activate with the matching approval: %v", err)
+		}
+		if err := eng.Validate(); err != nil {
+			t.Errorf("Validate with the matching approval: %v", err)
+		}
+		if err := eng.Start(); err != nil {
+			t.Errorf("Start with the matching approval: %v", err)
+		}
+
+		// (2) A judge whose version changed loses its approval: Start and
+		// Validate refuse, and the stranded approval reports invalidated.
+		changed := NewJudge(types.EvalQuality, &fixedModel{version: "judge-v2", delta: "0.8"}, "judge-v2",
+			Rubric{Version: "rub-v2", Instruction: "score quality v2"})
+		if changed.Fingerprint() == judge.Fingerprint() {
+			t.Fatal("judge fingerprint unchanged after model and rubric change; the fingerprint must cover model and rubric versions")
+		}
+		eng2, err := NewOnline(1, []Judge{changed}, WithSink(&sinkRecorder{}, "dest-eval"))
+		if err != nil {
+			t.Fatalf("NewOnline with the changed judge: %v", err)
+		}
+		if err := eng2.Validate(); !errors.Is(err, ErrCalibrationRequired) {
+			t.Errorf("Validate without a covering approval: err = %v; want errors.Is ErrCalibrationRequired", err)
+		}
+		if err := eng2.Start(); !errors.Is(err, ErrCalibrationRequired) {
+			t.Errorf("Start without a covering approval: err = %v; want errors.Is ErrCalibrationRequired", err)
+		}
+		if err := eng2.Activate(appr); !errors.Is(err, ErrCalibrationInvalidated) {
+			t.Errorf("Activate of the stranded approval: err = %v; want errors.Is ErrCalibrationInvalidated", err)
+		}
+
+		// (3) Re-review with the changed judge passes, activates and starts.
+		appr2, err := gate.Review(context.Background(), changed)
+		if err != nil {
+			t.Fatalf("re-Review with the changed judge: %v", err)
+		}
+		if appr2.Fingerprint != changed.Fingerprint() {
+			t.Errorf("re-review approval fingerprint = %q; want %q", appr2.Fingerprint, changed.Fingerprint())
+		}
+		if err := eng2.Activate(appr2); err != nil {
+			t.Errorf("Activate with the re-reviewed approval: %v", err)
+		}
+		if err := eng2.Start(); err != nil {
+			t.Errorf("Start after re-calibration: %v", err)
+		}
+
+		// (4) Deterministic evaluators need no approval.
+		det, err := NewOnline(1, []Judge{Faithfulness()}, WithSink(&sinkRecorder{}, "dest-eval"))
+		if err != nil {
+			t.Fatalf("NewOnline with deterministic judges: %v", err)
+		}
+		if err := det.Validate(); err != nil {
+			t.Errorf("Validate without any approval for deterministic evaluators: %v", err)
+		}
+		if err := det.Start(); err != nil {
+			t.Errorf("Start without any approval for deterministic evaluators: %v", err)
+		}
+
+		// A criteria miss wraps ErrCalibrationCriteria and names the class.
+		miss := set
+		miss.Labels = append([]CalibratedLabel(nil), set.Labels...)
+		miss.Labels[0] = set.Labels[0]
+		miss.Labels[0].Expected = map[string]float64{types.EvalQuality: 1.0}
+		missGate := CalibrationGate{Set: miss, Criteria: criteria}
+		if _, err := missGate.Review(context.Background(), judge); !errors.Is(err, ErrCalibrationCriteria) {
+			t.Errorf("Review with a label outside tolerance: err = %v; want errors.Is ErrCalibrationCriteria naming the failing class", err)
+		}
+	})
+}
+
+// fixedModel is a deterministic judge model always answering the same
+// score token under a configurable profile version.
+type fixedModel struct {
+	version string
+	delta   string
+}
+
+func (m *fixedModel) Profile() types.ModelProfile {
+	return types.ModelProfile{Name: "scripted-judge", Version: m.version}
+}
+
+func (m *fixedModel) Generate(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+	return func(yield func(types.ModelChunk, error) bool) {
+		yield(types.ModelChunk{Kind: types.DeltaText, Delta: m.delta, Finish: types.FinishStop}, nil)
+	}
+}
+
+// evalCompletionWithDone is a terminal primary completion carrying real
+// usage and cost so the settled record's cost and token accounting are
+// assertable.
+func evalCompletionWithDone(sessionID string) gohan.RunCompletion {
+	comp := evalCompletion(sessionID)
+	comp.Done = types.Done{
+		Reason: types.StopCompleted,
+		Seq:    1,
+		Usage:  types.Usage{InputTokens: 10, OutputTokens: 20},
+		Cost:   0.02,
+	}
+	return comp
+}
+
+type recordPair struct {
+	recordID     types.RecordID
+	evaluationID string
+}
+
+// captureSink forwards to an inner sink and remembers every record's
+// envelope ID and evaluation ID at admission time.
+type captureSink struct {
+	inner types.RecordSink
+
+	mu   sync.Mutex
+	ids  []recordPair
+}
+
+func (s *captureSink) Ingest(ctx context.Context, dest string, recs []types.ExportRecord) error {
+	s.mu.Lock()
+	for _, r := range recs {
+		evalID := ""
+		if r.Eval != nil {
+			evalID = r.Eval.EvaluationID
+		}
+		s.ids = append(s.ids, recordPair{recordID: r.ID, evaluationID: evalID})
+	}
+	s.mu.Unlock()
+	return s.inner.Ingest(ctx, dest, recs)
+}
+
+func (s *captureSink) Flush(ctx context.Context) (types.UnresolvedWork, error) {
+	return s.inner.Flush(ctx)
+}
+
+func (s *captureSink) Shutdown(ctx context.Context) (types.UnresolvedWork, error) {
+	return s.inner.Shutdown(ctx)
+}
+
+func (s *captureSink) pairs() []recordPair {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]recordPair(nil), s.ids...)
+}
+
+// outcomeDest is an ExportDestination that captures delivered records and
+// optionally refuses every delivery attempt, simulating an outage.
+type outcomeDest struct {
+	name    string
+	signals []types.ExportSignalKind
+	fail    bool
+
+	mu  sync.Mutex
+	got []types.ExportRecord
+}
+
+func (d *outcomeDest) Name() string { return d.name }
+
+func (d *outcomeDest) Capabilities() types.DestinationCapabilities {
+	return types.DestinationCapabilities{Signals: d.signals, Replay: types.ReplayDedupByID}
+}
+
+func (d *outcomeDest) Export(ctx context.Context, recs []types.ExportRecord) ([]types.RecordOutcome, error) {
+	d.mu.Lock()
+	d.got = append(d.got, recs...)
+	d.mu.Unlock()
+	if d.fail {
+		return nil, errors.New("destination outage")
+	}
+	out := make([]types.RecordOutcome, len(recs))
+	for i, r := range recs {
+		out[i] = types.RecordOutcome{ID: r.ID, Status: types.OutcomeAccepted}
+	}
+	return out, nil
+}
+
+func (d *outcomeDest) delivered() []types.ExportRecord {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]types.ExportRecord(nil), d.got...)
+}
+
+type metricPoint struct {
+	name  string
+	attrs []types.Attr
+}
+
+// telRecorder is a types.Telemetry that captures every metric emission.
+type telRecorder struct {
+	mu     sync.Mutex
+	points []metricPoint
+}
+
+func (t *telRecorder) StartSpan(ctx context.Context, name string, attrs ...types.Attr) (context.Context, func(...types.Attr)) {
+	return ctx, func(...types.Attr) {}
+}
+
+func (t *telRecorder) Count(ctx context.Context, name string, n int64, attrs ...types.Attr) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.points = append(t.points, metricPoint{name: name, attrs: append([]types.Attr(nil), attrs...)})
+}
+
+func (t *telRecorder) Record(ctx context.Context, name string, v float64, attrs ...types.Attr) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.points = append(t.points, metricPoint{name: name, attrs: append([]types.Attr(nil), attrs...)})
+}
+
+func (t *telRecorder) named(name string) []metricPoint {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []metricPoint
+	for _, p := range t.points {
+		if p.name == name {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func attrMap(attrs []types.Attr) map[string]string {
+	m := make(map[string]string, len(attrs))
+	for _, a := range attrs {
+		if s, ok := a.Value.(string); ok {
+			m[a.Key] = s
+		}
+	}
+	return m
 }
 
 func fmtSession(prefix string, i int) string {
