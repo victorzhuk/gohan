@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -120,12 +121,37 @@ func (dd *destDelivery) head() (spoolRec, bool) {
 	return dd.st.pending[0], true
 }
 
+// headBatch copies up to n records starting at the first unacked record,
+// under the stream lock, so a delivery pass snapshots a consistent batch
+// without nesting locks.
+func (st *spoolStream) headBatch(acked int64, n int) []spoolRec {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	start := 0
+	for start < len(st.pending) && int64(st.pending[start].seq) <= acked {
+		start++
+	}
+	end := min(start+n, len(st.pending))
+	if start >= end {
+		return nil
+	}
+	return append([]spoolRec(nil), st.pending[start:end]...)
+}
+
 // deliverPass runs one bounded delivery pass: batches in strict sequence
 // order, the outcome state machine per record, retry with exponential
 // backoff within the pass, then cursor persistence before reclaim.
 func (s *Spool) deliverPass(ctx context.Context, dd *destDelivery) {
 	var delivered int64
 	for {
+		s.mu.Lock()
+		var rule SubjectErasure
+		hasRule := s.erasure != nil
+		if hasRule {
+			rule = *s.erasure
+		}
+		s.mu.Unlock()
+
 		dd.mu.Lock()
 		head, ok := dd.head()
 		if !ok || dd.parked[head.rec.ID] || dd.expired[head.rec.ID] {
@@ -137,10 +163,11 @@ func (s *Spool) deliverPass(ctx context.Context, dd *destDelivery) {
 			dd.mu.Unlock()
 			break
 		}
-		n := min(len(dd.st.pending), DefaultSpoolBatchRecords)
-		batch := append([]spoolRec(nil), dd.st.pending[:n]...)
-		if m := s.firstErasureMatch(batch); m >= 0 {
-			batch = batch[:m]
+		batch := dd.st.headBatch(dd.acked, DefaultSpoolBatchRecords)
+		if hasRule {
+			if m := slices.IndexFunc(batch, func(r spoolRec) bool { return matchErasure(rule, r.rec) }); m >= 0 {
+				batch = batch[:m]
+			}
 		}
 		dd.mu.Unlock()
 		if len(batch) == 0 {
@@ -153,7 +180,13 @@ func (s *Spool) deliverPass(ctx context.Context, dd *destDelivery) {
 
 		blocked, retryable, nd := s.applyOutcomes(ctx, dd, batch, outcomes, xerr)
 		delivered += nd
-		if !blocked || ctx.Err() != nil || !retryable {
+		if ctx.Err() != nil {
+			break
+		}
+		if !blocked {
+			continue
+		}
+		if !retryable {
 			break
 		}
 		dd.mu.Lock()
@@ -262,7 +295,7 @@ func (dd *destDelivery) persistCursor() error {
 		return fmt.Errorf("gohan/telemetry: spool %s: marshal cursor: %w", dd.st.name, err)
 	}
 	tmp := filepath.Join(dd.st.dir, "cursor.json.tmp")
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return fmt.Errorf("gohan/telemetry: spool %s: write cursor: %w", dd.st.name, err)
 	}
@@ -287,7 +320,12 @@ func (dd *destDelivery) persistCursor() error {
 }
 
 func loadCursor(dir string) (int64, bool) {
-	data, err := os.ReadFile(filepath.Join(dir, "cursor.json"))
+	f, err := os.OpenFile(filepath.Join(dir, "cursor.json"), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return 0, false
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return 0, false
 	}
@@ -318,19 +356,22 @@ func (s *Spool) reclaim(dd *destDelivery) {
 		bytes += r.bytes
 	}
 	kept := append([]spoolRec(nil), st.pending[drop:]...)
-	st.pending = kept
 	err := s.compactStream(st, kept)
+	if err == nil {
+		st.pending = kept
+		s.pending -= bytes
+	}
 	st.mu.Unlock()
-	s.pending -= bytes
 	if err != nil {
 		s.report(context.Background(), types.ExportDiagnostic{Kind: DiagSpoolCorrupt, Name: st.name, Err: err})
 	}
 }
 
-// compactStream rewrites the stream to exactly kept records. Temp files are
-// fsynced and dir-synced before the originals are unlinked, so a crash
-// mid-compaction leaves a recoverable union of old and temp segments.
-// Callers hold st.mu.
+// compactStream rewrites the stream to exactly kept records. Temp files
+// are fsynced and a first dir sync makes their directory entries durable
+// BEFORE the originals are unlinked; a second dir sync after the renames
+// makes the promoted segments durable. A crash mid-compaction leaves a
+// recoverable union of old and temp segments. Callers hold st.mu.
 func (s *Spool) compactStream(st *spoolStream, kept []spoolRec) error {
 	entries, err := os.ReadDir(st.dir)
 	if err != nil {
@@ -395,6 +436,11 @@ func (s *Spool) compactStream(st *spoolStream, kept []spoolRec) error {
 	if len(old) == 0 && count == 0 {
 		return nil
 	}
+	if count > 0 {
+		if err := syncDir(st.dir); err != nil {
+			return fmt.Errorf("gohan/telemetry: spool %s: sync compacted temp segments: %w", st.name, err)
+		}
+	}
 	for _, name := range old {
 		if err := os.Remove(filepath.Join(st.dir, name)); err != nil {
 			return fmt.Errorf("gohan/telemetry: spool %s: remove retired segment: %w", st.name, err)
@@ -422,7 +468,7 @@ func (s *Spool) compactStream(st *spoolStream, kept []spoolRec) error {
 		if serr != nil {
 			return fmt.Errorf("gohan/telemetry: spool %s: stat compacted segment: %w", st.name, serr)
 		}
-		f, oerr := os.OpenFile(path, os.O_WRONLY, 0)
+		f, oerr := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
 		if oerr != nil {
 			return fmt.Errorf("gohan/telemetry: spool %s: reopen compacted segment: %w", st.name, oerr)
 		}
@@ -458,6 +504,7 @@ func (dd *destDelivery) drainWithin(ctx context.Context) (delivered int64, unres
 	defer close(finished)
 	dd.mu.Lock()
 	dd.drainSeq++
+	dd.drainDone = false
 	dd.drainCx = ctx
 	dd.cond.Broadcast()
 	for !dd.drainDone && !grace.Load() {
@@ -494,7 +541,37 @@ func (s *Spool) syncAdmitted(ctx context.Context) (synced int64, failed map[stri
 	}
 	s.admitted = nil
 	for dest, recs := range byDest {
-		if err := s.writeRecords(ctx, s.dests[dest], recs); err != nil {
+		if s.erasure != nil {
+			rule := *s.erasure
+			kept := make([]types.ExportRecord, 0, len(recs))
+			var erased int64
+			for _, rec := range recs {
+				if matchErasure(rule, rec) {
+					erased++
+					continue
+				}
+				kept = append(kept, rec)
+			}
+			if erased > 0 {
+				s.report(ctx, types.ExportDiagnostic{Kind: types.DiagDeliveryDropped, Name: dest, Dropped: erased,
+					Err: errors.New("gohan/telemetry: spool: record matched active erasure rule")})
+				recs = kept
+			}
+		}
+		st, ok := s.dests[dest]
+		if len(recs) == 0 {
+			continue
+		}
+		if !ok {
+			s.rejected++
+			if failed == nil {
+				failed = make(map[string]int64, len(s.dests))
+			}
+			failed[dest] += int64(len(recs))
+			errs = append(errs, fmt.Errorf("gohan/telemetry: spool admit %q: %w", dest, types.ErrUnknownDestination))
+			continue
+		}
+		if err := s.writeRecords(ctx, st, recs); err != nil {
 			s.rejected++
 			if failed == nil {
 				failed = make(map[string]int64, len(s.dests))
@@ -639,11 +716,15 @@ func (s *Spool) Discard(ctx context.Context, dest string, ids ...types.RecordID)
 	st.mu.Lock()
 	var removed int64
 	var bytes int64
+	var maxSeq uint64
 	kept := make([]spoolRec, 0, len(st.pending))
 	for _, r := range st.pending {
 		if idset[r.rec.ID] {
 			removed++
 			bytes += r.bytes
+			if r.seq > maxSeq {
+				maxSeq = r.seq
+			}
 			continue
 		}
 		kept = append(kept, r)
@@ -652,18 +733,35 @@ func (s *Spool) Discard(ctx context.Context, dest string, ids ...types.RecordID)
 		st.mu.Unlock()
 		return 0, nil
 	}
-	st.pending = kept
 	err := s.compactStream(st, kept)
-	st.mu.Unlock()
-	dd.mu.Lock()
-	for id := range idset {
-		delete(dd.parked, id)
-		delete(dd.expired, id)
+	if err == nil {
+		st.pending = kept
 	}
-	dd.mu.Unlock()
-	s.pending -= bytes
+	st.mu.Unlock()
 	if err != nil {
 		return removed, err
+	}
+	if dd != nil {
+		dd.mu.Lock()
+		for id := range idset {
+			delete(dd.parked, id)
+			delete(dd.expired, id)
+		}
+		dd.mu.Unlock()
+	}
+	s.pending -= bytes
+	acked := int64(0)
+	if dd != nil {
+		dd.mu.Lock()
+		acked = dd.acked
+		dd.mu.Unlock()
+	} else if a, ok := loadCursor(st.dir); ok {
+		acked = a
+	}
+	if maxSeq > uint64(acked) {
+		if serr := persistSpoolState(s.dir, s.seq); serr != nil {
+			return removed, fmt.Errorf("gohan/telemetry: spool %s: persist state: %w", st.name, serr)
+		}
 	}
 	return removed, nil
 }
@@ -672,6 +770,11 @@ func (s *Spool) Discard(ctx context.Context, dest string, ids ...types.RecordID)
 // backlog. Retained backlogs stay durable and quota-counted and resume when
 // the same name is opened again.
 func (s *Spool) RemoveDestination(ctx context.Context, dest string, disposition BacklogDisposition) error {
+	switch disposition {
+	case BacklogDiscard, BacklogRetain:
+	default:
+		return fmt.Errorf("gohan/telemetry: spool remove %q: unknown backlog disposition %q", dest, disposition)
+	}
 	dd, ok := s.dds[dest]
 	if !ok {
 		return fmt.Errorf("gohan/telemetry: spool remove %q: %w", dest, types.ErrUnknownDestination)
@@ -691,17 +794,15 @@ func (s *Spool) RemoveDestination(ctx context.Context, dest string, disposition 
 		bytes += r.bytes
 	}
 	st.mu.Unlock()
-	delete(s.dests, dest)
 	delete(s.dds, dest)
 	switch disposition {
 	case BacklogDiscard:
+		delete(s.dests, dest)
 		s.pending -= bytes
 		if err := os.RemoveAll(st.dir); err != nil {
 			return fmt.Errorf("gohan/telemetry: spool remove %q: %w", dest, err)
 		}
 	case BacklogRetain:
-	default:
-		return fmt.Errorf("gohan/telemetry: spool remove %q: unknown backlog disposition %q", dest, disposition)
 	}
 	return nil
 }

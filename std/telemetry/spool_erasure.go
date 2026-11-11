@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"syscall"
 
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -48,29 +50,13 @@ func matchErasure(rule SubjectErasure, rec types.ExportRecord) bool {
 	return rec.Metric != nil && hit(rec.Metric.Dimensions)
 }
 
-// firstErasureMatch returns the first batch index matching an active
-// tombstone, so a delivery pass stops before reaching erased content.
-func (s *Spool) firstErasureMatch(batch []spoolRec) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.erasure == nil {
-		return -1
-	}
-	for i, r := range batch {
-		if matchErasure(*s.erasure, r.rec) {
-			return i
-		}
-	}
-	return -1
-}
-
 func writeErasureTombstone(dir string, rule SubjectErasure) error {
 	data, err := json.Marshal(rule)
 	if err != nil {
 		return fmt.Errorf("gohan/telemetry: spool erasure: marshal tombstone: %w", err)
 	}
 	tmp := filepath.Join(dir, spoolErasureFile+".tmp")
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return fmt.Errorf("gohan/telemetry: spool erasure: write tombstone: %w", err)
 	}
@@ -107,10 +93,15 @@ func clearErasureTombstone(dir string) error {
 // loadErasure returns the active tombstone. A malformed tombstone is an
 // error: matching content must never serve past a durable erasure rule.
 func loadErasure(dir string) (SubjectErasure, bool, error) {
-	data, err := os.ReadFile(filepath.Join(dir, spoolErasureFile))
+	f, err := os.OpenFile(filepath.Join(dir, spoolErasureFile), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return SubjectErasure{}, false, nil
 	}
+	if err != nil {
+		return SubjectErasure{}, false, fmt.Errorf("gohan/telemetry: spool: read erasure tombstone: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return SubjectErasure{}, false, fmt.Errorf("gohan/telemetry: spool: read erasure tombstone: %w", err)
 	}
@@ -138,10 +129,14 @@ func (s *Spool) compactErasure(ctx context.Context, rule SubjectErasure) (Erasur
 		st.mu.Lock()
 		kept := make([]spoolRec, 0, len(st.pending))
 		var removed, bytes int64
+		var maxSeq uint64
 		for _, r := range st.pending {
 			if matchErasure(rule, r.rec) {
 				removed++
 				bytes += r.bytes
+				if r.seq > maxSeq {
+					maxSeq = r.seq
+				}
 				continue
 			}
 			kept = append(kept, r)
@@ -150,17 +145,33 @@ func (s *Spool) compactErasure(ctx context.Context, rule SubjectErasure) (Erasur
 			st.mu.Unlock()
 			continue
 		}
-		st.pending = kept
 		err := s.compactStream(st, kept)
+		if err == nil {
+			st.pending = kept
+		}
 		st.mu.Unlock()
 		if err != nil {
 			return res, fmt.Errorf("gohan/telemetry: spool %s: erasure compaction: %w", name, err)
 		}
 		s.mu.Lock()
 		s.pending -= bytes
+		seq := s.seq
 		s.mu.Unlock()
 		res.Records += removed
 		res.Bytes += bytes
+		var acked int64
+		if dd := s.dds[name]; dd != nil {
+			dd.mu.Lock()
+			acked = dd.acked
+			dd.mu.Unlock()
+		} else if a, ok := loadCursor(st.dir); ok {
+			acked = a
+		}
+		if maxSeq > uint64(acked) {
+			if serr := persistSpoolState(s.dir, seq); serr != nil {
+				return res, fmt.Errorf("gohan/telemetry: spool %s: persist state: %w", name, serr)
+			}
+		}
 	}
 	return res, nil
 }
@@ -202,12 +213,23 @@ func (s *Spool) EraseSubjects(ctx context.Context, subjects SubjectErasure) (Era
 		return ErasureResult{}, err
 	}
 	s.erasure = &subjects
+	var admitted ErasureResult
+	kept := make([]admittedRec, 0, len(s.admitted))
+	for _, a := range s.admitted {
+		if matchErasure(subjects, a.rec) {
+			admitted.Records++
+			continue
+		}
+		kept = append(kept, a)
+	}
+	s.admitted = kept
 	s.mu.Unlock()
 
 	res, err := s.compactErasure(ctx, subjects)
 	if err != nil {
 		return res, fmt.Errorf("gohan/telemetry: spool erasure: %w", err)
 	}
+	res.Records += admitted.Records
 	s.clearErasureState(subjects)
 	if err := clearErasureTombstone(s.dir); err != nil {
 		return res, err

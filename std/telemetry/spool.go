@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -73,7 +74,77 @@ func WithSpoolAdmissionDepth(n int) SpoolOption {
 const (
 	spoolHeaderSize  = 20
 	spoolSegmentGlob = "seg-*"
+	spoolStateFile   = "state.json"
 )
+
+// spoolInventory lists every stream directory under the spool root: the
+// durable stream inventory is the directory listing, so a retained backlog
+// survives even when no destination supplies its name.
+func spoolInventory(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read spool dir: %w", err)
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() || !filepath.IsLocal(e.Name()) {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	return names, nil
+}
+
+// persistSpoolState durably records the sequence high-water when a
+// compaction discards records no cursor proves, so recovery never
+// reuses a sequence number.
+func persistSpoolState(dir string, seq uint64) error {
+	data, err := json.Marshal(spoolMeta{Seq: seq})
+	if err != nil {
+		return fmt.Errorf("gohan/telemetry: spool: marshal state: %w", err)
+	}
+	tmp := filepath.Join(dir, spoolStateFile+".tmp")
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return fmt.Errorf("gohan/telemetry: spool: write state: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("gohan/telemetry: spool: write state: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("gohan/telemetry: spool: sync state: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("gohan/telemetry: spool: close state: %w", err)
+	}
+	if err := os.Rename(tmp, filepath.Join(dir, spoolStateFile)); err != nil {
+		return fmt.Errorf("gohan/telemetry: spool: persist state: %w", err)
+	}
+	return syncDir(dir)
+}
+
+func loadSpoolState(dir string) (uint64, bool) {
+	f, err := os.OpenFile(filepath.Join(dir, spoolStateFile), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return 0, false
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return 0, false
+	}
+	var m spoolMeta
+	if err := json.Unmarshal(data, &m); err != nil {
+		return 0, false
+	}
+	return m.Seq, true
+}
+
+type spoolMeta struct {
+	Seq uint64 `json:"seq"`
+}
 
 func OpenSpool(dir string, dests []types.ExportDestination, cfg SpoolConfig, opts ...SpoolOption) (*Spool, error) {
 	sc := spoolConfig{content: ContentNone, admission: DefaultSpoolAdmissionDepth}
@@ -96,6 +167,9 @@ func OpenSpool(dir string, dests []types.ExportDestination, cfg SpoolConfig, opt
 		if name == "" {
 			return nil, fmt.Errorf("gohan/telemetry: OpenSpool needs a non-empty destination name")
 		}
+		if !filepath.IsLocal(name) {
+			return nil, fmt.Errorf("gohan/telemetry: invalid destination name %q", name)
+		}
 		if seen[name] {
 			return nil, fmt.Errorf("gohan/telemetry: duplicate destination %q", name)
 		}
@@ -105,8 +179,15 @@ func OpenSpool(dir string, dests []types.ExportDestination, cfg SpoolConfig, opt
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("open spool dir: %w", err)
 	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("open spool dir: %w", err)
+	}
 	lock, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
+		return nil, fmt.Errorf("open spool lock: %w", err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "lock"), 0o600); err != nil {
+		_ = lock.Close()
 		return nil, fmt.Errorf("open spool lock: %w", err)
 	}
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
@@ -125,6 +206,15 @@ func OpenSpool(dir string, dests []types.ExportDestination, cfg SpoolConfig, opt
 	for _, dest := range dests {
 		destIfc[dest.Name()] = dest
 	}
+	inventory, err := spoolInventory(dir)
+	if err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
+	names = append(names, inventory...)
+	slices.Sort(names)
+	names = slices.Compact(names)
+	var maxAcked uint64
 	for _, name := range names {
 		st, acked, err := s.recoverStream(name)
 		if err != nil {
@@ -133,7 +223,18 @@ func OpenSpool(dir string, dests []types.ExportDestination, cfg SpoolConfig, opt
 			return nil, err
 		}
 		s.dests[name] = st
-		s.dds[name] = newDestDelivery(destIfc[name], st, acked)
+		if dest, ok := destIfc[name]; ok {
+			s.dds[name] = newDestDelivery(dest, st, acked)
+		}
+		if seq := uint64(acked); seq > maxAcked {
+			maxAcked = seq
+		}
+	}
+	if metaSeq, ok := loadSpoolState(dir); ok && metaSeq > s.seq {
+		s.seq = metaSeq
+	}
+	if maxAcked > s.seq {
+		s.seq = maxAcked
 	}
 	rule, hasTombstone, err := loadErasure(dir)
 	if err != nil {
@@ -434,6 +535,9 @@ func (s *Spool) redact(ctx context.Context, attrs []types.Attr) ([]types.Attr, [
 // refusal leaves the stream unchanged; a failed write rolls the stream
 // back to its pre-call boundary.
 func (s *Spool) writeRecords(ctx context.Context, st *spoolStream, recs []types.ExportRecord) error {
+	if len(recs) == 0 {
+		return nil
+	}
 	bodies := make([][]byte, len(recs))
 	var total int64
 	for i, rec := range recs {
@@ -469,24 +573,28 @@ func (s *Spool) writeRecords(ctx context.Context, st *spoolStream, recs []types.
 		s.seq++
 		frame := spoolFrame(s.seq, body)
 		if _, err := st.f.Write(frame); err != nil {
-			if errors.Is(err, syscall.ENOSPC) {
-				err = fmt.Errorf("gohan/telemetry: spool append %q: %w: %w", st.name, ErrSpoolDiskFull, err)
-			}
-			return st.rollback(boundary, err)
+			return st.rollback(boundary, diskFullErr(st.name, err))
 		}
 		st.size += framed
 		st.pending = append(st.pending, spoolRec{seq: s.seq, rec: recs[i], bytes: framed, at: time.Now()})
 	}
 	if err := st.f.Sync(); err != nil {
-		return st.rollback(boundary, err)
+		return st.rollback(boundary, diskFullErr(st.name, err))
 	}
 	if created {
 		if err := syncDir(st.dir); err != nil {
-			return st.rollback(boundary, err)
+			return st.rollback(boundary, diskFullErr(st.name, err))
 		}
 	}
 	s.pending += total
 	return nil
+}
+
+func diskFullErr(name string, err error) error {
+	if errors.Is(err, syscall.ENOSPC) {
+		return fmt.Errorf("gohan/telemetry: spool append %q: %w: %w", name, ErrSpoolDiskFull, err)
+	}
+	return err
 }
 
 func spoolFrame(seq uint64, body []byte) []byte {
@@ -511,6 +619,9 @@ func (st *spoolStream) openSegment() error {
 }
 
 func (st *spoolStream) roll() error {
+	if err := st.f.Sync(); err != nil {
+		return fmt.Errorf("gohan/telemetry: spool %s: sync segment before rotate: %w", st.name, diskFullErr(st.name, err))
+	}
 	if err := st.f.Close(); err != nil {
 		st.f = nil
 		st.next++
@@ -533,7 +644,7 @@ func (st *spoolStream) rollback(boundary int64, werr error) error {
 		return fmt.Errorf("gohan/telemetry: spool rollback: %v (write error: %w)", err, werr)
 	}
 	if err := st.f.Sync(); err != nil {
-		return fmt.Errorf("gohan/telemetry: spool rollback: %v (write error: %w)", err, werr)
+		return fmt.Errorf("gohan/telemetry: spool rollback: %v (write error: %w)", diskFullErr(st.name, err), werr)
 	}
 	return werr
 }
@@ -590,6 +701,9 @@ func (s *Spool) recoverStream(name string) (*spoolStream, int64, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, 0, fmt.Errorf("open stream dir: %w", err)
 	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, 0, fmt.Errorf("open stream dir: %w", err)
+	}
 	acked, _ := loadCursor(dir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -597,7 +711,7 @@ func (s *Spool) recoverStream(name string) (*spoolStream, int64, error) {
 	}
 	var segs []string
 	for _, e := range entries {
-		if e.IsDir() || (!strings.HasPrefix(e.Name(), "seg-") && !strings.HasPrefix(e.Name(), "tmpseg-")) {
+		if !e.Type().IsRegular() || (!strings.HasPrefix(e.Name(), "seg-") && !strings.HasPrefix(e.Name(), "tmpseg-")) {
 			continue
 		}
 		segs = append(segs, e.Name())
@@ -607,6 +721,9 @@ func (s *Spool) recoverStream(name string) (*spoolStream, int64, error) {
 	var recs []spoolRec
 	for i, seg := range segs {
 		path := filepath.Join(dir, seg)
+		if err := os.Chmod(path, 0o600); err != nil {
+			return nil, 0, fmt.Errorf("open segment: %w", err)
+		}
 		at, serr := os.Stat(path)
 		if serr != nil {
 			return nil, 0, fmt.Errorf("stat segment: %w", serr)
@@ -629,6 +746,7 @@ func (s *Spool) recoverStream(name string) (*spoolStream, int64, error) {
 		}
 	}
 	slices.SortFunc(recs, func(a, b spoolRec) int { return cmp.Compare(a.seq, b.seq) })
+	recs = slices.CompactFunc(recs, func(a, b spoolRec) bool { return a.seq == b.seq })
 	var bytes int64
 	for _, r := range recs {
 		if int64(r.seq) > acked {
@@ -645,7 +763,7 @@ func (s *Spool) recoverStream(name string) (*spoolStream, int64, error) {
 // checksum, framing or version failure fails the open with a
 // *CorruptionError and is never skipped.
 func scanSegment(path string, final bool) (bytes int64, maxSeq uint64, repaired int64, recs []spoolRec, err error) {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return 0, 0, 0, nil, fmt.Errorf("open segment: %w", err)
 	}
