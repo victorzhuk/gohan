@@ -278,6 +278,10 @@ func validateRecord(rec *types.ExportRecord) error {
 		if rec.Metric == nil || rec.Span != nil {
 			return fmt.Errorf("gohan/telemetry: record %s: metric signal without metric payload", rec.ID)
 		}
+	case rec.Signal == types.SignalEval:
+		if rec.Eval == nil || rec.Span != nil || rec.Metric != nil {
+			return fmt.Errorf("gohan/telemetry: record %s: eval signal without eval payload", rec.ID)
+		}
 	default:
 		return fmt.Errorf("gohan/telemetry: record %s: unknown signal %q", rec.ID, rec.Signal)
 	}
@@ -285,7 +289,7 @@ func validateRecord(rec *types.ExportRecord) error {
 }
 
 func hasPayload(rec types.ExportRecord) bool {
-	return rec.Span != nil || rec.Metric != nil
+	return rec.Span != nil || rec.Metric != nil || rec.Eval != nil
 }
 
 // admit runs the content policy and the redactor over one record's

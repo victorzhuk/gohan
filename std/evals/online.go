@@ -100,6 +100,7 @@ type Online struct {
 
 	mu          sync.Mutex
 	state       int
+	approvals   map[string]CalibrationApproval
 	pending     chan *evalJob
 	live        int
 	cancel      context.CancelFunc
@@ -188,6 +189,12 @@ func validateJudges(js []Judge) error {
 // Start validates and starts the worker pool; Evaluate calls it lazily
 // once. Idempotent.
 func (o *Online) Start() error {
+	return o.start(true)
+}
+
+// start runs the Start sequence; enforce gates the calibration activation
+// check, which the lazy admission path defers to an explicit Start.
+func (o *Online) start(enforce bool) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	switch o.state {
@@ -201,6 +208,11 @@ func (o *Online) Start() error {
 	}
 	if err := validateJudges(o.Judges); err != nil {
 		return err
+	}
+	if enforce {
+		if err := o.validateCalibrationLocked(); err != nil {
+			return err
+		}
 	}
 	lim := o.Limits
 	if lim.QueueCapacity <= 0 {
@@ -300,7 +312,7 @@ func (o *Online) Evaluate(ctx context.Context, c gohan.RunCompletion) error {
 		o.mu.Unlock()
 		return nil
 	}
-	if err := o.Start(); err != nil {
+	if err := o.start(false); err != nil {
 		return err
 	}
 	o.mu.Lock()

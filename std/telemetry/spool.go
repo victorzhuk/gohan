@@ -392,6 +392,25 @@ type SpoolHealth struct {
 	Destinations     []DestinationHealth `json:"destinations"`
 }
 
+// destinationAdmits reports whether the destination accepts the record's
+// signal. Legacy span and metric signals keep their admission; an eval
+// record needs the destination to declare SignalEval. A recovered stream
+// without a live destination keeps the legacy admission.
+func (s *Spool) destinationAdmits(dest string, sig types.ExportSignalKind) bool {
+	if sig == types.SignalSpan || sig == types.SignalMetric {
+		return true
+	}
+	if dd, ok := s.dds[dest]; ok {
+		for _, ds := range dd.dest.Capabilities().Signals {
+			if ds == sig {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
 // Append is the explicit durable append: it returns nil only after the
 // record data and the segment creation and rotation metadata are synced.
 func (s *Spool) Append(ctx context.Context, dest string, recs []types.ExportRecord) error {
@@ -408,7 +427,7 @@ func (s *Spool) Append(ctx context.Context, dest string, recs []types.ExportReco
 		return fmt.Errorf("gohan/telemetry: spool append %q: %w", dest, types.ErrUnknownDestination)
 	}
 	for i := range recs {
-		if recs[i].Signal != types.SignalSpan && recs[i].Signal != types.SignalMetric {
+		if !s.destinationAdmits(dest, recs[i].Signal) {
 			return fmt.Errorf("gohan/telemetry: record %s: %w: %s", recs[i].ID, types.ErrExportUnsupportedSignal, recs[i].Signal)
 		}
 		if err := validateRecord(&recs[i]); err != nil {
@@ -442,7 +461,7 @@ func (s *Spool) Admit(ctx context.Context, dest string, recs []types.ExportRecor
 	}
 	kept := make([]types.ExportRecord, 0, len(recs))
 	for i := range recs {
-		if recs[i].Signal != types.SignalSpan && recs[i].Signal != types.SignalMetric {
+		if !s.destinationAdmits(dest, recs[i].Signal) {
 			return fmt.Errorf("gohan/telemetry: record %s: %w: %s", recs[i].ID, types.ErrExportUnsupportedSignal, recs[i].Signal)
 		}
 		if err := validateRecord(&recs[i]); err != nil {
