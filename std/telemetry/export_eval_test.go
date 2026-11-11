@@ -59,6 +59,7 @@ func TestValidateEvalRecord(t *testing.T) {
 		t.Run("rejects span signal with eval payload", func(t *testing.T) {
 			rec := evalRecordFixture("rec-span-eval", types.SignalSpan)
 			rec.Eval = &types.EvalRecord{}
+			rec.Span = &types.SpanRecord{TraceID: "trace-1", SpanID: "span-1"}
 			err := validateRecord(&rec)
 			if err == nil {
 				t.Fatal("validateRecord err = nil, want span-signal-without-span-payload error")
@@ -71,6 +72,7 @@ func TestValidateEvalRecord(t *testing.T) {
 		t.Run("rejects metric signal with eval payload", func(t *testing.T) {
 			rec := evalRecordFixture("rec-metric-eval", types.SignalMetric)
 			rec.Eval = &types.EvalRecord{}
+			rec.Metric = &types.MetricRecord{}
 			err := validateRecord(&rec)
 			if err == nil {
 				t.Fatal("validateRecord err = nil, want metric-signal-without-metric-payload error")
