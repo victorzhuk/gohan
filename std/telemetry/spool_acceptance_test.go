@@ -192,11 +192,11 @@ func TestWalAcceptance(t *testing.T) {
 			if _, err := f.Write(torn); err != nil {
 				t.Fatalf("write torn tail: %v", err)
 			}
-			f.Close()
+			_ = f.Close()
 
 			diag := &spoolDiags{}
 			s := walOpen(t, dir, diag, walConfig(1<<20, 1<<20))
-			defer s.Shutdown(ctx)
+			defer func() { _, _ = s.Shutdown(ctx) }()
 
 			h := s.Health()
 			if h.Corruption.RepairedTails != 1 || h.Corruption.RepairedBytes != int64(len(torn)) {
@@ -236,7 +236,7 @@ func TestWalAcceptance(t *testing.T) {
 			diag := &spoolDiags{}
 			s, err := telemetry.OpenSpool(dir, []types.ExportDestination{walDest()}, walConfig(1<<20, 1<<20), telemetry.WithSpoolDiagnostics(diag))
 			if err == nil {
-				s.Shutdown(ctx)
+				_, _ = s.Shutdown(ctx)
 				t.Fatal("open succeeded over an interior checksum failure")
 			}
 			var ce *telemetry.CorruptionError
@@ -284,7 +284,7 @@ func TestWalAcceptance(t *testing.T) {
 			diag := &spoolDiags{}
 			s, err := telemetry.OpenSpool(dir, []types.ExportDestination{walDest()}, walConfig(1<<20, 1<<20), telemetry.WithSpoolDiagnostics(diag))
 			if err == nil {
-				s.Shutdown(ctx)
+				_, _ = s.Shutdown(ctx)
 				t.Fatal("open succeeded over an unsupported envelope version")
 			}
 			var ce *telemetry.CorruptionError
@@ -318,7 +318,7 @@ func TestWalAcceptance(t *testing.T) {
 
 		if s2, err := telemetry.OpenSpool(dir, []types.ExportDestination{walDest()}, cfg); !errors.Is(err, telemetry.ErrSpoolLocked) {
 			if s2 != nil {
-				s2.Shutdown(ctx)
+				_, _ = s2.Shutdown(ctx)
 			}
 			t.Fatalf("second open err = %v, want ErrSpoolLocked", err)
 		}
@@ -355,7 +355,7 @@ func TestWalAcceptance(t *testing.T) {
 		}
 
 		s3 := walOpen(t, dir, nil, cfg)
-		defer s3.Shutdown(ctx)
+		defer func() { _, _ = s3.Shutdown(ctx) }()
 		got := readWalFrames(t, dir, "wal")
 		if len(got) != 1 || got[0].rec.ID != "a1" {
 			t.Fatalf("recovered frames = %v, want only a1 unchanged", walIDs(got))
@@ -394,7 +394,7 @@ func TestWalAcceptance(t *testing.T) {
 		}
 
 		s2 := walOpenDests(t, dir, nil, cfg, dest)
-		defer s2.Shutdown(ctx)
+		defer func() { _, _ = s2.Shutdown(ctx) }()
 		dest.script(acceptAll(want), nil)
 		f, err := s2.Flush(ctx)
 		if err != nil {
@@ -509,7 +509,7 @@ func TestWalAcceptance(t *testing.T) {
 		}
 
 		s3 := walOpenDests(t, dir, nil, cfg, d1, d2)
-		defer s3.Shutdown(ctx)
+		defer func() { _, _ = s3.Shutdown(ctx) }()
 		d2.script([]types.RecordOutcome{{ID: "c2", Status: types.OutcomeAccepted}}, nil)
 		f3, err := s3.Flush(ctx)
 		if err != nil {

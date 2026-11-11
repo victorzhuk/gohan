@@ -48,14 +48,6 @@ func matchErasure(rule SubjectErasure, rec types.ExportRecord) bool {
 	return rec.Metric != nil && hit(rec.Metric.Dimensions)
 }
 
-// blocksErasure gates delivery: a record matching an active tombstone never
-// leaves the stream until the erasure compacts it away.
-func (s *Spool) blocksErasure(rec types.ExportRecord) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.erasure != nil && matchErasure(*s.erasure, rec)
-}
-
 // firstErasureMatch returns the first batch index matching an active
 // tombstone, so a delivery pass stops before reaching erased content.
 func (s *Spool) firstErasureMatch(batch []spoolRec) int {
@@ -83,11 +75,11 @@ func writeErasureTombstone(dir string, rule SubjectErasure) error {
 		return fmt.Errorf("gohan/telemetry: spool erasure: write tombstone: %w", err)
 	}
 	if _, err := f.Write(data); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("gohan/telemetry: spool erasure: write tombstone: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("gohan/telemetry: spool erasure: sync tombstone: %w", err)
 	}
 	if err := f.Close(); err != nil {

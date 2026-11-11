@@ -110,7 +110,7 @@ func OpenSpool(dir string, dests []types.ExportDestination, cfg SpoolConfig, opt
 		return nil, fmt.Errorf("open spool lock: %w", err)
 	}
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		lock.Close()
+		_ = lock.Close()
 		return nil, fmt.Errorf("gohan/telemetry: open spool %s: %w", dir, ErrSpoolLocked)
 	}
 	s := &Spool{
@@ -129,7 +129,7 @@ func OpenSpool(dir string, dests []types.ExportDestination, cfg SpoolConfig, opt
 		st, acked, err := s.recoverStream(name)
 		if err != nil {
 			s.sc.diag.Report(context.Background(), types.ExportDiagnostic{Kind: DiagSpoolCorrupt, Name: name, Err: err})
-			lock.Close()
+			_ = lock.Close()
 			return nil, err
 		}
 		s.dests[name] = st
@@ -138,16 +138,16 @@ func OpenSpool(dir string, dests []types.ExportDestination, cfg SpoolConfig, opt
 	rule, hasTombstone, err := loadErasure(dir)
 	if err != nil {
 		s.sc.diag.Report(context.Background(), types.ExportDiagnostic{Kind: DiagSpoolCorrupt, Err: err})
-		lock.Close()
+		_ = lock.Close()
 		return nil, err
 	}
 	if hasTombstone {
 		if _, err := s.compactErasure(context.Background(), rule); err != nil {
-			lock.Close()
+			_ = lock.Close()
 			return nil, fmt.Errorf("gohan/telemetry: open spool %s: complete interrupted erasure: %w", dir, err)
 		}
 		if err := clearErasureTombstone(dir); err != nil {
-			lock.Close()
+			_ = lock.Close()
 			return nil, err
 		}
 	}
@@ -511,7 +511,11 @@ func (st *spoolStream) openSegment() error {
 }
 
 func (st *spoolStream) roll() error {
-	st.f.Close()
+	if err := st.f.Close(); err != nil {
+		st.f = nil
+		st.next++
+		return fmt.Errorf("gohan/telemetry: spool %s: close segment before rotate: %w", st.name, err)
+	}
 	st.f = nil
 	st.next++
 	return st.openSegment()
@@ -645,7 +649,7 @@ func scanSegment(path string, final bool) (bytes int64, maxSeq uint64, repaired 
 	if err != nil {
 		return 0, 0, 0, nil, fmt.Errorf("open segment: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		return 0, 0, 0, nil, fmt.Errorf("stat segment: %w", err)
@@ -726,7 +730,7 @@ func syncDir(path string) error {
 	if err != nil {
 		return fmt.Errorf("open stream dir: %w", err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	if err := syscall.Fsync(int(d.Fd())); err != nil {
 		return fmt.Errorf("sync stream dir: %w", err)
 	}

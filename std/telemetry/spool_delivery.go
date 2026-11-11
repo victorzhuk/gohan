@@ -267,11 +267,11 @@ func (dd *destDelivery) persistCursor() error {
 		return fmt.Errorf("gohan/telemetry: spool %s: write cursor: %w", dd.st.name, err)
 	}
 	if _, err := f.Write(data); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("gohan/telemetry: spool %s: write cursor: %w", dd.st.name, err)
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("gohan/telemetry: spool %s: sync cursor: %w", dd.st.name, err)
 	}
 	if err := f.Close(); err != nil {
@@ -350,7 +350,7 @@ func (s *Spool) compactStream(st *spoolStream, kept []spoolRec) error {
 			return nil
 		}
 		if err := cur.Sync(); err != nil {
-			cur.Close()
+			_ = cur.Close()
 			return fmt.Errorf("gohan/telemetry: spool %s: sync compacted segment: %w", st.name, err)
 		}
 		if err := cur.Close(); err != nil {
@@ -362,7 +362,7 @@ func (s *Spool) compactStream(st *spoolStream, kept []spoolRec) error {
 	for _, r := range kept {
 		body, merr := json.Marshal(r.rec)
 		if merr != nil {
-			closeCur()
+			_ = closeCur()
 			return fmt.Errorf("gohan/telemetry: spool %s: marshal record: %w", st.name, merr)
 		}
 		frame := spoolFrame(r.seq, body)
@@ -376,7 +376,7 @@ func (s *Spool) compactStream(st *spoolStream, kept []spoolRec) error {
 			path := filepath.Join(st.dir, fmt.Sprintf("tmpseg-%04d", count))
 			f, oerr := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 			if oerr != nil {
-				closeCur()
+				_ = closeCur()
 				return fmt.Errorf("gohan/telemetry: spool %s: open compacted segment: %w", st.name, oerr)
 			}
 			cur = f
@@ -384,7 +384,7 @@ func (s *Spool) compactStream(st *spoolStream, kept []spoolRec) error {
 			count++
 		}
 		if _, werr := cur.Write(frame); werr != nil {
-			closeCur()
+			_ = closeCur()
 			return fmt.Errorf("gohan/telemetry: spool %s: write compacted segment: %w", st.name, werr)
 		}
 		curSize += framed
@@ -409,7 +409,10 @@ func (s *Spool) compactStream(st *spoolStream, kept []spoolRec) error {
 		return err
 	}
 	if st.f != nil {
-		st.f.Close()
+		if cerr := st.f.Close(); cerr != nil {
+			st.f = nil
+			return fmt.Errorf("gohan/telemetry: spool %s: close segment: %w", st.name, cerr)
+		}
 		st.f = nil
 	}
 	st.size = 0
@@ -601,7 +604,7 @@ func (s *Spool) Shutdown(ctx context.Context) (types.UnresolvedWork, error) {
 		<-dd.done
 	}
 	s.closeCycle(ctx, true)
-	syscall.Flock(int(s.lock.Fd()), syscall.LOCK_UN)
+	_ = syscall.Flock(int(s.lock.Fd()), syscall.LOCK_UN)
 	if err := s.lock.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("close spool lock: %w", err))
 	}
