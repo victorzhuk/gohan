@@ -69,6 +69,7 @@ var (
 	ErrCalibrationInvalidated = errors.New("gohan/evals: calibration approval invalidated by judge model or rubric change")
 	ErrCalibrationCriteria    = errors.New("gohan/evals: judge does not meet the configured calibration criteria")
 	ErrEngineClosed           = errors.New("gohan/evals: online evaluation engine is shut down")
+	ErrRedactorRequired       = errors.New("gohan/evals: model-backed judges require a redactor bound with WithRedactor")
 )
 
 const (
@@ -197,22 +198,25 @@ func (o *Online) Start() error {
 func (o *Online) start(enforce bool) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	switch o.state {
-	case stateRunning:
-		return nil
-	case stateClosed:
-		return ErrEngineClosed
-	}
 	if o.Rate < 0 || o.Rate > 1 {
 		return ErrSamplingRate
 	}
 	if err := validateJudges(o.Judges); err != nil {
 		return err
 	}
+	if err := o.validateRedactorLocked(); err != nil {
+		return err
+	}
 	if enforce {
 		if err := o.validateCalibrationLocked(); err != nil {
 			return err
 		}
+	}
+	switch o.state {
+	case stateRunning:
+		return nil
+	case stateClosed:
+		return ErrEngineClosed
 	}
 	lim := o.Limits
 	if lim.QueueCapacity <= 0 {
@@ -284,7 +288,25 @@ func (o *Online) Shutdown(ctx context.Context) error {
 		}
 		<-done
 	}
+	o.drainPending()
 	return nil
+}
+
+// drainPending settles jobs left undiscovered in the pending queue after
+// the workers exited, so admitted jobs never strand.
+func (o *Online) drainPending() {
+	for {
+		select {
+		case job := <-o.pending:
+			if o.Closure == CloseSkipped {
+				o.settleUnfinished(job)
+				continue
+			}
+			o.settle(job, o.unscoredAll(job, types.EvalErrTimeout, "shutdown before judging finished"))
+		default:
+			return
+		}
+	}
 }
 
 // evalJob is one admitted evaluation.
@@ -296,6 +318,12 @@ type evalJob struct {
 	info      types.RunInfo
 	done      types.Done
 	history   func(context.Context) (stores.History, error)
+	// loadedVersion is the history version the loader actually returned.
+	loadedVersion int64
+	// judgeTokens and judgeCost accumulate the job's own judge spend on
+	// the single goroutine that runs the job.
+	judgeTokens int
+	judgeCost   float64
 }
 
 // Evaluate implements gohan.RunEvaluator. It samples, mints the
@@ -303,6 +331,9 @@ type evalJob struct {
 // waits on judge work. A full queue or exhausted budget produces a
 // skipped outcome, never an error to the Done path.
 func (o *Online) Evaluate(ctx context.Context, c gohan.RunCompletion) error {
+	if c.Info.Mode != types.Primary {
+		return nil
+	}
 	o.mu.Lock()
 	closed := o.state == stateClosed
 	o.mu.Unlock()
@@ -318,10 +349,6 @@ func (o *Online) Evaluate(ctx context.Context, c gohan.RunCompletion) error {
 	o.mu.Lock()
 	if o.state == stateClosed {
 		o.rates.Skipped++
-		o.mu.Unlock()
-		return nil
-	}
-	if c.Info.Mode != types.Primary {
 		o.mu.Unlock()
 		return nil
 	}
@@ -353,13 +380,11 @@ func (o *Online) Evaluate(ctx context.Context, c gohan.RunCompletion) error {
 	}
 	if o.live < o.limits.Workers {
 		o.live++
+		o.rates.Unknown++
 		o.wg.Add(1)
 		ctx := o.runCtx
 		o.mu.Unlock()
 		go o.worker(ctx, job)
-		o.mu.Lock()
-		o.rates.Unknown++
-		o.mu.Unlock()
 		return nil
 	}
 	select {
@@ -447,12 +472,8 @@ func (o *Online) run(parent context.Context, job *evalJob) {
 	} else {
 		ev := Evidence{Info: job.info, Done: job.done, History: hist}
 		for _, j := range o.Judges {
-			results = append(results, o.scoreJudge(jobCtx, j, ev))
+			results = append(results, o.scoreJudge(jobCtx, j, ev, job))
 		}
-	}
-	if jobCtx.Err() != nil && o.Closure == CloseSkipped {
-		o.settleUnfinished(job)
-		return
 	}
 	o.settle(job, results)
 }
@@ -473,13 +494,19 @@ func (o *Online) evidence(ctx context.Context, job *evalJob) (stores.History, *e
 	}
 	h, err := job.history(ctx)
 	if err != nil {
-		return stores.History{}, &evidenceErr{types.EvalErrMissingEvidence, "history load failed: " + err.Error()}
+		o.logger.Warn("gohan/evals: history load failed", "evaluation_id", job.evalID, "err", err)
+		return stores.History{}, &evidenceErr{types.EvalErrMissingEvidence, "history load failed"}
+	}
+	job.loadedVersion = h.Version
+	if h.Version != job.version {
+		return stores.History{}, &evidenceErr{types.EvalErrMissingEvidence, fmt.Sprintf("history version moved: requested %d, loaded %d", job.version, h.Version)}
 	}
 	if o.redactor != nil && len(h.Messages) > 0 {
 		for i, m := range h.Messages {
 			redacted, _, rerr := o.redactor.Redact(ctx, m.Blocks, o.policy)
 			if rerr != nil {
-				return stores.History{}, &evidenceErr{types.EvalErrRedaction, "evidence redaction failed: " + rerr.Error()}
+				o.logger.Warn("gohan/evals: evidence redaction failed", "evaluation_id", job.evalID, "err", rerr)
+				return stores.History{}, &evidenceErr{types.EvalErrRedaction, "evidence redaction failed"}
 			}
 			m.Blocks = redacted
 			h.Messages[i] = m
@@ -499,7 +526,7 @@ func (o *Online) unscoredAll(job *evalJob, cat types.EvalErrorCategory, reason s
 // scoreJudge resolves one judge's dimension result: deterministic
 // evaluators run in process; model judges repeat, retry and take the
 // median within the job deadline.
-func (o *Online) scoreJudge(ctx context.Context, j Judge, ev Evidence) types.EvalDimensionResult {
+func (o *Online) scoreJudge(ctx context.Context, j Judge, ev Evidence, job *evalJob) types.EvalDimensionResult {
 	if j.Evaluator != nil {
 		r := j.Evaluator.Evaluate(ev)
 		r.Dimension = j.Dimension
@@ -518,20 +545,21 @@ func (o *Online) scoreJudge(ctx context.Context, j Judge, ev Evidence) types.Eva
 			model = p.Version
 		}
 	}
-	attempts := 1 + o.maxRetries()
 	var scores []float64
 	var judgements []types.EvalJudgement
 	for len(scores) < repeats {
+		attempts := 1 + o.maxRetries()
 		if err := ctx.Err(); err != nil {
 			return unscored(j.Dimension, types.EvalErrTimeout, "job deadline exceeded before judging finished")
 		}
-		text, err := callJudge(ctx, j.Model, ev, j.Rubric)
+		text, err := callJudge(ctx, o, job, j.Model, ev, j.Rubric)
 		if err != nil {
 			if ctx.Err() != nil {
 				return unscored(j.Dimension, types.EvalErrTimeout, "job deadline exceeded before judging finished")
 			}
 			if attempts--; attempts <= 0 {
-				return unscored(j.Dimension, types.EvalErrJudgeFailed, "judge call failed after retries: "+err.Error())
+				o.logger.Warn("gohan/evals: judge call failed", "dimension", j.Dimension, "evaluation_id", job.evalID, "err", err)
+				return unscored(j.Dimension, types.EvalErrJudgeFailed, "judge call failed after retries")
 			}
 			continue
 		}
@@ -562,19 +590,64 @@ func (o *Online) maxRetries() int {
 	return 0
 }
 
-// callJudge runs one judge model call over the redacted evidence.
-func callJudge(ctx context.Context, m types.Model, ev Evidence, r Rubric) (string, error) {
+// callJudge runs one judge model call over the redacted evidence. Each
+// chunk usage commits its delta over already-committed usage, so
+// once-at-end, running-total and never-reporting adapters all charge
+// exactly once. Every delta adds tokens to the window spend and priced
+// cost to the job accumulator.
+func callJudge(ctx context.Context, o *Online, job *evalJob, m types.Model, ev Evidence, r Rubric) (string, error) {
 	instruction := "Score the run on dimension scale 0..1. Rubric " + r.Version + ": " + r.Instruction
 	req := types.ModelRequest{
 		System:   []types.Block{types.Text{Text: instruction}},
 		Messages: ev.History.Messages,
 	}
 	var sb strings.Builder
+	var committed types.Usage
+	var priced types.Pricing
+	priceKnown := false
 	for chunk, err := range m.Generate(ctx, req) {
 		if err != nil {
 			return sb.String(), err
 		}
 		sb.WriteString(chunk.Delta)
+		u := chunk.Usage
+		if u == nil {
+			continue
+		}
+		dIn := max(u.InputTokens-committed.InputTokens, 0)
+		dCached := max(u.CachedInputTokens-committed.CachedInputTokens, 0)
+		dWrite := max(u.CacheWriteTokens-committed.CacheWriteTokens, 0)
+		dOut := max(u.OutputTokens-committed.OutputTokens, 0)
+		tokens := dIn + dCached + dWrite + dOut
+		var cost float64
+		if !priceKnown {
+			if p := m.Profile(); p.Pricing.Input != 0 || p.Pricing.Output != 0 ||
+				p.Pricing.CachedInput != 0 || p.Pricing.CacheWrite != 0 {
+				priced = p.Pricing
+				priceKnown = true
+			}
+		}
+		if priceKnown {
+			writePrice := priced.CacheWrite
+			if priced.SocializeCacheWrites {
+				writePrice = priced.CachedInput
+			}
+			cost = float64(dIn)*priced.Input +
+				float64(dCached)*priced.CachedInput +
+				float64(dWrite)*writePrice +
+				float64(dOut)*priced.Output
+		}
+		if o != nil {
+			o.mu.Lock()
+			o.tokensUsed += int64(tokens)
+			o.costUsed += cost
+			o.mu.Unlock()
+		}
+		if job != nil {
+			job.judgeTokens += tokens
+			job.judgeCost += cost
+		}
+		committed = *u
 	}
 	return sb.String(), nil
 }
@@ -621,8 +694,6 @@ func (o *Online) settle(job *evalJob, results []types.EvalDimensionResult) {
 	} else {
 		o.rates.Failed++
 	}
-	o.tokensUsed += rec.Eval.Tokens
-	o.costUsed += rec.Eval.Cost
 	o.mu.Unlock()
 	o.emitMetrics(results, job.info.Flow)
 	if o.sink != nil {
@@ -642,7 +713,6 @@ func (o *Online) settleUnfinished(job *evalJob) {
 }
 
 func (o *Online) buildRecord(job *evalJob, results []types.EvalDimensionResult, completed time.Time) types.ExportRecord {
-	tokens := int64(job.done.Usage.InputTokens + job.done.Usage.CachedInputTokens + job.done.Usage.OutputTokens)
 	ev := &types.EvalRecord{
 		EvaluationID: job.evalID,
 		RunID:        job.info.RunID,
@@ -659,8 +729,8 @@ func (o *Online) buildRecord(job *evalJob, results []types.EvalDimensionResult, 
 		Evidence:    o.evidenceRefs(job),
 		StartedAt:   job.startedAt,
 		CompletedAt: completed,
-		Cost:        job.done.Cost,
-		Tokens:      tokens,
+		Cost:        job.judgeCost,
+		Tokens:      int64(job.judgeTokens),
 	}
 	return types.ExportRecord{
 		SchemaVersion: types.CurrentExportSchemaVersion,
@@ -676,8 +746,8 @@ func (o *Online) buildRecord(job *evalJob, results []types.EvalDimensionResult, 
 
 func (o *Online) evidenceRefs(job *evalJob) []types.EvidenceRef {
 	refs := []types.EvidenceRef{{Kind: types.EvidenceRunOutput, Ref: job.info.RunID}}
-	if job.history != nil {
-		refs = append(refs, types.EvidenceRef{Kind: types.EvidenceHistoryVersion, Ref: strconv.FormatInt(job.version, 10)})
+	if job.loadedVersion > 0 {
+		refs = append(refs, types.EvidenceRef{Kind: types.EvidenceHistoryVersion, Ref: strconv.FormatInt(job.loadedVersion, 10)})
 	}
 	return refs
 }

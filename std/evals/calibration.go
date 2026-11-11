@@ -127,7 +127,7 @@ func reviewScore(ctx context.Context, j Judge, ev Evidence) (float64, error) {
 	}
 	scores := make([]float64, 0, repeats)
 	for len(scores) < repeats {
-		text, err := callJudge(ctx, j.Model, ev, j.Rubric)
+		text, err := callJudge(ctx, nil, nil, j.Model, ev, j.Rubric)
 		if err != nil {
 			return 0, err
 		}
@@ -166,7 +166,22 @@ func (o *Online) checkApproval(a CalibrationApproval) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("gohan/evals: approval %s covers no configured judge: %w", a.Fingerprint[:8], ErrCalibrationInvalidated)
+	fp := a.Fingerprint
+	if len(fp) > 8 {
+		fp = fp[:8]
+	}
+	return fmt.Errorf("gohan/evals: approval %s covers no configured judge: %w", fp, ErrCalibrationInvalidated)
+}
+
+// validateRedactorLocked refuses engines whose model-backed judges run
+// without a bound redactor: redaction is a data-safety gate.
+func (o *Online) validateRedactorLocked() error {
+	for _, j := range o.Judges {
+		if j.Model != nil && o.redactor == nil {
+			return ErrRedactorRequired
+		}
+	}
+	return nil
 }
 
 // validateCalibrationLocked enforces the activation rule: every
