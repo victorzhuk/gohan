@@ -364,6 +364,17 @@ func (o *Online) Evaluate(ctx context.Context, c gohan.RunCompletion) error {
 		o.mu.Unlock()
 		return nil
 	}
+	// Ruling: spend from judge calls in flight when the budget is reached
+	// may overshoot by at most the admitted, unfinished jobs. While such
+	// jobs are outstanding the window cannot promise budget room, so
+	// admission refuses once spend has accrued, and outstanding admitted
+	// work never exceeds the Workers+QueueCapacity bound.
+	if o.rates.Unknown >= int64(o.limits.Workers+o.limits.QueueCapacity) ||
+		(o.rates.Unknown > 0 && (o.tokensUsed > 0 || o.costUsed > 0)) {
+		o.rates.Skipped++
+		o.mu.Unlock()
+		return nil
+	}
 	if o.Rate < 1 && rand.Float64() >= o.Rate {
 		o.rates.Skipped++
 		o.mu.Unlock()
@@ -467,13 +478,23 @@ func (o *Online) run(parent context.Context, job *evalJob) {
 	defer cancel()
 
 	var results []types.EvalDimensionResult
+	incomplete := false
 	if hist, eerr := o.evidence(jobCtx, job); eerr != nil {
+		incomplete = parent.Err() != nil
 		results = o.unscoredAll(job, eerr.cat, eerr.reason)
 	} else {
 		ev := Evidence{Info: job.info, Done: job.done, History: hist}
 		for _, j := range o.Judges {
-			results = append(results, o.scoreJudge(jobCtx, j, ev, job))
+			r := o.scoreJudge(jobCtx, j, ev, job)
+			if r.Status == types.EvalUnscored && r.ErrorCategory == types.EvalErrTimeout {
+				incomplete = true
+			}
+			results = append(results, r)
 		}
+	}
+	if o.Closure == CloseSkipped && parent.Err() != nil && incomplete {
+		o.settleUnfinished(job)
+		return
 	}
 	o.settle(job, results)
 }
@@ -548,20 +569,15 @@ func (o *Online) scoreJudge(ctx context.Context, j Judge, ev Evidence, job *eval
 	var scores []float64
 	var judgements []types.EvalJudgement
 	for len(scores) < repeats {
-		attempts := 1 + o.maxRetries()
 		if err := ctx.Err(); err != nil {
 			return unscored(j.Dimension, types.EvalErrTimeout, "job deadline exceeded before judging finished")
 		}
-		text, err := callJudge(ctx, o, job, j.Model, ev, j.Rubric)
-		if err != nil {
-			if ctx.Err() != nil {
+		text, cat := o.judgeCall(ctx, job, j, ev)
+		if cat != "" {
+			if cat == types.EvalErrTimeout {
 				return unscored(j.Dimension, types.EvalErrTimeout, "job deadline exceeded before judging finished")
 			}
-			if attempts--; attempts <= 0 {
-				o.logger.Warn("gohan/evals: judge call failed", "dimension", j.Dimension, "evaluation_id", job.evalID, "err", err)
-				return unscored(j.Dimension, types.EvalErrJudgeFailed, "judge call failed after retries")
-			}
-			continue
+			return unscored(j.Dimension, types.EvalErrJudgeFailed, "judge call failed after retries")
 		}
 		s := parseScore(text)
 		scores = append(scores, s)
@@ -588,6 +604,26 @@ func (o *Online) maxRetries() int {
 		return o.limits.MaxRetries
 	}
 	return 0
+}
+
+// judgeCall runs one repeat judge call with its own 1+MaxRetries attempts.
+// It returns the output text, or an error category when the call exhausted
+// its attempts (judge_failed) or the context expired (timeout).
+func (o *Online) judgeCall(ctx context.Context, job *evalJob, j Judge, ev Evidence) (string, types.EvalErrorCategory) {
+	for attempts := 1 + o.maxRetries(); attempts > 0; attempts-- {
+		if ctx.Err() != nil {
+			return "", types.EvalErrTimeout
+		}
+		text, err := callJudge(ctx, o, job, j.Model, ev, j.Rubric)
+		if err == nil {
+			return text, ""
+		}
+		if ctx.Err() != nil {
+			return "", types.EvalErrTimeout
+		}
+		o.logger.Warn("gohan/evals: judge call failed", "dimension", j.Dimension, "evaluation_id", job.evalID, "err", err)
+	}
+	return "", types.EvalErrJudgeFailed
 }
 
 // callJudge runs one judge model call over the redacted evidence. Each
