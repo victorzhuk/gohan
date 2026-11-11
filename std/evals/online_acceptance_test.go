@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"iter"
+	"math"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -127,7 +129,8 @@ func TestReleaseOnline(t *testing.T) {
 			defer close(gate)
 			blocked := NewJudge(types.EvalQuality, &gateModel{gate: gate}, "judge-v1",
 				Rubric{Version: "rub-v1", Instruction: "score quality"}, WithRepeat(DefaultJudgeRepeat))
-			eng, err := NewOnline(1, []Judge{blocked}, WithSink(rec, "dest-eval"))
+			eng, err := NewOnline(1, []Judge{blocked}, WithSink(rec, "dest-eval"),
+				WithRedactor(passthroughRedactor{}, types.RedactionPolicy{}))
 			if err != nil {
 				t.Fatalf("NewOnline: %v", err)
 			}
@@ -136,7 +139,8 @@ func TestReleaseOnline(t *testing.T) {
 			// (1) The terminal path is not delayed: Evaluate admits while the
 			// judge model is still blocked, at the cost of an admission-only
 			// call (the no-evaluator delay bound).
-			baseline, err := NewOnline(1, []Judge{Faithfulness()}, WithSink(&sinkRecorder{}, "dest-eval"))
+			recBase := &sinkRecorder{}
+			baseline, err := NewOnline(1, []Judge{Faithfulness()}, WithSink(recBase, "dest-eval"))
 			if err != nil {
 				t.Fatalf("NewOnline baseline: %v", err)
 			}
@@ -150,7 +154,7 @@ func TestReleaseOnline(t *testing.T) {
 			blockedElapsed := time.Since(start)
 
 			baseStart := time.Now()
-			if err := baseline.Evaluate(context.Background(), evalCompletion("sb-base")); err != nil {
+			if err := baseline.Evaluate(context.Background(), evalCompletionScoredEval("sb-base")); err != nil {
 				t.Fatalf("Evaluate on the admission-only baseline: %v", err)
 			}
 			baseElapsed := time.Since(baseStart)
@@ -162,6 +166,24 @@ func TestReleaseOnline(t *testing.T) {
 			}
 			if blockedElapsed > admissionBound || blockedElapsed > baseElapsed+admissionBound {
 				t.Errorf("Evaluate with blocked judges returned in %v (baseline %v); admission must not wait on judge work", blockedElapsed, baseElapsed)
+			}
+
+			// Evaluator provenance: the deterministic result names the
+			// evaluator that produced it.
+			synctest.Wait()
+			baseRecords := recBase.snapshot()
+			if len(baseRecords) == 0 {
+				t.Fatal("no baseline record settled; the evaluator-backed job must settle with a record")
+			}
+			for _, r := range baseRecords {
+				if r.Eval == nil {
+					continue
+				}
+				for _, res := range r.Eval.Results {
+					if res.Dimension == types.EvalFaithfulness && res.Evaluator == "" {
+						t.Errorf("evaluator-backed %s result carries an empty Evaluator; the result must name the evaluator that scored it", res.Dimension)
+					}
+				}
 			}
 
 			// (2) Completions beyond queue capacity are skipped, not blocked:
@@ -182,8 +204,8 @@ func TestReleaseOnline(t *testing.T) {
 			if err := eng.Shutdown(context.Background()); err != nil {
 				t.Errorf("Shutdown: %v", err)
 			}
-			if minted := len(rec.snapshot()); minted > 5 {
-				t.Errorf("%d eval records minted; only the 5 admitted offers may mint records", minted)
+			if minted := len(rec.snapshot()); minted != 5 {
+				t.Errorf("%d eval records minted; want exactly one record per settled admitted offer (5)", minted)
 			}
 			synctest.Wait()
 
@@ -193,7 +215,8 @@ func TestReleaseOnline(t *testing.T) {
 			gate3 := make(chan struct{})
 			model3 := &gateModel{gate: gate3}
 			eng3, err := NewOnline(1, []Judge{NewJudge(types.EvalQuality, model3, "judge-v1",
-				Rubric{Version: "rub-v1", Instruction: "score quality"})}, WithSink(rec3, "dest-eval"))
+				Rubric{Version: "rub-v1", Instruction: "score quality"})}, WithSink(rec3, "dest-eval"),
+				WithRedactor(passthroughRedactor{}, types.RedactionPolicy{}))
 			if err != nil {
 				t.Fatalf("NewOnline eng3: %v", err)
 			}
@@ -216,8 +239,8 @@ func TestReleaseOnline(t *testing.T) {
 			if rates3.Evaluated != 6 {
 				t.Errorf("Rates().Evaluated = %d; want 6 settled jobs with scored results", rates3.Evaluated)
 			}
-			if got := len(rec3.snapshot()); got < 6 {
-				t.Errorf("%d eval records minted; want one per settled job (6)", got)
+			if got := len(rec3.snapshot()); got != 6 {
+				t.Errorf("%d eval records minted; want exactly one per settled job (6)", got)
 			}
 		})
 	})
@@ -229,7 +252,8 @@ func TestReleaseOnline(t *testing.T) {
 			defer close(gate)
 			blocked := NewJudge(types.EvalQuality, &gateModel{gate: gate}, "judge-v1",
 				Rubric{Version: "rub-v1", Instruction: "score quality"}, WithRepeat(DefaultJudgeRepeat))
-			eng, err := NewOnline(1, []Judge{Faithfulness(), ContextRecall(), blocked}, WithSink(rec, "dest-eval"))
+			eng, err := NewOnline(1, []Judge{Faithfulness(), ContextRecall(), blocked}, WithSink(rec, "dest-eval"),
+				WithRedactor(passthroughRedactor{}, types.RedactionPolicy{}))
 			if err != nil {
 				t.Fatalf("NewOnline: %v", err)
 			}
@@ -319,6 +343,135 @@ func TestReleaseOnline(t *testing.T) {
 		})
 	})
 
+	t.Run("history version moved settles missing evidence", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			rec := &sinkRecorder{}
+			counter := &countingModel{}
+			judge := NewJudge(types.EvalQuality, counter, "judge-v1",
+				Rubric{Version: "rub-v1", Instruction: "score quality"})
+			eng, err := NewOnline(1, []Judge{Faithfulness(), judge}, WithSink(rec, "dest-eval"),
+				WithRedactor(passthroughRedactor{}, types.RedactionPolicy{}))
+			if err != nil {
+				t.Fatalf("NewOnline: %v", err)
+			}
+
+			comp := evalCompletion("shm")
+			if comp.Version != 7 {
+				t.Fatalf("completion Version = %d; the fixture requests history version 7", comp.Version)
+			}
+			comp.History = func(ctx context.Context) (stores.History, error) {
+				return stores.History{
+					Version: 9,
+					Messages: []types.Message{
+						evalMessage(types.RoleUser, types.OriginUser, "What is the deploy status?"),
+						evalMessage(types.RoleAssistant, types.OriginModel, "Done."),
+					},
+				}, nil
+			}
+			if err := eng.Evaluate(context.Background(), comp); err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), DefaultJobDeadline)
+			defer cancel()
+			if err := eng.Shutdown(shutdownCtx); err != nil {
+				t.Errorf("Shutdown: %v", err)
+			}
+			synctest.Wait()
+
+			records := rec.snapshot()
+			if len(records) != 1 {
+				t.Fatalf("%d records settled; want exactly one record for the mismatched job", len(records))
+			}
+			ev := records[0].Eval
+			if ev == nil {
+				t.Fatal("settled record carries no eval payload")
+			}
+			if n := len(ev.Results); n != 2 {
+				t.Errorf("%d results in the record; want one per configured dimension (2)", n)
+			}
+			for _, res := range ev.Results {
+				if res.Status != types.EvalUnscored {
+					t.Errorf("%s result status = %q; a moved history version settles every dimension unscored", res.Dimension, res.Status)
+				}
+				if res.ErrorCategory != types.EvalErrMissingEvidence {
+					t.Errorf("%s result error_category = %q; want missing_evidence for the version mismatch", res.Dimension, res.ErrorCategory)
+				}
+				if !strings.Contains(res.Reason, "7") || !strings.Contains(res.Reason, "9") {
+					t.Errorf("%s result reason = %q; want it to name both the requested version 7 and the loaded version 9", res.Dimension, res.Reason)
+				}
+				if res.PassRequired(0) {
+					t.Errorf("%s result passed PassRequired(0); an unscored result never passes", res.Dimension)
+				}
+			}
+			if calls := counter.callCount(); calls != 0 {
+				t.Errorf("%d judge calls made; the version mismatch must settle before any judge call", calls)
+			}
+			var haveHistoryRef bool
+			for _, e := range ev.Evidence {
+				if e.Kind == types.EvidenceHistoryVersion && e.Ref == "9" {
+					haveHistoryRef = true
+				}
+			}
+			if !haveHistoryRef {
+				t.Errorf("Evidence lacks a history_version ref naming the loaded version 9; got %v", ev.Evidence)
+			}
+		})
+	})
+
+	t.Run("release.online-timeout-self-settle", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			rec := &sinkRecorder{}
+			gate := make(chan struct{})
+			judge := NewJudge(types.EvalQuality, &gateModel{gate: gate}, "judge-v1",
+				Rubric{Version: "rub-v1", Instruction: "score quality"}, WithRepeat(DefaultJudgeRepeat))
+			eng, err := NewOnline(1, []Judge{judge}, WithSink(rec, "dest-eval"),
+				WithRedactor(passthroughRedactor{}, types.RedactionPolicy{}))
+			if err != nil {
+				t.Fatalf("NewOnline: %v", err)
+			}
+
+			if err := eng.Evaluate(context.Background(), evalCompletion("st1")); err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+
+			// No Shutdown: the deadline alone must retire the blocked job.
+			time.Sleep(DefaultJobDeadline + DefaultJobDeadline/2)
+			synctest.Wait()
+
+			records := rec.snapshot()
+			if len(records) != 1 {
+				t.Fatalf("%d records settled without Shutdown; want the job to self-settle at the deadline", len(records))
+			}
+			ev := records[0].Eval
+			if ev == nil {
+				t.Fatal("settled record carries no eval payload")
+			}
+			if settle := ev.CompletedAt.Sub(ev.StartedAt); settle > DefaultJobDeadline+5*time.Second {
+				t.Errorf("job settled in %v; JobDeadline %v must bound settling without Shutdown", settle, DefaultJobDeadline)
+			}
+			if len(ev.Results) == 0 {
+				t.Fatal("self-settled record carries no results")
+			}
+			for _, res := range ev.Results {
+				if res.Status != types.EvalUnscored {
+					t.Errorf("%s result status = %q; a deadline-retired job settles unscored", res.Dimension, res.Status)
+				}
+				if res.ErrorCategory != types.EvalErrTimeout {
+					t.Errorf("%s result error_category = %q; want timeout", res.Dimension, res.ErrorCategory)
+				}
+				if res.Reason == "" {
+					t.Errorf("%s unscored result has empty Reason; want the unscored cause recorded", res.Dimension)
+				}
+			}
+
+			close(gate)
+			if err := eng.Shutdown(context.Background()); err != nil {
+				t.Errorf("Shutdown: %v", err)
+			}
+		})
+	})
+
 	t.Run("release.online-provenance", func(t *testing.T) {
 		dir := t.TempDir()
 		outage := &outcomeDest{
@@ -348,7 +501,8 @@ func TestReleaseOnline(t *testing.T) {
 		judge := NewJudge(types.EvalQuality, &fixedModel{version: "judge-v1", delta: "0.8"}, "judge-v1",
 			Rubric{Version: "rub-v1", Instruction: "score quality"}, WithRepeat(DefaultJudgeRepeat))
 		capture := &captureSink{inner: telemetry.SpoolSink(spool)}
-		eng, err := NewOnline(1, []Judge{judge}, WithSink(capture, "dest-eval"), WithMetrics(met))
+		eng, err := NewOnline(1, []Judge{judge}, WithSink(capture, "dest-eval"), WithMetrics(met),
+			WithRedactor(passthroughRedactor{}, types.RedactionPolicy{}))
 		if err != nil {
 			t.Fatalf("NewOnline: %v", err)
 		}
@@ -495,11 +649,14 @@ func TestReleaseOnline(t *testing.T) {
 			} else if ev.CompletedAt.Before(ev.StartedAt) {
 				t.Errorf("CompletedAt %v before StartedAt %v", ev.CompletedAt, ev.StartedAt)
 			}
-			if ev.Tokens != 30 {
-				t.Errorf("EvalRecord.Tokens = %d; want the run usage 30", ev.Tokens)
+			// Provenance accounting: the record carries the evaluation's own
+			// judge spend, not the run usage. DefaultJudgeRepeat calls at
+			// 30 tokens and 0.02 each make 90 tokens and 0.06.
+			if ev.Tokens != 90 {
+				t.Errorf("EvalRecord.Tokens = %d; want the judge spend 90 (%d calls x 30 tokens), not the run usage 30", ev.Tokens, DefaultJudgeRepeat)
 			}
-			if ev.Cost != 0.02 {
-				t.Errorf("EvalRecord.Cost = %v; want the run cost 0.02", ev.Cost)
+			if diff := math.Abs(ev.Cost - 0.06); diff > 1e-9 {
+				t.Errorf("EvalRecord.Cost = %v; want the judge spend 0.06 (%d calls x 0.02) within 1e-9, not the run cost 0.02", ev.Cost, DefaultJudgeRepeat)
 			}
 		}
 
@@ -593,7 +750,8 @@ func TestReleaseOnline(t *testing.T) {
 		}
 
 		rec := &sinkRecorder{}
-		eng, err := NewOnline(1, []Judge{judge}, WithSink(rec, "dest-eval"))
+		eng, err := NewOnline(1, []Judge{judge}, WithSink(rec, "dest-eval"),
+			WithRedactor(passthroughRedactor{}, types.RedactionPolicy{}))
 		if err != nil {
 			t.Fatalf("NewOnline: %v", err)
 		}
@@ -614,7 +772,8 @@ func TestReleaseOnline(t *testing.T) {
 		if changed.Fingerprint() == judge.Fingerprint() {
 			t.Fatal("judge fingerprint unchanged after model and rubric change; the fingerprint must cover model and rubric versions")
 		}
-		eng2, err := NewOnline(1, []Judge{changed}, WithSink(&sinkRecorder{}, "dest-eval"))
+		eng2, err := NewOnline(1, []Judge{changed}, WithSink(&sinkRecorder{}, "dest-eval"),
+			WithRedactor(passthroughRedactor{}, types.RedactionPolicy{}))
 		if err != nil {
 			t.Fatalf("NewOnline with the changed judge: %v", err)
 		}
@@ -664,7 +823,95 @@ func TestReleaseOnline(t *testing.T) {
 		if _, err := missGate.Review(context.Background(), judge); !errors.Is(err, ErrCalibrationCriteria) {
 			t.Errorf("Review with a label outside tolerance: err = %v; want errors.Is ErrCalibrationCriteria naming the failing class", err)
 		}
+
+		// A review over a set that names no version is refused.
+		emptyVersionGate := CalibrationGate{
+			Set:      CalibrationSet{Labels: set.Labels},
+			Criteria: criteria,
+		}
+		if _, err := emptyVersionGate.Review(context.Background(), judge); err == nil {
+			t.Error("Review over a set with an empty Version was granted; want a refusal")
+		}
+
+		// An approval naming no set version is refused at activation.
+		eng3, err := NewOnline(1, []Judge{judge}, WithSink(&sinkRecorder{}, "dest-eval"),
+			WithRedactor(passthroughRedactor{}, types.RedactionPolicy{}))
+		if err != nil {
+			t.Fatalf("NewOnline for the unversioned approval: %v", err)
+		}
+		noVersion := CalibrationApproval{Fingerprint: judge.Fingerprint()}
+		if err := eng3.Activate(noVersion); !errors.Is(err, ErrCalibrationRequired) {
+			t.Errorf("Activate of an approval with an empty SetVersion: err = %v; want errors.Is ErrCalibrationRequired", err)
+		}
+
+		// MaxClassError must cover every class present in the set: a
+		// criteria that omits the present class hard is refused and the
+		// error names that class.
+		partialCriteria := criteria
+		partialCriteria.MaxClassError = map[string]float64{"easy": 0.2}
+		partialGate := CalibrationGate{Set: set, Criteria: partialCriteria}
+		_, err = partialGate.Review(context.Background(), judge)
+		if !errors.Is(err, ErrCalibrationCriteria) {
+			t.Errorf("Review with MaxClassError missing the present class hard: err = %v; want errors.Is ErrCalibrationCriteria", err)
+		} else if !strings.Contains(err.Error(), "hard") {
+			t.Errorf("refusal for the missing class coverage: err = %v; want the error to name the uncovered class hard", err)
+		}
 	})
+}
+
+// evalCompletionScoredEval is a terminal completion whose history carries
+// a declarative claim the faithfulness evaluator scores, so the settled
+// result is scored and names its evaluator.
+func evalCompletionScoredEval(sessionID string) gohan.RunCompletion {
+	comp := evalCompletion(sessionID)
+	comp.History = func(ctx context.Context) (stores.History, error) {
+		return stores.History{
+			Messages: []types.Message{
+				evalMessage(types.RoleUser, types.OriginUser, "Tell me the deploy status for the api service."),
+				evalMessage(types.RoleAssistant, types.OriginModel, "The deploy status for the api service is green."),
+			},
+			Version: 7,
+		}, nil
+	}
+	return comp
+}
+
+// passthroughRedactor is an in-package types.Redactor fake: the engine
+// gate checks presence only, so it returns blocks unchanged.
+type passthroughRedactor struct{}
+
+func (passthroughRedactor) Redact(ctx context.Context, blocks []types.Block, p types.RedactionPolicy) ([]types.Block, types.RedactionMap, error) {
+	return blocks, types.RedactionMap{}, nil
+}
+
+func (passthroughRedactor) Rehydrate(ctx context.Context, blocks []types.Block, m types.RedactionMap) ([]types.Block, error) {
+	return blocks, nil
+}
+
+// countingModel is a judge model that counts its Generate calls and
+// reports one usage unit per call.
+type countingModel struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (m *countingModel) Profile() types.ModelProfile {
+	return types.ModelProfile{Name: "counting-judge", Version: "judge-v1"}
+}
+
+func (m *countingModel) Generate(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+	return func(yield func(types.ModelChunk, error) bool) {
+		m.mu.Lock()
+		m.calls++
+		m.mu.Unlock()
+		yield(types.ModelChunk{Kind: types.DeltaText, Delta: "0.8", Finish: types.FinishStop}, nil)
+	}
+}
+
+func (m *countingModel) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
 }
 
 // fixedModel is a deterministic judge model always answering the same
@@ -675,12 +922,21 @@ type fixedModel struct {
 }
 
 func (m *fixedModel) Profile() types.ModelProfile {
-	return types.ModelProfile{Name: "scripted-judge", Version: m.version}
+	return types.ModelProfile{
+		Name:    "scripted-judge",
+		Version: m.version,
+		Pricing: types.Pricing{Input: 0.001, Output: 0.0005},
+	}
 }
 
 func (m *fixedModel) Generate(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
 	return func(yield func(types.ModelChunk, error) bool) {
-		yield(types.ModelChunk{Kind: types.DeltaText, Delta: m.delta, Finish: types.FinishStop}, nil)
+		yield(types.ModelChunk{
+			Kind:   types.DeltaText,
+			Delta:  m.delta,
+			Usage:  &types.Usage{InputTokens: 10, OutputTokens: 20},
+			Finish: types.FinishStop,
+		}, nil)
 	}
 }
 
