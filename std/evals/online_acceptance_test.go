@@ -253,7 +253,6 @@ func TestReleaseOnline(t *testing.T) {
 				status    types.EvalStatus
 				category  types.EvalErrorCategory
 				wantTrue  bool // category must match
-				wantFalse bool // category must be empty
 			}
 			expected := map[string]want{
 				types.EvalFaithfulness:  {status: types.EvalUnscored, category: types.EvalErrMissingEvidence, wantTrue: true},
