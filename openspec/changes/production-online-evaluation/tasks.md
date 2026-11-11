@@ -16,5 +16,5 @@ Risk depth: existing-service-strict. No skipped, flaky or infrastructure-failed 
 
 ## 3. Integration
 
-- [ ] 3.1 Run assigned scenarios, process crash tests where applicable and targeted race checks. Retain assertion-level evidence, process deadlines and worker bounds. Unit tests require named residual risks beyond acceptance coverage.
-- [ ] 3.2 Verify `task lint`, `task spec`, `task test`, `task api:check` and affected standalone adapter checks after inspecting wrappers. Bound command duration and concurrency. Update existing `[Unreleased]` entries for shipped behavior.
+- [x] 3.1 Run assigned scenarios, process crash tests where applicable and targeted race checks. Retain assertion-level evidence, process deadlines and worker bounds. Unit tests require named residual risks beyond acceptance coverage.
+- [x] 3.2 Verify `task lint`, `task spec`, `task test`, `task api:check` and affected standalone adapter checks after inspecting wrappers. Bound command duration and concurrency. Update existing `[Unreleased]` entries for shipped behavior.
