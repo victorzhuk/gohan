@@ -10,6 +10,7 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 - Portable telemetry export records, destination and sink ports, optional lifecycle and gauge interfaces, and bounded diagnostics in `core/types`.
 - Bounded per-destination telemetry delivery, admission policy and outcome handling in `std/telemetry`.
 - An owned `adapter/otel` export pipeline, gauge support and diagnostics for rejected instruments; caller-provided providers remain borrowed.
+- An opt-in durable local telemetry spool in `std/telemetry` with sync-before-acknowledgement appends, restart replay, per-destination cursors, corruption recovery, capacity and erasure guarantees; `adapter/otel` integrates through `SpoolSink`.
 
 ### Changed
 

@@ -3872,5 +3872,30 @@
     "capability": "telemetry",
     "origin": "telemetry-export-contracts",
     "title": "admission rejects unsafe growth"
+  },
+  "telemetry.wal-durable-restart": {
+    "capability": "telemetry",
+    "origin": "telemetry-local-wal",
+    "title": "crash after local acceptance"
+  },
+  "telemetry.wal-corruption": {
+    "capability": "telemetry",
+    "origin": "telemetry-local-wal",
+    "title": "corrupt spool recovery"
+  },
+  "telemetry.wal-destination-cursors": {
+    "capability": "telemetry",
+    "origin": "telemetry-local-wal",
+    "title": "restart with divergent destinations"
+  },
+  "telemetry.wal-capacity-ownership": {
+    "capability": "telemetry",
+    "origin": "telemetry-local-wal",
+    "title": "ownership and disk failure"
+  },
+  "telemetry.wal-content-erasure": {
+    "capability": "telemetry",
+    "origin": "telemetry-local-wal",
+    "title": "erasure survives interruption"
   }
 }

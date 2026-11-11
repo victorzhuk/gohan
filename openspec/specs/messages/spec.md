@@ -264,6 +264,7 @@ Rules:
 | `gohan.subflow_partial` | Permanent | 422 | `PartialError` |
 | `gohan.outcome_unknown` | Retryable | 409 | `UncertainOutcomeError` |
 | `gohan.export_refused` | Permanent (delivery-path diagnostic; surfaces through export diagnostics, never `ProblemOf`) | 500 | `ErrExportUnsupportedSignal`, `ErrIncompatibleReplay`, `ErrUnknownDestination`, `ErrExportQueueFull`, `ErrInstrumentLimit`, `ErrInstrumentConflict`, `ErrDimensionLimit`, `ErrSeriesLimit`, `ErrExportShutdown` |
+| `gohan.spool_refused` | Permanent (delivery-path diagnostic; surfaces through spool diagnostics and returned errors, never `ProblemOf`) | 500 | `ErrSpoolLocked`, `ErrSpoolConfig`, `ErrSpoolQuota`, `ErrSpoolDiskFull`, `CorruptionError` |
 | `gohan.internal` | Permanent | 500 | any other error, including `ErrSignalsPending` escaping the runtime (a bug) |
 
 #### Scenario: every sentinel has a code

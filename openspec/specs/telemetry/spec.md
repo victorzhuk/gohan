@@ -416,6 +416,184 @@ func (p *ExportPipeline) Shutdown(ctx context.Context) (UnresolvedWork, error)
 
 Instrument creation failures on any path report `DiagInstrumentRejected` instead of dropping silently; the distinct-name count is bounded by `ExportLimits.MaxInstruments`.
 
+### 6.16b Durable local telemetry
+
+Export (6.16a) gains an opt-in durable local spool: `std/telemetry`, standard library only, Linux local filesystems only. The spool owns delivery itself — it never wraps `Pipeline`, and `NewPipeline` behavior for non-WAL users never changes. `adapter/otel` drives the spool through `SpoolSink`, the void instrumentation bridge, which promises bounded admission only; critical callers use the explicit durable append and wait for sync. Records persist in the 6.16a wire form with their stable IDs; delivery is at-least-once, so a destination may see duplicates after a crash, never silent loss.
+
+One process owns each spool. `OpenSpool` creates the directory with mode `0o700` and every file with mode `0o600`, takes an exclusive OS lock (flock) on a lock file for the spool's lifetime, and fails with `ErrSpoolLocked` when another writer holds it; `Shutdown` releases the lock and is idempotent. Every limit is required at construction: a zero or negative `ByteQuota`, `SegmentBytes`, `MaxPendingAge`, `RetryPolicy` field, `Workers` or `RequestDeadline` fails with `ErrSpoolConfig` naming the field — there are no hidden defaults for the six required limits. Destination names must be unique and non-nil at open; per-record admission mirrors 6.16a (content capture off by default through `ContentNone`, an optional `Redactor` round-tripping surviving string values, forbidden identity dimensions dropped under both spellings, record validation) and runs before any byte is queued; a record whose signal the destination does not support refuses with `ErrExportUnsupportedSignal`, an unconfigured destination with `ErrUnknownDestination`. Admission may redact or drop attributes in place through the caller's record pointers, so a caller retaining records must copy first.
+
+Acceptance has two explicit levels. `Append` is the durable append: it returns `nil` only after the record bytes and the segment creation and rotation metadata (file data fsync, then directory fsync when a segment is created or rolled) are synced; concurrent appends share one fsync to amortize cost, and no caller is acknowledged before that sync completes. `Admit` is queue acceptance: bounded by the admission depth (`DefaultSpoolAdmissionDepth`, adjustable), refused with `ErrExportQueueFull` when full, never a durability promise — only synced records replay after a restart. After `Shutdown` both refuse with `ErrExportShutdown`. Capacity refusal is atomic and never evicts: appending past `ByteQuota` fails with `ErrSpoolQuota`, a full disk fails with `ErrSpoolDiskFull` wrapping the write error, and in both cases the whole call refuses, no record is persisted partially, and pending records are never deleted to make room.
+
+Storage is one ordered stream per destination, split into segments that roll at `SegmentBytes` (a record larger than the threshold occupies its own segment). Each record is length-framed, little-endian: a header of `u32` version (`CurrentSpoolRecordVersion`), `u64` sequence, `u32` body length and `u32` CRC-32C over the body, followed by the body in the 6.16a wire form. Sequence numbers are minted at append, survive compaction unchanged and are never reused. Recovery at open verifies every record. An incomplete final record — header or body cut off by end of file — is repaired: the stream truncates to the last complete boundary and fsyncs, preceding records are preserved, and the repair is reported as `DiagSpoolRepaired` and in health. Any interior checksum or framing failure, and any complete record whose envelope version or body `schema_version` is unsupported, fails the open with a `*CorruptionError` carrying kind, path and offset, reported as `DiagSpoolCorrupt` — corruption is never silently skipped.
+
+Replay and delivery: a destination's pending records are exactly the sequence range above its durable cursor. At most `Workers` delivery workers run concurrently, one owning each destination's stream; batches carry at most `DefaultSpoolBatchRecords` records in strict sequence order, and every `Export` attempt runs under a context bounded by `RequestDeadline`. Outcomes follow the 6.16a state machine with two durable-mode amendments: `ambiguous` retains the record unresolved — a later attempt may duplicate it, which the at-least-once contract permits — and `permanent` parks the stream at that record instead of dropping it. `retryable`, an absent outcome row and a cancelled attempt retain the record with its ID unchanged. The cursor advances only past acknowledged or explicitly discarded records; remote acknowledgements persist (cursor fsync) before any acknowledged prefix is reclaimed, so a crash between remote acceptance and cursor persistence replays the record — duplicates, never loss. `Retry` bounds attempts per record within a spool session (exponential backoff from `Backoff` to `MaxBackoff`; exhausted attempts park the record); `MaxPendingAge` is the durable backstop: a pending record older than the limit expires, delivery for its destination stops at that record, and only explicit discard resumes the stream.
+
+Two decisions stay with the owner. `Discard` removes named pending records from a destination stream through a synced compaction, returns the count removed and unblocks the stream — the required disposition for parked and expired records. `RemoveDestination` refuses to guess: `BacklogDiscard` compacts the stream away, clears its cursor and removes retired files before returning; `BacklogRetain` keeps the records durable and quota-counted, undelivered, and the stream resumes if the same name is registered again.
+
+Persisted content obeys erasure. Credentials never persist: redaction precedes append and content capture is off by default; cursor, lock and health state carry no record content. `EraseSubjects` runs crash-safely: it fsyncs a tombstone of the erasure rule first; from that moment every read path blocks matching records (string equality on `Attr` across resource attrs, span attrs and metric dimensions); each stream compacts without the matching records while surviving records keep their sequence numbers and order; cursor state compacts with them; retired files are unlinked and the directory fsynced before the call reports completion; only then is the tombstone cleared. An erasure interrupted at any point completes at the next open before the spool serves, and removed subject content never replays — not even between crash and completed compaction, because the tombstone filters first. Erasure does not promise physical media sanitization; deployments combine it with filesystem encryption.
+
+Health is independent of the record path: `Health` takes a read-only local snapshot, never enqueues records and never routes failures back through the WAL. It reports pending bytes, admitted-but-unsynced count, oldest pending age, per-destination cursor, pending count, lag (age of the oldest undelivered record), retries, parked IDs, expired count, cumulative rejected appends and corruption repairs. `Flush` distinguishes locally synced from remotely delivered work: it syncs every admitted record, waits for one bounded delivery pass within `ctx`, and returns how many records became durable (`Synced`), were acknowledged remotely per destination (`Delivered`) and remain durable but undelivered (`Undelivered`). `Shutdown` performs one final bounded drain, persists cursors and state, releases the lock and leaves every undelivered record durable for the next start; draining or retaining is the rollback path and a spool is never deleted as rollback.
+
+```go
+const CurrentSpoolRecordVersion = 1
+
+const (
+	DefaultSpoolAdmissionDepth = 2048
+	DefaultSpoolBatchRecords   = 128
+)
+
+type RetryPolicy struct {
+	MaxAttempts int           // attempts per record per spool session; exhaustion parks the record
+	Backoff     time.Duration // base delay between attempts
+	MaxBackoff  time.Duration // exponential backoff ceiling
+}
+
+type SpoolConfig struct {
+	ByteQuota       int64         // durable pending bytes; refusal beyond it never evicts records
+	SegmentBytes    int64         // segment rollover threshold
+	MaxPendingAge   time.Duration // retention limit; expired pending parks delivery until discard
+	Retry           RetryPolicy   // delivery retry bounds
+	Workers         int           // concurrent delivery worker cap
+	RequestDeadline time.Duration // per Export attempt deadline
+}
+
+type SpoolOption func(*spoolConfig)
+
+func WithSpoolDiagnostics(d Diagnostics) SpoolOption
+func WithSpoolRedactor(r Redactor, p RedactionPolicy) SpoolOption
+func WithSpoolContentCapture(c ContentMapping) SpoolOption
+func WithSpoolAdmissionDepth(n int) SpoolOption
+
+// OpenSpool opens (or creates) the spool at dir, owned exclusively by this
+// process for its lifetime, recovers streams and cursors, completes any
+// interrupted erasure, and validates cfg and dests before serving.
+func OpenSpool(dir string, dests []ExportDestination, cfg SpoolConfig, opts ...SpoolOption) (*Spool, error)
+
+type Spool struct{ /* unexported */ }
+
+// Append is the explicit durable append: it returns nil only after the
+// record data and the segment creation and rotation metadata are synced.
+func (s *Spool) Append(ctx context.Context, dest string, recs []ExportRecord) error
+
+// Admit is bounded queue acceptance: no sync promise, refused with
+// ErrExportQueueFull past the admission depth. Only synced records replay.
+func (s *Spool) Admit(ctx context.Context, dest string, recs []ExportRecord) error
+
+// Flush syncs admitted records, waits for one bounded delivery pass within
+// ctx and reports synced, delivered and undelivered work separately.
+func (s *Spool) Flush(ctx context.Context) (SpoolFlush, error)
+
+// Shutdown runs one final bounded drain, persists cursors and state,
+// releases the exclusive lock and is idempotent. Undelivered records stay
+// durable for the next open.
+func (s *Spool) Shutdown(ctx context.Context) (UnresolvedWork, error)
+
+// Health snapshots the spool locally; it never enqueues records.
+func (s *Spool) Health() SpoolHealth
+
+// Discard removes named pending records from dest through a synced
+// compaction and returns how many were removed. It is the required
+// disposition for parked and expired records.
+func (s *Spool) Discard(ctx context.Context, dest string, ids ...RecordID) (int64, error)
+
+// RemoveDestination deregisters dest after an explicit disposition of its
+// backlog.
+func (s *Spool) RemoveDestination(ctx context.Context, dest string, disposition BacklogDisposition) error
+
+// EraseSubjects removes every record matching the erasure rule from all
+// streams, crash-safely, and never lets matching content replay again.
+func (s *Spool) EraseSubjects(ctx context.Context, subjects SubjectErasure) (ErasureResult, error)
+
+// SpoolSink adapts a Spool to RecordSink for adapter/otel: Ingest admits
+// with bounded queue acceptance, Flush syncs and drains, Shutdown shuts
+// down. The bridge promises bounded admission only.
+func SpoolSink(s *Spool) RecordSink
+
+type SpoolFlush struct {
+	Synced      int64            `json:"synced"`              // records made durable by this flush
+	Delivered   map[string]int64 `json:"delivered,omitempty"` // records acknowledged remotely per destination
+	Undelivered UnresolvedWork   `json:"undelivered"`         // durable records awaiting remote acknowledgement
+}
+
+type DestinationCursor struct {
+	Name  string `json:"name"`
+	Acked int64  `json:"acked"` // highest sequence acknowledged or discarded
+}
+
+type DestinationHealth struct {
+	Name    string            `json:"name"`
+	Cursor  DestinationCursor `json:"cursor"`
+	Pending int64             `json:"pending"` // undelivered records
+	Lag     time.Duration     `json:"lag"`     // age of the oldest undelivered record
+	Retries int64             `json:"retries"` // cumulative retryable outcomes since open
+	Parked  []RecordID        `json:"parked,omitempty"` // permanent rejections and exhausted retries
+	Expired int64             `json:"expired"` // pending records past the retention limit
+}
+
+type CorruptionReport struct {
+	RepairedTails int64 `json:"repaired_tails"` // incomplete final records truncated at recovery
+	RepairedBytes int64 `json:"repaired_bytes"`
+}
+
+type SpoolHealth struct {
+	PendingBytes     int64               `json:"pending_bytes"`
+	AdmissionQueued  int64               `json:"admission_queued"` // accepted, not yet synced
+	OldestPendingAge time.Duration       `json:"oldest_pending_age"`
+	RejectedAppends  int64               `json:"rejected_appends"` // cumulative refused Append and Admit calls
+	Corruption       CorruptionReport    `json:"corruption"`
+	Destinations     []DestinationHealth `json:"destinations"`
+}
+
+type BacklogDisposition string
+
+const (
+	BacklogDiscard BacklogDisposition = "discard" // compact the stream away and remove retired files
+	BacklogRetain  BacklogDisposition = "retain"  // keep records durable and quota-counted; resume on re-registration
+)
+
+type SubjectErasure struct {
+	Attr   string   `json:"attr"`   // attribute key identifying the subject
+	Values []string `json:"values"` // matching string values are erased
+}
+
+type ErasureResult struct {
+	Records int64 `json:"records"`
+	Bytes   int64 `json:"bytes"`
+}
+
+type CorruptionKind string
+
+const (
+	CorruptionTail     CorruptionKind = "incomplete_tail" // repairable torn final record
+	CorruptionChecksum CorruptionKind = "checksum"        // interior checksum mismatch
+	CorruptionFraming  CorruptionKind = "framing"         // interior length or header violation
+	CorruptionVersion  CorruptionKind = "version"         // unsupported envelope version or schema_version
+)
+
+type CorruptionError struct {
+	Kind   CorruptionKind
+	Path   string
+	Offset int64
+	Err    error
+}
+
+func (e *CorruptionError) Error() string
+func (e *CorruptionError) Unwrap() error
+
+// Declared on the core DiagnosticKind type; core/types itself is unchanged.
+const (
+	DiagSpoolCorrupt  DiagnosticKind = "spool_corrupt"  // rejected corruption with a *CorruptionError
+	DiagSpoolRepaired DiagnosticKind = "spool_repaired" // tail repair; Dropped carries lost bytes
+)
+
+var (
+	ErrSpoolLocked   = errors.New("gohan: spool is owned by another writer")
+	ErrSpoolConfig   = errors.New("gohan: spool configuration is invalid")
+	ErrSpoolQuota    = errors.New("gohan: spool byte quota exceeded")
+	ErrSpoolDiskFull = errors.New("gohan: spool device is out of space")
+)
+```
+
 ## Requirements
 
 ### Requirement: Telemetry
@@ -512,3 +690,43 @@ Pipelines MUST bound queues, instruments, dimension values and total series. Red
 ID: `telemetry.export-bounds-privacy`
 - **WHEN** producers submit secret-bearing content, unbounded dimensions and a failing instrument registration
 - **THEN** forbidden content reaches no serialized output and bounded independent diagnostics report rejection
+
+### Requirement: Durable local acceptance survives restart
+Durable append MUST acknowledge only synced records. Restart MUST replay these records with their original IDs until remote acknowledgement.
+
+#### Scenario: Crash after local acceptance
+ID: `telemetry.wal-durable-restart`
+- **WHEN** the process is killed after synced acknowledgement and before remote delivery
+- **THEN** restart exports every locally acknowledged pending record with unchanged IDs
+
+### Requirement: WAL corruption is explicit
+Recovery MUST reject interior corruption and unknown versions. Recovery MUST preserve preceding records when repairing an incomplete final record.
+
+#### Scenario: Corrupt spool recovery
+ID: `telemetry.wal-corruption`
+- **WHEN** a spool has an incomplete tail, interior checksum failure or unsupported version
+- **THEN** only the incomplete tail is repaired and other corruption fails with actionable diagnostics
+
+### Requirement: Destinations retain independent progress
+Each destination MUST persist its acknowledgement progress. Ambiguous delivery MUST retain unresolved records and permit duplicate replay.
+
+#### Scenario: Restart with divergent destinations
+ID: `telemetry.wal-destination-cursors`
+- **WHEN** one destination acknowledges and another fails before a restart
+- **THEN** acknowledged progress survives and unresolved records replay with stable IDs
+
+### Requirement: Spool limits preserve durable records
+The spool MUST reject concurrent writers and appends beyond capacity. It MUST NOT automatically evict unacknowledged records.
+
+#### Scenario: Ownership and disk failure
+ID: `telemetry.wal-capacity-ownership`
+- **WHEN** a second writer opens the spool and its owner encounters quota or disk exhaustion
+- **THEN** the second writer fails and existing durable records remain recoverable
+
+### Requirement: Persisted content obeys erasure
+Subject erasure MUST remove matching captured content before reporting completion and MUST prevent its subsequent replay.
+
+#### Scenario: Erasure survives interruption
+ID: `telemetry.wal-content-erasure`
+- **WHEN** erasure is interrupted during segment replacement and retried after restart
+- **THEN** recovery completes erasure without replaying removed subject content

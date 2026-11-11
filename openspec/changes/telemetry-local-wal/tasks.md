@@ -4,8 +4,8 @@ Risk depth: existing-service-strict. No skipped, flaky or infrastructure-failed 
 
 ## 1. Contracts
 
-- [ ] 1.1 Add the next available ADR, sync the approved delta, register its scenario IDs and regenerate docs/design/types.md. Verify `task spec:types` and frozen method compatibility.
-- [ ] 1.2 Finalize additive Go declarations and serialized shapes from design.md before implementation. Verify review against existing telemetry, redaction and compatibility contracts.
+- [x] 1.1 Add the next available ADR, sync the approved delta, register its scenario IDs and regenerate docs/design/types.md. Verify `task spec:types` and frozen method compatibility.
+- [x] 1.2 Finalize additive Go declarations and serialized shapes from design.md before implementation. Verify review against existing telemetry, redaction and compatibility contracts.
 
 ## 2. Behavior
 

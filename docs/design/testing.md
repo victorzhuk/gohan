@@ -24,6 +24,8 @@
 - `telemetry.export-lifecycle` in `adapter/otel` covers bounded flush and shutdown, unresolved work, repeated shutdown, post-shutdown refusal, and worker cleanup. It also checks that borrowed providers remain usable and do not expose `TelemetryLifecycle`, unlike the owned pipeline.
 - `telemetry.export-signal-fidelity` in `adapter/otel` covers span ancestry, timestamps and outcomes, metric instrument semantics, and destination rejection. Its rejection cases also live in `std/telemetry`.
 - `telemetry.export-bounds-privacy` covers instrument limits in `adapter/otel` and admission bounds, content filtering, redaction and forbidden identity dimensions in `std/telemetry`.
+- `telemetry.wal-corruption` and `telemetry.wal-capacity-ownership` in `std/telemetry` cover tail repair versus interior corruption rejection, exclusive flock ownership, atomic quota refusal without eviction, and reopen recoverability.
+- `telemetry.wal-durable-restart`, `telemetry.wal-destination-cursors` and `telemetry.wal-content-erasure` in `std/telemetry` cover restart replay with stable IDs, divergent per-destination cursors, and crash-safe subject erasure.
 
 
 ## Testkit shapes (illustrative tier — testkit is not a capability; names may change in task 29)
