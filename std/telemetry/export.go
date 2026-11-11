@@ -219,6 +219,20 @@ func (p *Pipeline) Ingest(ctx context.Context, dest string, recs []types.ExportR
 		if err := validateRecord(&recs[i]); err != nil {
 			return err
 		}
+		sig := recs[i].Signal
+		if sig == types.SignalSpan || sig == types.SignalMetric {
+			continue
+		}
+		declared := false
+		for _, ds := range d.caps.Signals {
+			if ds == sig {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			return fmt.Errorf("gohan/telemetry: record %s: %w: %s", recs[i].ID, types.ErrExportUnsupportedSignal, sig)
+		}
 	}
 
 	dropped := make([]string, 0, len(recs))
@@ -271,11 +285,11 @@ func validateRecord(rec *types.ExportRecord) error {
 	case rec.SchemaVersion != types.CurrentExportSchemaVersion:
 		return fmt.Errorf("gohan/telemetry: record %s: schema version %d, want %d", rec.ID, rec.SchemaVersion, types.CurrentExportSchemaVersion)
 	case rec.Signal == types.SignalSpan:
-		if rec.Span == nil || rec.Metric != nil {
+		if rec.Span == nil || rec.Metric != nil || rec.Eval != nil {
 			return fmt.Errorf("gohan/telemetry: record %s: span signal without span payload", rec.ID)
 		}
 	case rec.Signal == types.SignalMetric:
-		if rec.Metric == nil || rec.Span != nil {
+		if rec.Metric == nil || rec.Span != nil || rec.Eval != nil {
 			return fmt.Errorf("gohan/telemetry: record %s: metric signal without metric payload", rec.ID)
 		}
 	case rec.Signal == types.SignalEval:
