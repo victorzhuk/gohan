@@ -116,6 +116,8 @@ type Lifecycle struct {
 	sessions           stores.SessionIndex
 	consolidator       MemoryConsolidator
 	consolidationAudit stores.AuditLog
+	evaluator          RunEvaluator
+	evalHistory        HistoryLoader
 	cacheWrite         CacheWriteFunc
 	handoff            func(context.Context, types.HandoffContext) error
 	handles            types.SandboxHandles

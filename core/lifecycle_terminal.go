@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/runtime"
@@ -17,6 +18,14 @@ import (
 // through. A lifecycle without one finishes without consolidating.
 func WithLifecycleConsolidation(c MemoryConsolidator, audit stores.AuditLog) LifecycleOption {
 	return func(lc *Lifecycle) { lc.consolidator, lc.consolidationAudit = c, audit }
+}
+
+// WithLifecycleEvaluation binds the terminal evaluation seam and its
+// history loader. A lifecycle without one evaluates nothing. The seam
+// runs after the terminal write, beside consolidation; admission is
+// nonblocking and its error is logged, never a failed Done.
+func WithLifecycleEvaluation(e RunEvaluator, load HistoryLoader) LifecycleOption {
+	return func(lc *Lifecycle) { lc.evaluator, lc.evalHistory = e, load }
 }
 
 // WithLifecycleApprovalPolicy binds the source the suspension resolves each
@@ -190,7 +199,11 @@ func (lc *Lifecycle) finishTurn(ctx context.Context, st runtime.State, terminal 
 	}
 	lc.writeCacheEntry(ctx, st, terminal, unknown)
 	lc.consolidate(ctx)
-	return st, []types.Event{lc.done(st, unknown, terminal)}, false, nil
+	d := lc.done(st, unknown, terminal)
+	if done, ok := d.(types.Done); ok {
+		lc.evaluate(ctx, st, done)
+	}
+	return st, []types.Event{d}, false, nil
 }
 
 // writeCacheEntry applies the never-cache-failures gate before the
@@ -256,6 +269,28 @@ func (lc *Lifecycle) consolidate(ctx context.Context) {
 	ri := types.RunInfo{SessionID: lc.sessionID, RunID: lc.lease.RunID, Principal: lc.originator}
 	if err := lc.consolidator.Run(ctx, ri); err != nil {
 		consolidateFailure(ctx, lc.consolidationAudit, ri, err)
+	}
+}
+
+// evaluate offers the finished run to the terminal evaluation seam
+// beside consolidation. Admission is nonblocking; an error is logged at
+// Warn and never fails the terminal Done.
+func (lc *Lifecycle) evaluate(ctx context.Context, st runtime.State, d types.Done) {
+	if lc.evaluator == nil {
+		return
+	}
+	info, _ := types.RunInfoFrom(ctx)
+	version := st.HistoryVersion
+	var history func(context.Context) (stores.History, error)
+	if lc.evalHistory != nil {
+		load := lc.evalHistory
+		history = func(ctx context.Context) (stores.History, error) {
+			return load(ctx, version)
+		}
+	}
+	snap := RunCompletion{Info: info, Done: d, Version: version, History: history}
+	if err := lc.evaluator.Evaluate(ctx, snap); err != nil {
+		slog.Warn("gohan: online evaluation admission failed", "err", err)
 	}
 }
 

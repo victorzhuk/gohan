@@ -365,6 +365,7 @@ func NewForeignConversation(stack *Stack, name string, opts ...ConversationOptio
 	c.redactionPolicy = cfg.redactionPolicy
 	c.consolidator = stack.consolidation(name)
 	c.consolidationAudit = stack.stores.Audit
+	c.evaluator = stack.evaluator
 	c.foreignRun = func(ctx context.Context, sessionID string, hist stores.History, seed float64, input []Message) (context.Context, runtime.Runtime, runtime.AgentRun, *chains.LimitsState, error) {
 		if hist.Version == 0 {
 			h, err := c.load(ctx, sessionID)

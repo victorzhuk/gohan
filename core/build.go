@@ -104,6 +104,7 @@ type Stack struct {
 	recovery           map[string]runtime.Runtime
 	manifest           ReleaseManifest
 	consolidator       func(ConsolidationWiring) MemoryConsolidator
+	evaluator          RunEvaluator
 	flags              types.Flags
 	frozen             map[string]any
 	titleProfile       string
@@ -214,6 +215,7 @@ func Build(opts ...Option) (*Stack, error) {
 		stores:             cfg.stores,
 		tenant:             cfg.tenant,
 		consolidator:       cfg.consolidator,
+		evaluator:          cfg.evaluator,
 		flags:              cfg.flags,
 		frozen:             cfg.frozen,
 		titleProfile:       titleProfile,

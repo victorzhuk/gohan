@@ -1,6 +1,9 @@
 package evals
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -31,7 +34,10 @@ type Rubric struct {
 }
 
 // Fingerprint hashes the rubric version and instruction.
-func (r Rubric) Fingerprint() string { return "" }
+func (r Rubric) Fingerprint() string {
+	sum := sha256.Sum256([]byte(r.Version + "\x00" + r.Instruction))
+	return hex.EncodeToString(sum[:8])
+}
 
 // Judge is one evaluation unit: a named dimension scored by a
 // deterministic Evaluator or by an external judge adapter over a
@@ -51,7 +57,14 @@ type Judge struct {
 // Fingerprint is the judge identity a calibration approval covers:
 // dimension, evaluator version or model version, and rubric fingerprint
 // (spec: profile version + instruction hash).
-func (j Judge) Fingerprint() string { return "" }
+func (j Judge) Fingerprint() string {
+	version := j.Version
+	if version == "" && j.Model != nil {
+		version = j.Model.Profile().Version
+	}
+	sum := sha256.Sum256([]byte(j.Dimension + "\x00" + version + "\x00" + j.Rubric.Fingerprint()))
+	return hex.EncodeToString(sum[:8])
+}
 
 const (
 	DefaultJudgeRepeat = 3

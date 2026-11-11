@@ -103,6 +103,9 @@ func (c *conversation) lifecycleOptions(sessionID string, lease stores.Lease, or
 	if c.consolidator != nil {
 		opts = append(opts, WithLifecycleConsolidation(c.consolidator, c.consolidationAudit))
 	}
+	if c.evaluator != nil {
+		opts = append(opts, WithLifecycleEvaluation(c.evaluator, c.evalHistoryLoader(sessionID)))
+	}
 	if idx, ok := c.log.(stores.SessionIndex); ok {
 		opts = append(opts, WithLifecycleSessions(idx))
 	}
@@ -113,6 +116,19 @@ func (c *conversation) lifecycleOptions(sessionID string, lease stores.Lease, or
 		opts = append(opts, WithLifecycleSandboxHandles(h))
 	}
 	return c.verifyOptions(opts)
+}
+
+// evalHistoryLoader binds the session log the lifecycle loads the
+// completion's history through. A conversation without a log evaluates
+// from a nil history, which settles every dimension unscored.
+func (c *conversation) evalHistoryLoader(sessionID string) HistoryLoader {
+	if c.log == nil {
+		return nil
+	}
+	log := c.log
+	return func(ctx context.Context, _ int64) (stores.History, error) {
+		return log.Load(ctx, sessionID)
+	}
 }
 
 // requestHandoff performs the session-side transition of a model handoff:

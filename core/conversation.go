@@ -89,6 +89,7 @@ type conversation struct {
 	journal            stores.Journal
 	consolidator       MemoryConsolidator
 	consolidationAudit stores.AuditLog
+	evaluator          RunEvaluator
 	telemetry          types.Telemetry
 	detached           bool
 	wall               time.Duration
@@ -228,6 +229,7 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 		}
 		c.consolidator = stack.consolidation(spec)
 		c.consolidationAudit = stack.stores.Audit
+		c.evaluator = stack.evaluator
 		c.allowAnonymous = stack.allowAnonymous
 		c.telemetry = stack.telemetry
 		c.titleProfile = stack.titleProfile
