@@ -20,6 +20,16 @@ Faithfulness measures support in supplied context, not truth. No extracted claim
 
 Judge activation requires a versioned human-labelled calibration set, per-class error review and configured acceptance criteria. Model/rubric changes invalidate prior calibration approval. Temperature zero does not establish determinism. Preserve repeated judgments, median and instability. Judges receive untrusted evidence with no execution tools or production credentials.
 
+## Implementation rulings (review round, ADR-0176)
+
+Settled during apply after four-lens review; the frozen implementation contract wording stays, with these recorded interpretations and amendments.
+
+- Budget bound qualifier (required): consumption accrues as judge calls report usage; spend from calls already in flight when the budget is reached may overshoot the budget by at most the spend of admitted, unfinished jobs (bounded by Workers + QueueCapacity jobs). Admission keeps the frozen refusal predicate.
+- Charge basis (recommended, recorded): a settled record's Cost and Tokens are the evaluation's own judge spend, priced through the judge model's `Profile().Pricing`; primary-run usage stays with the run's own telemetry and is never billed to the evaluation budget.
+- Redactor gate (required): `Start`, `Validate` and the lazy admission path refuse an engine with a model-backed judge and no redactor with `ErrRedactorRequired`; `Evaluate` returns it and the lifecycle logs it at Warn without failing `Done`. Deterministic-evaluator engines need no redactor.
+- Reason hygiene (recommended, recorded): `Reason` is a bounded static message from a fixed vocabulary; raw error chains are logged at Warn and never exported.
+- History fidelity (frozen §3 interpretation): the engine compares the loaded `stores.History.Version` to the completion version at evidence build time; a mismatch settles every dimension unscored (`missing_evidence`) without any judge call, and the exported `history_version` evidence reference names the loaded version.
+
 ## Research review
 
 The attached research has numbered references without a bibliography. Its 85 percent agreement gate is unverified and is not adopted. Faithfulness score 1 cannot establish real-world truth. Keep dimensions separate and declare denominator and unknown handling.
