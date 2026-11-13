@@ -1,0 +1,39 @@
+# Design
+
+## Context
+
+ADR-0091 froze the sub-flow contract at depth 1: a child `*SuspendError` becomes a parent checkpoint with the child token in `Checkpoint.Child`, both tokens are single-use, `MaxDepth` (default 2) and `MaxParallelChildren` (default 8) are checked at the call boundary, `ChildLimits.MaxWallClock` must not exceed the parent's remaining wall clock, `CostShare` splits the tree budget, and fan-out takes `FailFast | Collect`. The existing scenarios prove each property with one parent and one child. M3 workflow processes chain sub-flows deeper and fan out concurrently, which raises three questions the depth-1 text does not answer: how a token chain behaves when more than one level suspends, what a child inherits when the parent itself is already spending an inherited budget, and what the parent receives from a fan-out beyond the error split.
+
+## Goals / Non-Goals
+
+Goals:
+
+- Suspension and resume specified for arbitrary depth within `MaxDepth`.
+- Limit inheritance: each child derives its effective budget from the parent's remaining budget at the call boundary.
+- Fan-out collection: keyed results, per-child cost and depth accounting, per-wave concurrency cap.
+
+Non-Goals:
+
+- Detached children (Q25, post-v1).
+- Changing any frozen contract from ADR-0091: tokens stay single-use, effect derivation, cancellation and event propagation are untouched.
+- New port methods or stored shapes; `Checkpoint.Child` already exists.
+
+## Decisions
+
+1. **Chained checkpoints, one per level.** A depth-2 suspension stores the depth-2 child token in the depth-1 parent's `Checkpoint.Child`, and the depth-1 parent's token in the root's `Checkpoint.Child`. `Resume` at any level consumes exactly its own token and drives the level below; the full chain completes only when every level finishes. Each token remains single-use; presenting an inner token after its outer ancestor was consumed fails `ErrTokenConsumed`, already specified.
+2. **Inheritance from remaining, not granted.** A child's effective wall clock is `min(declared, parent remaining)`, its cost budget is `min(cost share, tree remaining)`, and its depth allowance is `MaxDepth - parent depth`. Effective budgets are checked at the call boundary and recorded on the child run, so `Recover` replays the tree with the same budgets.
+3. **Per-child accounting on fan-out.** Every fan-out child records its spent cost and final depth on its `Runs` record. Under `Collect`, the parent receives results in input order (positions keyed to the input slice, not completion order) plus a `*PartialError` whose per-error entry names the child position; per-child cost and depth are readable from the run tree, and the parent tree budget reflects the sum of child spends.
+4. **Per-wave concurrency.** `MaxParallelChildren` bounds the concurrently running children of one fan-out wave; queued children start as running ones finish. It is not a process-lifetime cap.
+5. **Relocated spec detail (body compression).** The queueing obligation moved here from the `Fan-out accounting and collection` body: queued children MUST start as running ones finish; the cap is never a process-lifetime bound. The per-level resume bound moved here from the `Nested suspension` body: resume consumes one token per level, bounded by `MaxDepth`. No obligation is dropped.
+
+## Risks / Trade-offs
+
+- Deep chains multiply checkpoint writes on the suspend path; bounded by `MaxDepth`, so at most a constant number per suspension.
+- Keyed-by-input-order collection means the parent waits for the slowest child under `Collect`; `FailFast` remains the default for latency-sensitive paths.
+- Derived effective budgets must be deterministic across pods or resume changes semantics; they derive only from persisted parent state.
+
+## Migration Plan
+
+Spec-first change. Registration of scenario ids and `task spec:types` run at admission (task 1.1); behavior lands in `core` and `std/flow` with acceptance subtests per scenario id. No API break: `ChildLimits`, `OnError`, `PartialError` keep their shapes.
+
+No additional migration risk. Frozen contracts from ADR-0091 and the suspension capability are preserved verbatim.
