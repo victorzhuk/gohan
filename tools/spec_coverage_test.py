@@ -169,6 +169,40 @@ class CoverageTest(unittest.TestCase):
         self.assertEqual(out.returncode, 0)
         self.assertIn("covered=1", out.stdout)
 
+    def test_package_level_fail_is_failed_leg(self):
+        events = [
+            {"Action": "fail", "Package": "github.com/victorzhuk/gohan/adapter/otel", "Elapsed": 0}
+        ]
+        out = self.stream(events, [])
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("failed_leg  github.com/victorzhuk/gohan/adapter/otel", out.stdout)
+        self.assertIn("failed_legs=1", out.stdout)
+
+    def test_setup_failed_output_is_failed_leg(self):
+        events = [
+            {
+                "Action": "output",
+                "Package": "github.com/victorzhuk/gohan/examples",
+                "Output": "FAIL\tgithub.com/victorzhuk/gohan/examples [setup failed]\n",
+            }
+        ]
+        out = self.stream(events, [])
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("failed_leg  github.com/victorzhuk/gohan/examples", out.stdout)
+        self.assertIn("failed_legs=1", out.stdout)
+
+    def test_healthy_stream_reports_zero_failed_legs(self):
+        out = self.stream(ran("TestFlow/flow.plain-invoke"), [])
+        self.assertEqual(out.returncode, 0)
+        self.assertIn("failed_legs=0", out.stdout)
+
+    def test_failing_test_is_not_a_failed_leg(self):
+        events = [ev("run", "TestFlow/flow.plain-invoke"), ev("fail", "TestFlow/flow.plain-invoke")]
+        out = self.stream(events, [])
+        self.assertEqual(out.returncode, 0)
+        self.assertNotIn("failed_leg  ", out.stdout)
+        self.assertIn("failed_legs=0", out.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

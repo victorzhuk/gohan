@@ -25,7 +25,10 @@ def parse_test_events(stream):
     # A test counts only when its terminal event arrived: a "run" whose
     # stream ends in "skip" or "fail", or that never terminates, must not
     # register the scenario it is named after.
+    # Package-level failures (build or setup) have no Test field; a test
+    # with its own fail event is not a failed leg.
     passed = []
+    failed = set()
     for line in stream:
         line = line.strip()
         if not line:
@@ -34,12 +37,19 @@ def parse_test_events(stream):
             event = json.loads(line)
         except json.JSONDecodeError as e:
             raise UsageError(f"malformed JSON in test stream: {e}")
-        if not isinstance(event, dict) or event.get("Action") != "pass":
+        if not isinstance(event, dict):
             continue
-        test = event.get("Test")
-        if isinstance(test, str):
-            passed.append(test)
-    yield from passed
+        if "Test" in event:
+            if event.get("Action") == "pass":
+                passed.append(event["Test"])
+            continue
+        action = event.get("Action")
+        package = event.get("Package")
+        if not isinstance(package, str):
+            continue
+        if action == "fail" or (action == "output" and "[setup failed]" in str(event.get("Output", ""))):
+            failed.add(package)
+    return passed, failed
 
 
 def discovered_subtests(tests):
@@ -105,9 +115,9 @@ def run(argv):
         except OSError as e:
             raise UsageError(f"cannot read test json {args.test_json}: {e}")
         with stream:
-            tests = list(parse_test_events(stream))
+            tests, failed = parse_test_events(stream)
     else:
-        tests = list(parse_test_events(sys.stdin))
+        tests, failed = parse_test_events(sys.stdin)
 
     funcs, segments = discovered_subtests(tests)
 
@@ -134,16 +144,22 @@ def run(argv):
     for sid, func in sorted(unregistered):
         print(f"unregistered  {sid}  ({func})")
 
+    for pkg in sorted(failed):
+        print(f"failed_leg  {pkg}")
+
     summary = (
         f"summary registered={len(registered)} subtests={len(segments)} "
         f"covered={len(covered)} missing={len(missing)} "
-        f"missing_in_scope={len(missing_in_scope)} unregistered={len(unregistered)}"
+        f"missing_in_scope={len(missing_in_scope)} unregistered={len(unregistered)} "
+        f"failed_legs={len(failed)}"
     )
     print(summary)
 
     if unregistered:
         return 1
     if args.gate and missing_in_scope:
+        return 1
+    if failed:
         return 1
     return 0
 

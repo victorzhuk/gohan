@@ -16,14 +16,14 @@ tasks:
     cmds:
       - |
         set -euo pipefail
-        { go test -json -timeout 2m -short ./...;
-          go -C adapter/otel test -json -timeout 2m -short ./...;
-          go -C adapter/openai test -json -timeout 2m -short ./...;
-          go -C adapter/anthropic test -json -timeout 2m -short ./...;
-          go -C adapter/eino test -json -timeout 2m -short ./...;
-          go -C adapter/docker test -json -timeout 10m -short ./...;
-          go -C adapter/postgres test -json -timeout 2m -short ./...;
-          go -C examples test -json -timeout 2m -short ./...; } |
+        { go test -json -timeout 2m -short ./... || { echo "leg failed: root" >&2; exit 1; };
+          go -C adapter/otel test -json -timeout 2m -short ./... || { echo "leg failed: adapter/otel" >&2; exit 1; };
+          go -C adapter/openai test -json -timeout 2m -short ./... || { echo "leg failed: adapter/openai" >&2; exit 1; };
+          go -C adapter/anthropic test -json -timeout 2m -short ./... || { echo "leg failed: adapter/anthropic" >&2; exit 1; };
+          go -C adapter/eino test -json -timeout 2m -short ./... || { echo "leg failed: adapter/eino" >&2; exit 1; };
+          go -C adapter/docker test -json -timeout 10m -short ./... || { echo "leg failed: adapter/docker" >&2; exit 1; };
+          go -C adapter/postgres test -json -timeout 2m -short ./... || { echo "leg failed: adapter/postgres" >&2; exit 1; };
+          go -C examples test -json -timeout 2m -short ./... || { echo "leg failed: examples" >&2; exit 1; }; } |
           python3 tools/spec_coverage.py {{.CLI_ARGS}}
 
   spec:gate:
@@ -33,14 +33,14 @@ tasks:
     cmds:
       - |
         set -euo pipefail
-        { go test -json -timeout 2m -short ./...;
-          go -C adapter/otel test -json -timeout 2m -short ./...;
-          go -C adapter/openai test -json -timeout 2m -short ./...;
-          go -C adapter/anthropic test -json -timeout 2m -short ./...;
-          go -C adapter/eino test -json -timeout 2m -short ./...;
-          go -C adapter/docker test -json -timeout 10m -short ./...;
-          go -C adapter/postgres test -json -timeout 10m -short -tags full ./...;
-          go -C examples test -json -timeout 2m -short ./...; } |
+        { go test -json -timeout 2m -short ./... || { echo "leg failed: root" >&2; exit 1; };
+          go -C adapter/otel test -json -timeout 2m -short ./... || { echo "leg failed: adapter/otel" >&2; exit 1; };
+          go -C adapter/openai test -json -timeout 2m -short ./... || { echo "leg failed: adapter/openai" >&2; exit 1; };
+          go -C adapter/anthropic test -json -timeout 2m -short ./... || { echo "leg failed: adapter/anthropic" >&2; exit 1; };
+          go -C adapter/eino test -json -timeout 2m -short ./... || { echo "leg failed: adapter/eino" >&2; exit 1; };
+          go -C adapter/docker test -json -timeout 10m -short ./... || { echo "leg failed: adapter/docker" >&2; exit 1; };
+          go -C adapter/postgres test -json -timeout 10m -short -tags full ./... || { echo "leg failed: adapter/postgres" >&2; exit 1; };
+          go -C examples test -json -timeout 2m -short ./... || { echo "leg failed: examples" >&2; exit 1; }; } |
           python3 tools/spec_coverage.py --gate '{{.GATE}}'
 
   spec:
