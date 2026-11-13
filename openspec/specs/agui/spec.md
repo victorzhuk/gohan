@@ -64,6 +64,8 @@ Rules:
 
 ### Requirement: Core additions
 
+The adapter MUST deliver message ids, reasoning deltas and typed shared state losslessly over the AG-UI event protocol.
+
 #### Scenario: input on live run steers
 ID: `agui.input-on-live-run-steers`
 - WHEN a `RunAgentInput` with one new user message arrives for a thread whose run is `Running`
@@ -90,6 +92,8 @@ ID: `agui.client-state-guarded`
 - THEN the run does not start and `RUN_ERROR{code: "guard"}` is sent
 
 ### Requirement: Mapping
+
+The adapter MUST map gohan run events onto the AG-UI protocol according to the mapping table and rules in the Contract.
 
 #### Scenario: interrupt round-trip
 ID: `agui.interrupt-roundtrip`

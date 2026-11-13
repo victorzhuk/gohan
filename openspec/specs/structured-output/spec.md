@@ -37,6 +37,8 @@ var ErrStructuredOutput = errors.New("gohan: model output failed schema validati
 
 ### Requirement: Structured output
 
+`Extract` MUST validate model output against the declared schema and repair under `ValidateRepair` before returning `ErrStructuredOutput`.
+
 #### Scenario: constrained
 ID: `structured-output.constrained`
 - WHEN the profile has `Caps.Constrained` and no override
@@ -49,6 +51,8 @@ ID: `structured-output.validate-and-repair`
 
 ### Requirement: Partial results
 
+`PartialView` MUST return an unvalidated deep-partial view, and `Done.Result` MUST carry only the value `Extract` validated.
+
 #### Scenario: result delta partial
 ID: `structured-output.result-delta-partial`
 - WHEN `Extract[Invoice]` streams `{"total": 12, "lines": [{"sku": "A"`
@@ -60,6 +64,8 @@ ID: `structured-output.partial-never-validated`
 - THEN no partial value is returned in `Done.Result`, the turn follows the truncation rule, and clients that consumed `ResultDelta` receive the failure in `Done`
 
 ### Requirement: Structured output hardening
+
+`Extract` MUST validate constrained-decoding bounds, and schema-valid refusals MUST be classified `ContentPolicy`.
 
 #### Scenario: bounds validated after constrained decoding
 ID: `structured-output.bounds-validated-after-constrained-decoding`

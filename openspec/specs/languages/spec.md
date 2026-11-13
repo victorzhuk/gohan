@@ -92,6 +92,8 @@ Adapters: `adapter/cel` (default `ExprLang`; non-Turing-complete, linear evaluat
 
 ### Requirement: Definitions and languages
 
+`Build` MUST parse definitions with the declared front-end, validate and compile them, and refuse unadmitted languages.
+
 #### Scenario: same definition, two front-ends
 ID: `languages.same-definition-two-front-ends`
 - WHEN the same flow is written as YAML and as Lisp

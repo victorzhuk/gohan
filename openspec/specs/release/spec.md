@@ -67,6 +67,8 @@ Metrics: `gohan.eval.score`, `gohan.eval.unstable`, `gohan.shadow.runs`, `gohan.
 
 ### Requirement: Shadow mode
 
+A shadow run MUST execute side-effect tools only by replaying the primary journal or returning `ShadowSuppressed`, and MUST leave primary stores and budget untouched.
+
 #### Scenario: side effect suppressed
 ID: `release.shadow-suppressed`
 - WHEN a shadow run calls `create_booking` and the primary journal has no entry for that `CallKey`
@@ -94,6 +96,8 @@ ID: `release.shadow-suspension`
 
 ### Requirement: Release identity
 
+`Build` MUST derive `ReleaseManifest.ID()` deterministically, and every run MUST carry `ReleaseID` and `Variant` on spans, audit records, `Done` metadata and metrics.
+
 #### Scenario: release id deterministic
 ID: `release.id-deterministic`
 - WHEN `Build` runs twice with identical inputs
@@ -105,6 +109,8 @@ ID: `release.run-attributes`
 - THEN spans, audit records, `Done` metadata and metrics carry `release=<id>` and `variant="b"`
 
 ### Requirement: Evals
+
+The suite MUST fail on an unpinned dataset, and gate results MUST follow the delta bands with judge medians and pairwise shadow reporting.
 
 #### Scenario: dataset pinned
 ID: `release.dataset-pinned`

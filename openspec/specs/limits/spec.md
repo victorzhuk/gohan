@@ -56,6 +56,8 @@ A flow whose run finished with journal entries in `Outcome: Unknown` returns `*U
 
 ### Requirement: Defaults and cost
 
+The harness MUST reject a flow built with zero `RunLimits` and no preset, and MUST accumulate cost across the run tree against `MaxCost`.
+
 #### Scenario: unbounded run rejected
 ID: `limits.unbounded-rejected`
 - WHEN a flow is built with zero `RunLimits` and no preset
@@ -67,6 +69,8 @@ ID: `limits.cost-accumulates`
 - THEN the third spend triggers `*LimitExceededError{Limit: "MaxCost"}` and `Done.Cost` on the root equals the sum spent
 
 ### Requirement: Run limits
+
+The harness MUST stop a run with `Done{Reason: StopLimit}` when `MaxTurns` or `MaxToolCalls` is reached at an effect boundary, and MUST abort with `*LimitExceededError` when `MaxCost` or `MaxWallClock` is exceeded. A ledger reservation exceeding the remaining `MaxToolCalls` MUST refuse the whole batch before any call executes, without charging it, and the native driver MUST return the error matching `types.ErrBatchOverrun` directly. If `runtime.Batch.Run` instead returns an error matching `types.ErrBatchOverrun`, the native driver MUST refund the reservation and return `*LimitExceededError{Limit: "MaxToolCalls"}`. The foreign path renders reservation failures per call as permanent `not_executed:` results. Wall clock MUST be measured on monotonic time.
 
 #### Scenario: hard cost abort
 ID: `limits.hard-cost-abort`
@@ -81,7 +85,7 @@ ID: `limits.wall-clock`
 #### Scenario: provider calls count
 ID: `limits.provider-calls-count`
 - WHEN `MaxToolCalls` is 3 and one model response performs three provider searches
-- THEN the next tool call of any executor exceeds the limit and the run aborts
+- THEN the next ledger reservation is refused with an error matching `types.ErrBatchOverrun` and spends no additional budget
 
 #### Scenario: wall clock is monotonic
 ID: `limits.wall-clock-monotonic`

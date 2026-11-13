@@ -53,6 +53,8 @@ func NewHandler(stack *Stack, auth Authenticator) http.Handler
 
 ### Requirement: AwaitingInput
 
+`Resume(token, Deliver(data))` MUST validate `data` against `Schema` before the run continues.
+
 #### Scenario: structured input round-trip
 ID: `interop.awaiting-input-roundtrip`
 - WHEN a tool suspends with `AwaitingInput{Schema}` and `Resume(token, Deliver(data))` carries data matching the schema
@@ -64,6 +66,8 @@ ID: `interop.awaiting-input-invalid`
 - THEN `Resume` returns `ErrInputInvalid` and the token remains usable
 
 ### Requirement: MCP client
+
+The MCP client MUST register imported tools under a pinned namespace, honor annotation-derived effect caps and map task and `input_required` replies to suspensions.
 
 #### Scenario: namespace required for a second set
 ID: `interop.namespace-required-for-second-set`
@@ -102,6 +106,8 @@ ID: `interop.catalog-ttl`
 
 ### Requirement: HTTP API
 
+The HTTP API MUST follow `api/gohan.yaml` as the source of truth, require identity on every request and return errors as `application/problem+json`.
+
 #### Scenario: OpenAPI matches handlers
 ID: `interop.http-openapi-matches-handlers`
 - WHEN `task api:check` runs with a route added to the server but not to `api/gohan.yaml`
@@ -123,6 +129,8 @@ ID: `interop.http-problem-json`
 - THEN the response is `409 application/problem+json` with `type: https://gohan.dev/problems/gohan.session_held`
 
 ### Requirement: MCP server
+
+The MCP server MUST expose one flow as one stateless MCP tool and surface flow suspensions as `input_required` replies or Tasks.
 
 #### Scenario: approval as input_required
 ID: `interop.server-input-required`

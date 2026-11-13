@@ -101,6 +101,8 @@ Detection is layered: `std/redact` ships rules with checksums (cards, IBANs, pho
 
 ### Requirement: Redaction, erasure, residency
 
+The harness MUST apply redaction at the four fixed placements, and `EraseSubject` MUST remove every subject-owned record while reporting held sessions.
+
 #### Scenario: erase reports held sessions
 ID: `redaction.erase-reports-held`
 - WHEN `EraseSubject` runs for a subject with three sessions, one under legal hold

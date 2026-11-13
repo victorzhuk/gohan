@@ -77,6 +77,8 @@ type Fallback func(ctx context.Context, err *GuardBlockedError) Message
 
 ### Requirement: Guards
 
+Guards MUST run at their declared stages, and a `Block` MUST cut the output and return `*GuardBlockedError` with the fallback message.
+
 #### Scenario: input injection blocked
 ID: `guards.input-injection-blocked`
 - WHEN the input guard returns Block
@@ -103,6 +105,8 @@ ID: `guards.redaction`
 - THEN the model request and stored history contain the rewritten input only
 
 ### Requirement: Provenance and context guards
+
+Provenance MUST survive conversion between gohan and adapter types, and context guards MUST apply `Origin`-aware rules to provider and notes content.
 
 #### Scenario: notes poisoning blocked
 ID: `guards.notes-poisoning-blocked`

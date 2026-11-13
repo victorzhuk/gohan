@@ -31,6 +31,8 @@ Used by: permission gate, guards, router, eval scorers. Implementations: rules (
 
 ### Requirement: Decider contract
 
+A `Decider` MUST return a schema-validated decision with confidence, default closed on error and record a `gohan.decide` span when consulted.
+
 #### Scenario: rules are certain
 ID: `decider.rules-confidence-one`
 - WHEN a rules-based decider decides

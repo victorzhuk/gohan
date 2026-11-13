@@ -219,12 +219,17 @@ Rules:
 - `ModelChunk` streams typed deltas (`DeltaText`, `DeltaReasoning`, `DeltaToolArgs` as preview only — `streams`); `ToolUse` blocks are emitted complete. A `ToolUse` produced under `Finish == max_tokens` is marked truncated and is never executed: the model receives a `Failed(Permanent)` result naming truncation and the turn is retried once with a larger `MaxTokens` (metric `gohan.tool.truncated_args`). Schema-valid free-text fields carrying refusal signatures are classified `ModelError{Class: ContentPolicy}` (`gohan.model.refusal_as_json`).
 
 
+### Blob ids across providers
+
+A blob re-sent to a different provider MUST NOT reuse, rewrite or re-tag the id — it MUST be re-uploaded for that provider, or its bytes loaded from `OutputStore` and inlined when the target adapter has no `BlobUploader`. A ledger row that cannot be honoured and whose bytes are gone MUST fail with `ErrInputInvalid` before any request is built.
+
 ## Requirements
 
 ### Requirement: Error catalog
 
-`ProblemOf` is the only place a Go error becomes client-facing. The catalog is closed and versioned with the spec; every sentinel and typed error a spec defines has a row, and `spec:types` fails when one does not — except the three that never reach a transport: `*SuspendError`, the suspension signal, `ToolError`, tool-result data the model reads, and `ToolArgsError`, which becomes the same model-visible `Failed`/`Permanent` result. `Title` is the code's fixed English title; `Detail` is rendered from a fixed template per code with allow-listed `Fields` (`tool`, `limit`, `retry_after`, `run_id`, `stage`, `reason`, `key_id`) and never contains provider bodies, prompts, arguments, tenant or subject ids; `Instance` is the run id. Unknown errors become `gohan.internal` with `Detail: "internal error"` and the cause logged with the run id. Transports: HTTP responds `application/problem+json` with `type: https://gohan.dev/problems/<code>`, `status`, and `Retry-After` when `RetryAfter > 0`; a stream that has already started sends one terminal `error` event `{code, kind, retry_after, instance}` and closes, and a close without `done` or `error` is `gohan.stream_interrupted` (client-side, reattach by `Seq`); AG-UI sends `RUN_ERROR{code, message: Title}`; the MCP server sets JSON-RPC `error.data.code`. `Explain` prints the catalog.
+`ProblemOf` MUST be the only place a Go error becomes client-facing. The catalog is closed and versioned with the spec; every sentinel and typed error a spec defines has a row, and `spec:types` fails when one does not — except the three that never reach a transport: `*SuspendError`, the suspension signal, `ToolError`, tool-result data the model reads, and `ToolArgsError`, which becomes the same model-visible `Failed`/`Permanent` result. `Explain` prints the catalog.
 
+```
 | Code | Kind | HTTP | Source |
 |---|---|---|---|
 | `gohan.no_principal` | Permanent | 401 | `ErrNoPrincipal` |
@@ -266,11 +271,16 @@ Rules:
 | `gohan.export_refused` | Permanent (delivery-path diagnostic; surfaces through export diagnostics, never `ProblemOf`) | 500 | `ErrExportUnsupportedSignal`, `ErrIncompatibleReplay`, `ErrUnknownDestination`, `ErrExportQueueFull`, `ErrInstrumentLimit`, `ErrInstrumentConflict`, `ErrDimensionLimit`, `ErrSeriesLimit`, `ErrExportShutdown` |
 | `gohan.spool_refused` | Permanent (delivery-path diagnostic; surfaces through spool diagnostics and returned errors, never `ProblemOf`) | 500 | `ErrSpoolLocked`, `ErrSpoolConfig`, `ErrSpoolQuota`, `ErrSpoolDiskFull`, `CorruptionError` |
 | `gohan.internal` | Permanent | 500 | any other error, including `ErrSignalsPending` escaping the runtime (a bug) |
+```
 
 #### Scenario: every sentinel has a code
 ID: `errors.every-sentinel-has-code`
 - WHEN `spec:types` runs
 - THEN every sentinel and typed error declared in a spec appears in the catalog, and a missing row fails the check
+
+### Requirement: Error problem fields
+
+`Title` MUST be the code's fixed English title. `Detail` MUST be rendered from a fixed template per code with allow-listed `Fields` (`tool`, `limit`, `retry_after`, `run_id`, `stage`, `reason`, `key_id`) and MUST NOT contain provider bodies, prompts, arguments, tenant or subject ids. `Instance` is the run id. Unknown errors become `gohan.internal` with `Detail: "internal error"` and the cause logged with the run id.
 
 #### Scenario: unknown error is internal
 ID: `errors.problem-of-unknown-is-internal`
@@ -282,6 +292,10 @@ ID: `errors.detail-never-carries-provider-body`
 - WHEN a provider returns a 500 with a body naming the request payload
 - THEN the client sees `gohan.model_unavailable` whose `Detail` contains none of the provider body
 
+### Requirement: Error transports
+
+HTTP MUST respond with `application/problem+json`, `type: https://gohan.dev/problems/<code>`, `status`, and `Retry-After` when `RetryAfter > 0`. A stream that has already started sends one terminal `error` event `{code, kind, retry_after, instance}` and closes. A close without `done` or `error` is `gohan.stream_interrupted` (client-side, reattach by `Seq`). AG-UI sends `RUN_ERROR{code, message: Title}`. The MCP server sets JSON-RPC `error.data.code`.
+
 #### Scenario: retry-after on retryable
 ID: `errors.retry-after-on-retryable`
 - WHEN `Send` fails with `ErrRunActive` over HTTP
@@ -289,9 +303,12 @@ ID: `errors.retry-after-on-retryable`
 
 ### Requirement: Blobs
 
-An `Image`, `Audio` or `File` whose `Data` exceeds `InlineBlobBytes` is stored once in `OutputStore` and persisted as `Blob{Ref, SHA256, Bytes}` with nil `Data`; storage is content-addressed. Assembly loads bytes from the store only when the adapter has no provider handle. An adapter implementing the optional `BlobUploader` (`model` *Provider adapter contract*) uploads a blob once per profile, records `ref → provider id` in session metadata, and sends the provider id on later turns.
+An `Image`, `Audio` or `File` whose `Data` exceeds `InlineBlobBytes` MUST be stored once in `OutputStore` and persisted as `Blob{Ref, SHA256, Bytes}` with nil `Data`. Storage is content-addressed. Assembly loads bytes from the store only when the adapter has no provider handle. The harness MUST fetch tool-result URLs under the egress policy and never forward them to the provider.
 
-The provider id carries the identity of the provider that issued it: `Blob` MUST carry the issuing provider name and its id, and assembly MUST send the id only to that provider. A blob re-sent to a different provider MUST NOT reuse, rewrite or re-tag the id — it MUST be re-uploaded for that provider, or its bytes loaded from `OutputStore` and inlined when the target adapter has no `BlobUploader`. A ledger row that cannot be honoured and whose bytes are gone MUST fail with `ErrInputInvalid` before any request is built.
+#### Scenario: url only from user
+ID: `messages.url-only-from-user`
+- WHEN a tool result contains an `Image` with a `URL`
+- THEN the harness fetches it under the egress policy and stores a blob, and the request to the provider carries no URL
 
 #### Scenario: blob stored by reference
 ID: `messages.blob-stored-by-ref`
@@ -303,22 +320,23 @@ ID: `messages.blob-content-addressed`
 - WHEN the same image is sent in two messages
 - THEN both blocks carry the same `Ref` and the store holds one copy
 
-#### Scenario: provider id reused
-ID: `messages.blob-provider-id-reused`
-- WHEN the adapter implements `BlobUploader` and a conversation runs three turns after an image was attached
-- THEN the image bytes are uploaded once and turns two and three send the provider id
-
-#### Scenario: url only from user
-ID: `messages.url-only-from-user`
-- WHEN a tool result contains an `Image` with a `URL`
-- THEN the harness fetches it under the egress policy and stores a blob, and the request to the provider carries no URL
-
 #### Scenario: blob too large
 ID: `messages.blob-too-large`
 - WHEN `Send` carries a `File` over `Caps.Blobs.MaxBytes`
 - THEN `ErrBlobTooLarge` is returned before any store write and no run starts
 
+### Requirement: Blob provider ids
+
+An adapter implementing the optional `BlobUploader` (`model` *Provider adapter contract*) uploads a blob once per profile, records `ref → provider id` in session metadata, and sends the provider id on later turns. The provider id carries the identity of the provider that issued it: `Blob` MUST carry the issuing provider name and its id, and assembly MUST send the id only to that provider.
+
+#### Scenario: provider id reused
+ID: `messages.blob-provider-id-reused`
+- WHEN the adapter implements `BlobUploader` and a conversation runs three turns after an image was attached
+- THEN the image bytes are uploaded once and turns two and three send the provider id
+
 ### Requirement: Block model and fidelity
+
+Adapters MUST preserve block order per the declared fidelity matrix, and `Build` MUST fail when a flow can emit a block its profile would `Drop` unless the flow opts in with `AllowDrop`.
 
 #### Scenario: order preserved
 ID: `messages.order-preserved`

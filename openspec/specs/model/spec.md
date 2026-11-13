@@ -267,6 +267,34 @@ Text and reasoning stream as typed deltas; `ToolUse` blocks are emitted complete
 
 `Pricing` is per token; `SocializeCacheWrites` folds cache-write cost into an overhead rate on cached reads instead of charging the run that repopulated the cache; `BatchDiscount` is applied pro rata per item by token share when a batch completes.
 
+### Provider tool usage accounting
+
+The model capability owns provider tool usage accounting: an adapter MUST count each provider-executed tool call it observes in a response under the tool's name in `Usage.ProviderToolCalls`, and the run's cost MUST include that count priced at `Pricing.ProviderCall[name]`.
+
+### Provider tool block conversion
+
+A provider tool block MUST NOT be treated as `Raw`: the adapter MUST convert it per `tools` *Provider-executed tools* rule 4, while payloads the provider requires back stay inside the result as `Raw` and round-trip per rule 8 below.
+
+### Request cost tags
+
+`ModelRequest` MUST carry a `Metadata RequestMetadata` field, and `RequestMetadata` MUST carry `CostTags CostTags` — the run's `RunInfo.CostTags` (`core/types/identity.go:42,80`). The provider request assembly MUST populate `ModelRequest.Metadata.CostTags` from the run; the prefix-cache key builder already reads the same three values (`std/assembly.go:92-94`).
+
+### Provider request metadata
+
+An adapter whose provider documents a request-metadata channel MUST map `Metadata.CostTags` onto that channel in the provider's documented form. An adapter whose provider has no such channel MUST leave the values unsent, MUST NOT fail the call, and MUST NOT synthesise a channel.
+
+### Cost tag confidentiality
+
+The values are run attributes, never model content: no adapter, telemetry sink or log record MUST emit them as content — they MUST NOT appear in span content capture or in any log record.
+
+### Cost tag attribution
+
+`Metadata.CostTags` is not `Extra`: `Extra` is a flow's verbatim pass-through (this spec, *Pass-through*), while `Metadata` is harness-assembled run attribution. `adapter/openai` and `adapter/anthropic` are the implementations of this field; each names the concrete Send function that performs the mapping when it is authored.
+
+### Adapter metadata conformance
+
+These obligations bind the adapter call path; the shared conformance suite that exercises them is owned by `m1-provider-conformance-contract` and run by `m1-openai-provider` and `m1-anthropic-provider`.
+
 ### Provider adapter contract
 
 Every `Model` implementation (`adapter/openai`, `adapter/anthropic`, gateways, `gohantest.ScriptedModel`) SHALL:
@@ -296,7 +324,7 @@ Every `Model` implementation (`adapter/openai`, `adapter/anthropic`, gateways, `
 
 ### Requirement: Provider adapter contract
 
-The implementation MUST carry the *Provider adapter contract* on the public adapter path. The model capability owns provider tool usage accounting: an adapter MUST count each provider-executed tool call it observes in a response under the tool's name in `Usage.ProviderToolCalls`, and the run's cost MUST include that count priced at `Pricing.ProviderCall[name]`. A provider tool block MUST NOT be treated as `Raw`: the adapter MUST convert it per `tools` *Provider-executed tools* rule 4, while payloads the provider requires back stay inside the result as `Raw` and round-trip per rule 8 below. `ModelRequest` MUST carry a `Metadata RequestMetadata` field, and `RequestMetadata` MUST carry `CostTags CostTags` — the run's `RunInfo.CostTags` (`core/types/identity.go:42,80`). The provider request assembly MUST populate `ModelRequest.Metadata.CostTags` from the run; the prefix-cache key builder already reads the same three values (`std/assembly.go:92-94`). An adapter whose provider documents a request-metadata channel MUST map `Metadata.CostTags` onto that channel in the provider's documented form. An adapter whose provider has no such channel MUST leave the values unsent, MUST NOT fail the call, and MUST NOT synthesise a channel. The values are run attributes, never model content: no adapter, telemetry sink or log record MUST emit them as content — they MUST NOT appear in span content capture or in any log record. `Metadata.CostTags` is not `Extra`: `Extra` is a flow's verbatim pass-through (this spec, *Pass-through*), while `Metadata` is harness-assembled run attribution. `adapter/openai` and `adapter/anthropic` are the implementations of this field; each names the concrete Send function that performs the mapping when it is authored. These obligations bind the adapter call path; the shared conformance suite that exercises them is owned by `m1-provider-conformance-contract` and run by `m1-openai-provider` and `m1-anthropic-provider`.
+The implementation MUST carry the *Provider adapter contract* on the public adapter path.
 
 #### Scenario: status maps to class
 ID: `model.status-to-class`
@@ -363,6 +391,8 @@ The implementation MUST provide deterministic shared conformance inputs, and eac
 
 ### Requirement: Provider keys
 
+Adapters MUST obtain credentials for every call from `ProviderKeySource` according to the profile's `Keys` mode. `PlatformKey` MUST use an empty tenant. `TenantKey` MUST use the tenant from `PrincipalFrom(ctx)` and fail closed on `ErrNoProviderKey`. `TenantOrPlatformKey` MUST use that tenant and fall back to the platform key only on `ErrNoProviderKey`, never on `ClassAuth`.
+
 #### Scenario: tenant key selected
 ID: `model.tenant-key-selected`
 - WHEN a profile has `Keys: TenantKey` and the principal's tenant is `t1`
@@ -395,6 +425,8 @@ ID: `model.key-validated-at-build`
 
 ### Requirement: Token budget
 
+`ContextBudget` MUST compute `Limit = ContextWindow - MaxTokens - Margin`, with `Margin` equal to 2% of `ContextWindow` and at least 512. It MUST compute `Estimated = est.Estimate(req, caps) × ratio`.
+
 #### Scenario: budget reserves output
 ID: `model.budget-reserves-output`
 - WHEN `ContextWindow` is 200 000 and `MaxTokens` is 8 000
@@ -412,6 +444,8 @@ ID: `model.token-counter-optional`
 
 ### Requirement: Timeouts and mid-stream failure
 
+`Connect` or `FirstChunk` expiry MUST produce a `Transient` error. An `Idle` expiry after the first chunk MUST be `Permanent` for that call. On mid-stream failure, the partial assistant message MUST be appended to `SessionLog` with `Finish: FinishError`, and the run MUST end with `StopFailed`.
+
 #### Scenario: first-chunk timeout is transient
 ID: `model.first-chunk-timeout-transient`
 - WHEN a provider sends nothing for longer than `Timeout.FirstChunk`
@@ -428,6 +462,8 @@ ID: `model.partial-terminal-on-replay`
 - THEN that message is never re-sent to a provider and the next turn proceeds from the history
 
 ### Requirement: Failover and version pinning
+
+`Version` MUST pin the exact model the profile was validated against. With `Caps.StrictVersion`, a served version mismatch MUST fail the call as `ClassVersionDrift`. Fallback targets MUST be validated at build for `Caps` compatibility with every flow that can reach them.
 
 #### Scenario: 429 fails over without retry
 ID: `model.429-fails-over-without-retry`
@@ -461,12 +497,16 @@ ID: `model.version-drift`
 
 ### Requirement: Tool argument deltas
 
+An adapter MUST yield a `DeltaToolArgs` chunk per tool-call argument fragment and one complete `ToolUse` block at the end. An adapter that receives arguments whole MUST yield exactly one delta before the block.
+
 #### Scenario: tool args delta kind
 ID: `model.tool-args-delta-kind`
 - WHEN a provider streams tool-call argument fragments
 - THEN the adapter yields `ModelChunk{Kind: DeltaToolArgs, Delta: <fragment>, ToolUse: {ID, Name}}` per fragment and one complete `ToolUse` block at the end; an adapter that receives arguments whole yields exactly one delta before the block
 
 ### Requirement: Iterator contract
+
+The iterator MUST release resources before returning when `yield` returns false. It MUST return within one network read of `ctx.Done()`. It MUST NOT yield after returning an error.
 
 #### Scenario: early break releases
 ID: `model.early-break-releases`
@@ -501,3 +541,45 @@ The Anthropic adapter SHALL map the provider-neutral `ModelRequest` and `ModelCh
 
 - WHEN the provider returns an opaque `Reasoning` block that carries a signature
 - THEN the block is retained with its signature and re-sent unchanged to the same endpoint
+
+### Requirement: Provider tool streams complete each call independently
+
+Argument previews MUST carry their call identity. Each completed tool block MUST produce one executable `ToolUse` with complete arguments. Indexed calls MUST NOT share argument accumulation. Forced structured-output mapping MUST retain its existing text behavior, and unfinished arguments MUST remain non-executable.
+
+#### Scenario: Anthropic returns multiple tool blocks
+ID: `model.anthropic-complete-tool-blocks`
+- WHEN an Anthropic response streams two indexed tool blocks with separate argument fragments
+- THEN both complete calls retain their own ID, name and arguments and execute through the native conversation as authorized
+
+#### Scenario: Provider arguments stream before completion
+ID: `model.provider-argument-preview-identity`
+- WHEN either provider streams tool argument fragments
+- THEN previews carry the corresponding call identity and exactly one complete block is admitted per completed call
+
+#### Scenario: Forced output and unfinished arguments
+ID: `model.forced-output-and-tool-truncation`
+- WHEN a response uses forced structured output or ends before tool arguments complete
+- THEN forced output retains its text mapping and incomplete arguments are not executed
+
+### Requirement: OpenAI stream termination is final
+
+An OpenAI iterator MUST yield nothing after its consumer returns false or after a terminal stream error. Estimated usage MUST be emitted only on clean completion when reported usage is absent. The response body MUST be released on every exit.
+
+#### Scenario: The consumer stops before usage arrives
+ID: `model.openai-consumer-stop-final`
+- WHEN a consumer breaks after a text or reasoning chunk
+- THEN iteration returns without a later usage yield or panic and the response body closes
+
+#### Scenario: A stream decode fails before usage arrives
+ID: `model.openai-stream-error-final`
+- WHEN a response contains a terminal decode or read failure
+- THEN the iterator yields the failure once and produces no later usage chunk
+
+### Requirement: Optional cache usage details remain optional
+
+A reported usage record without cache details MUST remain valid for `CacheAuto`. Missing details MUST produce zero cache-token counts without a panic.
+
+#### Scenario: Automatic cache mode receives only total usage
+ID: `model.openai-cache-details-absent`
+- WHEN `CacheAuto` receives nonzero usage totals without prompt-token details
+- THEN usage is reported with zero cached tokens and iteration completes safely

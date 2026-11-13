@@ -64,6 +64,8 @@ Options not listed in the code block are `(illustrative)` until M0: `SequentialT
 
 ### Requirement: Build validation
 
+`Build` and every flow constructor MUST validate everything knowable at build time and fail on rejected combinations.
+
 #### Scenario: exfil derived from egress
 ID: `build.exfil-derived-from-egress`
 - WHEN a tool's `EgressPolicy.Allow` lists only `*.internal.example` with `PrivateRanges: AllowPrivate`

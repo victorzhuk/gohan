@@ -350,6 +350,12 @@ func TestProviderToolUsage(t *testing.T) {
 		if !errors.Is(err, types.ErrBatchOverrun) {
 			t.Fatalf("next reserve err = %v, want ErrBatchOverrun at MaxToolCalls=3", err)
 		}
+		if got := ledger.Snapshot().ToolUses; got != 3 {
+			t.Fatalf("ledger tool uses after refused reservation = %d, want 3", got)
+		}
 		release()
+		if got := ledger.Snapshot().ToolUses; got != 3 {
+			t.Fatalf("ledger tool uses after release = %d, want 3", got)
+		}
 	})
 }

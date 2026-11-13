@@ -5,6 +5,7 @@ root = pathlib.Path(__file__).resolve().parent.parent
 rows = collections.defaultdict(list)
 dups = collections.defaultdict(list)
 decls = []
+iface_methods = set()
 for p in sorted((root / 'openspec/specs').glob('*/spec.md')):
     cap = p.parent.name
     s = p.read_text()
@@ -28,6 +29,9 @@ for p in sorted((root / 'openspec/specs').glob('*/spec.md')):
         for cb in re.findall(r'^const \(\n(.*?)^\)', block, re.S | re.M):
             for m in re.finditer(r'^\t(\w+)', cb, re.M):
                 rows['const'].append((m.group(1), cap, tier)); decls.append((m.group(1), cap, 'const', 'const'))
+        for ib in re.findall(r'interface \{(.*?)\}', block, re.S):
+            for m in re.finditer(r'^\t*(?!func\b)(\w+)\(', ib, re.M):
+                iface_methods.add(m.group(1))
 HANDLES = {'Conversation', 'Flow'}
 ifaces = []
 for p_ in sorted((root / 'openspec/specs').glob('*/spec.md')):
@@ -77,7 +81,7 @@ for line in catalog_body.splitlines():
 empty_source = sorted(cells[0] for cells in catalog_rows if len(cells) < 4 or not cells[-1])
 undeclared_source = []
 d = {k: v for k, v in dups.items() if len(set(v)) > 1}
-defined = {n for n, _, _ in rows['type']} | {n for n, _, _ in rows['func']} | {n for n, _, _ in rows['const']} | {n for n, _, _ in rows['error']}
+defined = {n for n, _, _ in rows['type']} | {n for n, _, _ in rows['func']} | {n for n, _, _ in rows['const']} | {n for n, _, _ in rows['error']} | iface_methods
 for cells in catalog_rows:
     if len(cells) < 4:
         continue

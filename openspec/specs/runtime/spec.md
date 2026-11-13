@@ -96,7 +96,7 @@ Resume strategies:
 **Before `Drive`** (`Invoke`/`Send`/`Resume`):
 
 1. `PrincipalFrom(ctx)` or `ErrNoPrincipal` (unless `AllowAnonymous`).
-2. `Runs.Start(run, LeaseTTL)` → lease, or `ErrRunActive`; `OperationID` dedup (`engines`) happens here.
+2. New `Invoke`/`Send`: `Runs.Start(run, LeaseTTL)` → lease, or `ErrRunActive`; `OperationID` dedup (`engines`) happens here. `Resume`: the store's `CheckpointRuns.ResumingCheckpoint` acquires the lease fenced to the run's current suspended token, and a store without that surface fails with `types.ErrCheckpointIncompatible` before the token is consumed.
 3. `SessionLog.Load(session)` → `History{Messages, Version}`.
 4. Frozen flags evaluated once, snapshotted into `RunInfo.Flags` and the run-start audit record.
 5. Input message(s) appended with `expectedVersion = History.Version`; `Message.ID` assigned; `History.Version` advanced.
@@ -110,7 +110,7 @@ Resume strategies:
 
    **Batch protocol** (native runtime; behaviour derives from `Effect`, there is no scheduling option):
 
-   1. *Gate all first.* Every call is gated (hard blocks, taint, policy, session grants, decider) and reserved against `MaxToolCalls` before any executes; an overrun aborts the run with nothing executed. `Deny` and `TaintDenied` produce their `Failed(Permanent)` results at once.
+   1. *Gate all first.* Every call is gated (hard blocks, taint, policy, session grants, decider) and reserved against `MaxToolCalls` before any executes. A refused ledger reservation spends no budget and the native driver returns its error matching `types.ErrBatchOverrun` directly. If `runtime.Batch.Run` returns an error matching `types.ErrBatchOverrun`, the driver refunds the reservation and returns `*LimitExceededError{Limit: "MaxToolCalls"}`. `Deny` and `TaintDenied` produce their `Failed(Permanent)` results at once.
    2. *Execute the allowed calls.* `ReadOnly` calls run concurrently, at most `RunLimits.MaxParallelTools` at a time (`FlowAsTool` calls count against this and `MaxParallelChildren`); `Idempotent` and `SideEffect` calls run sequentially in call order after the read-only group, each with journal `Reserve` → call (cancel shield for `SideEffect`) → `Complete`. One call's failure never cancels another; every result is model-visible.
    3. *Then the asks.* Calls gated `Ask` suspend one at a time in call order with a single `ApprovalRequest` (`EditArgs` unchanged); already-executed results are in the journal and replay on resume.
    4. *Complete result set.* Exactly one `ToolResult` per `ToolUse`, in call order; a call that was not executed (denied, rejected, or the run aborted mid-batch) carries `Failed` with `Error.Kind = Permanent` and a reason beginning `not_executed:`. Core exports that prefix as `runtime.NotExecutedPrefix`; the batch path and the resume path render it, so a call rejected on resume reads `not_executed: rejected by <approver>`. The same protocol governs the driver's governed-turn path: a gate decision that suspends is never converted into an ordinary failed tool result, and a call after the suspending one is never dropped.
@@ -188,13 +188,45 @@ Metrics: `gohan.shutdown.preempted`, `gohan.shutdown.incomplete`, `gohan.shutdow
 
 Governed components in foreign graphs: `einoflow` provides node builders from governed components (`einoflow.ModelNode(m gohan.Model)`, `einoflow.ToolsNode(tools...)`). Components not built this way are ungoverned; `einoflow.Check` reports them where graph introspection allows (*verify*).
 
+### Step granularity
+
+One `Step` is one effect boundary: for `native`, one model call or one tool batch (`StepGranularity: Effect`); for `eino` and `adkgo`, one turn (`StepGranularity: Turn`), declared through `Runtime.Granularity` and printed by `Explain`.
+
+### Readiness
+
+`Ready` is the conjunction of the required checks; breaker state per endpoint is reported (`breaker:<endpoint>`) but never affects `Ready`.
+
+The checks are backend-independent: a foreign runtime MUST NOT report readiness through a channel of its own, no backend may keep `Ready` true after `Shutdown` began, and `Ready()` stays `Health(ctx).Ready` with the cached result.
+
+### Preemption safe point
+
+Checkpoint publication, `Runs.Suspend`, the `Suspended{Preempted}` event and the handoff to a resumed run wait for the next safe point, which a `Turn`-granularity backend reaches when the cancelled turn has returned.
+
+### Shielded side effect preemption
+
+Only a shielded side effect outlives cancellation: it runs to completion, is journaled and appended, and preemption follows it.
+
+### Stack lifecycle ownership
+
+`Shutdown`, `Ready` and the health report stay owned by the stack: an adapter MUST NOT implement its own lifecycle, its own run loop or its own shutdown handling.
+
+### Component events and turn counting
+
+Component-level events (`TextDelta`, `ToolStarted`, `ToolFinished`) and the turn counter MUST come from the governed decorators through the run-scoped sink in `ctx`; a runtime MUST NOT emit them, and MUST NOT count turns itself: `Drive` owns the limit.
+
+### Foreign tool bridge validation
+
+A foreign tool bridge MUST validate its declared spec before execution and MUST NOT infer a governance field the upstream tool info omits.
+
+### Message bridge content
+
+A message bridge MUST carry each block's `Origin` and `Seq` and any blob the source held.
+
 ## Requirements
 
 ### Requirement: Run lifecycle ordering
 
 `Drive` MUST be the only loop for `native`, `eino` and `adkgo` alike: it applies `RunLimits`, emits events, persists per ADR-0048, runs `Replay` as re-execution of `Step` over recorded results, and re-drives `Resuming` runs from the stored `ResumeInput`. A runtime MUST NOT emit `Done`; the harness emits it after `Runs.Finish` returned.
-
-One `Step` is one effect boundary: for `native`, one model call or one tool batch (`StepGranularity: Effect`); for `eino` and `adkgo`, one turn (`StepGranularity: Turn`), declared through `Runtime.Granularity` and printed by `Explain`.
 
 #### Scenario: suspend order
 ID: `runtime.suspend-order`
@@ -214,9 +246,7 @@ ID: `runtime.done-after-finish`
 
 ### Requirement: Health
 
-`Health` runs the readiness checks with a bounded ctx (default 2 s) and reports each by name: every configured store answers a ping and the Postgres schema is within the skew rule; every platform provider key validated at `Build` is still accepted (re-checked at most once per minute, cached); `shutdown` is false once `Shutdown` began. `Ready` is the conjunction of the required checks; breaker state per endpoint is reported (`breaker:<endpoint>`) but never affects `Ready`.
-
-The checks are backend-independent: a foreign runtime MUST NOT report readiness through a channel of its own, no backend may keep `Ready` true after `Shutdown` began, and `Ready()` stays `Health(ctx).Ready` with the cached result.
+`Health` MUST run readiness checks with a bounded ctx (default 2 s) and report each by name. Every configured store MUST answer a ping and the Postgres schema MUST be within the skew rule. Every platform provider key validated at `Build` MUST still be accepted, re-checked at most once per minute and cached. `shutdown` MUST be false once `Shutdown` began.
 
 #### Scenario: readiness false on schema skew
 ID: `runtime.readyz-false-on-schema-skew`
@@ -232,10 +262,6 @@ ID: `runtime.readyz-false-during-shutdown`
 ### Requirement: Graceful shutdown
 
 A foreign runtime MUST reach preemption through the same wrapped runtime a native run uses, and MUST pass the run ctx unchanged into every model and tool call, so cancellation stops the turn's own work at once. A cancelled turn aborts an in-flight model call, drops the partial assistant deltas it had not appended, and runs no further component of that turn; a turn MUST NOT continue its graph after its ctx is cancelled.
-
-Checkpoint publication, `Runs.Suspend`, the `Suspended{Preempted}` event and the handoff to a resumed run wait for the next safe point, which a `Turn`-granularity backend reaches when the cancelled turn has returned. Only a shielded side effect outlives cancellation: it runs to completion, is journaled and appended, and preemption follows it.
-
-`Shutdown`, `Ready` and the health report stay owned by the stack: an adapter MUST NOT implement its own lifecycle, its own run loop or its own shutdown handling.
 
 #### Scenario: shutdown rejects new work
 ID: `runtime.shutdown-rejects-new`
@@ -279,8 +305,8 @@ ID: `runtime.batch-gate-first`
 
 #### Scenario: batch limit before execution
 ID: `runtime.batch-limit-before-execute`
-- WHEN `MaxToolCalls` leaves room for two calls and the turn carries three
-- THEN the run aborts with `*LimitExceededError` and no tool executes
+- WHEN `runtime.Batch.Run` receives two calls with `MaxToolCalls` set to 2 and one call already used
+- THEN it returns an error matching `types.ErrBatchOverrun` and no tool executes
 
 #### Scenario: read-only calls run concurrently
 ID: `runtime.readonly-parallel`
@@ -315,9 +341,7 @@ ID: `runtime.sequential-tools-hint`
 
 ### Requirement: Runtime conformance
 
-`conformance.Runtime(t, newRuntime)` SHALL pass for `native`, `eino`, `adkgo`. A backend propagates `ctx` unchanged into every component call, translates a component's suspend signal into its own mechanism and back into `Suspended`, and honours cancellation.
-
-Component-level events (`TextDelta`, `ToolStarted`, `ToolFinished`) and the turn counter MUST come from the governed decorators through the run-scoped sink in `ctx`; a runtime MUST NOT emit them, and MUST NOT count turns itself: `Drive` owns the limit.
+`conformance.Runtime(t, newRuntime)` SHALL pass for `native`, `eino`, `adkgo`. A backend MUST propagate `ctx` unchanged into every component call, translate a component's suspend signal into its own mechanism and back into `Suspended`, and honour cancellation.
 
 #### Scenario: plain answer
 ID: `runtime.plain-answer`
@@ -348,8 +372,6 @@ ID: `runtime.cancellation`
 ### Requirement: Component mixing
 
 A backend MUST reach every governed model, tool and message conversion through the exported seams, so mixing a foreign component under the native runtime and mixing governed components inside a foreign graph run the same chains. A message bridge MUST declare the fidelity it keeps, and MUST NOT drop a block the source carried.
-
-A foreign tool bridge MUST validate its declared spec before execution and MUST NOT infer a governance field the upstream tool info omits. A message bridge MUST carry each block's `Origin` and `Seq` and any blob the source held.
 
 #### Scenario: foreign tool under native
 ID: `runtime.foreign-tool-under-native`
@@ -542,4 +564,31 @@ ID: `runtime.message-block-base-carried`
 ID: `runtime.message-blob-carried`
 - WHEN an `Image`, `Audio` or `File` block carries `Data`, a `URL` and a `Blob`
 - THEN all three survive the conversion and no `URL` is discarded
+
+### Requirement: Terminal success follows successful persistence
+
+A runtime-carried stop reason MUST be preserved only after the terminal store transition succeeds. A failed terminal transition MUST emit an error or terminal failure and MUST NOT emit `Done`.
+
+#### Scenario: A limit stop encounters a failed finish write
+ID: `runtime.finish-error-no-done`
+- WHEN a step carries a limit stop and terminal persistence fails
+- THEN no `Done` is delivered and the failure remains visible
+
+### Requirement: Native tool admissions remain cumulative
+
+Native suspension and recovery MUST preserve the cumulative admitted tool count. A pending prepaid call MUST execute without another charge. A subsequent new batch MUST be checked against all earlier admissions in the same run.
+
+#### Scenario: A later batch suspends and resumes
+ID: `runtime.resume-tool-budget-cumulative`
+- WHEN earlier batches and a pending approved call have consumed the run's tool limit
+- THEN resume executes the prepaid call but admits no additional call beyond the limit
+
+### Requirement: Foreign runtime construction installs call identity
+
+A shipped foreign runtime MUST carry each backend-generated tool call ID through its public conversation path before the governed call boundary. A valid call MUST reach permission, accounting and journal processing with that identity.
+
+#### Scenario: Eino executes a governed tool through the shipped constructor
+ID: `runtime.eino-governed-call-identity`
+- WHEN a registered Eino flow invokes a tool through its foreign conversation
+- THEN its backend call ID reaches the gate and journal and the tool executes once when authorized
 

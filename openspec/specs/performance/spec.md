@@ -31,19 +31,17 @@ Gate: benchmarks run on every PR with alternating base/head measurement, 3 round
 
 ### Requirement: Performance budgets
 
+Gated benchmark paths MUST stay within the frozen budgets on the reference machine, and a regression beyond tolerance MUST fail CI. The second identical prefix build MUST perform zero allocations.
+
 #### Scenario: chain overhead within budget
 ID: `performance.chain-overhead-within-budget`
 - WHEN the `BenchmarkToolChain_ReadOnly` benchmark runs on the reference machine
 - THEN overhead over the raw call is within the frozen budget and allocations do not exceed the contract
 
-### Requirement: Performance budgets
-
 #### Scenario: prefix build allocation free
 ID: `performance.prefix-build-allocation-free`
 - WHEN the same prefix is assembled twice
 - THEN the second build performs zero allocations
-
-### Requirement: Performance budgets
 
 #### Scenario: regression gate
 ID: `performance.regression-gate`

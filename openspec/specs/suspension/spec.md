@@ -95,6 +95,8 @@ Rules: a token is single-use and is consumed by the first `Resume` that decides 
 
 ### Requirement: Suspension and resume
 
+A suspension MUST be resumable exactly once through its single-use resume token, and `Resume` with a token from another flow or runtime MUST return `ErrTokenMismatch` before any component runs.
+
 #### Scenario: approve on another pod
 ID: `suspension.approve-on-another-pod`
 - WHEN the gate returns Ask for `create_booking` on pod 1

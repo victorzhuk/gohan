@@ -89,6 +89,8 @@ Shared state: `SharedState[S](ctx) (S, int64, bool)` (`ok == false` outside a ru
 
 ### Requirement: Subject memory
 
+Subject memory MUST be keyed by `NotesKey{ScopeSubject, Tenant, Subject}` built from `SessionOwner`, and `memory_write` MUST be denied while the taint window contains an `Untrusted` block unless the flow declares `notes.AllowUntrustedMemory()`.
+
 #### Scenario: memory store optional
 ID: `working-state.memory-store-optional`
 - WHEN `notes.Memory` is registered with a `NotesStore` that does not implement `MemoryStore`
@@ -130,6 +132,8 @@ ID: `working-state.memory-ttl-eviction`
 - THEN the oldest by store clock is evicted and `gohan.memory.evicted` increments
 
 ### Requirement: Notes, outputs and shared state
+
+Notes MUST survive compaction and follow the Working retention clock, tool results exceeding `MaxOutput` MUST be stored by reference, and shared state MUST be versioned and restored on resume.
 
 #### Scenario: notes follow working retention
 ID: `working-state.notes-follow-working-retention`

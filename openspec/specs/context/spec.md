@@ -68,17 +68,15 @@ Rules:
 
 Metrics (`telemetry`): `gohan.context.compactions` counter by kind, `gohan.context.tokens_cleared` counter, `gohan.context.tokens_before`/`tokens_after` histograms, `gohan.context.cache_invalidated` counter.
 
+### Projection clearing counter
+
+A projection firing does not emit `gohan.context.tokens_cleared`. The budget stage owns that counter.
+
 ## Requirements
 
 ### Requirement: Projections are views
 
 The harness MUST apply the declared projections in order before it calls the caller assembler. Each projection MUST receive the selected model profile and the current history version. The harness MUST use the projected messages only for assembly. A projection MUST NOT mutate the source history or write to a store. The harness MUST retain the existing blob resolution, redaction, and operator-turn fence after the caller assembler.
-
-`ClearToolResults` MUST identify each result's tool through its matching `ToolUse.ID`. It MUST count the last `Keep` tool uses in history order. It MUST preserve all `ToolUse` blocks and the position of each `ToolResult`. It MUST preserve results within the retained window. It MUST preserve results for tools in `Exclude`, including `notes_read` and `notes_write` regardless of caller configuration.
-
-`ClearToolResults` MUST replace eligible result content with a deterministic placeholder. It MUST preserve the result identity, outcome, error, and origin. It MUST decide `ClearAtLeast` through `ContextBudget` with a deterministic estimator. Cleared tokens MUST mean the positive difference between the original estimate and the candidate estimate, including placeholder cost. A firing MUST clear at least `ClearAtLeast` tokens or leave the history unchanged.
-
-A projection firing does not emit `gohan.context.tokens_cleared`. The budget stage owns that counter.
 
 #### Scenario: session log untouched
 ID: `context.projection-does-not-write`
@@ -90,6 +88,10 @@ ID: `context.projection-deterministic`
 - WHEN the same `History.Version` is assembled twice for the same profile
 - THEN the projected request bytes are identical
 
+### Requirement: ClearToolResults selects cleared tool results
+
+`ClearToolResults` MUST identify each result's tool through its matching `ToolUse.ID`. It MUST count the last `Keep` tool uses in history order. It MUST preserve all `ToolUse` blocks and the position of each `ToolResult`. It MUST preserve results within the retained window. It MUST preserve results for tools in `Exclude`, including `notes_read` and `notes_write` regardless of caller configuration.
+
 #### Scenario: keep last N
 ID: `context.keep-last-n`
 - WHEN `ClearToolResults{Keep: 3}` runs over a history with six completed tool calls
@@ -99,6 +101,11 @@ ID: `context.keep-last-n`
 ID: `context.notes-excluded`
 - WHEN `notes_read` results are older than the last `Keep` tool uses
 - THEN they are not cleared
+
+
+### Requirement: ClearToolResults replaces cleared content with a placeholder
+
+`ClearToolResults` MUST replace eligible result content with a deterministic placeholder. It MUST preserve the result identity, outcome, error, and origin. It MUST decide `ClearAtLeast` through `ContextBudget` with a deterministic estimator. Cleared tokens MUST mean the positive difference between the original estimate and the candidate estimate, including placeholder cost. A firing MUST clear at least `ClearAtLeast` tokens or leave the history unchanged.
 
 #### Scenario: batched clearing
 ID: `context.clear-at-least`
@@ -128,7 +135,7 @@ ID: `context.overflow-compacts-and-retries-once`
 
 ### Requirement: Compaction is persisted
 
-The harness MUST persist a compaction as a `Compaction` block that records `CoversUpTo`, and assembly MUST hide the covered versions. `CoversUpTo` MUST stay below any pending `ToolUse`. A replayed run MUST assemble the same request bytes as the original run did after compaction. A summary the guard rejects MUST NOT be persisted, and the turn MUST use `Truncate` instead. A `CompactionOpaque` block MUST bind to the model it was created for. Every persisted compaction MUST write the `Compacted` audit record and event.
+The harness MUST persist a compaction as a `Compaction` block that records `CoversUpTo`, and assembly MUST hide the covered versions. `CoversUpTo` MUST stay below any pending `ToolUse`. A replayed run MUST assemble the same request bytes as the original run did after compaction.
 
 #### Scenario: compaction appended
 ID: `context.compaction-persisted`
@@ -145,10 +152,18 @@ ID: `context.pending-call-survives`
 - WHEN compaction is triggered while a `ToolUse` awaits `HumanApproval`
 - THEN `CoversUpTo` is below that `ToolUse` and the resumed run still sees it
 
+### Requirement: A rejected summary is not persisted
+
+A summary the guard rejects MUST NOT be persisted, and the turn MUST use `Truncate` instead.
+
 #### Scenario: summary is guarded
 ID: `context.summary-guarded`
 - WHEN a harness-side summary contains an instruction the `StageContext` guard rejects
 - THEN nothing is persisted, `Truncate` is used for the turn and `gohan.guard.context_rejected{provider="compaction"}` increments
+
+### Requirement: Opaque compaction binds to one model
+
+A `CompactionOpaque` block MUST bind to the model it was created for.
 
 #### Scenario: opaque compaction bound to model
 ID: `context.opaque-bound-to-model`
@@ -159,6 +174,10 @@ ID: `context.opaque-bound-to-model`
 ID: `context.opaque-fallback-rejected`
 - WHEN a flow uses `ProviderCompact` on a profile with `Caps.Compaction == CompactionOpaqueCap` and its `Fallback` lists another provider
 - THEN `Build` returns an error naming flow, profile and strategy
+
+### Requirement: Persisted compaction is audited
+
+Every persisted compaction MUST write the `Compacted` audit record and event.
 
 #### Scenario: compaction audited
 ID: `context.compaction-audited`

@@ -66,6 +66,8 @@ Rules: no timestamps, run IDs or random values before the last `CacheBreak`; pro
 
 ### Requirement: Context assembly
 
+The assembler MUST produce a prefix-stable model request from deterministic providers.
+
 #### Scenario: prefix stability
 ID: `assembly.prefix-stability`
 - WHEN the same flow runs twice for different users with the same static providers

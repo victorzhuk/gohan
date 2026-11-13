@@ -1866,6 +1866,16 @@
     "origin": "ADR-0107",
     "title": "typed result on conversation"
   },
+  "flow.native-definition-resolved-once": {
+    "capability": "flow",
+    "origin": "ADR-0187",
+    "title": "definition resolved once"
+  },
+  "flow.native-tools-single-source": {
+    "capability": "flow",
+    "origin": "ADR-0187",
+    "title": "tools have one source"
+  },
   "streams.error-tuple-terminal": {
     "capability": "streams",
     "origin": "ADR-0108",

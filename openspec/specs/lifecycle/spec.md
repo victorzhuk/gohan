@@ -22,28 +22,10 @@ Model retirement fields live on `ModelProfile` (`model`); `SchemaVersion` and up
 
 Public `Build` MUST fail when a pinned profile is inside its notice window and MUST warn instead when the build sets the warn-only option. The notice window MUST default to 30 days and MUST be settable per build. The error MUST name the profile and its successor. A profile whose `Sunset` is zero MUST pass.
 
-A provider response classified `ClassDeprecated` MUST NOT be silent. The run MUST route the call to `Successor` when the profile declares one and MUST otherwise return `*ModelError{Class: Deprecated}` to the flow. The implementation MUST NOT synthesise a fallback assistant message for a deprecated call. The implementation MUST emit `gohan.model.deprecated_calls{profile}` for every deprecated call, `gohan.model.deprecated_routed{profile,successor}` when the call reroutes, and `gohan.model.sunset_warning{profile}` for each build warning.
-
-`Build` MUST validate every flow that can reach a profile against that profile's `Caps` and against the `Caps` of its declared successor. When the successor lacks a capability the flow's options require, `Build` MUST fail and MUST name the option.
-
-A run's `CostTags` MUST reach the provider accounting path, travelling as `ModelRequest.Metadata` (`RequestMetadata.CostTags`). A provider that accepts request metadata MUST receive them; `gohan.cost.per_run{flow}` MUST record the run's total.
-
-When `Pricing.SocializeCacheWrites` is on, the run that repopulates the prefix cache MUST NOT be charged the cache-write premium, and the cost MUST fold into an overhead rate carried by cached reads (`Pricing.CachedInput`).
-
 #### Scenario: sunset inside notice window
 ID: `lifecycle.sunset-inside-notice-window`
 - WHEN a pinned profile's `Sunset` is 20 days away and `NoticeWindow` is 30
 - THEN `Build` fails (or warns under `SunsetWarnOnly`) naming the profile and successor
-
-#### Scenario: deprecated never silent
-ID: `lifecycle.deprecated-never-silent`
-- WHEN a provider returns a deprecation error
-- THEN the call routes to `Successor` if declared, otherwise the flow returns `*ModelError{Class: Deprecated}`; no fallback message is produced
-
-#### Scenario: successor params validated
-ID: `lifecycle.successor-params-validated`
-- WHEN a successor profile lacks `Caps.Temperature` and a flow sets temperature
-- THEN `Build` fails naming the option
 
 #### Scenario: upcast on read
 ID: `lifecycle.upcast-on-read`
@@ -55,10 +37,38 @@ ID: `lifecycle.historical-fixtures`
 - WHEN `storetest.Schemas` runs
 - THEN every recorded fixture from released versions loads through current readers without error
 
+### Requirement: Deprecated call routing
+
+A provider response classified `ClassDeprecated` MUST NOT be silent. The run MUST route the call to `Successor` when the profile declares one and MUST otherwise return `*ModelError{Class: Deprecated}` to the flow. The implementation MUST NOT synthesise a fallback assistant message for a deprecated call.
+
+#### Scenario: deprecated never silent
+ID: `lifecycle.deprecated-never-silent`
+- WHEN a provider returns a deprecation error
+- THEN the call routes to `Successor` if declared, otherwise the flow returns `*ModelError{Class: Deprecated}`; no fallback message is produced
+
+### Requirement: Deprecation metrics and successor checks
+
+The implementation MUST emit `gohan.model.deprecated_calls{profile}` for every deprecated call, `gohan.model.deprecated_routed{profile,successor}` when the call reroutes, and `gohan.model.sunset_warning{profile}` for each build warning.
+
+`Build` MUST validate every flow that can reach a profile against that profile's `Caps` and against the `Caps` of its declared successor. When the successor lacks a capability the flow's options require, `Build` MUST fail and MUST name the option.
+
+#### Scenario: successor params validated
+ID: `lifecycle.successor-params-validated`
+- WHEN a successor profile lacks `Caps.Temperature` and a flow sets temperature
+- THEN `Build` fails naming the option
+
+### Requirement: Cost tag forwarding
+
+A run's `CostTags` MUST reach the provider accounting path, travelling as `ModelRequest.Metadata` (`RequestMetadata.CostTags`). A provider that accepts request metadata MUST receive them; `gohan.cost.per_run{flow}` MUST record the run's total.
+
 #### Scenario: cost tags forwarded
 ID: `lifecycle.cost-tags-forwarded`
 - WHEN a run has `CostTags{Feature: "assist", Environment: "prod"}`
 - THEN spans carry them and providers that accept metadata receive them; `gohan.cost.per_run{flow}` records the run's total
+
+### Requirement: Cache write socialization
+
+When `Pricing.SocializeCacheWrites` is on, the run that repopulates the prefix cache MUST NOT be charged the cache-write premium, and the cost MUST fold into an overhead rate carried by cached reads (`Pricing.CachedInput`).
 
 #### Scenario: cache write socialized
 ID: `lifecycle.cache-write-socialized`

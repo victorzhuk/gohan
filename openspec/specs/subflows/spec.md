@@ -58,6 +58,8 @@ Rules:
 
 ### Requirement: Isolation and typing
 
+A child run MUST start with an empty history in its child session, and its typed output MUST pass `StageToolResult` guards.
+
 #### Scenario: fresh history
 ID: `subflows.fresh-history`
 - WHEN a parent with 30 messages of history invokes a `FlowAsTool`
@@ -75,6 +77,8 @@ ID: `subflows.output-guarded`
 
 ### Requirement: Effect derivation
 
+`FlowAsTool` MUST derive the tool effect from the child's registered tools, and an explicit `WithEffect` MUST only tighten it.
+
 #### Scenario: side effect dominates
 ID: `subflows.effect-derived`
 - WHEN a child flow registers one `SideEffect` tool among `ReadOnly` ones
@@ -86,6 +90,8 @@ ID: `subflows.effect-tighten-only`
 - THEN `Build` returns an error
 
 ### Requirement: Nested suspension
+
+A child suspension MUST checkpoint the child token in the parent, and both tokens MUST be single-use.
 
 #### Scenario: approval inside child
 ID: `subflows.nested-approval`
@@ -103,6 +109,8 @@ ID: `subflows.nested-tokens-single-use`
 - THEN `Resume` returns `ErrTokenConsumed`
 
 ### Requirement: Limits and failure
+
+The call boundary MUST enforce `MaxDepth`, `MaxParallelChildren` and `ChildLimits`, and fan-out MUST follow the configured `OnError` policy.
 
 #### Scenario: depth limit
 ID: `subflows.max-depth`
@@ -135,6 +143,8 @@ ID: `subflows.collect-partials`
 - THEN the parent receives four results and a `*PartialError` with one error
 
 ### Requirement: Propagation
+
+Parent cancellation MUST propagate to the child, and child events MUST carry `ParentRunID` and `Depth` in the parent's stream.
 
 #### Scenario: cancellation
 ID: `subflows.cancel-propagates`

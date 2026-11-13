@@ -381,4 +381,61 @@ func TestRecoveryContract(t *testing.T) {
 			t.Fatal("send without suspension did not finish")
 		}
 	})
+
+	t.Run("consumed-discovery-frozen-runs-port", func(t *testing.T) {
+		f := newRecoverFixture(t, "agent")
+		ctx := f.reaperCtx()
+		f.seedHistory(t, 1)
+		tok := f.seedPreempted(t, "r1")
+		if _, err := f.cps.Consume(ctx, tok, Continue()); err != nil {
+			t.Fatal(err)
+		}
+
+		// Discovery is bound to the underlying runs and returns the
+		// consumed current checkpoint before the frozen run port drops
+		// CheckpointRuns.
+		ready, err := f.cps.ResumeReady(ctx, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ready) != 1 || ready[0].RunID != "r1" || ready[0].Token != tok {
+			t.Fatalf("ResumeReady = %+v, want r1's consumed checkpoint on %q", ready, tok)
+		}
+
+		// Recovery through the frozen run port: the token-fenced lease
+		// surface is absent, so the consumed pass skips the run without
+		// error and never executes the suspension.
+		f.stack.stores.Runs = &frozenPortRuns{Runs: f.runs}
+		if err := f.stack.Recover(ctx, 10); err != nil {
+			t.Fatal(err)
+		}
+		if n := f.rt.modelCalls(); n != 0 {
+			t.Fatalf("model calls = %d, want 0", n)
+		}
+		if st := runState(t, f.runs, "r1"); st != stores.Suspended {
+			t.Fatalf("run state = %v, want Suspended", st)
+		}
+	})
+
+	t.Run("unbound-discovery-lister-refuses", func(t *testing.T) {
+		f := newRecoverFixture(t, "agent")
+		ctx := f.reaperCtx()
+		f.seedHistory(t, 1)
+		f.seedPreempted(t, "r1")
+		unbound := stores.NewMemoryCheckpoints(stores.WithMemoryCheckpointClock(func() time.Time { return f.now }))
+		st, err := Build(
+			WithStores(stores.Stores{SessionLog: f.log, Runs: &frozenPortRuns{Runs: f.runs}, Checkpoints: unbound, Journal: f.jnl}),
+			WithRecoveryRuntime("agent", f.rt),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Recovery discovery without the run-store binding is not
+		// decidable locally: the sweep refuses instead of guessing.
+		err = st.Recover(ctx, 10)
+		if !errors.Is(err, types.ErrCheckpointIncompatible) {
+			t.Fatalf("recover with unbound discovery = %v, want ErrCheckpointIncompatible", err)
+		}
+	})
 }

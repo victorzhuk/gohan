@@ -18,7 +18,7 @@ The harness is stateless; every run is recoverable from `SessionLog` + `Journal`
 1. `Invoke`/`Send` → `Runs.Start` (lease) → per turn: when the turn has non-`ReadOnly` calls, `SessionLog.Append` the assistant message *before* executing them, then `Append` the results; otherwise one `Append` with message and results → `Runs.Finish`.
 2. A process that dies mid-turn leaves: a `Running` run with a stale heartbeat, an assistant message with pending calls, journal entries `Reserved` (unknown) or `Completed`.
 3. A reaper (user-owned cron/queue) calls `stack.Recover(ctx, limit)`: `Runs.Stale` → `Reclaim` → for each run, `Replay` from the last persisted turn: completed calls are replayed from the journal, reserved ones re-execute with their pinned key, never-started ones execute normally. Recovery honours the original `RunLimits` and principal (via `CredentialSource`).
-3a. Before stale runs, when `Runs` implements `PreemptedLister`, `Recover` lists `Preempted(ctx, limit)` and resumes each with `Continue()` (`Consume` → `Resuming`, no staleness wait); a token already consumed by the client is skipped while that client's resume lease is live. A consumed checkpoint whose run holds no lease is recovered with its recorded input, so a client that dies between `Consume` and `Resuming` cannot strand the run (ADR-0146). The deployment note is to call `Recover` once on pod start and then on the reaper cadence.
+3a. Before stale runs, when `Runs` implements `PreemptedLister`, `Recover` lists `Preempted(ctx, limit)` without a staleness wait. For a current `Preempted` checkpoint, it uses `ConsumeIf` and then takes a token-fenced `ResumingCheckpoint` lease. Without `CheckpointRuns`, the preempted path is skipped. After the stale pass, `Recover` calls `ResumeReady` when the checkpoint store implements `ResumeReadyLister`. A discovery error is returned with its cause, including `types.ErrCheckpointIncompatible` for unbound memory checkpoint discovery. After successful discovery, consumed candidates without `CheckpointRuns` are skipped. Otherwise recovery fences the lease with the already-consumed token without consuming it again (ADR-0146). The stale pass does not require `CheckpointRuns`, but `Recover` can still return a later discovery error. Call `Recover` once on pod start and then on the reaper cadence.
 4. If the flow cannot be re-run headlessly (e.g. a `Conversation` whose client is gone), recovery finishes the run as `Failed{Uncertain}` and emits `gohan.run.abandoned`; the session remains consistent for the next `Send`.
 5. `Recover` is idempotent and safe to run on every pod.
 6. `stack.Inspect(ctx, runID) (RunView, error)` returns `RunView{Run, Input}`: the stored `Run` — current `Turn`, last `Seq`, pending tool calls and `Cost` so far — plus the `*ResumeInput` a suspended run waits for, from stores only, so any pod can answer it. No limits-remaining value is returned. `RunView` is declared by the driver package, which imports both leaves: `type RunView struct { stores.Run; Input *stores.ResumeInput }`.
@@ -29,6 +29,8 @@ Persistence per turn: one `SessionLog.Append` carrying the assistant message and
 ## Requirements
 
 ### Requirement: Crash recovery
+
+`Recover` MUST reclaim stale runs and replay from the last persisted turn when the preceding recovery operations succeed. It MUST replay completed calls from the journal and re-execute reserved calls with their pinned key. Recovery MUST honour the original `RunLimits` and principal. It MUST propagate a `ResumeReady` discovery error after the stale pass.
 
 #### Scenario: pod dies mid-turn
 ID: `recovery.pod-dies-mid-turn`
@@ -59,3 +61,44 @@ ID: `recovery.consumed-preempted-is-recoverable`
 ID: `recovery.headless-recovery-impossible`
 - WHEN a `Conversation` run is stale and no client is attached
 - THEN the run is finished as `Failed` with `Uncertain` and `gohan.run.abandoned` increments; the next `Send` on the session succeeds
+
+### Requirement: Automatic preemption recovery consumes its exact token
+
+Automatic preemption recovery MUST conditionally consume the current `Preempted` checkpoint before taking its token-fenced resume lease. It MUST NOT automatically resume a human approval or another suspension reason. An obsolete token MUST NOT replace a later suspension.
+
+#### Scenario: Recovery reaches a second suspension
+ID: `recovery.preemption-token-consumed`
+- WHEN recovery consumes checkpoint A and execution later suspends on checkpoint B
+- THEN A cannot be resumed again and B remains current
+
+#### Scenario: A human approval is pending
+ID: `recovery.human-approval-not-preempted`
+- WHEN a run is suspended for human approval and automatic recovery runs
+- THEN recovery does not decide or execute the approval-controlled call
+
+### Requirement: Recorded consumption is independent of input contents
+
+Recovery MUST use persisted consumption state and recorded input. A consumed empty `Continue()` MUST remain distinguishable from an unconsumed checkpoint. A crash between conditional consumption and lease acquisition MUST remain recoverable exactly once.
+
+#### Scenario: The client dies after consuming an empty continuation
+ID: `recovery.empty-continue-consumed`
+- WHEN a client consumes a preempted token with empty continuation input and dies before acquiring its resume lease
+- THEN recovery continues that consumed decision exactly once
+
+### Requirement: Recovery records the public event stream durably
+
+Recovered execution MUST persist its ordinary events, terminal failure and final boundary using the same ordering and redaction guarantees as live execution. A conversation on another instance MUST be able to attach to the recovered tail and terminate at its boundary.
+
+#### Scenario: A second instance attaches after recovery finishes
+ID: `recovery.eventlog-tail-durable`
+- WHEN recovery completes a run and another conversation attaches after the prior cursor
+- THEN it receives the recovered tail and exactly one terminal boundary without waiting for cancellation
+
+### Requirement: Missing optional recovery support has explicit behavior
+
+A governed external resume without token-fenced store support MUST return `ErrCheckpointIncompatible` before consumption. Automatic preempted recovery MUST skip an unsupported token-fenced path. After successful consumed-checkpoint discovery, recovery MUST skip candidates without token-fenced run-store support. `Recover` MUST propagate discovery errors, including unbound memory discovery's `ErrCheckpointIncompatible`. Supported stale-run recovery occurs before consumed-checkpoint discovery and does not require token-fenced support. New sends remain available.
+
+#### Scenario: A custom run store has no token-fenced extension
+ID: `recovery.optional-token-surface-absent`
+- WHEN a custom store implements the frozen run port without the optional token-fenced surface
+- THEN external resume refuses without consuming its token and automatic recovery does not use that unsupported path

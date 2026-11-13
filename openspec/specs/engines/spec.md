@@ -28,6 +28,8 @@ Under `WithHost(engine)`, `Waker` and `Recover` remain gohan's for the *run* onl
 
 ### Requirement: Composition, dedup, states and flags
 
+Engine integration MUST keep the business process owned by the engine, the run owned by gohan and deduplication keyed by `OperationID`.
+
 #### Scenario: redelivery returns the same result
 ID: `engines.redelivery-returns-the-same-result`
 - WHEN `Invoke` with `OperationID` X completes and the same X is invoked again

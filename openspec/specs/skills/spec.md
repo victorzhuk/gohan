@@ -52,6 +52,8 @@ Metrics: `gohan.skill.loaded{name}`, `gohan.skill.rejected{reason}`, `gohan.skil
 
 ### Requirement: Progressive disclosure
 
+The catalog MUST render byte-stable in the static prefix, and skill bodies MUST load only through `load_skill`.
+
 #### Scenario: catalog in prefix
 ID: `skills.catalog-prefix-stable`
 - WHEN 30 skills are registered and the same flow runs twice
@@ -74,6 +76,8 @@ ID: `skills.resource-to-store`
 
 ### Requirement: Trust and containment
 
+Untrusted skills MUST be instructions-only with no script execution, and skill scripts MUST run only through the sandbox tool set.
+
 #### Scenario: untrusted is instructions-only
 ID: `skills.untrusted-no-scripts`
 - WHEN an `Untrusted` skill bundles `scripts/run.py` and the model asks to run it
@@ -95,6 +99,8 @@ ID: `skills.body-guarded`
 - THEN the model receives a guard block, not the body
 
 ### Requirement: Required tools and manifest
+
+`Build` MUST fail on a missing required tool, skill loading MUST NOT widen the tool set, and a drifted pinned hash MUST disable the skill.
 
 #### Scenario: missing required tool
 ID: `skills.required-tool-missing`

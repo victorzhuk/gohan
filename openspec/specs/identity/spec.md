@@ -106,7 +106,19 @@ Rules:
    | `Detached` harness ctx | copied | re-issued via `CredentialSource` | copied | copied | dropped |
    | `FlowAsTool` child | inherited | inherited unless `subflows` isolation forbids | new (`ParentRunID` set) | dropped | dropped |
    | `Waker` poll / resume on another pod | restored from checkpoint | re-issued via `CredentialSource` | restored | restored | set by `Resume` |
-   | `sandbox` process | none | none (secrets via `CredentialSource` only) | none | none | none |
+   | `sandbox` process | none | none (secrets via `SecretResolver` only) | none | none | none |
+
+### Identity values under the cancel shield
+
+The cancel shield MUST preserve the identity values: a `SideEffect` tool running under `context.WithoutCancel` MUST observe the run's `Principal`, `Credential` and `RunInfo` unchanged.
+
+### Detached credentials
+
+A `Detached` run MUST re-issue its credential through `CredentialSource` for the copied principal, and MUST NOT reuse the caller's `Credential`; the fresh token stays in `ctx` and is never logged, emitted or persisted.
+
+### Sandbox credentials
+
+The harness `Credential` MUST NOT be exported into a sandbox workspace under any policy: no process environment entry and no mounted file carries its value or any value derived from it. A workspace receives credentials only through a `SecretRef` the operator put in `SandboxPolicy.Secrets`, resolved for the run originator through the `SecretResolver` port and injected through `Workspace.SetEnv`.
 
 ## Requirements
 
@@ -202,7 +214,7 @@ ID: `identity.credential-not-on-principal`
 
 ### Requirement: Context values
 
-The idempotency key is transport-only: it orders retries of one logical call and MUST NOT become run identity. It MUST NOT enter `RunInfo`, and a sub-flow invoked through `FlowAsTool` MUST NOT inherit the caller's key or approval — the child observes `IdempotencyKey` and `ApprovalFrom` as `ok == false`. The cancel shield MUST preserve the identity values: a `SideEffect` tool running under `context.WithoutCancel` MUST observe the run's `Principal`, `Credential` and `RunInfo` unchanged. A `Detached` run MUST re-issue its credential through `CredentialSource` for the copied principal, and MUST NOT reuse the caller's `Credential`; the fresh token stays in `ctx` and is never logged, emitted or persisted. The harness `Credential` MUST NOT be exported into a sandbox workspace under any policy: no process environment entry and no mounted file carries its value or any value derived from it. A workspace receives credentials only through a `SecretRef` the operator put in `SandboxPolicy.Secrets`, resolved for the run originator through the `SecretResolver` port and injected through `Workspace.SetEnv`.
+The idempotency key is transport-only: it orders retries of one logical call and MUST NOT become run identity. It MUST NOT enter `RunInfo`, and a sub-flow invoked through `FlowAsTool` MUST NOT inherit the caller's key or approval - the child observes `IdempotencyKey` and `ApprovalFrom` as `ok == false`.
 
 #### Scenario: accessors outside a run
 ID: `identity.accessor-outside-run`
@@ -269,4 +281,18 @@ ID: `identity.detached-run-id-captured-before-gate`
 ID: `identity.detached-no-credential-reuse`
 - WHEN a `Detached` flow starts with a stale `Credential` in the caller's context
 - THEN the run observes the freshly issued token and never the caller's token
+
+### Requirement: Identity exclusions apply during argument decoding
+
+An identity field excluded from a tool's declared schema MUST also be excluded when supplied arguments are decoded for execution. The exclusion MUST follow the same nested-field and JSON-name rules as schema derivation. Transport principal identity MUST remain authoritative.
+
+#### Scenario: Excluded identity is supplied through the public tool path
+ID: `identity.excluded-arguments-not-decoded`
+- WHEN a model supplies an excluded identity field to a typed tool
+- THEN the callback receives the field's zero value and the verified transport principal remains unchanged
+
+#### Scenario: Identity is supplied inside a nested argument
+ID: `identity.nested-excluded-arguments-not-decoded`
+- WHEN an excluded identity name appears in a nested field represented by the derived schema
+- THEN the callback receives no model-supplied value for that field
 

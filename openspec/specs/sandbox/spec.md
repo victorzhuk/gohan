@@ -19,6 +19,7 @@ type Workspace interface {
 	Exec(ctx context.Context, req ExecRequest) (ExecResult, error)
 	Put(ctx context.Context, path string, r io.Reader) error
 	Get(ctx context.Context, path string) (io.ReadCloser, error)
+	SetEnv(ctx context.Context, env map[string]string) error
 	Snapshot(ctx context.Context) (WorkspaceRef, error)
 	Close(ctx context.Context) error
 }
@@ -88,7 +89,7 @@ type ExecResult struct {
 `std/sandbox` ships `New(sb Sandbox, p SandboxPolicy, opts ...Option) ToolSet` exposing `run_code`, `write_file`, `read_file` (and `list_files`) as one governed tool set. Rules:
 
 1. **Effect from policy.** `PerCall` + empty `Egress.Allow` → `ReadOnly`; `PerSession` + empty `Egress.Allow` → `Idempotent`; any `Egress.Allow` → `SideEffect`. `Egress` is the `EgressPolicy` of `tools`, enforced by the adapter at the network layer with the same private-range and hop rules. `WithEffect` may only tighten. Empty `Egress` means deny-all, including DNS.
-2. **Secrets.** `Secrets` are resolved by the harness through `CredentialSource` for the originator at `Open` and injected as environment inside the workspace. Secret values never appear in tool args, results, history, journal or spans; `read_file`/`run_code` output is scanned for injected values and redacted (`gohan.sandbox.secret_leak` increments).
+2. **Secrets.** `Secrets` are resolved by the harness through `SecretResolver` for the run originator at `Open` and injected as environment inside the workspace through `Workspace.SetEnv`. Secret values never appear in tool args, results, history, journal or spans; `read_file`/`run_code` output is scanned for injected values and redacted (`gohan.sandbox.secret_leak` increments).
 3. **Outputs.** `Stdout`/`Stderr` are capped by `ToolSpec.MaxOutput`; overflow and files the model asks to return go to `OutputStore` and come back as `File` blocks with `Ref`.
 4. **Lifecycle.** `PerCall`: `Open` → `Exec` → `Close` inside one tool call. `PerSession`: one workspace per session, kept open across turns through one live handle fenced by the run id and the store-minted lease generation; on suspension the harness calls `Snapshot` and stores the ref and its generation in `Checkpoint.Workspace` and `Checkpoint.WorkspaceGeneration` before the suspension is persisted; at the end of a detached run it publishes the ref as the session's durable workspace metadata and creates no checkpoint; `Resume` opens from that ref under the generation-and-owner restore rules; the live handle is released after the suspension or terminal write succeeds, and a failed close leaves a cleanup record the sweep retries.
 5. **Replay.** Exec results are journaled like any tool result; `Replay` replays them without re-executing and restores the workspace from the checkpoint ref, so a run resumed on another pod sees the same files.
@@ -101,13 +102,45 @@ Adapters: `adapter/docker` (dev, reference), `adapter/e2b`; a Kubernetes agent-s
 
 Metrics: `gohan.sandbox.seconds` by lifecycle, `gohan.sandbox.opens`, `gohan.sandbox.cold_start` histogram, `gohan.sandbox.secret_leak`, `gohan.sandbox.egress_denied`.
 
-## Requirements
-
-### Requirement: Policy and effect
+### Workspace interface
 
 `core/types` MUST declare `Sandbox.Open(ctx, WorkspaceRef, SandboxPolicy) (Workspace, error)` and `Workspace.Exec`, `Put`, `Get`, `SetEnv`, `Snapshot` and `Close`; `WorkspaceRef` MUST be one shared type aliased where it is consumed. `SetEnv(ctx, map[string]string) error` MUST be the only injection path into a workspace.
 
+### Workspace listing
+
 Listing MUST NOT be a `Workspace` method. `WorkspaceLister` is an optional interface declaring `List(ctx, path) ([]WorkspaceEntry, error)`, and the harness MUST reach it by type assertion on the opened workspace. A workspace that does not implement it MUST fail `list_files` with `ErrWorkspaceListingRequired`; the harness MUST NOT return a partial listing as the answer.
+
+### Secret value exposure
+
+An injected value MUST NOT appear in tool arguments, results, history, journal, audit records, spans or logs.
+
+### Secret output redaction
+
+`read_file` and `run_code` output MUST be scanned for every injected value, a hit MUST be replaced by a redaction marker, and `gohan.sandbox.secret_leak` MUST increment.
+
+### Workspace handle fencing
+
+The live handle MUST be bound to the owning run id and the store-minted lease generation, and a stale owner MUST be refused.
+
+### Suspension workspace snapshot
+
+On suspension the harness MUST snapshot the live handle through the fallible lifecycle path and MUST store the produced `WorkspaceRef` and its generation in `Checkpoint.Workspace` before the suspension is persisted.
+
+### Detached workspace publication
+
+At the end of a detached run the harness MUST snapshot the live handle and MUST persist the produced ref as the session's durable workspace ref; a detached run creates no checkpoint.
+
+### Workspace restoration
+
+On resume the harness MUST open the workspace from `Checkpoint.Workspace` only when the checkpoint generation is not older than the session's stored generation, and a missing or expired snapshot MUST return an error instead of opening fresh.
+
+### Terminal workspace publication
+
+At the end of a non-detached run the harness MUST publish the durable session ref before the run's terminal write, and MUST close the live handle only after that terminal write succeeds.
+
+## Requirements
+
+### Requirement: Policy and effect
 
 The tool set MUST derive each tool's effect from the policy: `PerCall` with empty `Egress.Allow` is `ReadOnly`, `PerSession` with empty `Egress.Allow` is `Idempotent`, and any `Egress.Allow` entry is `SideEffect`. `WithEffect` MAY only tighten and a loosening option MUST be refused. `Egress` MUST be the `EgressPolicy` of `tools`, enforced by the adapter at the network layer with the same private-range and hop rules. Empty `Egress` MUST mean deny-all, including DNS.
 
@@ -131,8 +164,6 @@ ID: `sandbox.egress-allowlisted`
 
 Each `SecretRef` MUST be resolved at `Open` for the run originator through the optional `SecretResolver` port, `Resolve(ctx, Principal, name) (string, error)`, which is distinct from `CredentialSource` and takes the `SecretRef` name, and the resolved environment MUST be injected through `Workspace.SetEnv`. The run `Credential` MUST NOT substitute for a resolver and MUST NOT enter the workspace; a build without a resolver MUST inject nothing and the secret-named call MUST fail.
 
-An injected value MUST NOT appear in tool arguments, results, history, journal, audit records, spans or logs. `read_file` and `run_code` output MUST be scanned for every injected value, a hit MUST be replaced by a redaction marker, and `gohan.sandbox.secret_leak` MUST increment.
-
 #### Scenario: secret injected not visible
 ID: `sandbox.secret-injected`
 - WHEN the policy names `SecretRef{Name: "warehouse", Env: "PGPASSWORD"}`
@@ -148,7 +179,7 @@ ID: `sandbox.secret-leak-redacted`
 
 The `PerCall` lifecycle MUST run `Open`, `Exec` and `Close` inside one tool call, and `Close` MUST be called exactly once per call, including when the call panics.
 
-The `PerSession` lifecycle MUST keep one workspace per session across turns through one live handle owned by the run: a later call in the same run MUST reuse that handle, and a call in a later run MUST open from the session's durable `WorkspaceRef` so files written in an earlier turn are visible without re-upload. The live handle MUST be bound to the owning run id and the store-minted lease generation, and a stale owner MUST be refused. On suspension the harness MUST snapshot the live handle through the fallible lifecycle path and MUST store the produced `WorkspaceRef` and its generation in `Checkpoint.Workspace` before the suspension is persisted. At the end of a detached run the harness MUST snapshot the live handle and MUST persist the produced ref as the session's durable workspace ref; a detached run creates no checkpoint. On resume the harness MUST open the workspace from `Checkpoint.Workspace` only when the checkpoint generation is not older than the session's stored generation, and a missing or expired snapshot MUST return an error instead of opening fresh. At the end of a non-detached run the harness MUST publish the durable session ref before the run's terminal write, and MUST close the live handle only after that terminal write succeeds.
+The `PerSession` lifecycle MUST keep one workspace per session across turns through one live handle owned by the run: a later call in the same run MUST reuse that handle, and a call in a later run MUST open from the session's durable `WorkspaceRef` so files written in an earlier turn are visible without re-upload.
 
 #### Scenario: per-session persistence
 ID: `sandbox.per-session-persists`
@@ -444,4 +475,42 @@ A read-only warehouse query MUST carry a `PerSession` `SandboxPolicy` with an em
 ID: `sandbox.data-analyst-resume-and-page`
 - WHEN a session runs a read-only warehouse query that writes an extract, then suspends and resumes on a second stack that opens from the stored ref
 - THEN the resumed turn reads the extract with no extra `Put` and no re-execution, and `read_output(ref, range)` pages back the requested slice with no personally identifying value
+
+### Requirement: Workload execution cannot administer network enforcement
+
+Untrusted workspace execution MUST have no authority to change its network enforcement or regain that authority. Trusted policy setup MUST complete before the workspace becomes usable. Failed setup MUST return no usable workspace and MUST clean its created resources.
+
+#### Scenario: Workload code attempts to remove the firewall
+ID: `sandbox.firewall-authority-isolated`
+- WHEN workspace execution attempts firewall removal or capability regain
+- THEN the attempt fails, an allowed controlled peer remains reachable, and a denied controlled peer remains unreachable
+
+#### Scenario: Privileged setup fails
+ID: `sandbox.policy-setup-failure-cleanup`
+- WHEN trusted network policy setup fails
+- THEN opening the workspace fails and no usable unprotected workspace or setup resource is left behind
+
+#### Scenario: A restored snapshot replaces its startup executable
+ID: `sandbox.restored-startup-policy-first`
+- WHEN a restored workspace snapshot contains a modified startup executable or an inherited healthcheck
+- THEN no workload process executes before policy is established and inherited healthchecks do not run
+
+### Requirement: Snapshot references identify immutable content
+
+A successful snapshot reference MUST retain its content across later publications from the same workspace. A failed publication or metadata compare-and-set MUST NOT change content behind an earlier committed reference. Existing labelled snapshot references MUST remain readable and removable.
+
+#### Scenario: One live workspace publishes twice
+ID: `sandbox.same-workspace-snapshots-immutable`
+- WHEN a workspace publishes A, changes a file, then publishes B
+- THEN restoring A and B yields their respective file contents
+
+#### Scenario: A later metadata publication loses its compare-and-set
+ID: `sandbox.snapshot-cas-failure-keeps-content`
+- WHEN a later snapshot publication fails its metadata compare-and-set
+- THEN restoring the previously committed reference yields its original content
+
+#### Scenario: A legacy tagged snapshot is restored
+ID: `sandbox.legacy-snapshot-ref-readable`
+- WHEN an existing labelled tagged snapshot reference is opened or removed
+- THEN restore and cleanup remain supported without retagging or deleting another snapshot
 

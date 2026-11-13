@@ -598,6 +598,8 @@ var (
 
 ### Requirement: Telemetry
 
+All backends MUST produce the same span and metric tree through the governed chains.
+
 #### Scenario: same tree on all backends
 ID: `telemetry.same-tree-on-all-backends`
 - WHEN a run with 2 model calls and 1 tool call executes on native, eino and adk-go
@@ -614,6 +616,8 @@ ID: `telemetry.loop-detection`
 - THEN the 4th call is denied and `gohan.loop.detected` increments
 
 ### Requirement: Attributes, labels and logging
+
+Spans MUST carry the canonical `gohan.*` attribute keys, a metric registered with a label outside the allow-list MUST fail `Build`, and log records MUST never contain message content, tool arguments or credentials.
 
 #### Scenario: canonical keys on spans
 ID: `telemetry.canonical-keys`
@@ -632,7 +636,7 @@ ID: `telemetry.no-content-in-logs`
 
 ### Requirement: Telemetry conventions and prompts
 
-`Stack.Feedback` MUST record each signal through `stores.FeedbackStore`, append the `feedback` audit record and the `FeedbackRecorded` event, and emit `gohan.feedback`. The metric MUST be registered with the labels `name` and `flow` only; the metric layer stamps `release` and `variant`, so the observed series is exactly `gohan.feedback{name, flow, release, variant}`. A numeric `Value` MUST record a histogram and any other `Value` MUST count. No label MAY carry the subject, session, run, target, comment or correction: the allow-list admits none of them and forbids the identity names. The cardinality is bounded by the declared `name` set (the tool-name grammar `^[a-z][a-z0-9_]{0,63}$`), the registered flow names, the release and the variant — a fixed four-label product with no unbounded dimension.
+`Stack.Feedback` MUST record each signal through `stores.FeedbackStore`, append the `feedback` audit record and the `FeedbackRecorded` event, and emit `gohan.feedback`. The metric MUST be registered with the labels `name` and `flow` only; the metric layer stamps `release` and `variant`, so the observed series is exactly `gohan.feedback{name, flow, release, variant}`.
 
 #### Scenario: rename is config
 ID: `telemetry.rename-is-config`
@@ -649,15 +653,19 @@ ID: `telemetry.prompt-source-outage`
 - WHEN the `PromptSource` is unreachable and the cache is empty
 - THEN the run uses the embedded fallback text, stamps `version=fallback`, and `gohan.prompt.fallback` increments
 
-#### Scenario: feedback metric labels
-ID: `telemetry.feedback-metric-labels`
-- WHEN feedback `csat: 4` is recorded for a run under release `r7`, variant `b`
-- THEN `gohan.feedback{name=csat, release=r7, variant=b}` observes 4 and no label carries the subject or comment
-
 #### Scenario: replay strictness
 ID: `telemetry.replay-strictness`
 - WHEN a cassette was recorded with `Version: v1` and the profile now pins `v2`
 - THEN `Strict` replay fails naming the version mismatch; `ByTurn` replays with a warning
+
+### Requirement: Feedback values and cardinality
+
+A numeric `Value` MUST record a histogram and any other `Value` MUST count. No label MAY carry the subject, session, run, target, comment or correction: the allow-list admits none of them and forbids the identity names. The cardinality is bounded by the declared `name` set (the tool-name grammar `^[a-z][a-z0-9_]{0,63}$`), the registered flow names, the release and the variant — a fixed four-label product with no unbounded dimension.
+
+#### Scenario: feedback metric labels
+ID: `telemetry.feedback-metric-labels`
+- WHEN feedback `csat: 4` is recorded for a run under release `r7`, variant `b`
+- THEN `gohan.feedback{name=csat, release=r7, variant=b}` observes 4 and no label carries the subject or comment
 
 ### Requirement: Export acceptance is explicit
 Exporters MUST distinguish accepted, retryable, permanent and ambiguous results per record. Cancellation MUST leave unacknowledged records unresolved.

@@ -88,8 +88,9 @@ Implementations:
 | Constructor | Backend |
 |---|---|
 | `gohan.FlowFunc` | plain Go / mock; `Resume` returns `ErrNotSuspendable` |
-| `agent.New[In, Out](stack, spec, runtime, opts...) (Flow[In, Out], error)` | agent loop on `native`, `eino`, `adkgo` |
-| `agent.NewConversation(stack, spec, runtime, opts...) (Conversation, error)` | same, streaming chat |
+| `gohan.WithNativeAgent(gohan.NativeSpec)` | registers a native definition before `Build`, which resolves its profile, chains and tools once |
+| `gohan.NewNativeConversation(stack, name, opts...)` | streaming chat on the resolved native definition |
+| `gohan.NewForeignConversation(stack, name, opts...)` | streaming chat over a foreign-runtime definition (`einoflow`, `adkflow`) |
 | `einoflow.FromRunnable[In, Out](stack, r, opts...)` | eino `compose.Runnable[I, O]` |
 | `adkflow.FromAgent[In, Out](stack, a, opts...)` | adk-go `agent.Agent` incl. workflow agents |
 | `flow.Extract[Out](stack, profile string, opts...) Flow[[]Block, Out]` | single model call with `StructuredOutput`; no tools (M0) |
@@ -132,33 +133,6 @@ restricted to untrusted content, offering no tool, and MUST return
 `Quarantined[Out]`: the decoded value with the origins of the blocks it was
 extracted from. The recording path MUST attach those origins to the recorded
 result blocks.
-
-The title generator MUST be `std/flow.Title`, an `Extract[string]` recipe of at
-most six words that offers no tool. The harness MUST start it after the first
-`Done` of a session's first primary run as its own governed run of
-`Kind: SessionChild` with cost tag `title`, on the profile from
-`agent.WithTitleProfile` (default: the cheapest configured profile), and MUST
-write the result with `UpdateSession`. The primary run's `Done` MUST NOT be
-delayed by the title run. Generation MUST be skipped when `TitleLocked` is set
-or the session already carries a title, and the generated write MUST set
-`TitleLocked`; a rename therefore always wins and a session is titled at most
-once. A fork inherits the parent's title with the suffix `(edited)` and is not
-titled again. Until a title exists the index holds an empty `Title`.
-
-A model request for a human MUST be a terminal outcome, not a suspension. The
-`request_human` built-in tool MUST return a `types.HandoffError` carrying the
-`HandoffContext`; the error MUST join the control-error class that never renders
-as a `ToolResult`, and the lifecycle MUST close the run with
-`Done{Reason: StopHandedOff}` — never `Suspended` — with no `ResumeToken`, so
-`Resume` cannot continue it. The same terminal transition MUST write
-`ControlHandoffRequested`, persist the `HandoffContext` on the session index,
-and audit the transition as `handoff_requested`.
-
-After `HandBack` restores `ControlAgent`, assembly MUST fence the operator
-turns: every history block whose origin is `OriginOperator` MUST be projected
-with a preceding `PromptSet.OperatorTurn` marker so the operator turns are
-wrapped as one marked segment, and the model's reply MUST carry `OriginModel`.
-History MUST NOT be rewritten by the projection.
 
 #### Scenario: plain invoke
 ID: `flow.plain-invoke`
@@ -230,26 +204,6 @@ ID: `flow.send-during-human-control-no-run`
 - WHEN the user sends a message to a `ControlHuman` session
 - THEN it is appended, `Done{Reason: StopHandedOff}` is emitted, `Runs` records no run and `Continue` returns `ErrSessionHandedOff`
 
-#### Scenario: request human ends the run
-ID: `flow.request-human-ends-run`
-- WHEN the model calls `request_human` with a reason
-- THEN the run ends `Done{Reason: StopHandedOff}`, `Control` is `ControlHandoffRequested` with the `HandoffContext`, and no resume token exists
-
-#### Scenario: hand-back fences operator turns
-ID: `flow.handback-fences-operator-turns`
-- WHEN `HandBack` is called after two operator messages and the user sends again
-- THEN the assembled request contains both operator turns wrapped by `PromptSet.OperatorTurn` and the model's reply is `OriginModel`
-
-#### Scenario: title generated after first done
-ID: `flow.title-generated-after-first-done`
-- WHEN a new session's first run completes
-- THEN one child run with cost tag `title` produces a title of at most six words and the index shows it; the primary run's `Done` was not delayed by it
-
-#### Scenario: title locked by rename
-ID: `flow.title-locked-by-rename`
-- WHEN the owner renames a session and later runs complete
-- THEN no title run is started and the user's title stays
-
 #### Scenario: feedback owner-checked
 ID: `flow.feedback-owner-checked`
 - WHEN a principal from another tenant calls `Stack.Feedback` for a session
@@ -285,6 +239,72 @@ ID: `flow.backend-swap`
 - WHEN the S1 acceptance test suite runs against the S1 native flow and the S4 eino graph flow with the same scripted model
 - THEN both pass without changes to test code
 
+### Requirement: Title generation
+
+The title generator MUST be `std/flow.Title`, an `Extract[string]` recipe of at
+most six words that offers no tool. The harness MUST start it after the first
+`Done` of a session's first primary run as its own governed run of
+`Kind: SessionChild` with cost tag `title`, on the profile from
+`agent.WithTitleProfile` (default: the cheapest configured profile), and MUST
+write the result with `UpdateSession`. The primary run's `Done` MUST NOT be
+delayed by the title run.
+
+#### Scenario: title generated after first done
+ID: `flow.title-generated-after-first-done`
+- WHEN a new session's first run completes
+- THEN one child run with cost tag `title` produces a title of at most six words and the index shows it; the primary run's `Done` was not delayed by it
+
+### Requirement: Title lock and inheritance
+
+Generation MUST be skipped when `TitleLocked` is set
+or the session already carries a title, and the generated write MUST set
+`TitleLocked`; a rename therefore always wins and a session is titled at most
+once. A fork inherits the parent's title with the suffix `(edited)` and is not
+titled again. Until a title exists the index holds an empty `Title`.
+
+#### Scenario: title locked by rename
+ID: `flow.title-locked-by-rename`
+- WHEN the owner renames a session and later runs complete
+- THEN no title run is started and the user's title stays
+
+### Requirement: Human handoff terminal outcome
+
+A model request for a human MUST be a terminal outcome, not a suspension. The
+`request_human` built-in tool MUST return a `types.HandoffError` carrying the
+`HandoffContext`; the error MUST join the control-error class that never renders
+as a `ToolResult`, and the lifecycle MUST close the run with
+`Done{Reason: StopHandedOff}` — never `Suspended` — with no `ResumeToken`, so
+`Resume` cannot continue it.
+
+#### Scenario: request human ends the run
+ID: `flow.request-human-ends-run`
+- WHEN the model calls `request_human` with a reason
+- THEN the run ends `Done{Reason: StopHandedOff}`, `Control` is `ControlHandoffRequested` with the `HandoffContext`, and no resume token exists
+
+### Requirement: Human handoff control transition
+
+The same terminal transition MUST write
+`ControlHandoffRequested`, persist the `HandoffContext` on the session index,
+and audit the transition as `handoff_requested`.
+
+#### Scenario: control transition happens once
+ID: `flow.handoff-control-transition-once`
+- WHEN `request_human` ends a run and the session index with a control writer is present
+- THEN the `HandoffContext` is persisted, `Control` is `ControlHandoffRequested`, `handoff_requested` is audited once, and the handoff callback fires once
+
+### Requirement: Operator turn fencing
+
+After `HandBack` restores `ControlAgent`, assembly MUST fence the operator
+turns: every history block whose origin is `OriginOperator` MUST be projected
+with a preceding `PromptSet.OperatorTurn` marker so the operator turns are
+wrapped as one marked segment, and the model's reply MUST carry `OriginModel`.
+History MUST NOT be rewritten by the projection.
+
+#### Scenario: hand-back fences operator turns
+ID: `flow.handback-fences-operator-turns`
+- WHEN `HandBack` is called after two operator messages and the user sends again
+- THEN the assembled request contains both operator turns wrapped by `PromptSet.OperatorTurn` and the model's reply is `OriginModel`
+
 
 ### Requirement: Handoff terminal transition
 
@@ -295,11 +315,6 @@ close the run. With a session index, the transition MUST persist the
 When an optional store is absent, the transition MUST skip only that step and
 MUST still close the run with `Done{Reason: StopHandedOff}`. An optional
 handoff callback MUST fire exactly once.
-
-#### Scenario: control transition happens once
-ID: `flow.handoff-control-transition-once`
-- WHEN `request_human` ends a run and the session index with a control writer is present
-- THEN the `HandoffContext` is persisted, `Control` is `ControlHandoffRequested`, `handoff_requested` is audited once, and the handoff callback fires once
 
 #### Scenario: optional-store configuration still closes the run
 ID: `flow.handoff-optional-store`
@@ -315,4 +330,18 @@ ID: `flow.handoff-state-preserved`
 ID: `flow.handoff-no-resume-token`
 - WHEN a run ends from `request_human`
 - THEN no `ResumeToken` is minted and `Resume` cannot continue the run
+
+### Requirement: Native definition construction
+
+A native flow MUST be registered as a `gohan.NativeSpec` through `gohan.WithNativeAgent` before `Build` resolves it, and `gohan.NewNativeConversation(stack, name, opts...)` MUST read that resolution without recomputing it. `Request.Tools` MUST derive from `NativeSpec.Tools` during resolution and MUST NOT be supplied independently. An unknown definition or profile name MUST fail before any provider call.
+
+#### Scenario: definition resolved once
+ID: `flow.native-definition-resolved-once`
+- WHEN a stack registers one `NativeSpec` and `Build` resolves its profile, chains and tools
+- THEN `NewNativeConversation` reads that resolution, and `Explain` projects the same configuration with zero provider calls and no run budget spent
+
+#### Scenario: tools have one source
+ID: `flow.native-tools-single-source`
+- WHEN a `NativeSpec` declares `Tools` and its `Request` carries a different tool list
+- THEN resolution derives `Request.Tools` from `NativeSpec.Tools`, and the resolved flow executes exactly the derived set
 

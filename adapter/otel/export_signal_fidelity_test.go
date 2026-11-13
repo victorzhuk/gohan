@@ -236,15 +236,20 @@ func fidRoundTrip(t *testing.T, rec types.ExportRecord) types.ExportRecord {
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Fatalf("unmarshal export record: %v", err)
 	}
-	// JSON has no monotonic clock reading; strip it before comparing.
+	// JSON preserves instants, not monotonic readings or location identity.
+	// Normalize local copies without changing the records being compared.
 	sent, got := rec, back
 	if sent.Span != nil {
-		sent.Span.Start, sent.Span.End = sent.Span.Start.Round(0), sent.Span.End.Round(0)
-		got.Span.Start, got.Span.End = got.Span.Start.Round(0), got.Span.End.Round(0)
+		sentSpan, gotSpan := *sent.Span, *got.Span
+		sentSpan.Start, sentSpan.End = sentSpan.Start.Round(0).UTC(), sentSpan.End.Round(0).UTC()
+		gotSpan.Start, gotSpan.End = gotSpan.Start.Round(0).UTC(), gotSpan.End.Round(0).UTC()
+		sent.Span, got.Span = &sentSpan, &gotSpan
 	}
 	if sent.Metric != nil {
-		sent.Metric.Time, sent.Metric.Start = sent.Metric.Time.Round(0), sent.Metric.Start.Round(0)
-		got.Metric.Time, got.Metric.Start = got.Metric.Time.Round(0), got.Metric.Start.Round(0)
+		sentMetric, gotMetric := *sent.Metric, *got.Metric
+		sentMetric.Time, sentMetric.Start = sentMetric.Time.Round(0).UTC(), sentMetric.Start.Round(0).UTC()
+		gotMetric.Time, gotMetric.Start = gotMetric.Time.Round(0).UTC(), gotMetric.Start.Round(0).UTC()
+		sent.Metric, got.Metric = &sentMetric, &gotMetric
 	}
 	if !reflect.DeepEqual(sent, got) {
 		t.Fatalf("serialized form lost data:\n sent: %#v\n got:  %#v", sent, got)

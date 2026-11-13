@@ -186,13 +186,40 @@ func StoreOutput(ctx context.Context, s OutputStoreParams) ([]types.Block, strin
 `DefaultMaxOutput` is the per-stream inline cap and the tools contract default for `ToolSpec.MaxOutput`. `SanitizeFunc` rewrites one stream's bytes before they are capped or stored and reports how many occurrences it replaced. `OutputStoreParams` carries one stream through the shared step in this order: `Sanitize`, resolve the effective `Max`, store, render excerpt and marker, count. `Max` at or below zero resolves to `DefaultMaxOutput`; `ForceStore` stores under the cap; `Store` and `Tel` may be `nil`. `StoreOutput` returns the blocks, the stored document's ref (`""` when nothing was stored) and an error: a sanitize or store error returns no blocks and no ref, and the leak count `Sanitize` reports is emitted once as `gohan.sandbox.secret_leak`.
 
 
+### Egress policy declaration
+
+A tool declares it with `WithEgress(p)`; `Build` fails with `ErrEgressPolicyRequired` for a tool that declares network capability (`WithExfil()`, `Effect` above `ReadOnly` with `WithHTTP()`, or a `std/tool/http` tool) without one, and derives `Capabilities.Exfil` from the policy: any `Allow` entry outside the private ranges makes the tool exfil-capable. `sandbox.SandboxPolicy.Egress` uses the same type.
+
+### Egress refusal and clients
+
+`std/egress.Client(p, opts...) *http.Client` enforces the policy: it resolves the host, checks every resolved address against the policy and dials the checked address with the original `Host` (rebinding-safe), repeats the check on each redirect hop, strips `Authorization` on a cross-host redirect, enforces scheme, size and time, and routes through `WithProxy(url)` when set while still validating hops. A refusal returns `EgressDenied{URL, Reason}` (`Permanent`) to the model, appends an audit record `egress_denied` with the run id, and increments `gohan.egress.requests{tool, host, decision}`. Every gohan-shipped HTTP tool (`std/tool/http.Fetch`, the blob URL fetch in `messages`) uses it; user tools receive it from `NewTool` through `EgressClient(ctx)`. MCP client transports and provider adapters are configuration, not model input, and are exempt; `Explain` lists their hosts beside the tool policies.
+
+### Tool name collisions
+
+Two tools with the same name in one flow (`Deferred`, provider-executed, sandbox, skills and imported sets included) fail `Build` with `ErrToolCollision{Name, Sources}`. The names `search_tools`, `read_output`, `notes_read`, `notes_write`, `memory_read`, `memory_write`, `load_skill` and `read_skill_resource` are reserved for the harness. `ToolSpec.Name` is the identity used by the pinned manifest, session grants, `CallKey`, taint policy, audit and `approve:<name>` scopes: a renamed tool is a new tool and nothing migrates. Imported sets are namespaced at wiring (`interop`) as `<ns>__<tool>`.
+
+### Shared tool values
+
+A `Tool` value is built once, before `Build`, and shared by every run: its dependencies are constructor arguments captured by `fn` (`tools.Search(repo)`), tenant-scoped resources are chosen inside `fn` from `PrincipalFrom(ctx)`, and `Call` must be safe for concurrent use; nothing per-request is stored on the value.
+
+### Provider tool policy
+
+Tools the provider runs inside the model call (web search, code execution, hosted MCP) are registered like any other tool with `Executor: ByProvider`; `std/tool/provider` ships `WebSearch(opts...)`, `CodeExec()` and `HostedMCP(url, allowed ...string)`, all `Untrusted`, with effect `ReadOnly` for search and `SideEffect` for the other two, and `Exfil: true` for search and hosted MCP. They ship their own `ToolPolicy` raising `MaxEffect` to the declared effect, so the import cap does not apply to them; a wiring that lowers `MaxEffect` below the declared effect still caps it and increments `gohan.tool.effect_capped` (`tools.untrusted-effect-cap`).
+
+### Provider-executed tools
+
+1. **Enable path.** The adapter translates the spec into the provider's tool declaration (search `max_uses` from the run's remaining `MaxToolCalls`, domain allow/deny from `WithDomains`, hosted-MCP `allowed_tools` from `allowed`). A profile whose `Caps.ProviderTools` does not list the tool's kind fails `Build` with `gohan.tool.provider_unsupported`.
+2. **Gate before the call.** Because the call happens inside the model request, the permission gate runs on the spec before the request is sent: `Deny` → the tool is not declared; `Ask` → declared with the provider's approval flag (`require_approval: always`) when `Caps.ProviderTools` marks approval as supported, otherwise treated as `Deny`; `Allow` → declared. A provider approval request maps to `HumanApproval` with an `ApprovalRequest` built from the pending call; `Resume(Approve())` replays the model call carrying the approval item under the same `CallKey`.
+3. **Post-hoc taint.** The model's inputs to a provider tool are only visible after the fact. `std/taint` runs rule 1 of `taint` on them when the response arrives; a tainted input into an `Exfil` provider tool aborts the run `Failed(Permanent)` before any result block is appended or used, and `gohan.taint.post_hoc{tool}` increments.
+4. **Provenance.** Adapters convert the provider's call block to a `ToolUse`; the executor is the `Executor: ByProvider` of the registered spec with that name, not a block field, and its result block to a `ToolResult` whose blocks carry `OriginProvider{Name}`; opaque payloads the provider requires back (encrypted search content, citations) stay inside the result as `Raw` and round-trip per `model` rule 8. Fencing, guards and taint apply unchanged.
+5. **Cost, limits, journal.** Each provider call counts toward `MaxToolCalls`, is journaled `Completed` directly (never `Reserved`; it cannot be replayed or verified), is audited with `Executor`, and is priced from `Pricing.ProviderCall[name]` using `Usage.ProviderToolCalls`.
+6. **Trifecta.** A provider tool with `Exfil` is both the exfiltration leg and the untrusted-content leg of the `taint` build check.
+
 ## Requirements
 
 ### Requirement: Egress
 
-`EgressPolicy` is the one vocabulary for where a tool may connect: `Allow` lists host globs with optional ports; `Schemes` defaults to `https`; `PrivateRanges` defaults to `DenyPrivate` (RFC 1918, loopback, link-local including cloud metadata, IPv6 ULA, CGNAT); `MaxRedirects` defaults to 3 and every hop is re-validated; `MaxBytes` defaults to 8 MiB; `Timeout` defaults to `ToolSpec.Timeout`. A tool declares it with `WithEgress(p)`; `Build` fails with `ErrEgressPolicyRequired` for a tool that declares network capability (`WithExfil()`, `Effect` above `ReadOnly` with `WithHTTP()`, or a `std/tool/http` tool) without one, and derives `Capabilities.Exfil` from the policy: any `Allow` entry outside the private ranges makes the tool exfil-capable. `sandbox.SandboxPolicy.Egress` is the same type.
-
-`std/egress.Client(p, opts...) *http.Client` enforces the policy: it resolves the host, checks every resolved address against the policy and dials the checked address with the original `Host` (rebinding-safe), repeats the check on each redirect hop, strips `Authorization` on a cross-host redirect, enforces scheme, size and time, and routes through `WithProxy(url)` when set while still validating hops. A refusal returns `EgressDenied{URL, Reason}` (`Permanent`) to the model, appends an audit record `egress_denied` with the run id, and increments `gohan.egress.requests{tool, host, decision}`. Every gohan-shipped HTTP tool (`std/tool/http.Fetch`, the blob URL fetch in `messages`) uses it; user tools receive it from `NewTool` through `EgressClient(ctx)`. MCP client transports and provider adapters are configuration, not model input, and are exempt; `Explain` lists their hosts beside the tool policies.
+`EgressPolicy` MUST govern tool destinations. `Allow` lists host globs with optional ports. `Schemes` defaults to `https`. `PrivateRanges` defaults to `DenyPrivate` for RFC 1918, loopback, link-local including cloud metadata, IPv6 ULA and CGNAT. `MaxRedirects` defaults to 3. `MaxBytes` defaults to 8 MiB. `Timeout` defaults to `ToolSpec.Timeout`.
 
 #### Scenario: egress policy required
 ID: `tools.egress-policy-required`
@@ -225,6 +252,7 @@ ID: `tools.egress-audited`
 - THEN the audit record names the tool, the run id, the host and the reason, and never the request body
 
 
+
 ### Requirement: Shared-address destinations follow private-range policy
 
 `DenyPrivate` MUST reject resolved destinations in `100.64.0.0/10`, subject to the existing explicit literal allow exception.
@@ -255,9 +283,7 @@ ID: `tools.proxy-tls-authority-preserved`
 
 ### Requirement: Names and identity
 
-A tool name matches `^[a-z][a-z0-9_]{0,63}$`; `NewTool` and `Build` reject anything else with `ErrToolName`, and no adapter ever rewrites a name — a provider that cannot accept a valid name fails `Build` for that profile. Two tools with the same name in one flow (`Deferred`, provider-executed, sandbox, skills and imported sets included) fail `Build` with `ErrToolCollision{Name, Sources}`. The names `search_tools`, `read_output`, `notes_read`, `notes_write`, `memory_read`, `memory_write`, `load_skill` and `read_skill_resource` are reserved for the harness. `ToolSpec.Name` is the identity used by the pinned manifest, session grants, `CallKey`, taint policy, audit and `approve:<name>` scopes: a renamed tool is a new tool and nothing migrates. Imported sets are namespaced at wiring (`interop`) as `<ns>__<tool>`.
-
-A `Tool` value is built once, before `Build`, and shared by every run: its dependencies are constructor arguments captured by `fn` (`tools.Search(repo)`), tenant-scoped resources are chosen inside `fn` from `PrincipalFrom(ctx)`, and `Call` must be safe for concurrent use; nothing per-request is stored on the value.
+A tool name MUST match `^[a-z][a-z0-9_]{0,63}$`. `NewTool` and `Build` MUST reject other names with `ErrToolName`. Adapters MUST NOT rewrite names. A provider that cannot accept a valid name MUST fail `Build` for that profile.
 
 #### Scenario: name grammar
 ID: `tools.name-grammar`
@@ -285,7 +311,10 @@ ID: `tools.tool-value-shared-and-concurrent`
 - THEN each call reads its own principal from `ctx` and neither observes the other's arguments or results
 
 
+
 ### Requirement: Tool contract
+
+`Tool` MUST expose `Spec` and `Call`. Error handling MUST follow the Error mapping in Contract, including control-error and cancellation pass-through and `SideEffect` deadline `Outcome: Unknown`. `MaxOutput` MUST cap inline content and the output store holds the rest.
 
 #### Scenario: unknown tool
 ID: `tools.unknown-tool`
@@ -320,6 +349,8 @@ ID: `tools.notes-survive-reset`
 
 ### Requirement: Tool author contract
 
+`NewTool` MUST derive a JSON schema from `In` at construction. It MUST pass `[]Block` and `ToolResult` through unchanged. It MUST map a `string` to one `Text` block and marshal other values to JSON.
+
 #### Scenario: schema from tags
 ID: `tools.schema-from-tags`
 - WHEN `In` has `Currency string \`json:"currency" desc:"ISO code" enum:"EUR,USD"\`` and `Nights int \`json:"nights,omitempty" min:"1" max:"30"\``
@@ -348,6 +379,8 @@ ID: `tools.default-timeout`
 
 ### Requirement: Tool spec pinning
 
+`Stack.Manifest()` MUST list every tool with `hash(name, description, schema, effect, scopes, trust)`. `gohan.WithPinnedManifest(path)` MUST make `Build` fail on any hash change with `ErrManifestDrift`.
+
 #### Scenario: poisoned description
 ID: `tools.poisoned-description`
 - WHEN an imported tool's description contains an instruction directive
@@ -366,6 +399,8 @@ ID: `tools.untrusted-effect-cap`
 
 ### Requirement: Dynamic tools and inspection
 
+`ToolFilter` MUST select tools for each turn. `Inspect(runID)` MUST return the current turn, last `Seq`, pending calls and cost from stores.
+
 #### Scenario: tool filter per turn
 ID: `tools.tool-filter-per-turn`
 - WHEN `ToolFilter` hides `create_booking` on turn 1 and shows it on turn 2
@@ -378,6 +413,8 @@ ID: `tools.inspect-from-another-pod`
 
 
 ### Requirement: Deferred tools
+
+`Deferred` MUST mark a registered and governed tool whose definition is not assembled into the prompt until discovery. A discovered tool MUST join the active set for the rest of the run. The active set MUST be recorded in the checkpoint and audit and asserted on `Replay`.
 
 #### Scenario: not assembled until discovered
 ID: `tools.not-assembled-until-discovered`
@@ -398,34 +435,57 @@ ID: `tools.governed-while-deferred`
 
 ### Requirement: tool/exec
 
+`exec.New` MUST use argv built from typed args, never a shell string. The env allowlist MUST default to empty. It MUST set the working directory and kill the process group on timeout. Stdout and stderr MUST default to 64 KiB each and truncate with a marker. Non-zero exit MUST return `Outcome: Failed`, exit code and capped stderr. A `SideEffect` timeout MUST return `Outcome: Unknown`. `Effect` MUST default to `SideEffect`.
+
+#### Scenario: timeout kills group
+ID: `tools.timeout-kills-group`
+- WHEN a command spawns children and exceeds its timeout
+- THEN the whole process group is killed and the result is an error result
+
+#### Scenario: output cap
+ID: `tools.output-cap`
+- WHEN stdout exceeds the cap
+- THEN the result is truncated with a marker
+
+#### Scenario: env allowlist
+ID: `tools.env-allowlist`
+- WHEN the parent has `SECRET=x` and the allowlist is empty
+- THEN the child environment does not contain `SECRET`
+
 
 ### Requirement: Provider-executed tools
 
-The implementation MUST carry the *Provider-executed tools* contract on the public path. A provider-executed tool MUST be registered through the ordinary tool registry as a spec with `Executor: ByProvider`, and its effect, trust and `Capabilities.Exfil` MUST be read from that registered spec and never from the provider's block. The harness MUST NOT invoke the tool's `Call` for a `ByProvider` spec; the provider runs it inside the model request. `Build` MUST already have refused a `ByProvider` spec whose name is absent from the profile's `Caps.ProviderTools` with `ErrProviderToolUnsupported` (`core/build.go:244-251`). The permission gate MUST run on the spec before the model request is assembled, so the gate decision is a declaration decision: a `Deny` MUST leave the tool out of the request, an `Ask` MUST use the provider approval flag when `Caps.ProviderTools` marks approval supported and MUST otherwise behave as `Deny`, and an `Allow` MUST declare the tool. An approval request from the provider MUST become a suspension carrying the pending call and the matched argument origins, not an inline wait. A provider tool result MUST carry the origin of the tool that produced it, `OriginProvider{Name}`, on every block it appends.
+A provider-executed tool MUST be registered with `Executor: ByProvider`. Its effect, trust and `Capabilities.Exfil` MUST come from the registered spec, not the provider block. The harness MUST NOT invoke its `Call`. `Build` MUST already have refused a `ByProvider` spec whose name is absent from the profile's `Caps.ProviderTools` with `ErrProviderToolUnsupported` (`core/build.go:244-251`). The adapter MUST follow Provider-executed tools rule 1.
 
-Tools the provider runs inside the model call (web search, code execution, hosted MCP) are registered like any other tool with `Executor: ByProvider`; `std/tool/provider` ships `WebSearch(opts...)`, `CodeExec()` and `HostedMCP(url, allowed ...string)`, all `Untrusted`, with effect `ReadOnly` for search and `SideEffect` for the other two, and `Exfil: true` for search and hosted MCP. They ship their own `ToolPolicy` raising `MaxEffect` to the declared effect, so the import cap does not apply to them; a wiring that lowers `MaxEffect` below the declared effect still caps it and increments `gohan.tool.effect_capped` (`tools.untrusted-effect-cap`). Rules:
 
-1. **Enable path.** The adapter translates the spec into the provider's tool declaration (search `max_uses` from the run's remaining `MaxToolCalls`, domain allow/deny from `WithDomains`, hosted-MCP `allowed_tools` from `allowed`). A profile whose `Caps.ProviderTools` does not list the tool's kind fails `Build` with `gohan.tool.provider_unsupported`.
-2. **Gate before the call.** Because the call happens inside the model request, the permission gate runs on the spec before the request is sent: `Deny` → the tool is not declared; `Ask` → declared with the provider's approval flag (`require_approval: always`) when `Caps.ProviderTools` marks approval as supported, otherwise treated as `Deny`; `Allow` → declared. A provider approval request maps to `HumanApproval` with an `ApprovalRequest` built from the pending call; `Resume(Approve())` replays the model call carrying the approval item under the same `CallKey`.
-3. **Post-hoc taint.** The model's inputs to a provider tool are only visible after the fact. `std/taint` runs rule 1 of `taint` on them when the response arrives; a tainted input into an `Exfil` provider tool aborts the run `Failed(Permanent)` before any result block is appended or used, and `gohan.taint.post_hoc{tool}` increments.
-4. **Provenance.** Adapters convert the provider's call block to a `ToolUse`; the executor is the `Executor: ByProvider` of the registered spec with that name, not a block field, and its result block to a `ToolResult` whose blocks carry `OriginProvider{Name}`; opaque payloads the provider requires back (encrypted search content, citations) stay inside the result as `Raw` and round-trip per `model` rule 8. Fencing, guards and taint apply unchanged.
-5. **Cost, limits, journal.** Each provider call counts toward `MaxToolCalls`, is journaled `Completed` directly (never `Reserved`; it cannot be replayed or verified), is audited with `Executor`, and is priced from `Pricing.ProviderCall[name]` using `Usage.ProviderToolCalls`.
-6. **Trifecta.** A provider tool with `Exfil` is both the exfiltration leg and the untrusted-content leg of the `taint` build check.
 
 #### Scenario: provider tool registered
 ID: `tools.provider-tool-registered`
 - WHEN a flow registers `provider.WebSearch()` and the profile lists web search in `Caps.ProviderTools`
 - THEN the model request declares the provider's search tool and `Explain` lists it with `Executor: ByProvider`
 
+### Requirement: Provider tool gate
+
+The permission gate MUST run before request assembly. `Deny` MUST omit the declaration. `Allow` MUST declare the tool. `Ask` MUST use `require_approval: always` when `Caps.ProviderTools` supports approval and otherwise act as `Deny`.
+
 #### Scenario: gate decides before the call
 ID: `tools.provider-tool-gate-before-call`
 - WHEN the tool policy denies `web_search` for the principal
 - THEN the model request carries no search tool and no provider search occurs
 
+### Requirement: Provider approval
+
+A provider approval request MUST suspend with `HumanApproval`, not an inline wait, and an `ApprovalRequest` from the pending call and matched argument origins. `Resume(Approve())` MUST replay the model call with the approval item under the same `CallKey`.
+
 #### Scenario: provider approval as suspension
 ID: `tools.provider-approval-as-suspension`
 - WHEN a hosted-MCP tool is gated `Ask` and the provider returns an approval request
 - THEN the run suspends with `HumanApproval` naming the pending call, and `Resume(Approve())` replays the model call with the approval under the original `CallKey`
+
+
+### Requirement: Provider result provenance
+
+Adapters MUST convert provider call blocks to `ToolUse` and result blocks to `ToolResult`. The executor MUST come from the registered spec. Result blocks MUST carry `OriginProvider{Name}`. Required opaque payloads MUST remain as `Raw` and round-trip per `model` rule 8. Fencing, guards and taint apply unchanged.
 
 #### Scenario: provider result carries origin
 ID: `tools.provider-result-origin`
@@ -433,7 +493,10 @@ ID: `tools.provider-result-origin`
 - THEN they are appended as a `ToolResult` with `OriginProvider{"web_search"}` and the encrypted payload round-trips as `Raw` on the next call
 
 
+
 ### Requirement: Verification
+
+`Verify` MUST read authoritative state without re-executing the effect. The harness MUST run it after every `SideEffect` result with `Outcome: Unknown`, on `Resume` or `Recover` for unknown journal entries, and before `Done` while `Uncertain` is non-empty. It MUST journal verification by `CallKey` + `"/verify"`.
 
 #### Scenario: unknown reconciled
 ID: `tools.verify-reconciles-unknown`
@@ -455,20 +518,6 @@ ID: `tools.verify-error`
 - WHEN `Verify` returns an error
 - THEN the entry stays `Unknown` and `*UncertainOutcomeError` is returned
 
-#### Scenario: timeout kills group
-ID: `tools.timeout-kills-group`
-- WHEN a command spawns children and exceeds its timeout
-- THEN the whole process group is killed and the result is an error result
-
-#### Scenario: output cap
-ID: `tools.output-cap`
-- WHEN stdout exceeds the cap
-- THEN the result is truncated with a marker
-
-#### Scenario: env allowlist
-ID: `tools.env-allowlist`
-- WHEN the parent has `SECRET=x` and the allowlist is empty
-- THEN the child environment does not contain `SECRET`
 
 
 ### Requirement: Fetched response cap and store
@@ -533,4 +582,42 @@ The egress client MUST NOT reuse or pool a connection before a measurement shows
 ID: `tools.egress-per-request-transport-released`
 - WHEN two requests run in sequence over the same client
 - THEN each request owns its transport and no idle connection survives the first response
+
+### Requirement: Host execution advertises its effective effect
+
+A host runner MUST expose the same effect used by its permission, journal, shielding, scheduling and timeout behavior. An unset host effect MUST resolve to `SideEffect`. An explicit effect option MUST override the supplied declaration.
+
+#### Scenario: Host effect is omitted
+ID: `tools.host-effect-default-consistent`
+- WHEN a host runner is registered without an explicit effect
+- THEN it advertises `SideEffect` and requires the corresponding approval and journal path
+
+#### Scenario: An effect option overrides the declaration
+ID: `tools.host-effect-option-consistent`
+- WHEN the host runner receives an explicit effect option
+- THEN its declaration and execution use that effect consistently
+
+### Requirement: External effects retain one idempotency identity
+
+Initial execution and every retry of a reserved tool intent MUST receive the same nonempty downstream idempotency key. A completed successful intent MUST NOT suppress a genuinely new call under the existing intent-level contract.
+
+#### Scenario: Completion is lost after an external effect
+ID: `tools.initial-and-replay-key-stable`
+- WHEN an external effect runs and journal completion is lost before recovery
+- THEN the initial call and replay reach the downstream boundary with the same reserved key
+
+### Requirement: Argument identity preserves exact numeric values
+
+Approval and journal fingerprints MUST distinguish unequal JSON numeric values without floating-point rounding. Equivalent exact numeric spellings and object member order MUST preserve identity. Legacy unresolved journal candidates MUST be reused only after their stored complete arguments prove an exact match.
+
+#### Scenario: Adjacent large integer arguments differ
+ID: `tools.exact-numeric-fingerprint`
+- WHEN arguments contain 9007199254740992 and 9007199254740993
+- THEN their fingerprints differ and one value's authority cannot cover the other
+
+#### Scenario: An unresolved legacy intent is recovered
+ID: `tools.legacy-intent-exact-match`
+- WHEN a legacy journal candidate has complete argument evidence matching the new call exactly
+- THEN replay preserves its original reserved key
+- AND a candidate with different or absent argument evidence does not authorize a new effect
 

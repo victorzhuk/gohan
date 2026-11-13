@@ -414,7 +414,7 @@ Contracts:
 - `Append` with a stale version returns `ErrVersionConflict`; the harness reloads and retries once for pure appends, otherwise surfaces the error.
 - `Consume` is atomic; the second caller gets `ErrTokenConsumed`; expired checkpoints return `ErrTokenExpired`.
 - **Conditional resume.** An external `Resume` inspects a token before consuming it: `Peek` returns an owned snapshot and changes no token state; `ConsumeIf` and `UpdatePending` compare that snapshot against the stored record atomically across every field including `Data` bytes and originator scopes, return `ErrVersionConflict` when the record moved, and never overwrite collected approvals. `ConsumeIf` records the input and consumes the token in one transaction; `UpdatePending` may change only `Data`. Every read path returns copies — `Put`'s result, `Peek`, `Consume`, `ConsumeIf`, `PendingInput`, `ResumeReady` — so no caller can mutate store-owned bytes. A conversation with approvals requires both optional interfaces and is refused with `ErrCheckpointIncompatible` when the store has none, rather than falling back to unconditional `Consume`.
-- **Recovery discovery.** `ResumeReady` lists consumed checkpoints whose runs are still `Suspended`: `Recover` attempts the `Resuming` transition for each, exactly one driver wins, and a `Finished` run is never re-executed. This closes the crash interval between consumption and `Resuming`, which the separate atomic stores cannot do on their own.
+- **Recovery discovery.** `ResumeReady` lists consumed checkpoints whose runs are still `Suspended`. `Recover` invokes it after the stale pass when `ResumeReadyLister` is present, before checking `CheckpointRuns` per candidate. Discovery errors propagate from `Recover`. Unbound memory checkpoint discovery returns an error matching `types.ErrCheckpointIncompatible`. After successful discovery, recovery skips consumed candidates without `CheckpointRuns`; otherwise it takes a `ResumingCheckpoint` lease fenced to the already-consumed token without consuming it again. Exactly one driver wins, and a `Finished` run is never re-executed. For a current `Preempted` checkpoint, recovery uses `ConsumeIf` before taking the token-fenced lease; it skips that path without `CheckpointRuns`. The stale pass does not require `CheckpointRuns`, though later discovery can still fail.
 - **Lease generation.** `Lease.Generation` is a nonzero ownership token minted by `Start`, `Resuming` and `Reclaim`; `Heartbeat` changes only `Expires`. `Heartbeat`, `Finish`, `Suspend` and `Drain` require the run id *and* the current generation of an active, unexpired record; a stale generation fails with `ErrRunNotActive` and mutates nothing, so a driver that was reclaimed cannot heartbeat, finish, suspend or drain the new driver's run. `Expires` stays informational and is never an ownership token. Implementations allocate generations that do not repeat for the same run and refuse rather than wrap when the counter is exhausted.
 - `Reserve` returns `created=true` for a new reservation. Existing `Completed` → decorator returns the recorded result without executing (`ToolFinished.Replayed=true`). Existing `Reserved` → outcome unknown; the tool re-executes with the same pinned key. A key presented with a fingerprint that differs from the stored entry's is refused with `ErrJournalFingerprintMismatch`, so a reused call id cannot inherit another call's outcome. `Complete` refuses a key with no live reservation — expired or never reserved — with `ErrJournalCompleteMissed`, so a write that outlived its journal entry fails the call instead of a clean run being reported over an unrecorded result (ADR-0149). `Reserve` also records the call's tool name and its canonical argument bytes in the entry, and the journal lists a session's entries whose outcome is still `Unknown` together with both, so a reconciliation resolves the tool and reads the arguments the effect was attempted with rather than reconstructing them from a history that projection and compaction are allowed to change (`tools` Verification).
 - `Fingerprint = hash(tool name, canonical JSON of args)`. Before creating a new entry the decorator calls `ByFingerprint`; if an entry whose `Result.Outcome` is `Unknown` (state `Reserved`) exists in the same session, the new entry **inherits its `Key`** (key pinning per intent). If a `Completed`/`Succeeded` entry exists for a `SideEffect` fingerprint, the call proceeds with a fresh key but `gohan.tool.repeat_intent` increments and the loop detector counts it.
@@ -422,8 +422,8 @@ Contracts:
 - `Journal` results are needed for replay during a run's lifetime only: after `Runs.Finish` they expire (default 24 h); the audit record keeps `ResultSHA` and `ResultBytes`, where `ResultSHA` is the SHA-256 of the canonical encoding of the result's message and `ResultBytes` is that encoding's size, so an auditor can recompute the checksum from the stored output.
 - `stack.Reconstruct(ctx, sessionID)` joins `AuditLog` and `SessionLog` into an ordered decision trail: who ran what, for whom, which tools were allowed/denied/asked, who approved, what version of model/prompts/toolset was in force.
 - `Runs.Start` with a non-empty `OperationID` is unique per tenant; a duplicate returns `ErrOperationExists{RunID}` and the caller reads the stored result via `ByOperation` + `ResultRef` (an `OutputStore` ref; it is retained by the Conversation tier of the owning session). A deliberate re-execution needs a new operation ID.
-- `Suspend` releases the lease and records the token; the run is not recoverable while `Suspended`; its retention is the checkpoint's `ExpiresAt`. `Consume(t, in)` stores the resume input atomically with consumption and `Resuming(runID)` takes a fresh lease; a crash after that point leaves a `Resuming` run whose input `Recover` reads back with `PendingInput` and re-drives. Only `Running` and `Resuming` runs are ever reclaimed.
-- `Runs.Start` fails with `ErrRunActive` if the session has an unexpired lease. Leases are refreshed by the harness at least every `HeartbeatEvery`, through the run's heartbeat goroutine and, where the store supports it, the per-turn writes (`recovery`). `Stale` lists runs whose heartbeat is older than `staleAfter` by the store's clock and state `Running` or `Resuming`, so a run left `Resuming` by a crash after `Resuming(runID)` is reclaimed like a stale `Running` one. `PreemptedLister` is an optional interface on `Runs` (`docs/design/compatibility.md`): when the store implements it, `Recover` resumes preempted runs first; when it does not, preempted runs wait for a client `Continue()` or, if none comes, expire with their checkpoint. `Preempted` lists `Suspended` runs whose checkpoint reason is `Preempted`, oldest first. The core memory store and `adapter/postgres` implement it. `Reclaim` atomically takes over a stale run (exactly one reaper wins).
+- `Suspend` releases the lease and records the token. The checkpoint's retention is its `ExpiresAt`. `ConsumeIf(t, expected, in)` stores the resume input atomically with conditional consumption, and `CheckpointRuns.ResumingCheckpoint` takes the lease fenced to that token. Recovery can acquire a token-fenced lease for a consumed checkpoint while its run remains `Suspended`. A crash after lease acquisition leaves a `Resuming` run whose input `Recover` reads back with `PendingInput` and re-drives. The frozen `Consume` and `Resuming(runID)` methods remain available. Only `Running` and `Resuming` runs are reclaimed by the stale pass.
+- `Runs.Start` fails with `ErrRunActive` if the session has an unexpired lease. Leases are refreshed by the harness at least every `HeartbeatEvery`, through the run's heartbeat goroutine and, where the store supports it, the per-turn writes (`recovery`). `Stale` lists runs whose heartbeat is older than `staleAfter` by the store's clock and state `Running` or `Resuming`, so a run left `Resuming` by a crash is reclaimed like a stale `Running` one. `PreemptedLister` is an optional interface on `Runs` (`docs/design/compatibility.md`): when the store implements it, `Recover` discovers preempted runs before stale runs; when it does not, recovery skips preempted discovery. `Preempted` lists `Suspended` runs whose checkpoint reason is `Preempted`, oldest first. The core memory store and `adapter/postgres` implement it. `Reclaim` atomically takes over a stale run (exactly one reaper wins).
 - **Forking.** `Stores.ForkSession(from, upTo)` creates a new session whose history is the parent's prefix through message `upTo` (message IDs, origins and compaction blocks preserved), with the same `SessionOwner`, `History.ForkedFrom` set, an audit record `session_fork` and `gohan.session.forked{tenant}`. It fails with `ErrRunActive` while the parent has a live lease; a suspended parent forks (its token stays with the parent). Inheritance: owner yes; session grants no (the child starts with none); notes and shared state copied as of fork time (shared state at version 1 with a full-snapshot `StateChanged`); journal, checkpoints and runs no; subject memory is owner-scoped and unchanged; taint is computed over the child's own history. A store may implement copy-on-write with a parent pointer, but a fork is not a dependent record: `DeleteSession(parent)` leaves it readable, and `EraseSubject` covers parent and forks alike. `stack.Reconstruct(child)` prepends the parent's trail through `UpTo` with a fork marker. Assembly is prefix-stable, so a fork's first model call reuses the parent's provider cache.
 - **Session run discovery.** `SessionRunFinder` is an optional interface on `Runs` (`docs/design/compatibility.md`): it returns the session's active run — state `Running` or `Resuming` with a live lease — or `ErrRunNotFound`. `Suspended`, terminal, lease-expired and null-lease runs are excluded, and the store judges the lease on its own clock. A store that does not implement it keeps every other operation unchanged; run discovery over it simply reports no run.
 - **Session index.** `SessionIndex` is an optional interface on `SessionLog` (`docs/design/compatibility.md`; the core memory store and `adapter/postgres` implement it). `Append` maintains `Messages` and `LastActivity` (store clock); `ForkSession`, `subflows` and `release` set `Kind`; `Sessions` lists by `LastActivity` descending with cursor pagination (`Limit` default 25, max 200) and, with an empty `Kinds`, returns only `SessionPrimary` and `SessionFork`; `Archived == nil` means not archived. `Stack.Sessions` scopes the query to `PrincipalFrom(ctx)`'s owner (or a tenant with `session:read`); `Stack.UpdateSession` is owner-checked like `Send`, and a title set by a user sets `TitleLocked`. Without the index, `Stack.Sessions` returns `ErrSessionIndexRequired`. Retention: `Purge` skips `Pinned` sessions and applies `ArchivedRetention` (default 180 days) to archived ones; `DeleteSession` and `EraseSubject` remove index rows; `Reconstruct` reads archived sessions.
@@ -436,6 +436,46 @@ Contracts:
 - `adapter/postgres` adds `func (j *Journal) CompleteTx(ctx context.Context, tx pgx.Tx, k gohan.CallKey, res gohan.ToolResult) error`.
 - **Postgres schema.** Every table lives in schema `gohan` (or the name given by `postgres.WithSchema`, so two stacks may share one database) as `<store>_<record>`; users never alter these tables and extend by their own tables keyed on gohan ids; `sqlc` queries are the only SQL in the adapter. Migrations are embedded goose SQL files applied by `postgres.Migrate(ctx, pool, MigrateOptions{Schema, TargetVersion})` under an advisory lock (concurrent pods serialise) and by the `gohan-postgres migrate` command (JSON output when stdout is not a TTY). The intended place is the deploy pipeline or a pre-install hook with a DDL role; `postgres.WithAutoMigrate()` is for development and `Build` refuses it when `CostTags.Environment` is `production`. DDL versions are separate from record `SchemaVersion`s. **Skew rule:** each release runs against the previous release's schema and the next one — added columns are nullable or defaulted and not read until the following release, drops happen two releases after the last reader; `postgres.New` reads `gohan.schema_version` and fails with `ErrSchemaTooOld` below its `MinSchema`, and `Build` warns `gohan.postgres.schema_ahead` when the schema is newer than the code. Time-partitioned tables (`journal`, `events`, `audit`, `outputs`, `session_log`) have partitions created 14 days ahead by `Migrate` and thereafter by `postgres.Maintain(ctx)` on the reaper cadence; a write into a missing partition fails with `ErrPartitionMissing`, never a default partition. `storetest.Migrations` runs every store suite on a fresh install at head and on an install migrated step by step from the first version, and requires both schemas to be identical.
 
+
+### Session workspace metadata
+
+`SessionWorkspaceMeta` is such a surface on `SessionLog`: `WorkspaceMeta` reads the durable per-session workspace pointer and reports absence, `SetWorkspaceMeta` compares the expected generation and validates the current lease owner in one atomic write and returns `types.ErrVersionConflict` on a stale token or `types.ErrRunNotActive` on a stale owner, and `ImportWorkspaceMeta` writes one legacy generation-zero ref into absent metadata. A `SessionLog` that does not implement the surface keeps every other operation unchanged, and core MUST refuse a `PerSession` build that wires no durable workspace-metadata surface.
+
+### Notice claims and retention
+
+`Notices` claims up to `limit` pending notices for the calling dispatcher for `LeaseTTL` (another pod's `Notices` skips them until the claim expires), `AckNotice` removes one; an unacknowledged claim returns to pending. Notices belong to the session's Conversation tier and are purged and deleted with it. Postgres: `run_notices`; memory: an in-process queue.
+
+### Finish with pending signals and signal storage
+
+`Finish` is atomic with the mailbox: it fails with `ErrSignalsPending` when `SignalSteer` entries remain, and the runtime drains them and runs one more turn, which counts against `MaxTurns`; when that limit is already reached the run ends with `Done(StopLimit)` instead; pending `SignalCancel` never blocks `Finish`. Signals are not journal entries; a steer becomes part of history only when the runtime appends it (`runtime`). The memory store and Postgres (`run_signals`, purged with the run's session under the Conversation tier) implement the mailbox; `Signal` from any pod reaches the holder on its next `Drain`.
+
+### Retention tiers
+
+Three tiers, each with its own clock by the store's time: **Conversation** covers everything keyed by a session — `SessionLog`, `EventLog`, `OutputStore` and its blobs, `Checkpoints`, `Journal`, the run mailbox, `FeedbackStore` and `RedactionMap` — measured from `SessionMeta.LastActivity`; a session with a `Running` run never ages, and a `Suspended` one until its checkpoint's `ExpiresAt` passes; a session whose suspended checkpoint has expired ages normally, `Recover` no longer resumes that run and `Consume` returns `ErrTokenExpired`. `Pinned` sessions never age, and an archived session ages by `ArchivedRetention` (default 180 days, `SessionIndex`) instead of the Conversation tier. **Working** covers notes and subject memory, measured from the entry's last write. **Audit** covers `AuditLog` and is never shorter than `Conversation`; `Build` fails on such a policy. `Stack.Maintain` runs every store's purge tenant by tenant under the tenant's policy, skips `Pinned`, `Archived` (their own threshold, `stores.purge-respects-pinned-and-archived`) and held sessions, calls `postgres.Maintain`, and appends one `purge` audit record per tenant with per-store counts; `gohan-maintain` (JSON when stdout is not a TTY) is the cron entry point. `Conversation: 0` is zero retention: the session's Conversation-tier records are deleted at `Finish` and only audit checksums remain; `agent.Ephemeral()` sets it for a flow.
+
+### Legal hold
+
+**Legal hold.** `SessionMeta.Hold` is a hold id (empty = none) set through `UpdateSession` by a principal of the owner's tenant with `session:hold`; each change is audited (`hold_set`, `hold_cleared`). While set, `Maintain` skips the session and counts it in `Held`, `DeleteSession` returns `ErrSessionHeld`, zero retention does not apply, and `EraseSubject` erases everything else and lists the session in `EraseReport.Held`. Holds live in session metadata; a host that needs a hold registry drives `UpdateSession` from it.
+
+### Checkpoint backend version compatibility and quota pools
+
+A resume under a different backend version MUST NOT assume compatibility: an agent runtime whose driver state decodes MUST proceed through `Replay`, and a graph checkpoint that cannot be decoded under the current backend MUST be refused with `ErrCheckpointIncompatible` and MUST leave the token unconsumed. A `QuotaPool` on a model profile MUST be enforced across every process sharing that pool, `Batch` admission MUST yield to `Interactive` admission while pool queue-wait is above the threshold, and pool spend MUST be bounded per window so a limit is a `Permanent` `*LimitExceededError` naming the limit.
+
+### Postgres adapter seams and workspace transaction
+
+No port gains a method in core; the adapter-specific seams are methods on the concrete adapter types (ADR-0117). `SessionWorkspaceMeta` MUST run one transaction that takes the session serialization lock, locks `session_record` and then the owning `run_record` last, applies the `stores` refusal precedence, writes `expectedGeneration+1` and commits without releasing the owner row lock; any operation that needs both rows uses the session-before-run order, and a run-only mutation keeps run-only locking.
+
+### Postgres record envelopes
+
+Every stored shape MUST be persisted in the `stores` record envelope and decoded through the schema registry on read.
+
+### Postgres migration reversal
+
+On an empty scratch schema installed at head, the embedded migration down sections MUST support a down-up-down schema-shape check. The check MUST execute down sections newest first and clear migration bookkeeping before each reapplication. Reapplication through `postgres.Migrate` MUST apply every embedded version and reproduce the fresh head install's normalized column and constraint definitions.
+
+### Postgres final migration state
+
+After the final down sweep, the only ordinary table MUST be `schema_migrations`. This check does not guarantee recovery of deleted data or require a public down-migration API.
 
 ## Requirements
 
@@ -475,6 +515,8 @@ ID: `stores.reclaim-race`
 
 
 ### Requirement: Two clocks
+
+Stores MUST compute and compare persisted instants using their own clocks.
 
 #### Scenario: staleness by store clock
 ID: `stores.stale-by-store-clock`
@@ -519,6 +561,8 @@ ID: `stores.same-transaction-journal`
 
 ### Requirement: Intent-level idempotency and uncertainty
 
+The decorator MUST reuse the pinned key when an entry with the same fingerprint has an `Unknown` outcome in the same session.
+
 #### Scenario: late commit
 ID: `stores.late-commit`
 - WHEN `create_booking` (SideEffect) times out, then the model re-calls it with identical args and a new call ID
@@ -552,7 +596,7 @@ ID: `stores.complete-without-reservation`
 
 ### Requirement: Optional interfaces
 
-An optional surface MUST be discovered by type assertion, and the spec that introduces it MUST state core's behaviour when the assertion fails. `SessionWorkspaceMeta` is such a surface on `SessionLog`: `WorkspaceMeta` reads the durable per-session workspace pointer and reports absence, `SetWorkspaceMeta` compares the expected generation and validates the current lease owner in one atomic write and returns `types.ErrVersionConflict` on a stale token or `types.ErrRunNotActive` on a stale owner, and `ImportWorkspaceMeta` writes one legacy generation-zero ref into absent metadata. A `SessionLog` that does not implement the surface keeps every other operation unchanged, and core MUST refuse a `PerSession` build that wires no durable workspace-metadata surface.
+An optional surface MUST be discovered by type assertion, and the spec that introduces it MUST state core's behaviour when the assertion fails.
 
 #### Scenario: session index optional
 ID: `stores.session-index-optional`
@@ -567,7 +611,7 @@ ID: `stores.optional-preempted-lister-fallback`
 
 ### Requirement: Notice outbox
 
-`Finish` and `Suspend` append a `RunNotice` (`streams`) in the same transaction as the state change; a crash after the transaction never loses the notice and a crash before it never emits one. `Notices` claims up to `limit` pending notices for the calling dispatcher for `LeaseTTL` (another pod's `Notices` skips them until the claim expires), `AckNotice` removes one; an unacknowledged claim returns to pending. Notices belong to the session's Conversation tier and are purged and deleted with it. Postgres: `run_notices`; memory: an in-process queue.
+`Finish` and `Suspend` MUST append a `RunNotice` (`streams`) in the same transaction as the state change; a crash after the transaction never loses the notice and a crash before it never emits one.
 
 #### Scenario: notice written with finish
 ID: `stores.notice-written-with-finish`
@@ -577,7 +621,7 @@ ID: `stores.notice-written-with-finish`
 
 ### Requirement: Run mailbox
 
-Every run has a mailbox in `Runs`. `Signal` appends for a run whose state is `Running` and fails with `ErrRunNotActive` otherwise, and with `ErrMailboxFull` past `MaxPendingSignals`; `Drain` returns and removes the pending signals in arrival order for the lease holder only. `Cancel` is `Signal{SignalCancel}`. `Finish` is atomic with the mailbox: it fails with `ErrSignalsPending` when `SignalSteer` entries remain, and the runtime drains them and runs one more turn, which counts against `MaxTurns`; when that limit is already reached the run ends with `Done(StopLimit)` instead; pending `SignalCancel` never blocks `Finish`. Signals are not journal entries; a steer becomes part of history only when the runtime appends it (`runtime`). The memory store and Postgres (`run_signals`, purged with the run's session under the Conversation tier) implement the mailbox; `Signal` from any pod reaches the holder on its next `Drain`.
+Every run MUST have a mailbox in `Runs`. `Signal` appends for a run whose state is `Running` and fails with `ErrRunNotActive` otherwise, and with `ErrMailboxFull` past `MaxPendingSignals`; `Drain` returns and removes the pending signals in arrival order for the lease holder only. `Cancel` is `Signal{SignalCancel}`.
 
 #### Scenario: cancel signal crosses pods
 ID: `stores.signal-cancel-cross-pod`
@@ -622,6 +666,8 @@ ID: `stores.purge-respects-pinned-and-archived`
 
 ### Requirement: Forking
 
+`Stores.ForkSession(from, upTo)` MUST create a new session with the parent's history prefix through `upTo`, preserving message IDs, origins and compaction blocks.
+
 #### Scenario: fork copies the prefix
 ID: `stores.fork-prefix`
 - WHEN `ForkSession(s, m7)` is called on a session with ten messages
@@ -645,6 +691,8 @@ ID: `stores.reconstruct-crosses-fork`
 
 ### Requirement: Feedback store
 
+Feedback MUST be removed with its session on erasure or deletion.
+
 #### Scenario: feedback cascades on erase
 ID: `stores.feedback-cascades-on-erase`
 - WHEN `EraseSubject` or `DeleteSession` runs for a session with feedback rows
@@ -653,9 +701,7 @@ ID: `stores.feedback-cascades-on-erase`
 
 ### Requirement: Retention and legal hold
 
-Retention is one `RetentionPolicy` per stack (`agent.WithRetention`; default 90 days / 180 days / 2 years), overridable per tenant through the optional `RetentionSource`. Three tiers, each with its own clock by the store's time: **Conversation** covers everything keyed by a session — `SessionLog`, `EventLog`, `OutputStore` and its blobs, `Checkpoints`, `Journal`, the run mailbox, `FeedbackStore` and `RedactionMap` — measured from `SessionMeta.LastActivity`; a session with a `Running` run never ages, and a `Suspended` one until its checkpoint's `ExpiresAt` passes; a session whose suspended checkpoint has expired ages normally, `Recover` no longer resumes that run and `Consume` returns `ErrTokenExpired`. `Pinned` sessions never age, and an archived session ages by `ArchivedRetention` (default 180 days, `SessionIndex`) instead of the Conversation tier. **Working** covers notes and subject memory, measured from the entry's last write. **Audit** covers `AuditLog` and is never shorter than `Conversation`; `Build` fails on such a policy. `Stack.Maintain` runs every store's purge tenant by tenant under the tenant's policy, skips `Pinned`, `Archived` (their own threshold, `stores.purge-respects-pinned-and-archived`) and held sessions, calls `postgres.Maintain`, and appends one `purge` audit record per tenant with per-store counts; `gohan-maintain` (JSON when stdout is not a TTY) is the cron entry point. `Conversation: 0` is zero retention: the session's Conversation-tier records are deleted at `Finish` and only audit checksums remain; `agent.Ephemeral()` sets it for a flow.
-
-**Legal hold.** `SessionMeta.Hold` is a hold id (empty = none) set through `UpdateSession` by a principal of the owner's tenant with `session:hold`; each change is audited (`hold_set`, `hold_cleared`). While set, `Maintain` skips the session and counts it in `Held`, `DeleteSession` returns `ErrSessionHeld`, zero retention does not apply, and `EraseSubject` erases everything else and lists the session in `EraseReport.Held`. Holds live in session metadata; a host that needs a hold registry drives `UpdateSession` from it.
+Retention MUST be one `RetentionPolicy` per stack (`agent.WithRetention`; default 90 days / 180 days / 2 years), overridable per tenant through the optional `RetentionSource`.
 
 #### Scenario: purge by tier
 ID: `stores.retention-purge-by-tier`
@@ -680,6 +726,8 @@ ID: `stores.purge-audited`
 
 ### Requirement: Session deletion
 
+`Stores.DeleteSession` MUST delete the session and its dependent records while retaining audit records with content checksums only.
+
 #### Scenario: delete cascades
 ID: `stores.delete-cascades`
 - WHEN `Stores.DeleteSession` is called for a session with checkpoints, journal entries, outputs, notes and events
@@ -687,6 +735,8 @@ ID: `stores.delete-cascades`
 
 
 ### Requirement: Audit trail
+
+`AuditLog.Append` MUST be called only from chain steps and the harness. Records carry checksums and sizes of args and results, never content.
 
 #### Scenario: chain-written only
 ID: `stores.chain-written-only`
@@ -721,7 +771,7 @@ ID: `stores.hash-chain`
 
 ### Requirement: Checkpoint versioning and quota pools
 
-A checkpoint carries the backend and backend version that wrote it, and the additive `WorkspaceGeneration int64` field names the session workspace generation the checkpoint's ref was published at; a checkpoint written before this field reads it as zero, which restores only a session that holds no durable workspace metadata. A resume under a different backend version MUST NOT assume compatibility: an agent runtime whose driver state decodes MUST proceed through `Replay`, and a graph checkpoint that cannot be decoded under the current backend MUST be refused with `ErrCheckpointIncompatible` and MUST leave the token unconsumed. A `QuotaPool` on a model profile MUST be enforced across every process sharing that pool, `Batch` admission MUST yield to `Interactive` admission while pool queue-wait is above the threshold, and pool spend MUST be bounded per window so a limit is a `Permanent` `*LimitExceededError` naming the limit.
+A checkpoint MUST carry the backend and backend version that wrote it, and the additive `WorkspaceGeneration int64` field names the session workspace generation the checkpoint's ref was published at; a checkpoint written before this field reads it as zero, which restores only a session that holds no durable workspace metadata.
 
 #### Scenario: native checkpoint after adapter upgrade
 ID: `stores.native-checkpoint-after-adapter-upgrade`
@@ -751,9 +801,7 @@ ID: `stores.daily-pool-budget`
 
 ### Requirement: Postgres contract
 
-`adapter/postgres` MUST implement every store port the core declares in its own module `github.com/victorzhuk/gohan/adapter/postgres`: `SessionLog` (with `SessionIndex` and `SessionWorkspaceMeta`), `Checkpoints` (with `CheckpointResumer` and `ResumeReadyLister`), `Journal` (with `CompleteTx` and `ModelCompleter`), `Runs` (with `PreemptedLister`, `SuspendReasonRecorder` and `FinishReasonRecorder`), `AuditLog`, `OutputStore`, `EventLog`, `NotesStore` and `RedactionMaps`. No port gains a method in core; the adapter-specific seams are methods on the concrete adapter types (ADR-0117). `SessionWorkspaceMeta` MUST run one transaction that takes the session serialization lock, locks `session_record` and then the owning `run_record` last, applies the `stores` refusal precedence, writes `expectedGeneration+1` and commits without releasing the owner row lock; any operation that needs both rows uses the session-before-run order, and a run-only mutation keeps run-only locking. Every stored shape MUST be persisted in the `stores` record envelope and decoded through the schema registry on read.
-
-On an empty scratch schema installed at head, the embedded migration down sections MUST support a down-up-down schema-shape check. The check MUST execute down sections newest first and clear migration bookkeeping before each reapplication. Reapplication through `postgres.Migrate` MUST apply every embedded version and reproduce the fresh head install's normalized column and constraint definitions. After the final down sweep, the only ordinary table MUST be `schema_migrations`. This check does not guarantee recovery of deleted data or require a public down-migration API.
+`adapter/postgres` MUST implement every store port the core declares in its own module `github.com/victorzhuk/gohan/adapter/postgres`: `SessionLog` (with `SessionIndex` and `SessionWorkspaceMeta`), `Checkpoints` (with `CheckpointResumer` and `ResumeReadyLister`), `Journal` (with `CompleteTx` and `ModelCompleter`), `Runs` (with `PreemptedLister`, `SuspendReasonRecorder` and `FinishReasonRecorder`), `AuditLog`, `OutputStore`, `EventLog`, `NotesStore` and `RedactionMaps`.
 
 #### Scenario: schema owned by the adapter
 ID: `stores.pg-schema-owned`
@@ -993,4 +1041,85 @@ ID: `stores.finish-notice-recorded-reason`
 ID: `stores.finish-notice-cancelled`
 - WHEN a run finishes through `FinishWithReason` with reason `StopCancelled`
 - THEN the terminal notice kind is `NoticeCancelled` and the reason word is `StopCancelled`
+
+### Requirement: Every lease acquisition preserves session exclusivity
+
+Start, resume and reclaim MUST atomically refuse another live run in the same session. Every successful acquisition MUST update session ownership consistently. Reclaim MUST accept only an expired stored `Running` or `Resuming` state.
+
+#### Scenario: A suspended run resumes while a newer run owns the session
+ID: `stores.resume-session-exclusive`
+- WHEN run A is suspended and run B holds a live lease for the same session
+- THEN resuming A returns `ErrRunActive` without changing either run
+
+#### Scenario: Reclaim races another acquisition
+ID: `stores.reclaim-session-exclusive`
+- WHEN an older expired run is reclaimed while a newer run owns the session
+- THEN reclaim returns `ErrRunActive` and the newer owner's lease remains usable
+
+#### Scenario: A stored terminal or suspended run is reclaimed
+ID: `stores.reclaim-state-refused`
+- WHEN a caller attempts to reclaim a stored terminal or suspended run
+- THEN reclaim returns `ErrRunNotActive` without minting ownership
+
+### Requirement: PostgreSQL is authoritative for production ownership time
+
+Without an explicit testing clock override, PostgreSQL MUST compute and compare persisted lease and checkpoint expiry times using database time. A process clock difference MUST NOT change ownership, expiry, staleness or active-session discovery.
+
+#### Scenario: Independent adapter instances have skewed process clocks
+ID: `stores.postgres-ownership-database-time`
+- WHEN independent adapter instances share a database and their process clocks differ
+- THEN a live lease remains owned and an unexpired checkpoint remains resumable by database time
+
+### Requirement: Checkpoint lifetime is independent store policy
+
+The driver MUST NOT derive checkpoint expiry from its execution lease. A positive configured checkpoint TTL MUST be measured by the store at creation when explicit expiry is absent. Zero TTL MUST retain no automatic expiry. Explicit expiry MUST remain unchanged. Negative policy MUST be refused before writing.
+
+#### Scenario: A healthy execution outlives its initial lease
+ID: `stores.checkpoint-lifetime-independent`
+- WHEN an execution heartbeats past its initial lease deadline and then suspends
+- THEN the fresh checkpoint remains usable until its own configured expiry
+
+#### Scenario: Explicit and absent checkpoint expiry
+ID: `stores.checkpoint-lifetime-policy`
+- WHEN checkpoints are written with explicit expiry, a positive store TTL or neither
+- THEN explicit expiry is preserved, configured TTL is measured from store time, and the absence of both leaves expiry unset
+
+### Requirement: Optional checkpoint resume port
+
+The optional `CheckpointRuns` port MUST expose this normative method set. Existing frozen `Runs` methods MUST remain unchanged.
+
+```go
+type CheckpointRuns interface {
+	SuspensionToken(context.Context, string) (types.ResumeToken, error)
+	ResumingCheckpoint(context.Context, string, types.ResumeToken, time.Duration) (Lease, error)
+}
+```
+
+#### Scenario: A token-aware store supports the optional port
+ID: `stores.optional-checkpoint-resume-port`
+- WHEN the concrete memory or PostgreSQL store is checked for token-aware resume support
+- THEN it implements the optional port without changing the frozen run port
+
+### Requirement: Optional checkpoint resume is token-fenced
+
+The optional `CheckpointRuns` surface MUST expose the current suspended token and atomically acquire a resume lease only for that token with exclusive session ownership. Frozen `Runs` methods MUST remain unchanged. A mismatched token MUST leave the current suspension untouched.
+
+#### Scenario: An old token is used after a newer suspension
+ID: `stores.resume-current-token-fenced`
+- WHEN a run currently waits on token B and a caller requests a lease for token A
+- THEN the request returns `ErrTokenMismatch` and B remains current
+
+### Requirement: Recovery discovery limits eligible current checkpoints
+
+Consumed-checkpoint discovery MUST filter for a current unexpired consumed token whose run is still suspended before applying its limit. Preempted discovery MUST filter the actual current checkpoint reason before its limit. Empty resume input MUST NOT determine consumption.
+
+#### Scenario: Completed checkpoints precede a recoverable checkpoint
+ID: `stores.resume-ready-filter-before-limit`
+- WHEN older consumed checkpoints belong to completed runs and the discovery limit is one
+- THEN a newer eligible consumed checkpoint is returned
+
+#### Scenario: Human approval precedes a preempted checkpoint
+ID: `stores.preempted-filter-before-limit`
+- WHEN an older human approval and a newer preempted checkpoint are suspended and the limit is one
+- THEN preempted discovery returns the preempted run only
 
