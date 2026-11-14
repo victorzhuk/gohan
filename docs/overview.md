@@ -47,10 +47,10 @@ The design target is evolution without rewrites: a service starts as a small, cl
 | Path | Holds |
 |---|---|
 | `openspec/specs/<capability>/spec.md` | Normative contract and requirements per capability (below) |
-| `docs/adr/` | 169 architecture decision records, numbered 0001–0169 (D1–D89 from the monolith, 0090+ from later grill rounds) |
+| `docs/adr/` | 190 architecture decision records, numbered 0001–0190 (D1–D89 from the monolith, 0090+ from later grill rounds) |
 | `docs/design/types.md` | generated index of every normative type, function and sentinel error with its defining capability |
 | `docs/design/` | Architecture, module layout, Go baseline, compatibility policy (normative), adapter mappings, inference layer, reference scenarios, testing, evidence, risks |
-| `openspec/changes/` | Change proposals with task lists and design notes; `m0-core` is fully tasked, `m1`–`m4` are scope stubs |
+| `openspec/changes/` | Change proposals with task lists and design notes; the `m0`–`m2` changes are archived, current planning is the `m3` umbrella plus eight `m3-*` changes, and `m4` is proposal-only |
 | `AGENTS.md`, `openspec/project.md` | Entry point and conventions for implementing agents: reading order, rules, commands, definition of done |
 | `docs/archive/gohan-spec-v0.13.md` | The pre-split monolith, kept for history only |
 
@@ -58,38 +58,36 @@ The design target is evolution without rewrites: a service starts as a small, cl
 
 | Capability | Title | Scenarios |
 |---|---|---|
-| `flow` | Flow and Conversation | 29 |
+| `flow` | Flow and Conversation | 31 |
 | `messages` | Messages and blocks | 15 |
 | `suspension` | Suspension and resume | 7 |
-| `identity` | Identity, approval and run trees | 26 |
-| `model` | Model and profiles | 32 |
-| `tools` | Tools | 50 |
+| `identity` | Identity, approval and run trees | 29 |
+| `model` | Model and profiles | 43 |
+| `tools` | Tools | 60 |
 | `decider` | Decider | 4 |
 | `chains` | Chains, prompts and Explain | 17 |
-| `cache` | Cache contract | 3 |
+| `cache` | Cache contract | 9 |
 | `flags` | Feature flags | 5 |
-| `redaction` | Redaction, erasure and residency | 9 |
-| `guards` | Guards and provenance | 10 |
-| `permission` | Permission gate and approvals | 19 |
+| `redaction` | Redaction, erasure and residency | 13 |
+| `guards` | Guards and provenance | 11 |
+| `permission` | Permission gate and approvals | 25 |
 | `assembly` | Context assembly | 3 |
-| `context` | Context management: projections and compaction | 43 |
+| `context` | Context management: projections and compaction | 45 |
 | `subflows` | Sub-flows: isolation, effects, nested suspension, limits | 16 |
 | `interop` | MCP client and server (2026-07-28), `AwaitingInput` | 16 |
-| `sandbox` | Sandboxed execution: port, policy, workspace lifecycle | 48 |
+| `sandbox` | Sandboxed execution: port, policy, workspace lifecycle | 57 |
 | `skills` | Skills: SKILL.md progressive disclosure under tool controls | 12 |
 | `agui` | Client transport (AG-UI): message ids, reasoning deltas, shared state | 14 |
-| `release` | Release safety: shadow runs, release identity, evals | 15 |
-| `taint` | Information-flow control: taint, trifecta check, quarantine | 14 |
-
-Capability freeze: no new capability specs until M0 ships; candidates go to `docs/backlog.md` (ADR-0098).
+| `release` | Release safety: shadow runs, release identity, evals | 19 |
+| `taint` | Information-flow control: taint, trifecta check, quarantine | 18 |
 | `build` | Strategies and Build | 8 |
-| `stores` | Store ports | 86 |
-| `recovery` | Crash recovery | 6 |
+| `stores` | Store ports | 101 |
+| `recovery` | Crash recovery | 14 |
 | `limits` | Run limits and uncertainty | 7 |
-| `runtime` | Runtimes and stepper | 51 |
+| `runtime` | Runtimes and stepper | 57 |
 | `streams` | Events, cancellation and streams | 29 |
 | `working-state` | Durable working state | 15 |
-| `telemetry` | Telemetry and prompt sources | 11 |
+| `telemetry` | Telemetry and prompt sources | 20 |
 | `structured-output` | Structured output | 9 |
 | `engines` | External engines, dedup and run states | 11 |
 | `languages` | Embedded languages and definitions | 8 |
@@ -98,11 +96,13 @@ Capability freeze: no new capability specs until M0 ships; candidates go to `doc
 | `performance` | Harness performance budgets | 3 |
 | `smoke` | No spec dir: send through each constructor | 1 |
 
-Total: 664 scenarios in `openspec/scenarios.json` (counted 2026-10-12), each with a stable ID that is the name of the subtest covering it. `task spec:coverage` reports scenarios without tests and tests without scenarios.
+Capability freeze: no new capability specs until M0 ships; candidates go to `docs/backlog.md` (ADR-0098).
 
-Eight registered IDs have no `openspec/specs/<capability>/spec.md` requirement block: the six `context.compaction-*` fallbacks and `stores.run-for-session-expired` added by later changes without a spec edit, `smoke.send-through-each-constructor` (a constructor smoke check, never specified), and `runtime.no-goroutine-leak` (the conformance leak check, bound to the runtime spec's leak requirement rather than to a `Scenario:` block).
+Total: 764 scenarios in `openspec/scenarios.json` (counted 2026-11-14), each with a stable ID that is the name of the subtest covering it. `task spec:coverage` reports scenarios without tests and tests without scenarios.
 
-Each scenario also carries an `origin` label: a requirement heading of the archived v0.13 monolith (`R1`–`R14`, `R5a`–`R5y` — the archive is the only place those are written down) or the ADR that added the scenario (`ADR-NNNN`). Labels from later review rounds (`R35`–`R60`, `R52`, `RPERF`) name no written requirement list and are provenance only. Acceptance is `deferred_to` plus `task spec:coverage`; never the label.
+Twenty-four registered IDs have no `openspec/specs/<capability>/spec.md` requirement block: the six fallbacks `context.compaction-fallback-oversized`, `context.compaction-fallback-required-nil-estimator`, `context.compaction-fallback-required-no-budget`, `context.compaction-measure-mismatch-failclosed`, `context.compaction-publication-survives-crash` and `context.compaction-stage-publishes`, and `stores.run-for-session-expired`, added by later changes without a spec edit; `smoke.send-through-each-constructor` (a constructor smoke check, never specified); `runtime.no-goroutine-leak` (the conformance leak check, bound to the runtime spec's leak requirement rather than to a `Scenario:` block); and `guards.guard-error-fails-closed`, `identity.anonymous-bypasses-no-authorization`, `permission.decider-error-asks`, `redaction.erasure-covers-notes`, `redaction.eval-export-redacted`, `redaction.failure-fails-closed`, `redaction.telemetry-capture-redacted`, `sandbox.admin-channel-isolated`, `sandbox.workload-posture-locked`, `taint.clear-tool-results-no-launder`, `taint.matches-post-redaction`, `taint.notes-readback-carries-origin`, `taint.window-truncated-reported`, `tools.egress-glob-no-exempt` and `tools.egress-literal-cgnat-allowed`, registered without a spec block. A row leaves the list when its block lands.
+
+Each scenario also carries an `origin` label: a requirement heading of the archived v0.13 monolith (`R1`–`R14`, `R5a`–`R5y` — the archive is the only place those are written down), the ADR that added the scenario (`ADR-NNNN`), or the slug of the change that added it. Labels from later review rounds (`R35`–`R60`, `R52`, `RPERF`) name no written requirement list and are provenance only. A slug without a live change directory remains historic provenance. Acceptance is `deferred_to` plus `task spec:coverage`; never the label (ADR-0189).
 
 ## 12. Milestones
 
@@ -113,7 +113,7 @@ Each scenario also carries an `origin` label: a requirement heading of the archi
 | M1 | `taint` (`Capabilities`, `std/taint`, trifecta check) and `Verify`; `quickstart` and `excursions` S1–S2 examples; `std/redact` rules + HMAC `Redactor` + `EraseSubject`; sunset/successor validation; schema versions + upcaster registry + `storetest.Schemas`; cost tags; `std/cache` key builder + exact-match cache; structured-output hardening; adapter/openai (+vLLM), adapter/anthropic with error-class normalization and version reporting, adapter/postgres (all ports incl. AuditLog) + CompleteTx, limit.Local + breaker, class-based retry/fallback, router Static/ByLatencyClass, guards (all four stages) + output modes + fallback, tool/exec, Notes, OutputStore, Waker port, `Detached` + Attach, `std.ExplainHandler` | `tool/exec` and `std/redact` scenarios green; `conformance.Model` green for both provider adapters; S2 green incl. pod-kill test |
 | M2 | adapter/eino: runtime, bridges, graph flow, Native resume; `sandbox` (port, `std/sandbox`, adapter/docker; `adapter/e2b` deferred past M2 — no credential, API URL or domain exists in-repo); `context` (projections, persisted compaction); `research-report` and `data-analyst` examples | `task spec:gate GATE=M2` reports `missing_in_scope=0`; `conformance.*` green on eino; S4 (graph) green; `research-report` done — `TestResearchReportOffline` green on its eleven non-skip subtests, with `tools.activation-persists-across-resume` and `tools.governed-while-deferred` skipped by their named unmet prerequisites (no native resume restores a per-run deferred-tool selection; no permission lookup is scoped to the assembled set), offline via `timeout 2m go -C examples run ./research-report` (`task examples:run`) and, as its own evidence, `timeout 2m go -C examples test -json -short -timeout 2m ./research-report/... -run '^TestResearchReportOffline$'`; the suite proves discovery, the two-source fan-out, the persisted compaction and the discovered definitions plus the note in the final assembled request, a projection that leaves the history version untouched, a detached run reattaching from a `Seq` cursor and a declared `types.RunLimits` ceiling refused over the wider fan-out, while the suspended `Replay` resume (the resumed leg reconstructs the persisted history and calls `Continue`), the harness-side accumulation of the per-source child costs into the parent total, the gap-free event delivery and its `MapReduce`, `RAG`, `Judge` and `subflows.collect-partials` prerequisites stay unasserted or unmet (M4, M4, M4, M3); both example lanes are done — `data-analyst` archived 2026-11-08 with its offline run and test suite green, its strict check superseded by the archive, and `research-report` strict-validated exit 0 with both offline runs green; `task api:check` clean against the frozen ports at `v1.0.0` (root and the landed `adapter/*` modules tagged, release order root then adapters) |
 | M3 | `subflows`; `interop` (adapter/mcp client + server on 2026-07-28); `release` (shadow mode, `ReleaseManifest`); adapter/adkgo: runtime, bridges, workflow flows; postgres partitioning + lint + `storetest.Bloat`; adapter/redis (quota pools, admission, EventLog); Constrained structured output; S3 load test incl. disconnect storm and noisy-neighbor test | `conformance.*` green on all three backends; S3 green |
-| M4 | `skills`, `agui` (adapter/agui), evals module (`release`); adapter/jev, adapter/langfuse, adapter/openfeature, `core/flowdef` + `std/flow.Compile` + YAML front-end, adapter/cel, adapter/lispico (front-end + ExprLang where declared), `catalog-enrichment`, live-engine tests for the three processes, evals module, FlowAsTool, Summarize policy, `std/flow` recipes (`Extract`, `Classify`, `Route`, `MapReduce`, `Pipeline`, `RAG`, `Judge`/`Refine`), remaining examples (`support-triage`, `invoice-extraction`, `ops-agent`, `pr-review`; `research-report` and `data-analyst` land in M2) | all eight examples green offline from cassettes and once live in the scheduled workflow |
+| M4 | `skills`, `agui` (adapter/agui), evals module (`release`); adapter/jev, adapter/langfuse, adapter/openfeature, adapter/httpapi (REST + SSE transport generated from `api/gohan.yaml`), `core/flowdef` + `std/flow.Compile` + YAML front-end, adapter/cel, adapter/lispico (front-end + ExprLang where declared), `catalog-enrichment`, live-engine tests for the three processes, evals module, FlowAsTool, Summarize policy, `std/flow` recipes (`Extract`, `Classify`, `Route`, `MapReduce`, `Pipeline`, `RAG`, `Judge`/`Refine`), remaining examples (`support-triage`, `invoice-extraction`, `ops-agent`, `pr-review`; `research-report` and `data-analyst` land in M2) | all eight examples green offline from cassettes and once live in the scheduled workflow |
 
 
 ## 13. Open questions

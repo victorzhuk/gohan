@@ -1,4 +1,4 @@
-# 0170. The research report reaches native Resume and reports its own ledger
+# 0177. The research report reaches native Resume and reports its own ledger
 
 Status: accepted
 

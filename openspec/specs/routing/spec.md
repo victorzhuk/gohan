@@ -1,8 +1,21 @@
 # routing Specification
 
+Capability: `routing` · Spec v1.0 · Source of truth for this capability.
+
+> **Contract tiers.** Code blocks in *Contract* are **normative** (ports, interfaces, error classes, stored shapes, event types, ordering rules) unless a block is marked `(illustrative)`, in which case names may change during M0 without a spec change. Prose rules in *Contract* are normative. Requirements are normative and each scenario ID is referenced by a test.
+
 ## Purpose
 
 Defines the endpoint-ordering policies the router exposes and the invariants they keep, so a caller can reason about which endpoint is tried first and what class preference may never change.
+
+
+## Contract
+
+`Static` MUST keep endpoints in declaration order and MUST be the default policy. `ByLatencyClass` MUST be selected by naming one latency class. It MUST place endpoints whose model profiles carry that class before all other endpoints. Both groups MUST keep declaration order.
+
+Selecting a class MUST NOT remove other endpoints, which remain fallback candidates. It MUST NOT reorder endpoints within either group or modify the caller's endpoint slice. When no endpoint carries the selected class, the router MUST keep the complete declaration order.
+
+An open breaker MUST remove its endpoint from candidate views without reordering the remaining endpoints. Reading the eligible view MUST NOT consume a half-open probe. A fallback MUST NOT select another endpoint after the first emitted chunk. It MUST serve remaining endpoints in policy order.
 
 ## Requirements
 
