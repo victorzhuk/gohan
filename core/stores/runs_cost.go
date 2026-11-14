@@ -14,7 +14,7 @@ type RunCostRecorder interface {
 	RecordCost(ctx context.Context, l Lease, cost float64) error
 }
 
-// RecordCost charges cost to the run the lease holds. The lease stays live,
+// RecordCost adds cost to the run's recorded spend. The lease stays live,
 // so the run finishes through Finish as usual.
 func (s *MemoryRuns) RecordCost(ctx context.Context, l Lease, cost float64) error {
 	if cost <= 0 {
@@ -26,6 +26,6 @@ func (s *MemoryRuns) RecordCost(ctx context.Context, l Lease, cost float64) erro
 	if err != nil {
 		return err
 	}
-	rec.run.Cost = cost
+	rec.run.Cost += cost
 	return s.encodeRunLocked(rec)
 }

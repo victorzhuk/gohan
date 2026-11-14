@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
 
@@ -281,6 +282,62 @@ func TestSubflowsLimits(t *testing.T) {
 		}
 		if !siblingRan {
 			t.Error("parent did not continue after the overrun")
+		}
+	})
+
+	t.Run("a suspending child without a checkpoint store fails as not suspendable", func(t *testing.T) {
+		s := subflowBuild(t, nil)
+		runs := stores.NewMemoryRuns()
+		s.stores.Runs = runs
+		var childRunID string
+		child := FlowFunc[subflowIn, subflowOut]("child", func(ctx context.Context, _ subflowIn) (subflowOut, error) {
+			info, _ := types.RunInfoFrom(ctx)
+			childRunID = info.RunID
+			return subflowOut{}, &types.SuspendError{Token: "tok-child", Reason: types.AwaitingInput}
+		}, AllowAnonymousFlow())
+		tool, err := s.FlowAsTool("child", child, WithDescription("child flow"))
+		if err != nil {
+			t.Fatalf("flow as tool: %v", err)
+		}
+		_, err = tool.Call(subflowParentCtx(0, "run-parent"), nil)
+		if !errors.Is(err, types.ErrNotSuspendable) {
+			t.Fatalf("err %v: want ErrNotSuspendable", err)
+		}
+		row, err := runs.ByID(context.Background(), childRunID)
+		if err != nil {
+			t.Fatalf("read child run %s: %v", childRunID, err)
+		}
+		if row.State == stores.Running {
+			t.Errorf("child run left Running after the refused suspension")
+		}
+	})
+
+	t.Run("a slow child does not fail on lease expiry", func(t *testing.T) {
+		// The child outlasts stores.LeaseTTL in real time; the heartbeat
+		// goroutine must keep the lease alive for the row to finish.
+		s := subflowBuild(t, nil)
+		runs := stores.NewMemoryRuns()
+		s.stores.Runs = runs
+		var childRunID string
+		child := FlowFunc[subflowIn, subflowOut]("child", func(ctx context.Context, _ subflowIn) (subflowOut, error) {
+			info, _ := types.RunInfoFrom(ctx)
+			childRunID = info.RunID
+			time.Sleep(stores.LeaseTTL + 500*time.Millisecond)
+			return subflowOut{}, nil
+		}, AllowAnonymousFlow())
+		tool, err := s.FlowAsTool("child", child, WithDescription("child flow"))
+		if err != nil {
+			t.Fatalf("flow as tool: %v", err)
+		}
+		if _, err := tool.Call(subflowParentCtx(0, "run-parent"), nil); err != nil {
+			t.Fatalf("slow child call: %v", err)
+		}
+		row, err := runs.ByID(context.Background(), childRunID)
+		if err != nil {
+			t.Fatalf("read child run %s: %v", childRunID, err)
+		}
+		if row.State != stores.Finished {
+			t.Errorf("child run state %v: want Finished", row.State)
 		}
 	})
 }

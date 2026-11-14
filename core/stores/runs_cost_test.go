@@ -23,8 +23,11 @@ func TestRunCostSurface(t *testing.T) {
 		if err != nil {
 			t.Fatalf("start: %v", err)
 		}
-		if err := s.RecordCost(ctx, l, 0.07); err != nil {
+		if err := s.RecordCost(ctx, l, 0.02); err != nil {
 			t.Fatalf("record cost: %v", err)
+		}
+		if err := s.RecordCost(ctx, l, 0.05); err != nil {
+			t.Fatalf("record cost second: %v", err)
 		}
 		if err := s.Finish(ctx, l, Finished, nil, ""); err != nil {
 			t.Fatalf("finish: %v", err)

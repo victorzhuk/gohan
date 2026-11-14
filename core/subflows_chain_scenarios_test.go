@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -61,8 +62,9 @@ func (m *chainModel) Generate(_ context.Context, req types.ModelRequest) iter.Se
 // effect before the first execution, so a call without a recorded approval
 // parks the run and an approved replay completes it.
 type chainLeafTool struct {
-	mu   sync.Mutex
-	asks []string
+	mu      sync.Mutex
+	asks    []string
+	budgets []types.RunBudget
 }
 
 func (l *chainLeafTool) Spec() types.ToolSpec {
@@ -76,6 +78,9 @@ func (l *chainLeafTool) Call(ctx context.Context, args jsontext.Value) (types.To
 	}
 	l.mu.Lock()
 	l.asks = append(l.asks, in.Ask)
+	if b, ok := types.RunBudgetFrom(ctx); ok {
+		l.budgets = append(l.budgets, b)
+	}
 	l.mu.Unlock()
 	if _, ok := types.ApprovalFrom(ctx); !ok {
 		return types.ToolResult{}, SuspendTool(types.AwaitingInput, map[string]string{"ask": in.Ask})
@@ -188,8 +193,19 @@ type chainHarness struct {
 	rootFlow *chainFlow
 }
 
-func newChainHarness(t *testing.T, depth int) *chainHarness {
+// chainHarnessOpts tunes one fixture build: the root level's limits and
+// the budget bounds the leaf sub-flow call declares.
+type chainHarnessOpts struct {
+	rootLimits  func(*types.RunLimits)
+	childLimits *types.ChildLimits
+}
+
+func newChainHarness(t *testing.T, depth int, opts ...func(*chainHarnessOpts)) *chainHarness {
 	t.Helper()
+	var o chainHarnessOpts
+	for _, opt := range opts {
+		opt(&o)
+	}
 	h := &chainHarness{leaf: &chainLeafTool{}}
 	var runs stores.Runs = stores.NewMemoryRuns(
 		stores.WithMemoryRunClock(time.Now),
@@ -212,6 +228,9 @@ func newChainHarness(t *testing.T, depth int) *chainHarness {
 		MaxTurns: 8, MaxToolCalls: 8, MaxWallClock: time.Minute,
 		SoftRatio: 0.8, MaxDepth: 4, MaxParallelChildren: 2, MaxParallelTools: 2,
 	}
+	if o.rootLimits != nil {
+		o.rootLimits(&limits)
+	}
 	base := []Option{
 		WithStores(h.stores),
 		WithLimits("root", limits),
@@ -226,7 +245,11 @@ func newChainHarness(t *testing.T, depth int) *chainHarness {
 	// tools exist before the native definitions resolve.
 	h.leafFlow = &chainFlow{spec: "leaf"}
 	h.midFlow = &chainFlow{spec: "mid"}
-	leafTool, err := inner.FlowAsTool("leaf", h.leafFlow, WithDescription("leaf flow"))
+	leafOpts := []SubflowOption{WithDescription("leaf flow")}
+	if o.childLimits != nil {
+		leafOpts = append(leafOpts, WithChildLimits(*o.childLimits))
+	}
+	leafTool, err := inner.FlowAsTool("leaf", h.leafFlow, leafOpts...)
 	if err != nil {
 		t.Fatalf("leaf flow as tool: %v", err)
 	}
@@ -256,7 +279,7 @@ func newChainHarness(t *testing.T, depth int) *chainHarness {
 	}}
 	leafModel := &chainModel{profile: "leaf-m", steps: leafSteps, final: "leaf done"}
 	midModel := &chainModel{profile: "mid-m", steps: midSteps, final: "mid done"}
-	opts := append(append([]Option{}, base...), WithModels(leafModel, midModel),
+	buildOpts := append(append([]Option{}, base...), WithModels(leafModel, midModel),
 		WithNativeAgent(NativeSpec{
 			Request:  FlowRequest{Name: "leaf"},
 			Profile:  "leaf-m",
@@ -276,7 +299,7 @@ func newChainHarness(t *testing.T, depth int) *chainHarness {
 			steps:   []types.ToolUse{{ID: "r1", Name: "middle", Args: jsontext.Value(`{"ask":"go"}`)}},
 			final:   "root done",
 		}
-		opts = append(opts, WithModels(rootModel), WithNativeAgent(NativeSpec{
+		buildOpts = append(buildOpts, WithModels(rootModel), WithNativeAgent(NativeSpec{
 			Request:  FlowRequest{Name: "root"},
 			Profile:  "root-m",
 			Tools:    []types.Tool{midTool},
@@ -284,7 +307,7 @@ func newChainHarness(t *testing.T, depth int) *chainHarness {
 		}))
 		h.rootFlow = &chainFlow{spec: "root"}
 	}
-	outer, err := Build(opts...)
+	outer, err := Build(buildOpts...)
 	if err != nil {
 		t.Fatalf("build outer stack: %v", err)
 	}
@@ -479,5 +502,46 @@ func TestSubflowsChain(t *testing.T) {
 
 	t.Run("subflows.inner-token-consumed-by-chain", func(t *testing.T) {
 		h2.mustRefuseConsumed(t, "leaf", leafTk2)
+	})
+
+	t.Run("a resumed level keeps its recorded budget", func(t *testing.T) {
+		h3 := newChainHarness(t, 2,
+			func(o *chainHarnessOpts) {
+				o.rootLimits = func(l *types.RunLimits) { l.MaxWallClock = 10 * time.Minute; l.MaxCost = 1.0 }
+				o.childLimits = &types.ChildLimits{MaxWallClock: 4 * time.Minute, CostShare: types.ShareFixed, FixedCost: 0.2}
+			},
+		)
+		out, err := h3.rootFlow.Invoke(ctx, chainReq{Ask: "go"})
+		var susp *types.SuspendError
+		if !errors.As(err, &susp) {
+			t.Fatalf("invoke err = %v out = %q leafRan = %v", err, out, h3.leaf.ran())
+		}
+		// The first resume replays the leaf's approved ask: the resumed
+		// depth-2 level must run under the budget the checkpoint recorded.
+		// The leaf's second ask surfaces another suspension; the second
+		// resume completes the chain.
+		_, rSusp, _ := chainStream(t, h3.conv(t, "root").Resume(nrrCtx(), susp.Token, Approve()))
+		if rSusp == nil || rSusp.Token == "" {
+			t.Fatal("first resume surfaced no suspension")
+		}
+		finalOut := h3.mustResumeAndComplete(t, "root", rSusp.Token)
+		if finalOut != "root done" {
+			t.Fatalf("root out = %q, want root done", finalOut)
+		}
+		// The recorded budget is the derivation the sub-flow boundary
+		// made for the leaf call: wall clock and cost from the declared
+		// child limits, one level under its calling conversation.
+		want := types.RunBudget{WallClock: 4 * time.Minute, Cost: 0.2, Depth: 1}
+		h3.leaf.mu.Lock()
+		got := append([]types.RunBudget(nil), h3.leaf.budgets...)
+		h3.leaf.mu.Unlock()
+		if len(got) == 0 {
+			t.Fatal("resumed leaf drive observed no run budget")
+		}
+		for _, b := range got {
+			if !reflect.DeepEqual(b, want) {
+				t.Fatalf("resumed leaf budget = %+v, want %+v", b, want)
+			}
+		}
 	})
 }

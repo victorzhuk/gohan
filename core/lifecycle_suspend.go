@@ -53,6 +53,9 @@ func WithLifecycleSuspendReason(r types.SuspendReason) LifecycleOption {
 // payload and the wake time the event carries; a Scheduled wake arms the
 // waker exactly once, after the run is marked suspended.
 func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.AgentRun, st runtime.State, sig *types.SuspendError) (types.Event, error) {
+	if r.Save == nil {
+		return nil, fmt.Errorf("gohan: run cannot suspend without a checkpoint store: %w", types.ErrNotSuspendable)
+	}
 	reason, payload, wakeAt := lc.reason, any(nil), time.Time{}
 	if sig != nil {
 		reason, payload, wakeAt = sig.Reason, sig.Payload, sig.WakeAt
@@ -67,6 +70,9 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 		},
 		Generation: 1,
 		State:      st,
+	}
+	if budget, ok := types.RunBudgetFrom(ctx); ok {
+		env.Budget = (*envelopeBudget)(&budget)
 	}
 	if reason == types.HumanApproval && (sig == nil || sig.Token == "") {
 		aps, aerr := lc.approvalsFor(ctx, r, st)

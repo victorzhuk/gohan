@@ -542,6 +542,11 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			}
 			runCtx, rt, ag, ledger = rctx, nrt, nag, nled
 		}
+		// A resumed level runs under the budget recorded at suspension,
+		// never under a re-derivation.
+		if env.Budget != nil {
+			runCtx = types.WithRunBudget(runCtx, types.RunBudget(*env.Budget))
+		}
 		if chainResume {
 			head, herr := chainResumeHead(&st)
 			if herr != nil {

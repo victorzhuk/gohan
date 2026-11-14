@@ -6,6 +6,7 @@ import (
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/runtime"
@@ -22,6 +23,36 @@ type checkpointEnvelope struct {
 	State      runtime.State        `json:"state"`
 	Approvals  []checkpointApproval `json:"approvals,omitempty"`
 	Input      *types.InputRequest  `json:"input,omitempty"`
+	Budget     *envelopeBudget      `json:"budget,omitempty"`
+}
+
+// envelopeBudget carries a types.RunBudget across the checkpoint: jsonv2
+// has no representation for time.Duration, so the wall clock crosses as
+// nanoseconds inside a plain object.
+type envelopeBudget types.RunBudget
+
+func (b envelopeBudget) MarshalJSONTo(e *jsontext.Encoder) error {
+	w := struct {
+		WallClockNanos int64   `json:"wall_clock_nanos"`
+		Cost           float64 `json:"cost"`
+		Depth          int     `json:"depth"`
+	}{WallClockNanos: int64(b.WallClock), Cost: b.Cost, Depth: b.Depth}
+	return jsonv2.MarshalEncode(e, w)
+}
+
+func (b *envelopeBudget) UnmarshalJSONFrom(d *jsontext.Decoder) error {
+	var w struct {
+		WallClockNanos int64   `json:"wall_clock_nanos"`
+		Cost           float64 `json:"cost"`
+		Depth          int     `json:"depth"`
+	}
+	if err := jsonv2.UnmarshalDecode(d, &w); err != nil {
+		return err
+	}
+	b.WallClock = time.Duration(w.WallClockNanos)
+	b.Cost = w.Cost
+	b.Depth = w.Depth
+	return nil
 }
 
 type checkpointApproval struct {
@@ -41,6 +72,7 @@ var envelopeKeys = map[string]bool{
 	"state":      true,
 	"approvals":  true,
 	"input":      true,
+	"budget":     true,
 }
 
 func encodeCheckpoint(env checkpointEnvelope) ([]byte, error) {

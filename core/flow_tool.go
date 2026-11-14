@@ -195,32 +195,47 @@ func runSubflow[In, Out any](ctx context.Context, s *Stack, f Flow[In, Out], cfg
 	})
 
 	var lease stores.Lease
+	var stopHeartbeat func()
 	if s.stores.Runs != nil {
 		lease, err = s.stores.Runs.Start(ctx, RunRow(childInfo), stores.LeaseTTL)
 		if err != nil {
 			return zero, fmt.Errorf("start subflow run %s: %w", childID, err)
 		}
+		stopHeartbeat = startLeaseHeartbeat(ctx, s.stores.Runs, lease, &lease)
 	}
 	before := ledger.TreeCost()
 	start := time.Now()
 	out, callErr := f.Invoke(childCtx, in)
 	spent := ledger.TreeCost() - before
+	var storeErr error
+	if stopHeartbeat != nil {
+		stopHeartbeat()
+	}
 	if s.stores.Runs != nil {
 		if rec, ok := s.stores.Runs.(stores.RunCostRecorder); ok && spent > 0 {
 			if recErr := rec.RecordCost(ctx, lease, spent); recErr != nil {
-				callErr = errors.Join(callErr, fmt.Errorf("record subflow cost: %w", recErr))
+				storeErr = errors.Join(storeErr, fmt.Errorf("record subflow cost: %w", recErr))
 			}
 		}
-		state := stores.Finished
-		if callErr != nil {
-			state = stores.Failed
-		}
-		if finErr := s.stores.Runs.Finish(ctx, lease, state, nil, ""); finErr != nil {
-			callErr = errors.Join(callErr, fmt.Errorf("finish subflow run: %w", finErr))
+		if susp, ok := errors.AsType[*types.SuspendError](callErr); ok && susp.Token != "" {
+			if suspErr := s.stores.Runs.Suspend(ctx, lease, susp.Token); suspErr != nil {
+				storeErr = errors.Join(storeErr, fmt.Errorf("suspend subflow run: %w", suspErr))
+			}
+		} else {
+			state := stores.Finished
+			if callErr != nil {
+				state = stores.Failed
+			}
+			if finErr := s.stores.Runs.Finish(ctx, lease, state, nil, ""); finErr != nil {
+				storeErr = errors.Join(storeErr, fmt.Errorf("finish subflow run: %w", finErr))
+			}
 		}
 	}
-	if callErr != nil {
+	if _, isSusp := errors.AsType[*types.SuspendError](callErr); isSusp {
 		return zero, callErr
+	}
+	if callErr != nil {
+		return zero, errors.Join(callErr, storeErr)
 	}
 	if parent.MaxCost > 0 && spent > cost {
 		return zero, &types.LimitExceededError{Limit: "MaxCost", Value: spent}
@@ -228,7 +243,38 @@ func runSubflow[In, Out any](ctx context.Context, s *Stack, f Flow[In, Out], cfg
 	if elapsed := time.Since(start); wall > 0 && elapsed > wall {
 		return zero, &types.LimitExceededError{Limit: "MaxWallClock", Value: elapsed.Seconds()}
 	}
+	if storeErr != nil {
+		return zero, storeErr
+	}
 	return out, nil
+}
+
+// startLeaseHeartbeat keeps the child run's lease alive while the child
+// call runs, refreshing the caller's lease with each renewal. The
+// returned stop closes the loop and joins the goroutine.
+func startLeaseHeartbeat(ctx context.Context, runs stores.Runs, l stores.Lease, cur *stores.Lease) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(stores.HeartbeatEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if next, hbErr := runs.Heartbeat(ctx, l); hbErr == nil {
+					*cur = next
+					l = next
+				}
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+	}
 }
 
 // subflowCost derives the child's cost budget: the cost share, clamped
