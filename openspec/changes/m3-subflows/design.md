@@ -63,7 +63,7 @@ func (s *Stack) FlowAsTool[In, Out any](name string, f Flow[In, Out], opts ...Su
 func WithChildLimits(l types.ChildLimits) SubflowOption
 func WithParentLimits(l types.RunLimits) SubflowOption
 func WithChildEffect(e types.Effect) SubflowOption
-func WithEffect(e types.Effect) SubflowOption
+func WithDescription(desc string) SubflowOption
 ```
 
 The constructor is stack-scoped because the parent's `RunLimits` (which carries `MaxDepth`, `MaxParallelChildren` and the declared wall clock) is reachable only through the stack that resolved them; a tool call receives no limits on its ctx. At call time it resolves `s.limits[types.RunInfoFrom(ctx).Flow]`, `WithParentLimits` wins when set, and a call with neither refuses before the child starts.
@@ -107,6 +107,8 @@ Derivation at the call boundary, in this order:
 3. Effective wall clock `min(ChildLimits.MaxWallClock, parent remaining)` from the parent's ledger (`WallClockLeft`), recorded on the child run.
 4. Effective cost `min(share, tree remaining)`, where `share` is `MaxCost - TreeCost()` for `ShareRemaining` and `FixedCost` for `ShareFixed`.
 5. Child spend is the `TreeCost()` delta across the call; it leaves the parent tree budget reduced by exactly that amount and is recorded on the child row through `RunCostRecorder` when the store implements it.
+
+Enforcement timing: the depth check refuses before any child run row exists; a spend or wall-clock overrun surfaces as the parent's tool error after the child returns, and the spend already charged stays on the tree. The wall-clock declaration error compares against the parent's declared `MaxWallClock`; a declared value that only exceeds the parent's remaining time is clamped, not refused. An undeclared `MaxWallClock` takes the parent's remaining wall clock as its budget, and an unbounded tree `MaxCost` reports zero cost budget, the same zero-means-unbounded convention the limits use.
 
 Chain shape: a suspending call inside a sub-flow writes the child token to `Checkpoint.Child` of the level above and returns that level's own `*SuspendError` with the same `Reason`/`Payload`; `Resume` at any level consumes exactly one token, drives the level below, and the root completes only after every inner level finishes. Every token stays single-use.
 

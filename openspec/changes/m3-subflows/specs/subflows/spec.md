@@ -83,7 +83,7 @@ ID: `subflows.inner-token-consumed-by-chain`
 
 ### Requirement: Limits and failure
 
-A child MUST declare `ChildLimits.MaxWallClock` no greater than the parent's remaining wall clock, else `Build` fails. `CostShare`: `ShareRemaining` (default) lets the child spend what the tree has left; `ShareFixed` caps it at `ChildLimits.FixedCost`. `MaxDepth` and `MaxParallelChildren` are checked at the call boundary; exceeding either is `*LimitExceededError`. `MaxTurns`/`MaxToolCalls` are per run; `MaxCost` and `MaxSandboxSeconds` are per tree.
+A child MUST declare `ChildLimits.MaxWallClock` no greater than the parent's declared wall clock, else `Build` fails; a declaration within that bound but above the parent's remaining time clamps to the remainder. `CostShare`: `ShareRemaining` (default) lets the child spend what the tree has left; `ShareFixed` caps it at `ChildLimits.FixedCost`. `MaxDepth` and `MaxParallelChildren` are checked at the call boundary; exceeding either is `*LimitExceededError`. `MaxTurns`/`MaxToolCalls` are per run; `MaxCost` and `MaxSandboxSeconds` are per tree.
 
 #### Scenario: depth limit
 ID: `subflows.max-depth`
