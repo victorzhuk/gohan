@@ -44,6 +44,8 @@ func (s *Stack) nativeTurnConfig(cfg *resolvedNativeConfig) turnConfig {
 		profile:            cfg.profile,
 		specs:              cfg.specs,
 		taintPolicy:        cfg.taintPolicy,
+		redactor:           cfg.redactor,
+		redactionPolicy:    cfg.redactionPolicy,
 		instruction:        cloneBlocks(cfg.instruction),
 		secrets:            s.secrets,
 		clients:            cfg.clients,
@@ -115,17 +117,25 @@ func nativeRun(c turnConfig, history, input []types.Message) runtime.AgentRun {
 	return runtime.AgentRun{
 		Input: input,
 		ModelEffect: func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
-			return modelEffect(env.effectCtx(ctx), st)
+			ctx, err := env.effectCtx(ctx)
+			if err != nil {
+				return st, nil, runtime.Continue, err
+			}
+			return modelEffect(ctx, st)
 		},
 		BatchEffect: func(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
-			return batchEffect(env.effectCtx(ctx), st)
+			ctx, err := env.effectCtx(ctx)
+			if err != nil {
+				return st, nil, runtime.Continue, err
+			}
+			return batchEffect(ctx, st)
 		},
 	}
 }
 
 // effectCtx installs the per-run scope the effects share. The lifecycle
 // steps one effect at a time, so the lazy sink lookup never races.
-func (env *turnEnv) effectCtx(ctx context.Context) context.Context {
+func (env *turnEnv) effectCtx(ctx context.Context) (context.Context, error) {
 	if env.sink == nil {
 		env.sink, _ = types.SinkFrom(ctx)
 	}
@@ -133,7 +143,30 @@ func (env *turnEnv) effectCtx(ctx context.Context) context.Context {
 	if env.c.secrets != nil {
 		base = types.WithSecrets(base, env.c.secrets)
 	}
-	return types.WithTaintWindow(base, rawTaintWindow(env.msgs))
+	window, err := env.taintWindow(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return types.WithTaintWindow(base, window), nil
+}
+
+// taintWindow builds the taint window the batch gate reads. With a
+// redactor and a detector policy configured, the window carries the
+// post-redaction blocks so a call referencing a pseudonym matches; the
+// returned map is discarded because redactModelRequest stays the single
+// map writer. A redaction failure fails the effect instead of falling
+// back to the raw window.
+func (env *turnEnv) taintWindow(ctx context.Context) ([]types.Block, error) {
+	raw := rawTaintWindow(env.msgs)
+	if env.c.redactor == nil || len(env.c.redactionPolicy.Detectors) == 0 {
+		return raw, nil
+	}
+	ri, _ := types.RunInfoFrom(ctx)
+	blocks, _, err := env.c.redactor.Redact(types.WithRunInfo(ctx, ri), raw, env.c.redactionPolicy)
+	if err != nil {
+		return nil, fmt.Errorf("redact taint window: %w", err)
+	}
+	return blocks, nil
 }
 
 func rawTaintWindow(msgs []types.Message) []types.Block {

@@ -161,6 +161,52 @@ func TestEraseSubject(t *testing.T) {
 		}
 	})
 
+	t.Run("redaction.erasure-covers-notes", func(t *testing.T) {
+		f := newEraseStores()
+		own := eraseCtx("t1", "u1")
+		other := eraseCtx("t1", "u2")
+		f.seedSession(t, own, "s1")
+		f.seedSession(t, other, "s2")
+		ownSessionKey := stores.NotesKey{Scope: stores.ScopeSession, Tenant: "t1", Subject: "u1", Session: "s1"}
+		otherSessionKey := stores.NotesKey{Scope: stores.ScopeSession, Tenant: "t1", Subject: "u2", Session: "s2"}
+		if _, err := f.notes.Write(own, ownSessionKey, 0, "own session notes"); err != nil {
+			t.Fatalf("write own notes: %v", err)
+		}
+		if _, err := f.notes.Write(other, otherSessionKey, 0, "other session notes"); err != nil {
+			t.Fatalf("write other notes: %v", err)
+		}
+		ownSubjectKey := stores.NotesKey{Scope: stores.ScopeSubject, Tenant: "t1", Subject: "u1"}
+		otherSubjectKey := stores.NotesKey{Scope: stores.ScopeSubject, Tenant: "t1", Subject: "u2"}
+		if err := f.notes.Put(own, ownSubjectKey, stores.MemoryEntry{ID: "m1", Value: json.RawMessage(`{"fact":"u1"}`)}); err != nil {
+			t.Fatalf("put own memory: %v", err)
+		}
+		if err := f.notes.Put(other, otherSubjectKey, stores.MemoryEntry{ID: "m2", Value: json.RawMessage(`{"fact":"u2"}`)}); err != nil {
+			t.Fatalf("put other memory: %v", err)
+		}
+
+		report, err := f.stack.EraseSubject(own, "t1", "u1")
+		if err != nil {
+			t.Fatalf("erase: %v", err)
+		}
+		if !slices.Contains(report.Memory, "m1") {
+			t.Fatalf("report.Memory = %v, want m1", report.Memory)
+		}
+		bctx := context.Background()
+		if notes, version, err := f.notes.Read(bctx, ownSessionKey); err != nil || notes != "" || version != 0 {
+			t.Fatalf("own session notes survived: notes=%q version=%d err=%v", notes, version, err)
+		}
+		if entries, err := f.notes.Entries(bctx, ownSubjectKey); err != nil || len(entries) != 0 {
+			t.Fatalf("own subject memory survived: %v %v", entries, err)
+		}
+		if notes, _, err := f.notes.Read(bctx, otherSessionKey); err != nil || notes != "other session notes" {
+			t.Fatalf("other session notes removed: notes=%q err=%v", notes, err)
+		}
+		entries, err := f.notes.Entries(bctx, otherSubjectKey)
+		if err != nil || len(entries) != 1 || entries[0].ID != "m2" {
+			t.Fatalf("other subject memory damaged: %v %v", entries, err)
+		}
+	})
+
 	t.Run("redaction.erase-removes-blobs", func(t *testing.T) {
 		f := newEraseStores()
 		own := eraseCtx("t1", "u1")

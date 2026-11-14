@@ -138,11 +138,16 @@ const (
 	StageProvider
 )
 
+// GuardBlockedError is the error a guard consultation fails closed with.
+// Err is the optional guard error that caused the block.
 type GuardBlockedError struct {
 	Stage    GuardStage
 	Reason   string
 	Fallback Message
+	Err      error
 }
+
+func (e *GuardBlockedError) Unwrap() error { return e.Err }
 
 func (e *GuardBlockedError) Error() string {
 	return "gohan: guard blocked " + stageName(e.Stage) + ": " + e.Reason

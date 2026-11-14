@@ -231,7 +231,11 @@ func release(ctx context.Context, inner guards.Guard, blocks []types.Block, fall
 	}
 	d, err := inner.Decide(ctx, guards.GuardInput{Stage: types.StageOutput, Blocks: blocks})
 	if err != nil {
-		return nil, err
+		gbe := guards.BlockedFromError(types.StageOutput, err)
+		if fallback != nil {
+			gbe.Fallback = fallback(ctx, gbe)
+		}
+		return nil, gbe
 	}
 	switch d.Value.Action {
 	case guards.Block:

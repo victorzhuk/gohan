@@ -41,6 +41,8 @@ func TestSandboxIsolation(t *testing.T) {
 		t.Run("open_cancelled", testPolicySetupOpenCancelled)
 	})
 	t.Run("sandbox.restored-startup-policy-first", testRestoredStartupPolicyFirst)
+	t.Run("sandbox.workload-posture-locked", testWorkloadPostureLocked)
+	t.Run("sandbox.admin-channel-isolated", testAdminChannelIsolated)
 	// Review-round leaves; unregistered scenario IDs must not PASS in short gate legs.
 	if !testing.Short() {
 		t.Run("sandbox.admin-env-isolated", testAdminEnvIsolated)
@@ -107,6 +109,20 @@ func testFirewallAuthorityIsolated(t *testing.T) {
 	// The kernel must deny the workload every capability, including the
 	// NET_ADMIN the enforcement chain needs, and must bar privilege
 	// regaining through no-new-privileges.
+	assertPrivilegeDropped(t, w)
+
+	assertFixtureConnectivity(t, f, w)
+
+	assertFirewallAuthorityDenied(t, w)
+
+	assertFixtureConnectivity(t, f, w)
+}
+
+// assertPrivilegeDropped proves the workload process holds no capability
+// in its effective or bounding sets and cannot regain privileges
+// through no-new-privileges.
+func assertPrivilegeDropped(t *testing.T, w types.Workspace) {
+	t.Helper()
 	status := mustExec(t, w, 10*time.Second, "sh", "-c", "grep -E '^(CapEff|CapBnd|NoNewPrivs):' /proc/self/status")
 	caps, nnp, err := parseProcStatus(string(status.Stdout))
 	if err != nil {
@@ -115,9 +131,17 @@ func testFirewallAuthorityIsolated(t *testing.T) {
 	if caps["CapEff"] != 0 || caps["CapBnd"] != 0 || nnp != "1" {
 		t.Fatalf("workload privilege drop missing: CapEff=%d CapBnd=%d NoNewPrivs=%s, want empty effective and bounding sets and NoNewPrivs=1", caps["CapEff"], caps["CapBnd"], nnp)
 	}
+}
 
-	assertFixtureConnectivity(t, f, w)
-
+// assertFirewallAuthorityDenied proves the attack utilities run in their
+// authorized read-only form before the kernel refusing the firewall
+// mutation and every capability-regain path counts as denial.
+func assertFirewallAuthorityDenied(t *testing.T, w types.Workspace) {
+	t.Helper()
+	ctrl := mustExec(t, w, 10*time.Second, "sh", "-c", "iptables --version >/dev/null && capsh --print >/dev/null")
+	if ctrl.ExitCode != 0 {
+		t.Fatalf("fixture attack utilities unusable in workload image (iptables/capsh): exit %d stderr %s", ctrl.ExitCode, ctrl.Stderr)
+	}
 	flush := mustExec(t, w, 10*time.Second, "sh", "-c", "iptables -F")
 	if flush.ExitCode == 0 {
 		t.Fatal("workload iptables -F exited 0, want the kernel to refuse the firewall mutation")
@@ -126,8 +150,6 @@ func testFirewallAuthorityIsolated(t *testing.T) {
 	if regain.ExitCode == 0 {
 		t.Fatal("capability regain through capsh exited 0, want refusal")
 	}
-
-	assertFixtureConnectivity(t, f, w)
 }
 
 // parseProcStatus reads CapEff/CapBnd hex words and the NoNewPrivs flag
@@ -584,18 +606,14 @@ func testPolicySetupFailureCleanup(t *testing.T) {
 	}
 }
 
-// testPolicySetupAdminTimeout proves the ten-second administration bound
-// is independent of Open's own context: a slow administration call makes
-// the trusted setup fail closed and unwind every created resource.
-func testPolicySetupAdminTimeout(t *testing.T) {
-	f := newConformanceFactory(t)
-	tr := newSandboxTransport()
-	sb := decoratedSandbox(t, f, tr)
+// assertAdminTimeoutCancelsSetup arms a slow anchor administration exec
+// and proves Open fails closed past the administration bound with an
+// empty attempt inventory, independent of Open's own context.
+func assertAdminTimeoutCancelsSetup(t *testing.T, f *Factory, tr *sandboxTransport, sb *Sandbox, p types.SandboxPolicy) {
+	t.Helper()
 	tr.armDelay("slow_admin", 12*time.Second, func(_ *sandboxTransport, method, path string, _ []byte) bool {
 		return method == "POST" && strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/exec")
 	})
-	p := types.SandboxPolicy{Lifecycle: types.PerCall}
-	p.Egress.Allow = []string{"example.com:80"}
 	w, err := sb.Open(context.Background(), "", p)
 	if hits := tr.hits("slow_admin"); hits != 1 {
 		t.Fatalf("slow administration call consumed %d times, want exactly once", hits)
@@ -604,6 +622,18 @@ func testPolicySetupAdminTimeout(t *testing.T) {
 		t.Fatalf("open past the administration bound returned workspace=%v err=%v, want nil workspace and an error", w, err)
 	}
 	assertInventoryClean(t, f, tr)
+}
+
+// testPolicySetupAdminTimeout proves the ten-second administration bound
+// is independent of Open's own context: a slow administration call makes
+// the trusted setup fail closed and unwind every created resource.
+func testPolicySetupAdminTimeout(t *testing.T) {
+	f := newConformanceFactory(t)
+	tr := newSandboxTransport()
+	sb := decoratedSandbox(t, f, tr)
+	p := types.SandboxPolicy{Lifecycle: types.PerCall}
+	p.Egress.Allow = []string{"example.com:80"}
+	assertAdminTimeoutCancelsSetup(t, f, tr, sb, p)
 }
 
 // testPolicySetupOpenCancelled proves a cancelled Open context fails the
@@ -958,5 +988,167 @@ func testAdminCounterBounded(t *testing.T) {
 	}
 	if n := f.rec.Denied(); n != 0 {
 		t.Fatalf("failed counter read fabricated %d egress_denied observations, want none", n)
+	}
+}
+
+// newStartupTrapImage builds through the public API a workspace image
+// whose commit configuration carries an inherited entrypoint and a
+// one-second healthcheck; both commands are proven to create their
+// markers before absence anywhere can mean suppression.
+func newStartupTrapImage(t *testing.T, f *Factory, ctx context.Context) types.WorkspaceRef {
+	t.Helper()
+	// The source workspace builds on the iptables-provisioned fixture
+	// image so a firewall-mutation attempt fails on kernel authority,
+	// not on a missing binary.
+	src, err := f.Sandbox(t).Open(ctx, types.WorkspaceRef(f.WorkloadImage()), types.SandboxPolicy{Lifecycle: types.PerCall})
+	if err != nil {
+		t.Fatalf("open source workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = src.Close(ctx) })
+	idle := "#!/bin/sh\n: > /markers/entrypoint\nexec \"$@\"\n"
+	if err := src.Put(ctx, "/bad/idle", strings.NewReader(idle)); err != nil {
+		t.Fatalf("put idle executable: %v", err)
+	}
+	if res := mustExec(t, src, 10*time.Second, "chmod", "755", "/bad/idle"); res.ExitCode != 0 {
+		t.Fatalf("chmod idle executable: exit %d stderr %s", res.ExitCode, res.Stderr)
+	}
+	if err := src.Put(ctx, "/markers/.keep", strings.NewReader("")); err != nil {
+		t.Fatalf("put markers dir: %v", err)
+	}
+	if res := mustExec(t, src, 10*time.Second, "/bad/idle", "true"); res.ExitCode != 0 {
+		t.Fatalf("entrypoint control failed: exit %d stderr %s", res.ExitCode, res.Stderr)
+	}
+	if res := mustExec(t, src, 10*time.Second, "sh", "-c", ": > /markers/healthcheck"); res.ExitCode != 0 {
+		t.Fatalf("healthcheck control failed: exit %d stderr %s", res.ExitCode, res.Stderr)
+	}
+	for _, marker := range []string{"/markers/entrypoint", "/markers/healthcheck"} {
+		if res := mustExec(t, src, 10*time.Second, "test", "-f", marker); res.ExitCode != 0 {
+			t.Fatalf("marker control %s did not appear", marker)
+		}
+	}
+	if res := mustExec(t, src, 10*time.Second, "sh", "-c", "rm -f /markers/entrypoint /markers/healthcheck"); res.ExitCode != 0 {
+		t.Fatalf("clean markers: exit %d stderr %s", res.ExitCode, res.Stderr)
+	}
+	tag := fmt.Sprintf("gohan-fx-trap-%d", time.Now().UnixNano())
+	if _, err := f.c.api.ContainerCommit(ctx, src.(*workspace).containerID, client.ContainerCommitOptions{
+		Reference: tag,
+		NoPause:   true,
+		Config: &container.Config{
+			Entrypoint: []string{"/bad/idle"},
+			Healthcheck: &container.HealthConfig{
+				Test:     []string{"CMD-SHELL", ": > /markers/healthcheck"},
+				Interval: time.Second,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("commit trap startup config: %v", err)
+	}
+	t.Cleanup(func() {
+		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = f.c.api.ImageRemove(cctx, tag, client.ImageRemoveOptions{})
+	})
+	return types.WorkspaceRef(tag)
+}
+
+// testWorkloadPostureLocked proves the workload process runs with zero
+// capabilities and no-new-privileges, that the image entrypoint is
+// overridden and an inherited healthcheck disabled, and that the public
+// Exec surface cannot administer network policy.
+func testWorkloadPostureLocked(t *testing.T) {
+	f := newConformanceFactory(t)
+	f.NetworkFixture(t)
+	ctx := context.Background()
+	trapRef := newStartupTrapImage(t, f, ctx)
+	p := types.SandboxPolicy{Lifecycle: types.PerCall}
+	p.Egress.Allow = []string{"api.example.com:443"}
+	w, err := f.Sandbox(t).Open(ctx, trapRef, p)
+	if err != nil {
+		t.Fatalf("open workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close(ctx) })
+
+	// Trusted controls: the inherited startup commands really run when
+	// invoked, so marker absence after the healthcheck window means
+	// suppression, not breakage.
+	if res := mustExec(t, w, 10*time.Second, "/bad/idle", "true"); res.ExitCode != 0 {
+		t.Fatalf("entrypoint control failed: exit %d stderr %s", res.ExitCode, res.Stderr)
+	}
+	if res := mustExec(t, w, 10*time.Second, "test", "-f", "/markers/entrypoint"); res.ExitCode != 0 {
+		t.Fatal("entrypoint control did not create /markers/entrypoint")
+	}
+	if res := mustExec(t, w, 10*time.Second, "sh", "-c", ": > /markers/healthcheck"); res.ExitCode != 0 {
+		t.Fatalf("healthcheck control failed: exit %d stderr %s", res.ExitCode, res.Stderr)
+	}
+	if res := mustExec(t, w, 10*time.Second, "sh", "-c", "rm -f /markers/entrypoint /markers/healthcheck"); res.ExitCode != 0 {
+		t.Fatalf("clean markers: exit %d stderr %s", res.ExitCode, res.Stderr)
+	}
+
+	// The kernel must deny the workload every capability and bar
+	// privilege regaining through no-new-privileges.
+	assertPrivilegeDropped(t, w)
+
+	// Three seconds at a one-second interval would run three inherited
+	// healthchecks; the inherited entrypoint must never have become
+	// PID 1 either.
+	time.Sleep(3 * time.Second)
+	for _, marker := range []string{"/markers/entrypoint", "/markers/healthcheck"} {
+		if res := mustExec(t, w, 10*time.Second, "test", "-f", marker); res.ExitCode == 0 {
+			t.Fatalf("inherited startup artifact executed: %s exists", marker)
+		}
+	}
+
+	// The daemon config itself must carry the trusted idle entrypoint
+	// overriding the image one, and the healthcheck must be disabled.
+	insp, err := f.c.api.ContainerInspect(ctx, w.(*workspace).containerID, client.ContainerInspectOptions{})
+	if err != nil {
+		t.Fatalf("inspect workload: %v", err)
+	}
+	cfg := insp.Container.Config
+	if len(cfg.Entrypoint) != 2 || cfg.Entrypoint[0] != "sleep" || cfg.Entrypoint[1] != "infinity" {
+		t.Fatalf("workload entrypoint %v, want the trusted idle entrypoint overriding the image one", cfg.Entrypoint)
+	}
+	if cfg.Healthcheck == nil || len(cfg.Healthcheck.Test) != 1 || cfg.Healthcheck.Test[0] != "NONE" {
+		t.Fatalf("workload healthcheck %v, want the inherited healthcheck disabled", cfg.Healthcheck)
+	}
+
+	assertFirewallAuthorityDenied(t, w)
+}
+
+// testAdminChannelIsolated proves a private anchor administration call
+// exceeding the administration bound is cancelled, the failure stays
+// visible and retryable, and no workload process starts before the
+// policy setup completes.
+func testAdminChannelIsolated(t *testing.T) {
+	f := newConformanceFactory(t)
+	f.NetworkFixture(t)
+	tr := newSandboxTransport()
+	sb := decoratedSandbox(t, f, tr)
+	p := types.SandboxPolicy{Lifecycle: types.PerCall}
+	p.Egress.Allow = []string{"example.com:80"}
+	assertAdminTimeoutCancelsSetup(t, f, tr, sb, p)
+	for _, id := range tr.containersCreatedFrom(f.WorkloadImage()) {
+		if tr.startIndexOf(id) >= 0 {
+			t.Fatalf("workload container %s started before policy setup completed", id)
+		}
+	}
+
+	// The failure is retryable: an identical open without the fault
+	// succeeds, and policy setup still completes before the first
+	// workload start.
+	tr.reset()
+	w, err := sb.Open(context.Background(), "", p)
+	if err != nil || w == nil {
+		t.Fatalf("retry open after administration timeout returned workspace=%v err=%v, want a usable workspace", w, err)
+	}
+	t.Cleanup(func() { _ = w.Close(context.Background()) })
+	workloadID := w.(*workspace).containerID
+	startIdx := tr.startIndexOf(workloadID)
+	execIdx := tr.lastExecIndex()
+	if startIdx < 0 {
+		t.Fatalf("no start request for retried workload %s", workloadID)
+	}
+	if execIdx >= 0 && execIdx > startIdx {
+		t.Fatalf("policy activity at log %d followed the workload start at %d; trusted setup must complete before the first workload start", execIdx, startIdx)
 	}
 }

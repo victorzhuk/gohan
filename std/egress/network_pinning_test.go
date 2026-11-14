@@ -39,6 +39,8 @@ import (
 // globals and therefore run serially (no t.Parallel).
 func TestNetworkPinningScenarios(t *testing.T) {
 	t.Run("tools.cgnat-destination-denied", testCGNATDestinationDenied)
+	t.Run("tools.egress-glob-no-exempt", testEgressGlobNoExempt)
+	t.Run("tools.egress-literal-cgnat-allowed", testEgressLiteralCGNATAllowed)
 	t.Run("tools.proxy-destination-pinned", testProxyDestinationPinned)
 	t.Run("tools.proxy-tls-authority-preserved", testProxyTLSAuthorityPreserved)
 }
@@ -55,8 +57,45 @@ const (
 )
 
 func testCGNATDestinationDenied(t *testing.T) {
-	allowed := startControlledPeerSerial(t, cgnatAllowedMarker)
-	denied := startControlledPeerSerial(t, cgnatDeniedMarker)
+	allowed, denied, dials, client := newCGNATFixture(t)
+	assertGlobPositiveControl(t, allowed, denied, client)
+	assertGlobPrivateRefusals(t, allowed, denied, dials, client)
+	assertLiteralAllowException(t, allowed, denied, dials, client)
+
+	// Addresses outside 100.64.0.0/10 keep their prior allowed behavior.
+	for _, nbr := range []string{"nbr-below.test", "nbr-above.test"} {
+		resp, err := client.Get("http://" + nbr + "/neighbor")
+		if err != nil {
+			t.Fatalf("neighbor %s outside 100.64.0.0/10 refused: %v", nbr, err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("neighbor %s body read failed: %v", nbr, err)
+		}
+		if string(body) != cgnatAllowedMarker {
+			t.Fatalf("neighbor %s body = %q, want %q", nbr, body, cgnatAllowedMarker)
+		}
+	}
+}
+
+func testEgressGlobNoExempt(t *testing.T) {
+	allowed, denied, dials, client := newCGNATFixture(t)
+	assertGlobPositiveControl(t, allowed, denied, client)
+	assertGlobPrivateRefusals(t, allowed, denied, dials, client)
+}
+
+func testEgressLiteralCGNATAllowed(t *testing.T) {
+	allowed, denied, dials, client := newCGNATFixture(t)
+	assertLiteralAllowException(t, allowed, denied, dials, client)
+}
+
+// newCGNATFixture starts the two controlled peers, installs the shared
+// controlled resolution and counting dial seam, and builds the egress client
+// with a hostname glob plus an explicit CGNAT literal under DenyPrivate.
+func newCGNATFixture(t *testing.T) (allowed, denied *controlledPeer, dials *dialCounter, client *http.Client) {
+	allowed = startControlledPeerSerial(t, cgnatAllowedMarker)
+	denied = startControlledPeerSerial(t, cgnatDeniedMarker)
 	allowed.checkReady(t)
 	denied.checkReady(t)
 	allowed.refuseUnready(t)
@@ -85,16 +124,21 @@ func testCGNATDestinationDenied(t *testing.T) {
 		"100.128.0.0":     allowed.loopbackAddr(),
 		"100.64.9.9":      allowed.loopbackAddr(),
 	}
-	dials := installCountingResolutionSerial(t, dns, seam)
-	client := Client(types.EgressPolicy{
+	dials = installCountingResolutionSerial(t, dns, seam)
+	client = Client(types.EgressPolicy{
 		Allow:         []string{"*.test", "100.64.9.9"},
 		Schemes:       []string{"http"},
 		PrivateRanges: types.DenyPrivate,
 		Timeout:       10 * time.Second,
 	})
+	return allowed, denied, dials, client
+}
 
-	// Positive control: an allowed public hostname reaches its peer and
-	// returns its unique marker.
+// assertGlobPositiveControl proves the hostname glob allows a public host to
+// reach its peer and return its unique marker.
+func assertGlobPositiveControl(t *testing.T, allowed, denied *controlledPeer, client *http.Client) {
+	t.Helper()
+
 	resp, err := client.Get("http://ok.test/marker")
 	if err != nil {
 		t.Fatalf("positive control to allowed host ok.test failed: %v", err)
@@ -112,6 +156,13 @@ func testCGNATDestinationDenied(t *testing.T) {
 	}
 	allowed.resetCount()
 	denied.resetCount()
+}
+
+// assertGlobPrivateRefusals proves private-resolving hostnames matched only by
+// the Allow glob are refused before any dial: a hostname glob grants no
+// exemption from DenyPrivate.
+func assertGlobPrivateRefusals(t *testing.T, allowed, denied *controlledPeer, dials *dialCounter, client *http.Client) {
+	t.Helper()
 
 	for _, tc := range []struct{ host, ip string }{
 		{"cgnat-low.test", "100.64.0.0"},
@@ -145,7 +196,7 @@ func testCGNATDestinationDenied(t *testing.T) {
 	// DenyPrivate with the same pre-dial proof, named separately from the
 	// CGNAT interior cases.
 	dials.reset()
-	resp, err = client.Get("http://rfc1918.test/rfc1918-check")
+	resp, err := client.Get("http://rfc1918.test/rfc1918-check")
 	if err == nil {
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
@@ -164,13 +215,20 @@ func testCGNATDestinationDenied(t *testing.T) {
 	if allowed.count() != 0 || denied.count() != 0 {
 		t.Fatalf("refused RFC1918 request caused peer activity allowed=%d denied=%d, want zero destination dials", allowed.count(), denied.count())
 	}
+}
+
+// assertLiteralAllowException proves the explicit literal allow stays
+// effective inside the CGNAT range while an unlisted literal in the same
+// range stays refused before any dial.
+func assertLiteralAllowException(t *testing.T, allowed, denied *controlledPeer, dials *dialCounter, client *http.Client) {
+	t.Helper()
 
 	// The explicit literal allow exception stays effective inside the range.
-	resp, err = client.Get("http://100.64.9.9:80/literal")
+	resp, err := client.Get("http://100.64.9.9:80/literal")
 	if err != nil {
 		t.Fatalf("explicitly allowed CGNAT literal 100.64.9.9 refused: %v", err)
 	}
-	body, err = io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if err != nil {
 		t.Fatalf("allowed literal body read failed: %v", err)
@@ -204,22 +262,6 @@ func testCGNATDestinationDenied(t *testing.T) {
 	}
 	if allowed.count() != 0 || denied.count() != 0 {
 		t.Fatalf("refused literal 100.64.9.8 caused peer activity allowed=%d denied=%d, want zero destination dials", allowed.count(), denied.count())
-	}
-
-	// Addresses outside 100.64.0.0/10 keep their prior allowed behavior.
-	for _, nbr := range []string{"nbr-below.test", "nbr-above.test"} {
-		resp, err := client.Get("http://" + nbr + "/neighbor")
-		if err != nil {
-			t.Fatalf("neighbor %s outside 100.64.0.0/10 refused: %v", nbr, err)
-		}
-		body, err := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if err != nil {
-			t.Fatalf("neighbor %s body read failed: %v", nbr, err)
-		}
-		if string(body) != cgnatAllowedMarker {
-			t.Fatalf("neighbor %s body = %q, want %q", nbr, body, cgnatAllowedMarker)
-		}
 	}
 }
 

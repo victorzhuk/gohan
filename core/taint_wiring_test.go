@@ -60,7 +60,10 @@ func TestNativeTaintHookReceivesWindow(t *testing.T) {
 	cfg := &resolvedNativeConfig{specs: []types.ToolSpec{{Name: "echo"}}, taintPolicy: hook}
 	gate := nativeBatchGate(cfg, stores.History{})
 	env := &turnEnv{msgs: []types.Message{{Blocks: []types.Block{types.Text{Text: "tool output"}}}}}
-	ctx := env.effectCtx(context.Background())
+	ctx, err := env.effectCtx(context.Background())
+	if err != nil {
+		t.Fatalf("effectCtx: %v", err)
+	}
 	decision := gate(ctx, types.ToolUse{Name: "echo"})
 	if decision.Outcome != runtime.BatchAllow || len(got) == 0 {
 		t.Fatalf("decision=%v, hook window=%v", decision.Outcome, got)

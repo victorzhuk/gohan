@@ -106,11 +106,13 @@ type turnConfig struct {
 	// assembler reads: the selected model profile, the registered tool
 	// specs and the instruction blocks. The native wiring binds all three;
 	// a run without a resolution leaves them unset.
-	profile     types.ModelProfile
-	specs       []types.ToolSpec
-	taintPolicy types.TaintHook
-	instruction []types.Block
-	secrets     types.SecretResolver
+	profile         types.ModelProfile
+	specs           []types.ToolSpec
+	taintPolicy     types.TaintHook
+	redactor        types.Redactor
+	redactionPolicy types.RedactionPolicy
+	instruction     []types.Block
+	secrets         types.SecretResolver
 }
 
 // turnEnv carries the per-run state the two effects share across their

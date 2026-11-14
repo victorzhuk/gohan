@@ -3,11 +3,13 @@ package notes
 import (
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"strings"
 	"testing"
 
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std/taint"
 )
 
 func runInfo(session string) types.RunInfo {
@@ -68,6 +70,50 @@ func TestNotesToolContract(t *testing.T) {
 		}
 		if got := slotText(t, n, runInfo("s-b")); got != "beta" {
 			t.Fatalf("session b slot = %q, want beta", got)
+		}
+	})
+
+	t.Run("taint.notes-readback-carries-origin", func(t *testing.T) {
+		ri := runInfo("s-taint")
+		const note = "secret note content"
+		writeNote(t, n, ri, note)
+		blocks, err := n.Provide(context.Background(), ri)
+		if err != nil {
+			t.Fatalf("Provide: %v", err)
+		}
+		if len(blocks) != 1 {
+			t.Fatalf("block count = %d, want 1", len(blocks))
+		}
+		if got := blocks[0].BlockOrigin(); got != (types.Origin{Kind: types.OriginTool, Name: "notes"}) {
+			t.Fatalf("block origin = %+v, want OriginTool{notes}", got)
+		}
+
+		hook, err := taint.New(taint.TaintPolicy{
+			ToExfil:      types.TaintDeny,
+			ToSideEffect: types.TaintDeny,
+			ToReadOnly:   types.TaintDeny,
+			MinMatch:     1,
+		}, nil)
+		if err != nil {
+			t.Fatalf("taint.New: %v", err)
+		}
+		ctx := types.WithTaintWindow(context.Background(), blocks)
+		args := jsontext.Value(`{"notes":"secret note content"}`)
+		action, taints := hook(ctx, types.ToolSpec{Name: "notes_write", Effect: types.ReadOnly}, args)
+		if action != types.TaintDeny {
+			t.Fatalf("action = %d, want deny", action)
+		}
+		if len(taints) == 0 {
+			t.Fatal("no argument taints reported")
+		}
+		found := false
+		for _, taint := range taints {
+			if taint.Arg == "notes" && taint.Match == note && taint.Origins[0] == (types.Origin{Kind: types.OriginTool, Name: "notes"}) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("taints = %+v, want notes arg tainted from OriginTool{notes}", taints)
 		}
 	})
 

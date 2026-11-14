@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -172,4 +173,83 @@ func TestRedactionSinks(t *testing.T) {
 			t.Fatalf("cross-tenant get err = %v, want ErrRedactionMapNotFound", err)
 		}
 	})
+
+	t.Run("redaction.failure-fails-closed", func(t *testing.T) {
+		ctx := types.WithPrincipal(context.Background(), types.Principal{Tenant: "t1", Subject: "u1"})
+		runs := stores.NewMemoryRuns(
+			stores.WithMemoryRunClock(time.Now),
+			stores.WithMemoryRunInfo(types.RunInfoFrom),
+		)
+		events := &sinkEvents{EventLog: stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))}
+		log := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
+		out := &sinkOutputs{OutputStore: stores.NewMemoryOutputs()}
+		cps := stores.NewMemoryCheckpoints(
+			stores.WithMemoryCheckpointClock(time.Now),
+			stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom),
+		)
+		model := &countingModel{profile: profile("primary", true)}
+
+		stack, err := Build(
+			WithStores(stores.Stores{
+				SessionLog:    log,
+				Runs:          runs,
+				Checkpoints:   cps,
+				RedactionMaps: stores.NewMemoryRedactionMaps(),
+				OutputStore:   out,
+			}),
+			WithModels(model),
+			WithRedactor(failClosedRedactor{}),
+			WithRedactionPolicy(scenarioPolicy()),
+			WithNativeAgent(NativeSpec{Request: FlowRequest{Name: "chat"}, Profile: "primary"}),
+		)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		conv, err := NewConversation(stack, "chat", &sinkRuntime{token: "ok"},
+			WithConversationRuns(runs),
+			WithConversationEventLog(events),
+			WithConversationCheckpoints(cps),
+		)
+		if err != nil {
+			t.Fatalf("NewConversation: %v", err)
+		}
+		errs := 0
+		for _, sendErr := range conv.Send(ctx, "s1", types.Message{Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: "Book for Anna Petrova"}}}) {
+			if sendErr == nil {
+				continue
+			}
+			errs++
+			if !errors.Is(sendErr, errRedactFailed) {
+				t.Fatalf("send err = %v, want errors.Is(errRedactFailed)", sendErr)
+			}
+		}
+		if errs == 0 {
+			t.Fatal("Send yielded no error")
+		}
+
+		if _, err := log.Load(ctx, "s1"); !errors.Is(err, stores.ErrSessionNotFound) {
+			t.Fatalf("session log load err = %v, want ErrSessionNotFound", err)
+		}
+		if len(events.appended) != 0 {
+			t.Fatalf("event log received %d events", len(events.appended))
+		}
+		if len(out.blocks) != 0 {
+			t.Fatalf("output store received %d outputs", len(out.blocks))
+		}
+		if model.calls.Load() != 0 {
+			t.Fatalf("model received %d requests", model.calls.Load())
+		}
+	})
+}
+
+var errRedactFailed = errors.New("redaction failed")
+
+type failClosedRedactor struct{}
+
+func (failClosedRedactor) Redact(context.Context, []types.Block, types.RedactionPolicy) ([]types.Block, types.RedactionMap, error) {
+	return nil, types.RedactionMap{}, fmt.Errorf("redact: %w", errRedactFailed)
+}
+
+func (failClosedRedactor) Rehydrate(context.Context, []types.Block, types.RedactionMap) ([]types.Block, error) {
+	return nil, nil
 }

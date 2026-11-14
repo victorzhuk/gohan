@@ -2,6 +2,7 @@ package evals
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"iter"
 	"math"
@@ -697,6 +698,61 @@ func TestReleaseOnline(t *testing.T) {
 		}
 	})
 
+	t.Run("redaction.eval-export-redacted", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			const entity = "Ivan Petrov"
+			secret := "sk-live-" + strings.Repeat("0", 12)
+			rec := &sinkRecorder{}
+			red := &pseudonymRedactor{entity: entity, pseudonym: "[person-1]", secret: secret}
+			judge := NewJudge(types.EvalQuality, &fixedModel{version: "judge-v1", delta: "0.8"}, "judge-v1",
+				Rubric{Version: "rub-v1", Instruction: "score quality"}, WithRepeat(DefaultJudgeRepeat))
+			eng, err := NewOnline(1, []Judge{judge}, WithSink(rec, "dest-eval"),
+				WithRedactor(red, types.RedactionPolicy{Detectors: []types.Detector{red}}))
+			if err != nil {
+				t.Fatalf("NewOnline: %v", err)
+			}
+
+			comp := evalCompletion("sr1")
+			comp.History = func(ctx context.Context) (stores.History, error) {
+				return stores.History{
+					Messages: []types.Message{
+						evalMessage(types.RoleUser, types.OriginUser, "Cardholder "+entity+" reports the deploy for the api service failed."),
+						evalMessage(types.RoleAssistant, types.OriginModel, "Ticket filed. Callback "+secret+" recorded for the deploy incident."),
+					},
+					Version: 7,
+				}, nil
+			}
+			if err := eng.Evaluate(context.Background(), comp); err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			if err := eng.Shutdown(context.Background()); err != nil {
+				t.Fatalf("Shutdown: %v", err)
+			}
+			synctest.Wait()
+
+			records := rec.snapshot()
+			if len(records) == 0 {
+				t.Fatal("no eval record settled; the redacted job must settle with a record")
+			}
+			if red.detections() == 0 {
+				t.Error("redactor detected no entity spans; the evidence must carry the entity the policy detects")
+			}
+			for _, r := range records {
+				data, err := json.Marshal(r)
+				if err != nil {
+					t.Fatalf("Marshal export record %s: %v", r.ID, err)
+				}
+				blob := string(data)
+				if strings.Contains(blob, entity) {
+					t.Errorf("export record %s leaks the raw entity %q", r.ID, entity)
+				}
+				if strings.Contains(blob, secret) {
+					t.Errorf("export record %s leaks the injected secret %q", r.ID, secret)
+				}
+			}
+		})
+	})
+
 	t.Run("release.online-calibration", func(t *testing.T) {
 		set := CalibrationSet{
 			Version: "cal-set-v1",
@@ -886,6 +942,79 @@ func (passthroughRedactor) Redact(ctx context.Context, blocks []types.Block, p t
 
 func (passthroughRedactor) Rehydrate(ctx context.Context, blocks []types.Block, m types.RedactionMap) ([]types.Block, error) {
 	return blocks, nil
+}
+
+// pseudonymRedactor is a file-local redactor fake whose Detect finds the
+// configured entity and whose Redact replaces it with a stable pseudonym
+// and strips the injected secret from every text block.
+type pseudonymRedactor struct {
+	entity    string
+	pseudonym string
+	secret    string
+
+	mu   sync.Mutex
+	seen int
+}
+
+func (r *pseudonymRedactor) Detect(ctx context.Context, blocks []types.Block) ([]types.Span, error) {
+	var spans []types.Span
+	for i, b := range blocks {
+		tb, ok := b.(types.Text)
+		if !ok {
+			continue
+		}
+		for off := 0; ; {
+			at := strings.Index(tb.Text[off:], r.entity)
+			if at < 0 {
+				break
+			}
+			at += off
+			spans = append(spans, types.Span{Block: i, Start: at, End: at + len(r.entity), Kind: types.EntityCustom})
+			off = at + len(r.entity)
+			r.mu.Lock()
+			r.seen++
+			r.mu.Unlock()
+		}
+	}
+	return spans, nil
+}
+
+func (r *pseudonymRedactor) Redact(ctx context.Context, blocks []types.Block, p types.RedactionPolicy) ([]types.Block, types.RedactionMap, error) {
+	var spans []types.Span
+	for _, d := range p.Detectors {
+		found, err := d.Detect(ctx, blocks)
+		if err != nil {
+			return nil, types.RedactionMap{}, err
+		}
+		spans = append(spans, found...)
+	}
+	out := make([]types.Block, len(blocks))
+	copy(out, blocks)
+	for _, sp := range spans {
+		tb, ok := out[sp.Block].(types.Text)
+		if !ok || sp.End > len(tb.Text) {
+			continue
+		}
+		out[sp.Block] = types.Text{BlockBase: tb.BlockBase, Text: tb.Text[:sp.Start] + r.pseudonym + tb.Text[sp.End:]}
+	}
+	for i, b := range out {
+		tb, ok := b.(types.Text)
+		if !ok || !strings.Contains(tb.Text, r.secret) {
+			continue
+		}
+		out[i] = types.Text{BlockBase: tb.BlockBase, Text: strings.ReplaceAll(tb.Text, r.secret, "[REDACTED]")}
+	}
+	return out, types.RedactionMap{Entries: map[string]types.Entity{}}, nil
+}
+
+func (r *pseudonymRedactor) Rehydrate(ctx context.Context, blocks []types.Block, m types.RedactionMap) ([]types.Block, error) {
+	return blocks, nil
+}
+
+func (r *pseudonymRedactor) detections() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.seen
 }
 
 // countingModel is a judge model that counts its Generate calls and

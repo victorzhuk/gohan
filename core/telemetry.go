@@ -83,7 +83,7 @@ func ConsultGuard(ctx context.Context, g guards.Guard, in guards.GuardInput) (ty
 	d, err := g.Decide(sctx, in)
 	if err != nil {
 		end(types.String(types.KeyGuardVerdict, "error"))
-		return d, err
+		return d, guards.BlockedFromError(in.Stage, err)
 	}
 	end(types.String(types.KeyGuardVerdict, guardVerdictName(d.Value)))
 	return d, nil
@@ -97,6 +97,8 @@ func guardStageName(s types.GuardStage) string {
 		return "tool_result"
 	case types.StageContext:
 		return "context"
+	case types.StageProvider:
+		return "provider"
 	default:
 		return "output"
 	}

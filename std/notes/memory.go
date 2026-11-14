@@ -105,7 +105,7 @@ func Memory(store stores.NotesStore, policy stores.MemoryPolicy, opts ...Option)
 				Run:    ri,
 			})
 			if err != nil {
-				return types.ToolResult{}, fmt.Errorf("memory_write: guard: %w", err)
+				return types.ToolResult{}, fmt.Errorf("memory_write: guard: %w", guards.BlockedFromError(types.StageContext, err))
 			}
 			if d.Value.Action == guards.Block || (!cfg.allowUntrusted && untrustedWindow(window)) {
 				countWriteDenied(ctx, ri.Principal.Tenant)

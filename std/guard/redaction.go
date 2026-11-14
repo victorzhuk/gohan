@@ -35,7 +35,7 @@ func (g *RedactionGuard) Decide(ctx context.Context, in guards.GuardInput) (type
 	}
 	blocks, _, err := g.redactor.Redact(ctx, in.Blocks, g.policy)
 	if err != nil {
-		return types.Decision[guards.GuardVerdict]{}, err
+		return types.Decision[guards.GuardVerdict]{}, guards.BlockedFromError(in.Stage, err)
 	}
 	return types.Decision[guards.GuardVerdict]{Value: guards.GuardVerdict{Action: guards.Rewrite, Blocks: blocks}, Confidence: 1}, nil
 }

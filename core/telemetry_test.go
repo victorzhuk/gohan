@@ -3,6 +3,7 @@ package gohan
 import (
 	"context"
 	"encoding/json/jsontext"
+	"errors"
 	"testing"
 
 	"github.com/victorzhuk/gohan/core/guards"
@@ -108,6 +109,12 @@ func (r *telRuntime) Step(ctx context.Context, st runtime.State) (runtime.State,
 	return runtime.State{Turn: st.Turn + 1, HistoryVersion: st.HistoryVersion + 1}, nil, runtime.DoneStatus, nil
 }
 
+type guardFunc func(context.Context, guards.GuardInput) (types.Decision[guards.GuardVerdict], error)
+
+func (f guardFunc) Decide(ctx context.Context, in guards.GuardInput) (types.Decision[guards.GuardVerdict], error) {
+	return f(ctx, in)
+}
+
 func runInfoCtx() context.Context {
 	return types.WithRunInfo(context.Background(), types.RunInfo{
 		Flow:        "trip",
@@ -154,6 +161,33 @@ func TestTelemetryGuardAndToolMetrics(t *testing.T) {
 		}
 		if got := tel.attr(t, guard, types.KeyGuardVerdict).Value; got != "pass" {
 			t.Fatalf("verdict = %v, want pass", got)
+		}
+	})
+
+	t.Run("guards.guard-error-fails-closed", func(t *testing.T) {
+		tel := &fakeTelemetry{}
+		ctx := withTelemetry(runInfoCtx(), tel)
+		cause := errors.New("detector offline")
+		failing := guardFunc(func(context.Context, guards.GuardInput) (types.Decision[guards.GuardVerdict], error) {
+			return types.Decision[guards.GuardVerdict]{}, cause
+		})
+		_, err := ConsultGuard(ctx, failing, guards.GuardInput{Stage: types.StageInput})
+		if err == nil {
+			t.Fatal("ConsultGuard: err = nil, want the block")
+		}
+		var gbe *types.GuardBlockedError
+		if !errors.As(err, &gbe) {
+			t.Fatalf("err = %v, want *types.GuardBlockedError", err)
+		}
+		if gbe.Stage != types.StageInput {
+			t.Errorf("Stage = %v, want StageInput", gbe.Stage)
+		}
+		if !errors.Is(err, cause) {
+			t.Errorf("err does not unwrap to the guard cause")
+		}
+		guard := tel.span(t, SpanGuard)
+		if got := tel.attr(t, guard, types.KeyGuardVerdict).Value; got != "error" {
+			t.Fatalf("verdict = %v, want error", got)
 		}
 	})
 

@@ -26,6 +26,32 @@ func TestAllowAnonymous(t *testing.T) {
 		return conv
 	}
 
+	// anonymousSendRefused seeds a session owned by t-a/u1 and sends on it
+	// through an anonymous conversation face. It returns the session log so
+	// a caller can assert the refusal disclosed no session content.
+	anonymousSendRefused := func(t *testing.T) *stores.MemorySessionLog {
+		t.Helper()
+		log := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
+		ctx := WithPrincipal(context.Background(), types.Principal{Tenant: "t-a", Subject: "u1"})
+		if _, err := log.Append(ctx, "owned", 0, userMsg("seed")); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		runs := &countingRuns{Runs: stores.NewMemoryRuns(stores.WithMemoryRunClock(time.Now))}
+		events := &countingEvents{EventLog: stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))}
+		conv := newConv(t, log, runs, events, AllowAnonymous())
+		var got error
+		for _, err := range conv.Send(context.Background(), "owned", userMsg("hi")) {
+			got = err
+		}
+		if !errors.Is(got, types.ErrSessionForbidden) {
+			t.Fatalf("anonymous send on owned session: got %v, want ErrSessionForbidden", got)
+		}
+		if runs.starts != 0 {
+			t.Fatalf("owned session acquired a lease: starts=%d", runs.starts)
+		}
+		return log
+	}
+
 	t.Run("identity.no-principal", func(t *testing.T) {
 		conv := newConv(t, stores.NewMemorySessionLog(), &countingRuns{}, &countingEvents{})
 		var got []error
@@ -110,23 +136,17 @@ func TestAllowAnonymous(t *testing.T) {
 	})
 
 	t.Run("anonymous owned session send refused", func(t *testing.T) {
-		log := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
-		ctx := WithPrincipal(context.Background(), types.Principal{Tenant: "t-a", Subject: "u1"})
-		if _, err := log.Append(ctx, "owned", 0, userMsg("seed")); err != nil {
-			t.Fatalf("seed: %v", err)
+		anonymousSendRefused(t)
+	})
+
+	t.Run("identity.anonymous-bypasses-no-authorization", func(t *testing.T) {
+		log := anonymousSendRefused(t)
+		owned, err := log.Load(WithPrincipal(context.Background(), types.Principal{Tenant: "t-a", Subject: "u1"}), "owned")
+		if err != nil {
+			t.Fatalf("load owned session: %v", err)
 		}
-		runs := &countingRuns{Runs: stores.NewMemoryRuns(stores.WithMemoryRunClock(time.Now))}
-		events := &countingEvents{EventLog: stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))}
-		conv := newConv(t, log, runs, events, AllowAnonymous())
-		var got error
-		for _, err := range conv.Send(context.Background(), "owned", userMsg("hi")) {
-			got = err
-		}
-		if !errors.Is(got, types.ErrSessionForbidden) {
-			t.Fatalf("anonymous send on owned session: got %v, want ErrSessionForbidden", got)
-		}
-		if runs.starts != 0 {
-			t.Fatalf("owned session acquired a lease: starts=%d", runs.starts)
+		if len(owned.Messages) != 1 {
+			t.Fatalf("owned session has %d messages after refusal, want only the seed", len(owned.Messages))
 		}
 	})
 }

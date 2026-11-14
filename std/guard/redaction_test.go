@@ -2,6 +2,7 @@ package guard
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -19,6 +20,28 @@ func (redactionFixture) Redact(_ context.Context, blocks []types.Block, _ types.
 
 func (redactionFixture) Rehydrate(context.Context, []types.Block, types.RedactionMap) ([]types.Block, error) {
 	return nil, nil
+}
+
+type failingRedactor struct{}
+
+func (failingRedactor) Redact(context.Context, []types.Block, types.RedactionPolicy) ([]types.Block, types.RedactionMap, error) {
+	return nil, types.RedactionMap{}, errors.New("detector offline")
+}
+
+func (failingRedactor) Rehydrate(context.Context, []types.Block, types.RedactionMap) ([]types.Block, error) {
+	return nil, nil
+}
+
+func TestRedactionGuardErrorFailsClosed(t *testing.T) {
+	g := NewRedactionGuard(failingRedactor{}, types.RedactionPolicy{Detectors: []types.Detector{nil}})
+	_, err := g.Decide(context.Background(), guards.GuardInput{Stage: types.StageInput, Blocks: []types.Block{types.Text{Text: "hi"}}})
+	var gbe *types.GuardBlockedError
+	if !errors.As(err, &gbe) {
+		t.Fatalf("err = %v, want *types.GuardBlockedError", err)
+	}
+	if gbe.Stage != types.StageInput {
+		t.Errorf("Stage = %v, want StageInput", gbe.Stage)
+	}
 }
 
 func TestRedactionGuardRewritesInput(t *testing.T) {

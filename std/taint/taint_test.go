@@ -243,6 +243,11 @@ func TestDocumentAndWholeValueMatch(t *testing.T) {
 }
 
 func TestWindowTruncation(t *testing.T) {
+	t.Run("taint.window-truncated-reported", windowTruncationReported)
+}
+
+func windowTruncationReported(t *testing.T) {
+	t.Helper()
 	old := strings.Repeat("o", 100)
 	fresh := strings.Repeat("f", 100)
 	blocks := []types.Block{

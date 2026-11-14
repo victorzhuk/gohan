@@ -28,6 +28,27 @@ func fallbackMessage(_ context.Context, err *types.GuardBlockedError) types.Mess
 	return types.Message{Role: types.RoleAssistant, Blocks: []types.Block{types.Text{Text: "blocked: " + err.Reason}}}
 }
 
+func TestReleaseErrorFailsClosed(t *testing.T) {
+	cause := errors.New("detector offline")
+	inner := &fakeGuard{decide: func(context.Context, guards.GuardInput) (guards.GuardVerdict, error) {
+		return guards.GuardVerdict{}, cause
+	}}
+	_, err := release(context.Background(), inner, []types.Block{types.Text{Text: "answer"}}, fallbackMessage)
+	var gbe *types.GuardBlockedError
+	if !errors.As(err, &gbe) {
+		t.Fatalf("err = %v, want *types.GuardBlockedError", err)
+	}
+	if gbe.Stage != types.StageOutput {
+		t.Errorf("Stage = %v, want StageOutput", gbe.Stage)
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("err does not unwrap to the guard cause")
+	}
+	if gbe.Fallback.Blocks[0].(types.Text).Text != "blocked: "+cause.Error() {
+		t.Errorf("fallback = %v, want the fallback message", gbe.Fallback)
+	}
+}
+
 func TestOutputGuard(t *testing.T) {
 	t.Run("guards.windowed-output", func(t *testing.T) {
 		blocked := false

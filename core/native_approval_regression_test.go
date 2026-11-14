@@ -3,6 +3,7 @@ package gohan
 import (
 	"context"
 	"encoding/json/jsontext"
+	"errors"
 	"reflect"
 	"sync"
 	"testing"
@@ -114,6 +115,64 @@ func TestNativeAskSuspendsAsHumanApproval(t *testing.T) {
 	if ap.Eligible.Quorum != 0 {
 		t.Fatalf("quorum = %d, want the policy's zero", ap.Eligible.Quorum)
 	}
+
+	t.Run("permission.decider-error-asks", func(t *testing.T) {
+		model := &nrrModel{}
+		book := &bookTool{}
+		note := &nrrNoteTool{}
+		stack, conv := naraOfflineStack(t, model, book, note)
+		model.reset(nrrBook("c1"))
+
+		var susp types.Suspended
+		for ev, err := range conv.Send(nrrCtx(), "s1", nlUser("go")) {
+			if err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+			if s, ok := ev.(types.Suspended); ok {
+				susp = s
+			}
+		}
+		if susp.Token == "" {
+			t.Fatal("Send: no suspension")
+		}
+		if susp.Reason != types.HumanApproval {
+			t.Fatalf("reason = %v, want HumanApproval", susp.Reason)
+		}
+		req, ok := susp.Payload.(permission.ApprovalRequest)
+		if !ok {
+			t.Fatalf("payload %T, want permission.ApprovalRequest", susp.Payload)
+		}
+		if req.Call.ID != "c1" || req.Call.Name != "book" {
+			t.Fatalf("payload call = %+v, want the asked book call c1", req.Call)
+		}
+		if ran := book.ran(); len(ran) != 0 {
+			t.Fatalf("tool executed before approval: %v", ran)
+		}
+
+		second, err := NewNativeConversation(stack, "chat",
+			WithConversationRuns(stack.stores.Runs),
+			WithConversationEventLog(stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))),
+			WithConversationApprovalPolicy(nrrAllowPolicy{}),
+		)
+		if err != nil {
+			t.Fatalf("second conversation: %v", err)
+		}
+		var done bool
+		for ev, err := range second.Resume(nrrCtx(), susp.Token, Approve()) {
+			if err != nil {
+				t.Fatalf("Resume: %v", err)
+			}
+			if _, ok := ev.(types.Done); ok {
+				done = true
+			}
+		}
+		if !done {
+			t.Fatal("Resume: no Done event")
+		}
+		if ran := book.ran(); len(ran) != 1 || ran[0] != "c1" {
+			t.Fatalf("book executions after approval: %v, want [c1] exactly once", ran)
+		}
+	})
 }
 
 func TestNativeApprovedAskExecutesOnce(t *testing.T) {
@@ -245,6 +304,56 @@ func naraStack(t *testing.T, model types.Model, note *nrrNoteTool, probe *naraPr
 		WithConversationRuns(runs),
 		WithConversationEventLog(stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))),
 		WithConversationApprovalPolicy(pol),
+	)
+	if err != nil {
+		t.Fatalf("new native conversation: %v", err)
+	}
+	return stack, conv
+}
+
+// naraOfflineDecider fails every decision, so the batch gate must fall
+// back to a human ask instead of leaking the error to the caller.
+type naraOfflineDecider struct{}
+
+func (naraOfflineDecider) Decide(_ context.Context, _ *permission.ToolInvocation) (types.Decision[permission.Verdict], error) {
+	return types.Decision[permission.Verdict]{}, errors.New("decider offline")
+}
+
+// naraOfflineStack wires the scripted model with a book tool behind the
+// erroring decider, mirroring naraStack.
+func naraOfflineStack(t *testing.T, model types.Model, book *bookTool, note *nrrNoteTool) (*Stack, Conversation) {
+	t.Helper()
+	runs := stores.NewMemoryRuns(
+		stores.WithMemoryRunClock(time.Now),
+		stores.WithMemoryRunInfo(func(ctx context.Context) (types.RunInfo, bool) {
+			p, ok := types.PrincipalFrom(ctx)
+			return types.RunInfo{Principal: p}, ok
+		}),
+	)
+	stack, err := Build(
+		WithStores(stores.Stores{
+			SessionLog:  stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom)),
+			Runs:        runs,
+			Checkpoints: stores.NewMemoryCheckpoints(stores.WithMemoryCheckpointClock(time.Now), stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom)),
+		}),
+		WithModels(model),
+		WithNativeAgent(NativeSpec{
+			Request: FlowRequest{Name: "chat"},
+			Profile: "native",
+			Tools:   []types.Tool{book, note},
+			Decider: naraOfflineDecider{},
+			Assemble: func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+				return types.ModelRequest{Messages: append(append([]types.Message{}, in.History...), in.Input...)}, nil
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	conv, err := NewNativeConversation(stack, "chat",
+		WithConversationRuns(runs),
+		WithConversationEventLog(stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))),
+		WithConversationApprovalPolicy(nrrAllowPolicy{}),
 	)
 	if err != nil {
 		t.Fatalf("new native conversation: %v", err)

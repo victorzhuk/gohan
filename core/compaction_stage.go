@@ -332,7 +332,11 @@ func runCompactionStage(ctx context.Context, st *runtime.State, env *turnEnv, re
 		Run:    info,
 	})
 	if err != nil {
-		return types.ModelRequest{}, nil, fmt.Errorf("gohan: compaction guard: %w", err)
+		env.emitDelta(ctx, types.GuardBlocked{Stage: types.StageContext, Reason: err.Error()})
+		if tel := telemetryFrom(ctx); tel != nil {
+			tel.Count(ctx, "gohan.guard.context_rejected", 1, types.String("provider", "compaction"))
+		}
+		return compactWithFallback(ctx, st, env)
 	}
 	summary := comp.Summary
 	if d.Value.Action == guards.Rewrite {

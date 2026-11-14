@@ -36,7 +36,7 @@ func (e TaintDenied) Error() string {
 
 type taintWindowContextKey struct{}
 
-// WithTaintWindow carries raw, unprojected run blocks because the driver binds them at the tool-call boundary.
+// WithTaintWindow carries the taint window's members: the raw, unprojected history since the last user turn, bound by the driver at the tool-call boundary. The text is post-redaction when a redactor and detector policy are configured.
 func WithTaintWindow(ctx context.Context, blocks []Block) context.Context {
 	return context.WithValue(ctx, taintWindowContextKey{}, blocks)
 }

@@ -27,7 +27,10 @@ func TestWithSecretResolver(t *testing.T) {
 
 	cfg := &resolvedNativeConfig{specs: []types.ToolSpec{{Name: "echo"}}}
 	env := &turnEnv{c: stack.nativeTurnConfig(cfg)}
-	ctx := env.effectCtx(context.Background())
+	ctx, err := env.effectCtx(context.Background())
+	if err != nil {
+		t.Fatalf("effectCtx: %v", err)
+	}
 	got, ok := types.SecretsFrom(ctx)
 	if !ok || got != types.SecretResolver(resolver) {
 		t.Fatalf("SecretsFrom effect ctx = %v, %v; want bound resolver", got, ok)
@@ -41,7 +44,11 @@ func TestWithSecretResolver(t *testing.T) {
 		t.Fatalf("Stack.Secrets without option = %v, want nil", bare.Secrets())
 	}
 	bareEnv := &turnEnv{c: bare.nativeTurnConfig(cfg)}
-	if r, ok := types.SecretsFrom(bareEnv.effectCtx(context.Background())); ok || r != nil {
+	bareCtx, err := bareEnv.effectCtx(context.Background())
+	if err != nil {
+		t.Fatalf("effectCtx: %v", err)
+	}
+	if r, ok := types.SecretsFrom(bareCtx); ok || r != nil {
 		t.Fatalf("SecretsFrom ctx without option = %v, %v; want none", r, ok)
 	}
 }

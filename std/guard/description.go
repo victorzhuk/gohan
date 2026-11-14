@@ -42,7 +42,7 @@ func CheckDescription(tool, description string) error {
 	}
 	d, err := g.Decide(context.Background(), in)
 	if err != nil {
-		return err
+		return guards.BlockedFromError(types.StageToolResult, err)
 	}
 	if d.Value.Action != guards.Block {
 		return nil

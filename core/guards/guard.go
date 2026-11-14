@@ -5,6 +5,7 @@ package guards
 
 import (
 	"context"
+	"errors"
 
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -52,3 +53,15 @@ type OutputMode struct {
 // Fallback answers a GuardBlockedError with the message the caller sees
 // instead of the blocked content.
 type Fallback func(ctx context.Context, err *types.GuardBlockedError) types.Message
+
+// BlockedFromError converts a guard error into the block the stage takes.
+func BlockedFromError(stage types.GuardStage, err error) *types.GuardBlockedError {
+	if err == nil {
+		return nil
+	}
+	var gb *types.GuardBlockedError
+	if errors.As(err, &gb) {
+		return gb
+	}
+	return &types.GuardBlockedError{Stage: stage, Reason: err.Error(), Err: err}
+}

@@ -151,5 +151,8 @@ func (n *Notes) Provide(ctx context.Context, ri types.RunInfo) ([]types.Block, e
 	if len(notes) > n.max {
 		notes = notes[:n.max]
 	}
-	return []types.Block{types.Text{Text: notes}}, nil
+	return []types.Block{types.Text{
+		BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginTool, Name: "notes"}},
+		Text:      notes,
+	}}, nil
 }

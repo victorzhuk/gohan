@@ -92,7 +92,7 @@ Placement is fixed in the chains and the harness, not chosen by callers:
 3. **Before telemetry content capture** (when enabled).
 4. **Rehydration at egress** inside the output stage: the `Windowed` output guard already holds back a token window; rehydration runs on each released window so a pseudonym is never split across chunks. Tokens the model invents that are not in the map are dropped and counted (`gohan.redact.unknown_token`); never leaked.
 
-Detection is layered: `std/redact` ships rules with checksums (cards, IBANs, phone, email, national ID formats); NER and LLM detectors plug in as `Decider`s. Erasure: `EraseSubject` deletes the subject's sessions, events, outputs, checkpoints, grants and redaction maps across all stores, records `AuditErasure`, and returns a report; audit records remain (checksums only). Residency: `ModelProfile.Region`, `Region` on every store implementation, `Tenant.Residency` in `RunInfo`; `Build` fails when any reachable router target or configured store for a residency-bound tenant is outside the region; runtime routing never overrides it. An external PII proxy or vendor service is an implementation of `Redactor`, not a substitute for the placement rules.
+Detection is layered: `std/redact` ships rules with checksums (cards, IBANs, phone, email, national ID formats); NER and LLM detectors plug in as `Decider`s. Erasure: `EraseSubject` deletes the subject's sessions, events, outputs, checkpoints, notes and note-derived records, grants and redaction maps across all stores, records `AuditErasure`, and returns a report; audit records remain (checksums only). Residency: `ModelProfile.Region`, `Region` on every store implementation, `Tenant.Residency` in `RunInfo`; `Build` fails when any reachable router target or configured store for a residency-bound tenant is outside the region; runtime routing never overrides it. An external PII proxy or vendor service is an implementation of `Redactor`, not a substitute for the placement rules.
 
 `Redactor` and the policy it takes are declared in `core` and implemented by `std/redact`: a flow registers one through `WithRedactor`, the harness applies it at the four placements above, and `core` never imports a redaction implementation. The `RedactionMap` is persisted through `Stores.RedactionMaps` (`stores`), retained independently of checkpoints and journal entries and keyed by tenant and session, so a resumed run reads the map back before it releases output and an erasure request finds it without scanning run state.
 
@@ -131,7 +131,7 @@ ID: `redaction.hallucinated-token-dropped`
 #### Scenario: erasure
 ID: `redaction.erasure`
 - WHEN `EraseSubject(tenant, subject)` runs
-- THEN no session, event, output, checkpoint, grant or redaction map for the subject remains; audit records remain with checksums; `AuditErasure` is appended
+- THEN no session, event, output, checkpoint, note or note-derived record, grant or redaction map for the subject remains; audit records remain with checksums; `AuditErasure` is appended
 
 #### Scenario: erasure removes blobs
 ID: `redaction.erase-removes-blobs`
