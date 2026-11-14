@@ -2,7 +2,7 @@
 
 ## Why
 
-ADR-0002 names three runtimes from the start: native, eino and adkgo. Native and eino are delivered; `adapter/adkgo` is missing, so the conformance contract that names all three backends is unmet and the third-backend legs `runtime.adkgo-runtime-conformance` and `engines.adkgo-runtime-conformance` cannot run.
+ADR-0002 names three runtimes from the start: native, eino and adkgo. Native and eino are delivered; `adapter/adkgo` is missing, so the conformance contract that names all three backends is unmet and the third-backend legs `runtime.conformance-adkgo` and `engines.adkgo-runtime-conformance` cannot run.
 
 ## What Changes
 

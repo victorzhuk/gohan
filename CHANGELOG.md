@@ -14,6 +14,7 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 - Bounded online evaluation in `std/evals` admits work without waiting for judges, with queue, worker, deadline, retry and token/cost budget limits.
 - Explicit unscored evaluation outcomes never pass required gates; provenance records can export through the durable telemetry spool with stable identities across replay.
 - A judge calibration gate in `std/evals` checks versioned human-labelled sets and per-class criteria before model-backed judge activation.
+- An `adapter/adkgo` runtime backend for `google.golang.org/adk/v2`: turn-granularity stepping, message and tool bridges, graph admission with a governed-component audit, and declared `Replay` fallback for capabilities the backend does not carry. Conformance runs beside `native` and `eino`.
 
 ### Changed
 

@@ -1,6 +1,6 @@
 # ADR-0181: The adk-go runtime backend targets adk v2 and falls back to Replay for backend gaps
 
-Status: proposed
+Status: Proposed (m3-adkgo-runtime)
 
 ## Decision
 

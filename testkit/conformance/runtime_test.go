@@ -138,7 +138,7 @@ func TestRuntimeAndChainConformance(t *testing.T) {
 		}
 	})
 
-	t.Run("runtime suite passes for the shipped native runtime", func(t *testing.T) {
+	t.Run("runtime.conformance-native", func(t *testing.T) {
 		Runtime(t, newNative)
 	})
 

@@ -15,24 +15,24 @@ ID: `engines.adkgo-message-fidelity`
 
 #### Scenario: Foreign tool under the adk-go backend
 ID: `engines.adkgo-foreign-tool`
-- WHEN a foreign tool runs under the adk-go runtime
-- THEN its identity, trust marking, spec declaration and result mapping match the assertions the eino leg already makes
+- WHEN a governed gohan tool is bridged as an adk tool and runs under the adk-go runtime
+- THEN its identity, trust marking, spec declaration and result mapping match the assertions the eino leg already makes, and a foreign adk tool called outside an adk invocation is refused rather than given a synthesized context
 
-### Requirement: Suspension crosses into adk-go's native mechanism
-The backend MUST translate a component's suspend signal into adk-go v2 native pause/resume and back into `Suspended`, MUST propagate `ctx` unchanged into every component call, and MUST honour cancellation.
+### Requirement: Suspension crosses into adk-go's own resume mechanism
+The backend MUST carry a component's suspend signal through its own resume mechanism and back into `Suspended`, MUST propagate `ctx` unchanged into every component call, and MUST honour cancellation. Where the adk runner cannot deliver a resumed input to the backend's agent shape, the adapter MUST declare that capability in its fallback table and resume the parked calls by `Replay` rather than falling back silently.
 
 #### Scenario: Suspend and resume through the backend
 ID: `engines.adkgo-suspend-bridge`
-- WHEN a run suspends inside an adk-go graph step and resumes from the stored resume input
-- THEN the backend re-drives the run from rebuilt state and the suspension and turn boundaries match the eino leg
+- WHEN a run suspends inside an adk-go turn and resumes from the stored resume input
+- THEN the backend re-drives the run from rebuilt state, the approved call executes once under its recorded id, and the suspension and turn boundaries match the eino leg
 
 ### Requirement: Backend gaps fall back to Replay
 For any capability the backend carries no mechanism for, the adapter MUST record the step result and resume by `Replay` re-executing `Step` over recorded results, and MUST declare the fallback per capability rather than falling back silently.
 
 #### Scenario: Replay fallback for a missing backend capability
 ID: `engines.adkgo-replay-fallback`
-- WHEN a run resumes a capability the backend does not natively carry
-- THEN `Step` is re-executed over recorded results producing the same `State` sequence up to the suspension point, and the adapter's declared fallback table names the capability
+- WHEN a run resumes from recorded results for a capability the backend does not carry natively
+- THEN `Step` is re-executed over those recorded results producing the same `State` sequence up to the suspension point, and the adapter's declared fallback table names every such capability
 
 ### Requirement: Workflow flows pass the foreign-backend suites
 The adk-go workflow flows MUST pass the backend-swap and limits suites with unchanged test code, and the shared suites MUST keep consuming the backend only through the public path.
