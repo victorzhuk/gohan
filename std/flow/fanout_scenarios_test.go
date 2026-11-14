@@ -175,12 +175,15 @@ func TestSubflowsFanout(t *testing.T) {
 			t.Fatalf("results len = %d, want 5", len(partial.Results))
 		}
 		for _, pos := range []int{1, 3} {
-			if ptr, ok := partial.Results[pos].(*string); !ok || ptr != nil {
+			if partial.Results[pos] != nil {
 				t.Fatalf("result at %d = %v, want nil", pos, partial.Results[pos])
 			}
 		}
-		if got := *(partial.Results[0].(*string)); got != "V0" {
-			t.Fatalf("result at 0 = %q, want V0", got)
+		for pos, want := range map[int]string{0: "V0", 2: "V2", 4: "V4"} {
+			got := *(partial.Results[pos].(*string))
+			if got != want {
+				t.Fatalf("result at %d = %q, want %q", pos, got, want)
+			}
 		}
 
 		// Fork leg: same failures under Collect on the []Out surface.
@@ -209,67 +212,105 @@ func TestSubflowsFanout(t *testing.T) {
 			t.Fatalf("fork results len = %d, want 5", len(partialF.Results))
 		}
 		for _, pos := range []int{1, 3} {
-			if s, ok := partialF.Results[pos].(string); !ok || s != "" {
-				t.Fatalf("fork result at %d = %v, want empty", pos, partialF.Results[pos])
+			if partialF.Results[pos] != nil {
+				t.Fatalf("fork result at %d = %v, want nil", pos, partialF.Results[pos])
 			}
 		}
-		if partialF.Results[0] != "V0" {
-			t.Fatalf("fork result at 0 = %v, want V0", partialF.Results[0])
+		for pos, want := range map[int]string{0: "V0", 2: "V2", 4: "V4"} {
+			if got := partialF.Results[pos].(string); got != want {
+				t.Fatalf("fork result at %d = %q, want %q", pos, got, want)
+			}
 		}
 	})
 
 	t.Run("subflows.fanout-per-wave-cap", func(t *testing.T) {
+		const cap = 8
 		var counter fanCounter
-		gates := make(map[string]chan struct{})
-		for _, v := range []string{"w1-1", "w1-2", "w1-3", "w1-4", "w2-1", "w2-2", "w2-3", "w2-4", "w2-5", "w2-6"} {
+		var mu sync.Mutex
+		var startOrder []string
+		wave1 := []string{"w1-1", "w1-2", "w1-3", "w1-4", "w1-5", "w1-6", "w1-7", "w1-8"}
+		wave2 := []string{"w2-1", "w2-2", "w2-3", "w2-4", "w2-5", "w2-6"}
+		gates := make(map[string]chan struct{}, cap+len(wave2))
+		for _, v := range wave1 {
 			gates[v] = make(chan struct{})
 		}
-		started := make(chan string, 16)
+		for _, v := range wave2 {
+			gates[v] = make(chan struct{})
+		}
+		started := make(chan string, cap+len(wave2))
 		child := fanFlow[string, *string]{fn: func(_ context.Context, in string) (*string, error) {
-			started <- in
 			counter.enter()
 			defer counter.exit()
+			mu.Lock()
+			startOrder = append(startOrder, in)
+			mu.Unlock()
+			started <- in
 			<-gates[in]
 			return new(in), nil
 		}}
-		f := Fork(child, WithParallelism(8))
-		wave1 := invokeAsync(t, f, ctx, []string{"w1-1", "w1-2", "w1-3", "w1-4"})
-		waitStarted(t, started, 4)
-		wave2 := invokeAsync(t, f, ctx, []string{"w2-1", "w2-2", "w2-3", "w2-4", "w2-5", "w2-6"})
+		f := Fork(child, WithParallelism(cap))
+		res1 := invokeAsync(t, f, ctx, wave1)
+		// Fill all 8 slots from wave 1 before arming wave 2 so the
+		// goroutine race between the two waves cannot reorder the cap.
+		waitStarted(t, started, cap)
+		res2 := invokeAsync(t, f, ctx, wave2)
 
+		// Demand is 14 children against a cap of 8: no ninth child may
+		// start while wave 1 still holds every slot.
+		select {
+		case v := <-started:
+			t.Fatalf("ninth child %q started before any wave-1 child finished", v)
+		case <-time.After(100 * time.Millisecond):
+		}
+		if running := counter.running(); running != cap {
+			t.Fatalf("running children = %d, want %d", running, cap)
+		}
+
+		// Free two slots; exactly two wave-2 children may start.
 		close(gates["w1-1"])
 		close(gates["w1-2"])
-		released := map[string]bool{"w1-1": true, "w1-2": true}
-		wave2Started := 0
-		deadline := time.After(100 * time.Millisecond)
-		for wave2Started == 0 {
+		waitStarted(t, started, 2)
+		select {
+		case v := <-started:
+			t.Fatalf("11th child %q started after releasing only 2 slots", v)
+		case <-time.After(100 * time.Millisecond):
+		}
+		if running := counter.running(); running != cap {
+			t.Fatalf("running children after first release = %d, want %d", running, cap)
+		}
+
+		// Free the rest; the remaining 4 wave-2 children fill the freed slots.
+		for i := 3; i <= cap; i++ {
+			close(gates[fmt.Sprintf("w1-%d", i)])
+		}
+		waitStarted(t, started, len(wave2)-2)
+		for _, v := range wave2 {
+			close(gates[v])
+		}
+
+		for _, res := range []<-chan fanResult[[]*string]{res1, res2} {
 			select {
-			case v := <-started:
-				if strings.HasPrefix(v, "w2-") {
-					wave2Started++
+			case r := <-res:
+				if r.err != nil {
+					t.Fatalf("wave invoke: %v", r.err)
 				}
-			case <-deadline:
-				t.Fatal("second wave never started while the first still ran")
+			case <-time.After(2 * time.Second):
+				t.Fatal("wave did not finish; a slot leaked")
 			}
 		}
-		if counter.running() == 0 {
-			t.Fatal("no wave-1 child still running when wave 2 started")
+		if peak := counter.peak(); peak != cap {
+			t.Fatalf("peak concurrent children = %d, want exactly %d", peak, cap)
 		}
-		if counter.peak() > 8 {
-			t.Fatalf("peak concurrent children = %d, want <= 8", counter.peak())
-		}
-		for v := range gates {
-			if !released[v] {
-				close(gates[v])
+		mu.Lock()
+		defer mu.Unlock()
+		for i, v := range startOrder {
+			want := "w1-"
+			if i >= cap {
+				want = "w2-"
 			}
-		}
-		r1 := <-wave1
-		r2 := <-wave2
-		if r1.err != nil || r2.err != nil {
-			t.Fatalf("waves: %v / %v", r1.err, r2.err)
-		}
-		if counter.peak() > 8 {
-			t.Fatalf("peak concurrent children = %d, want <= 8", counter.peak())
+			if !strings.HasPrefix(v, want) {
+				t.Fatalf("start order[%d] = %q, want a %q* child", i, v, want)
+			}
 		}
 	})
 
@@ -373,7 +414,7 @@ func TestSubflowsFanout(t *testing.T) {
 		succeeded := 0
 		for i, r := range partial.Results {
 			if i == 3 {
-				if ptr, ok := r.(*string); !ok || ptr != nil {
+				if r != nil {
 					t.Fatalf("result at 3 = %v, want nil", r)
 				}
 				continue

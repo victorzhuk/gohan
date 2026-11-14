@@ -68,8 +68,8 @@ func Fork[In, Out any](child gohan.Flow[In, Out], opts ...FanOption) gohan.Flow[
 
 // runFan invokes child for every input under the wave's semaphore. Under
 // FailFast the first error cancels the siblings and is returned; under
-// Collect every child settles, failed positions hold zero values, and the
-// failures come back as a *types.PartialError keyed by input position. A
+// Collect every child settles, failed positions hold nil in the returned
+// *types.PartialError, and the failures come back keyed by input position. A
 // cancelled wave ctx cancels the children and returns the ctx error, and the
 // caller's return waits for every started child.
 func runFan[In, Mid any](ctx context.Context, sem chan struct{}, onError types.OnError, in []In, child func(context.Context, int, In) (Mid, error)) ([]Mid, error) {
@@ -116,6 +116,10 @@ launch:
 		if len(failed) > 0 {
 			seen := make([]any, len(results))
 			for i, r := range results {
+				if errs[i] != nil {
+					seen[i] = nil
+					continue
+				}
 				seen[i] = r
 			}
 			return nil, &types.PartialError{Results: seen, Errors: failed}

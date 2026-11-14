@@ -373,9 +373,19 @@ func (c *conversation) runIdentityCtx(ctx context.Context, runID, sessionID stri
 	if p, ok := types.PrincipalFrom(ctx); ok {
 		info.Principal = p
 	}
-	// Cost attribution follows the caller's tags even though the run
-	// identity itself is rebuilt; identity must not survive, tags may.
 	if a, ok := types.RunInfoFrom(ctx); ok {
+		// A run keeps the tree identity its parent gave it; only a
+		// fresh run roots its own tree.
+		if a.RunID == runID {
+			info.RootRunID = a.RootRunID
+			if info.RootRunID == "" {
+				info.RootRunID = runID
+			}
+			info.ParentRunID = a.ParentRunID
+			info.Depth = a.Depth
+		}
+		// Cost attribution follows the caller's tags even though the run
+		// identity itself is rebuilt; identity must not survive, tags may.
 		info.CostTags = a.CostTags
 	}
 	if c.flags != nil && len(c.frozen) > 0 {
