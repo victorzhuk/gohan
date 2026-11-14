@@ -299,6 +299,42 @@
     "title": "never cache failures",
     "deferred_to": "M1"
   },
+  "cache.prefix-hit": {
+    "capability": "cache",
+    "origin": "m1-exact-match-cache",
+    "title": "identical prefix hits",
+    "deferred_to": "M1"
+  },
+  "cache.prefix-miss-repopulates": {
+    "capability": "cache",
+    "origin": "m1-exact-match-cache",
+    "title": "repopulating miss writes the prefix",
+    "deferred_to": "M1"
+  },
+  "cache.scope-isolation": {
+    "capability": "cache",
+    "origin": "m1-exact-match-cache",
+    "title": "scope is never crossed",
+    "deferred_to": "M1"
+  },
+  "cache.hit-usage": {
+    "capability": "cache",
+    "origin": "m1-exact-match-cache",
+    "title": "hit reports cached input",
+    "deferred_to": "M1"
+  },
+  "cache.miss-write-usage": {
+    "capability": "cache",
+    "origin": "m1-exact-match-cache",
+    "title": "repopulating miss reports cache write",
+    "deferred_to": "M1"
+  },
+  "cache.hit-miss-metrics": {
+    "capability": "cache",
+    "origin": "m1-exact-match-cache",
+    "title": "hit and miss counted",
+    "deferred_to": "M1"
+  },
   "redaction.pseudonym-stable-within-session": {
     "capability": "redaction",
     "origin": "R5x",
@@ -700,7 +736,8 @@
   "telemetry.same-tree-on-all-backends": {
     "capability": "telemetry",
     "origin": "R12",
-    "title": "same tree on all backends"
+    "title": "same tree on all backends",
+    "deferred_to": "M3"
   },
   "telemetry.ttft-and-tpot": {
     "capability": "telemetry",
@@ -835,6 +872,41 @@
     "origin": "R5v",
     "title": "replay is step re-execution",
     "deferred_to": "M0.5"
+  },
+  "engines.adkgo-runtime-conformance": {
+    "capability": "engines",
+    "origin": "m3-adkgo-runtime",
+    "title": "conformance green on the third backend"
+  },
+  "engines.adkgo-message-fidelity": {
+    "capability": "engines",
+    "origin": "m3-adkgo-runtime",
+    "title": "message fidelity round trip"
+  },
+  "engines.adkgo-foreign-tool": {
+    "capability": "engines",
+    "origin": "m3-adkgo-runtime",
+    "title": "foreign tool under the adk-go backend"
+  },
+  "engines.adkgo-suspend-bridge": {
+    "capability": "engines",
+    "origin": "m3-adkgo-runtime",
+    "title": "suspend and resume through the backend"
+  },
+  "engines.adkgo-replay-fallback": {
+    "capability": "engines",
+    "origin": "m3-adkgo-runtime",
+    "title": "replay fallback for a missing backend capability"
+  },
+  "engines.adkgo-workflow-swap": {
+    "capability": "engines",
+    "origin": "m3-adkgo-runtime",
+    "title": "flow backend swap on adkgo"
+  },
+  "engines.adkgo-limits-foreign": {
+    "capability": "engines",
+    "origin": "m3-adkgo-runtime",
+    "title": "limits under the adkgo backend"
   },
   "languages.same-definition-two-front-ends": {
     "capability": "languages",
@@ -3483,6 +3555,14 @@
     "origin": "ADR-0163",
     "title": "compaction summary not refolded"
   },
+  "context.research-report-claim-boundary": {
+    "capability": "context",
+    "origin": "ADR-0090",
+    "title": "claim boundary for native resume and deferred-tool selection",
+    "owner": "m2-research-report-example",
+    "example": "examples/research-report",
+    "deferred_to": "M2"
+  },
   "sandbox.handle-owner-exclusive": {
     "capability": "sandbox",
     "origin": "m2-sandbox-lifecycle-resume",
@@ -3658,6 +3738,35 @@
     "origin": "repair-runtime-safety-contracts",
     "title": "automatic cache mode receives only total usage"
   },
+  "model.shared-suite-coverage": {
+    "capability": "model",
+    "origin": "m1-provider-conformance-contract",
+    "title": "shared suite coverage"
+  },
+  "model.anthropic-cache-markers-order": {
+    "capability": "model",
+    "origin": "m1-anthropic-provider",
+    "title": "cache control markers mapped in order",
+    "deferred_to": "M1"
+  },
+  "model.anthropic-stop-reason-mapped": {
+    "capability": "model",
+    "origin": "m1-anthropic-provider",
+    "title": "stop reason mapped to finish reason",
+    "deferred_to": "M1"
+  },
+  "model.anthropic-forced-tool-schema": {
+    "capability": "model",
+    "origin": "m1-anthropic-provider",
+    "title": "response schema honoured through forced tool",
+    "deferred_to": "M1"
+  },
+  "model.anthropic-reasoning-signature": {
+    "capability": "model",
+    "origin": "m1-anthropic-provider",
+    "title": "reasoning signature round-trips",
+    "deferred_to": "M1"
+  },
   "permission.ordinary-approval-call-bound": {
     "capability": "permission",
     "origin": "repair-runtime-safety-contracts",
@@ -3723,6 +3832,23 @@
     "origin": "repair-runtime-safety-contracts",
     "title": "eino executes a governed tool through the shipped constructor"
   },
+  "runtime.conformance-native": {
+    "capability": "runtime",
+    "origin": "R2",
+    "title": "conformance suite passes for the native runtime"
+  },
+  "runtime.conformance-eino": {
+    "capability": "runtime",
+    "origin": "R2",
+    "title": "conformance suite passes for the eino runtime",
+    "deferred_to": "M2"
+  },
+  "runtime.conformance-adkgo": {
+    "capability": "runtime",
+    "origin": "R2",
+    "title": "conformance suite passes for the adk-go runtime",
+    "deferred_to": "M3"
+  },
   "sandbox.firewall-authority-isolated": {
     "capability": "sandbox",
     "origin": "repair-runtime-safety-contracts",
@@ -3771,7 +3897,8 @@
   "stores.postgres-ownership-database-time": {
     "capability": "stores",
     "origin": "repair-runtime-safety-contracts",
-    "title": "independent adapter instances have skewed process clocks"
+    "title": "independent adapter instances have skewed process clocks",
+    "deferred_to": "M1"
   },
   "stores.checkpoint-lifetime-independent": {
     "capability": "stores",
@@ -3846,17 +3973,20 @@
   "stores.reclaim-oldest-first-exclusive": {
     "capability": "stores",
     "origin": "repair-runtime-safety-contracts",
-    "title": "the oldest expired run is reclaimed first"
+    "title": "the oldest expired run is reclaimed first",
+    "deferred_to": "M1"
   },
   "stores.start-refused-reclaimed-lease": {
     "capability": "stores",
     "origin": "repair-runtime-safety-contracts",
-    "title": "start is refused against a reclaimed live lease"
+    "title": "start is refused against a reclaimed live lease",
+    "deferred_to": "M1"
   },
   "stores.resume-older-owner-blocks-start": {
     "capability": "stores",
     "origin": "repair-runtime-safety-contracts",
-    "title": "a resumed older owner blocks a later start"
+    "title": "a resumed older owner blocks a later start",
+    "deferred_to": "M1"
   },
   "stores.resume-ready-reentrant-run-port": {
     "capability": "stores",
@@ -3927,5 +4057,80 @@
     "capability": "telemetry",
     "origin": "telemetry-local-wal",
     "title": "erasure survives interruption"
+  },
+  "permission.decider-error-asks": {
+    "capability": "permission",
+    "origin": "ADR-0188",
+    "title": "decider error asks"
+  },
+  "redaction.failure-fails-closed": {
+    "capability": "redaction",
+    "origin": "ADR-0188",
+    "title": "detector outage fails the turn"
+  },
+  "redaction.telemetry-capture-redacted": {
+    "capability": "redaction",
+    "origin": "ADR-0188",
+    "title": "telemetry capture is redacted"
+  },
+  "redaction.eval-export-redacted": {
+    "capability": "redaction",
+    "origin": "ADR-0188",
+    "title": "evaluation export is redacted"
+  },
+  "redaction.erasure-covers-notes": {
+    "capability": "redaction",
+    "origin": "ADR-0188",
+    "title": "notes erased with the subject"
+  },
+  "sandbox.workload-posture-locked": {
+    "capability": "sandbox",
+    "origin": "ADR-0188",
+    "title": "workload posture locked"
+  },
+  "sandbox.admin-channel-isolated": {
+    "capability": "sandbox",
+    "origin": "ADR-0188",
+    "title": "administration channel isolated and bounded"
+  },
+  "tools.egress-glob-no-exempt": {
+    "capability": "tools",
+    "origin": "ADR-0188",
+    "title": "hostname glob cannot exempt a private resolution"
+  },
+  "tools.egress-literal-cgnat-allowed": {
+    "capability": "tools",
+    "origin": "ADR-0188",
+    "title": "exact CGNAT literal remains reachable"
+  },
+  "taint.clear-tool-results-no-launder": {
+    "capability": "taint",
+    "origin": "ADR-0188",
+    "title": "clearing tool results does not launder taint"
+  },
+  "taint.notes-readback-carries-origin": {
+    "capability": "taint",
+    "origin": "ADR-0188",
+    "title": "notes read-back carries origin"
+  },
+  "taint.window-truncated-reported": {
+    "capability": "taint",
+    "origin": "ADR-0188",
+    "title": "window truncation reported"
+  },
+  "taint.matches-post-redaction": {
+    "capability": "taint",
+    "origin": "ADR-0188",
+    "title": "matching runs over post-redaction text"
+  },
+  "guards.guard-error-fails-closed": {
+    "capability": "guards",
+    "origin": "ADR-0188",
+    "title": "guard error blocks"
+  },
+  "identity.anonymous-bypasses-no-authorization": {
+    "capability": "identity",
+    "origin": "ADR-0188",
+    "title": "anonymous bypasses no authorization"
   }
 }

@@ -1056,6 +1056,21 @@ ID: `stores.reclaim-session-exclusive`
 - WHEN an older expired run is reclaimed while a newer run owns the session
 - THEN reclaim returns `ErrRunActive` and the newer owner's lease remains usable
 
+#### Scenario: Reclaim keeps the oldest lease and refuses the newer run
+ID: `stores.reclaim-oldest-first-exclusive`
+- WHEN the oldest expired run is reclaimed and a newer expired run in the same session is then reclaimed
+- THEN the newer reclaim returns `ErrRunActive` and the reclaimed oldest run holds a live session lease
+
+#### Scenario: Start is refused while a reclaimed lease is live
+ID: `stores.start-refused-reclaimed-lease`
+- WHEN `Start` is called for the same session while the reclaimed run holds the session lease
+- THEN it returns `ErrRunActive`
+
+#### Scenario: Start is refused while a resumed older run owns the session
+ID: `stores.resume-older-owner-blocks-start`
+- WHEN the older run resumes and holds the session lease
+- THEN a `Start` for the same session returns `ErrRunActive`
+
 #### Scenario: A stored terminal or suspended run is reclaimed
 ID: `stores.reclaim-state-refused`
 - WHEN a caller attempts to reclaim a stored terminal or suspended run
@@ -1122,4 +1137,14 @@ ID: `stores.resume-ready-filter-before-limit`
 ID: `stores.preempted-filter-before-limit`
 - WHEN an older human approval and a newer preempted checkpoint are suspended and the limit is one
 - THEN preempted discovery returns the preempted run only
+
+#### Scenario: Re-entrant run port does not deadlock discovery
+ID: `stores.resume-ready-reentrant-run-port`
+- WHEN the run port re-enters the checkpoint store during `ResumeReady`
+- THEN discovery returns the consumed checkpoint without deadlocking
+
+#### Scenario: Preempted ranking precedes decoding
+ID: `stores.preempted-rank-before-decode`
+- WHEN a corrupt record is among the preempted candidates
+- THEN `Preempted` returns the oldest-first ranking with ties broken by run id when the limit excludes the corrupt record, and returns a decode error when the limit includes it
 

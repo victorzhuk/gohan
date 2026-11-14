@@ -38,7 +38,7 @@ func TestStore(t *testing.T) {
 		}
 	})
 
-	t.Run("scope isolation", func(t *testing.T) {
+	t.Run("cache.scope-isolation", func(t *testing.T) {
 		s := NewStore()
 		shared := input()
 		shared.Scope = ScopeShared

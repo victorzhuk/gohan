@@ -114,7 +114,7 @@ func TestPrefixCache(t *testing.T) {
 		}
 	})
 
-	t.Run("one assembly per key across identical calls", func(t *testing.T) {
+	t.Run("cache.prefix-miss-repopulates", func(t *testing.T) {
 		store := cache.NewStore()
 		counter := &buildCounter{}
 		providers := map[types.ContextSlot][]types.ContextProvider{types.SlotStatic: {counter}}
@@ -138,7 +138,7 @@ func TestPrefixCache(t *testing.T) {
 		}
 	})
 
-	t.Run("store hit returns the stored prefix without serving the rebuild", func(t *testing.T) {
+	t.Run("cache.prefix-hit", func(t *testing.T) {
 		store := cache.NewStore()
 		counter := &buildCounter{}
 		providers := func() map[types.ContextSlot][]types.ContextProvider {
@@ -218,7 +218,7 @@ func TestPrefixCache(t *testing.T) {
 		}
 	})
 
-	t.Run("metrics observe miss then hit once each", func(t *testing.T) {
+	t.Run("cache.hit-miss-metrics", func(t *testing.T) {
 		store := cache.NewStore()
 		sink := newCountingSink()
 		p := NewStablePrefix(WithCacheStore(store, cache.ScopeShared))

@@ -14,7 +14,7 @@ A Go library that fixes the structure, governance, identity, durability and tele
 
 - Layering and the core budget rule: `docs/design/architecture.md` §4.1–§4.2a.
 - Contract tiers and requirement format: every `openspec/specs/<cap>/spec.md` has *Purpose*, *Contract* (normative Go code and prose unless marked `(illustrative)`), *Requirements* with `### Requirement:` groups and `#### Scenario:` entries carrying a stable `ID: \`<cap>.<slug>\``.
-- Scenario ↔ test binding: subtest named exactly by the ID. `openspec/scenarios.json` is the registry; `tools/gen_types_index.py` and `task spec:coverage` are the checks.
+- Scenario ↔ test binding: subtest named exactly by the ID. `openspec/scenarios.json` is the registry; `tools/gen_types_index.py` and `task spec:coverage` are the checks. The `errors.*` IDs in capability `messages` are an exception to the prefix convention: the row's `capability` decides ownership. An `origin` may be a change slug; it records provenance, not acceptance (ADR-0189).
 - Decisions: `docs/adr/NNNN-*.md`, one per decision, with `Superseded by` / `Amended by` pointers; specs cite ADRs, never the reverse.
 - Style: `AGENTS.md` (zero comments unless why, short error wraps, functional options, slog only, Conventional Commits, no tooling references in code).
 

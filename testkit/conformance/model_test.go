@@ -25,6 +25,9 @@ func TestModelConformance(t *testing.T) {
 	t.Run("fixture double", func(t *testing.T) {
 		Model(t, fixtureModelFor, DefaultFixtures())
 	})
+	t.Run("model.shared-suite-coverage", func(t *testing.T) {
+		Model(t, fixtureModelFor, DefaultFixtures())
+	})
 }
 
 // TestModelConformanceRejectsSwallowedErrors proves the suite fails a

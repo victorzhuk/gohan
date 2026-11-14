@@ -48,14 +48,17 @@ ID: `cache.never-cache-failures`
 The harness MUST cache the assembled model request prefix — the byte-stable blocks that precede the last `CacheBreak` — in an exact-match store. `cache.Key` MUST include the tenant, the principal scope class, the manifest hash of the prompts, chains, toolset and model `Version`, the resolved prompt version, and the normalized request. A lookup MUST hit only on a byte-identical key; a miss MUST assemble the request and repopulate the entry.
 
 #### Scenario: identical prefix hits
+ID: `cache.prefix-hit`
 - WHEN a run assembles a request whose key matches a stored entry
 - THEN the stored prefix is returned and the request is not assembled again
 
 #### Scenario: repopulating miss writes the prefix
+ID: `cache.prefix-miss-repopulates`
 - WHEN no entry matches the key and the run proceeds
 - THEN the request is assembled and its prefix is written under that key
 
 #### Scenario: scope is never crossed
+ID: `cache.scope-isolation`
 - WHEN two runs differ in tenant or in principal scope class
 - THEN neither run reads the other's entry
 
@@ -64,10 +67,12 @@ The harness MUST cache the assembled model request prefix — the byte-stable bl
 A cache hit MUST report the served prefix as `Usage.CachedInputTokens` and MUST report no `Usage.CacheWriteTokens`. A miss that repopulates the cache MUST report the written prefix as `Usage.CacheWriteTokens`. The cache MUST NOT price tokens itself; the run's cost is charged from `Usage` against the profile's `Pricing`, and `Pricing.SocializeCacheWrites` folds the write premium into the cached-read rate.
 
 #### Scenario: hit reports cached input
+ID: `cache.hit-usage`
 - WHEN a run's model call is served from the cache
 - THEN its usage reports the prefix as cached input and reports no cache-write tokens
 
 #### Scenario: repopulating miss reports cache write
+ID: `cache.miss-write-usage`
 - WHEN a run's model call misses and repopulates the cache
 - THEN its usage reports the written prefix as cache-write tokens
 
@@ -76,5 +81,6 @@ A cache hit MUST report the served prefix as `Usage.CachedInputTokens` and MUST 
 A cache hit MUST increment `gohan.cache.hit`, tagged with the cached `Version`, and a cache miss MUST increment `gohan.cache.miss`, subject to the `telemetry` capability's metric policy.
 
 #### Scenario: hit and miss counted
+ID: `cache.hit-miss-metrics`
 - WHEN a model call is served from the cache
 - THEN `gohan.cache.hit` increments; and WHEN it misses, `gohan.cache.miss` increments

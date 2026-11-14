@@ -113,7 +113,7 @@ func TestAnthropicSend(t *testing.T) {
 		}
 	})
 
-	t.Run("cache-markers", func(t *testing.T) {
+	t.Run("model.anthropic-cache-markers-order", func(t *testing.T) {
 		tr := &captureTransport{}
 		okStream(tr)
 		m := newTestModel(t, tr, nil)
@@ -152,7 +152,7 @@ func TestAnthropicSend(t *testing.T) {
 		}
 	})
 
-	t.Run("schema-forced-tool", func(t *testing.T) {
+	t.Run("model.anthropic-forced-tool-schema", func(t *testing.T) {
 		tr := &captureTransport{}
 		tr.body = Fixtures()["truncated tool call"].Body
 		tr.status = 200
@@ -248,7 +248,7 @@ func TestAnthropicSend(t *testing.T) {
 		_ = encoded
 	})
 
-	t.Run("reasoning-signature-round-trip", func(t *testing.T) {
+	t.Run("model.anthropic-reasoning-signature", func(t *testing.T) {
 		sent := []byte("sig-abc")
 		tr := &captureTransport{}
 		tr.status = 200
@@ -290,7 +290,7 @@ func TestAnthropicSend(t *testing.T) {
 		}
 	})
 
-	t.Run("stop-reasons", func(t *testing.T) {
+	t.Run("model.anthropic-stop-reason-mapped", func(t *testing.T) {
 		for stop, want := range map[string]types.FinishReason{
 			"end_turn":   types.FinishStop,
 			"tool_use":   types.FinishToolUse,

@@ -7,5 +7,7 @@ import (
 )
 
 func TestConformance(t *testing.T) {
-	conformance.Runtime(t, newEinoHarness)
+	t.Run("runtime.conformance-eino", func(t *testing.T) {
+		conformance.Runtime(t, newEinoHarness)
+	})
 }

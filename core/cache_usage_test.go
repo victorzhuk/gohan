@@ -22,7 +22,7 @@ func TestCacheUsageReported(t *testing.T) {
 		return chains.Mark(req, chains.Outcome{Hit: hit, Tokens: 40})
 	}
 
-	t.Run("hit fills cached input and leaves the write at zero", func(t *testing.T) {
+	t.Run("cache.hit-usage", func(t *testing.T) {
 		st := chains.NewLimitsState()
 		mw := chains.Limits(types.RunLimits{MaxWallClock: time.Minute}, pricing, st)
 		for _, err := range mw(model)(context.Background(), mark(true)) {
@@ -35,7 +35,7 @@ func TestCacheUsageReported(t *testing.T) {
 		}
 	})
 
-	t.Run("repopulating miss fills the cache write and leaves the read at zero", func(t *testing.T) {
+	t.Run("cache.miss-write-usage", func(t *testing.T) {
 		st := chains.NewLimitsState()
 		mw := chains.Limits(types.RunLimits{MaxWallClock: time.Minute}, pricing, st)
 		for _, err := range mw(model)(context.Background(), mark(false)) {

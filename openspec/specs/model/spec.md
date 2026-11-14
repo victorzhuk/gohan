@@ -386,6 +386,7 @@ ID: `model.provider-no-metadata-channel`
 The implementation MUST provide deterministic shared conformance inputs, and each adapter MUST run the shared suite through its public model call path against recorded responses. Build MUST reject an unsupported output fidelity combination and a static governed-field collision, and a dynamic collision MUST return a permanent model error before the request is sent. Adapters MUST NOT ignore `ResponseSchema` without `Caps.Constrained`.
 
 #### Scenario: shared suite coverage
+ID: `model.shared-suite-coverage`
 - WHEN the shared suite runs against an adapter's recorded responses
 - THEN it checks error class mapping, Retry-After preservation, cache breakpoint order and limit, constrained-schema refusal before sending, usage estimation, Raw provider fidelity, per-key isolation and key redaction, and a reference double that violates an assertion fails the suite
 
@@ -523,21 +524,25 @@ ID: `model.cancel-returns-promptly`
 The Anthropic adapter SHALL map the provider-neutral `ModelRequest` and `ModelChunk` constructs onto the Anthropic Messages API and back: `CacheBreak` blocks become ordered `cache_control` markers capped by `Caps.CacheBreakpoints`, an Anthropic `stop_reason` becomes a `FinishReason`, a `ResponseSchema` is honoured through a forced tool call only when the profile declares `Caps.Constrained`, and an opaque `Reasoning` signature round-trips to the same endpoint.
 
 #### Scenario: cache control markers mapped in order
+ID: `model.anthropic-cache-markers-order`
 
 - WHEN a request carries three `CacheBreak` blocks and the selected profile has `CacheExplicit` with `CacheBreakpoints` 2
 - THEN the adapter sends two `cache_control` markers in block order and drops the third
 
 #### Scenario: stop reason mapped to finish reason
+ID: `model.anthropic-stop-reason-mapped`
 
 - WHEN the provider stream ends with `end_turn`, `tool_use` or `max_tokens`
 - THEN the final chunk carries `FinishStop`, `FinishToolUse` or `FinishMaxTokens` respectively
 
 #### Scenario: response schema honoured through forced tool
+ID: `model.anthropic-forced-tool-schema`
 
 - WHEN a `ResponseSchema` reaches a profile that declares `Caps.Constrained`
 - THEN the adapter sends one forced tool carrying the schema and returns the tool arguments as the response
 
 #### Scenario: reasoning signature round-trips
+ID: `model.anthropic-reasoning-signature`
 
 - WHEN the provider returns an opaque `Reasoning` block that carries a signature
 - THEN the block is retained with its signature and re-sent unchanged to the same endpoint

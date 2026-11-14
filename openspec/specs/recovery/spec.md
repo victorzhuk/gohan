@@ -76,6 +76,11 @@ ID: `recovery.human-approval-not-preempted`
 - WHEN a run is suspended for human approval and automatic recovery runs
 - THEN recovery does not decide or execute the approval-controlled call
 
+#### Scenario: A competing suspension is neither acquired nor replayed
+ID: `recovery.consumed-token-fenced`
+- WHEN token A is consumed and a competing acquisition records a newer suspension B during recovery
+- THEN recovery does not replay onto B, the run stays `Suspended`, B's approval remains pending and A stays `ErrTokenConsumed`
+
 ### Requirement: Recorded consumption is independent of input contents
 
 Recovery MUST use persisted consumption state and recorded input. A consumed empty `Continue()` MUST remain distinguishable from an unconsumed checkpoint. A crash between conditional consumption and lease acquisition MUST remain recoverable exactly once.
@@ -93,6 +98,16 @@ Recovered execution MUST persist its ordinary events, terminal failure and final
 ID: `recovery.eventlog-tail-durable`
 - WHEN recovery completes a run and another conversation attaches after the prior cursor
 - THEN it receives the recovered tail and exactly one terminal boundary without waiting for cancellation
+
+#### Scenario: One terminal boundary survives a drive spanning several write bounds
+ID: `recovery.eventlog-bound-outlives-drive`
+- WHEN a recovered drive takes longer than a single event-log write bound
+- THEN exactly one terminal boundary is recorded
+
+#### Scenario: Recovered output keeps the tenant redaction maps
+ID: `recovery.redaction-tenant-continuity`
+- WHEN a recovered run emits content redacted under the tenant's maps
+- THEN the recovered output's pseudonym is recorded in the same tenant session map as the live output
 
 ### Requirement: Missing optional recovery support has explicit behavior
 
