@@ -4,12 +4,14 @@ Risk depth: existing-service-strict. Scenario ids are proposed at authoring time
 
 ## 1. Contracts
 
-- [ ] 1.1 Register the delta's scenario ids in `openspec/scenarios.json` as proposed and regenerate `docs/design/types.md`; sync the approved `subflows` delta into the main spec. Verify `openspec validate m3-subflows --strict` and `task spec:types`.
-  Acceptance: all ids below registered; strict validation green; types index regenerated without unrelated churn.
+- [x] 1.1 Register the delta's scenario ids in `openspec/scenarios.json` as proposed and regenerate `docs/design/types.md`; sync the approved `subflows` and `stores` deltas into the main specs. Verify `openspec validate m3-subflows --strict` and `task spec:types`.
+  Acceptance: all ids below plus `stores.run-cost-optional` registered; strict validation green; types index regenerated without unrelated churn.
 - [ ] 1.2 Freeze the effective-budget derivation (wall clock, cost, depth allowance) and the per-level checkpoint chain shape against `Checkpoint.Child` and `Runs` as shipped. Verify review against ADR-0091 and the suspension capability with no frozen-contract changes.
   Acceptance: derivation and chain shape match `docs/design/types.md`; no port method additions.
 
 ## 2. Behavior
+
+The depth-1 contract this change builds also proves, with the same fixtures, `subflows.nested-approval`, `subflows.nested-resume`, `subflows.nested-tokens-single-use`, `subflows.max-depth`, `subflows.child-wall-clock`, `subflows.fixed-cost-share`, `subflows.max-parallel-children`, `subflows.fail-fast`, `subflows.collect-partials` and `stores.run-cost-optional`. `subflows.fresh-history`, `subflows.child-session`, `subflows.output-guarded`, `subflows.effect-derived`, `subflows.effect-tighten-only`, `subflows.cancel-propagates` and `subflows.child-events` stay deferred: their machinery is built here, their assertions belong to a later M3 slice.
 
 - [ ] 2.1 Implement and prove `subflows.suspension-depth-two-chain`, `subflows.resume-consumes-chain` and `subflows.inner-token-consumed-by-chain`: per-level checkpoints, one token consumed per `Resume`, chain completion order. Update existing architecture/testing guidance for the behavior.
   Acceptance: `subflows.suspension-depth-two-chain`, `subflows.resume-consumes-chain`, `subflows.inner-token-consumed-by-chain` pass as exact-ID public acceptance subtests.

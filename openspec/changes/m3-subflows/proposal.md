@@ -24,6 +24,6 @@ None.
 
 ## Impact
 
-Implementation touches `core` (checkpoint chaining, limit derivation at the call boundary) and `std/flow` (`fork`, `MapReduce` collection). Spec deltas only; `openspec/scenarios.json` registration and `docs/design/types.md` regeneration happen at admission (task 1.1), per ADR-0171. No frozen contract changes. One ADR, `docs/adr/0182-nested-subflows.md`, records the decision.
+Implementation touches `core` (checkpoint chaining, limit derivation at the call boundary), `std/flow` (`fork`, `MapReduce` collection) and `stores.Runs` (an optional per-run cost surface, discovered by type assertion; no port method is added). Spec deltas only; `openspec/scenarios.json` registration and `docs/design/types.md` regeneration happen at admission (task 1.1), per ADR-0171. No frozen contract changes. One ADR, `docs/adr/0182-nested-subflows.md`, records the decision.
 
-A single delta file in `specs/subflows/` is sufficient: every extended behavior lands in the existing `subflows` capability, whose spec already owns suspension, limits and fan-out. No second capability boundary is crossed.
+Two deltas: `specs/subflows/` carries every extended behavior in the existing `subflows` capability, whose spec already owns suspension, limits and fan-out; `specs/stores/` carries the optional `RunCostRecorder` surface that makes a child's own spend readable from its run row. No other capability boundary is crossed.

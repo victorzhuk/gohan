@@ -1193,6 +1193,72 @@
     "title": "child events in parent stream",
     "deferred_to": "M3"
   },
+  "subflows.suspension-depth-two-chain": {
+    "capability": "subflows",
+    "origin": "ADR-0182",
+    "title": "depth-two suspension chains to root",
+    "deferred_to": "M3"
+  },
+  "subflows.resume-consumes-chain": {
+    "capability": "subflows",
+    "origin": "ADR-0182",
+    "title": "resume consumes one token per level",
+    "deferred_to": "M3"
+  },
+  "subflows.inner-token-consumed-by-chain": {
+    "capability": "subflows",
+    "origin": "ADR-0182",
+    "title": "inner token after chain consumed",
+    "deferred_to": "M3"
+  },
+  "subflows.nested-depth-allowance": {
+    "capability": "subflows",
+    "origin": "ADR-0182",
+    "title": "nested depth allowance shrinks",
+    "deferred_to": "M3"
+  },
+  "subflows.nested-cost-inheritance": {
+    "capability": "subflows",
+    "origin": "ADR-0182",
+    "title": "nested cost inherits tree remaining",
+    "deferred_to": "M3"
+  },
+  "subflows.nested-wall-clock-inheritance": {
+    "capability": "subflows",
+    "origin": "ADR-0182",
+    "title": "nested wall clock inherits remaining",
+    "deferred_to": "M3"
+  },
+  "subflows.fanout-results-keyed": {
+    "capability": "subflows",
+    "origin": "ADR-0182",
+    "title": "results keyed to inputs",
+    "deferred_to": "M3"
+  },
+  "subflows.fanout-cost-attribution": {
+    "capability": "subflows",
+    "origin": "ADR-0182",
+    "title": "per-child cost attribution",
+    "deferred_to": "M3"
+  },
+  "subflows.fanout-per-wave-cap": {
+    "capability": "subflows",
+    "origin": "ADR-0182",
+    "title": "per-wave concurrency",
+    "deferred_to": "M3"
+  },
+  "subflows.fanout-partial-positions": {
+    "capability": "subflows",
+    "origin": "ADR-0182",
+    "title": "partial error names positions",
+    "deferred_to": "M3"
+  },
+  "stores.run-cost-optional": {
+    "capability": "stores",
+    "origin": "ADR-0182",
+    "title": "run cost recorded when the store supports it",
+    "deferred_to": "M3"
+  },
   "interop.awaiting-input-roundtrip": {
     "capability": "interop",
     "origin": "ADR-0092",

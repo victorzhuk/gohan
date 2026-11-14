@@ -24,7 +24,73 @@ Non-Goals:
 2. **Inheritance from remaining, not granted.** A child's effective wall clock is `min(declared, parent remaining)`, its cost budget is `min(cost share, tree remaining)`, and its depth allowance is `MaxDepth - parent depth`. Effective budgets are checked at the call boundary and recorded on the child run, so `Recover` replays the tree with the same budgets.
 3. **Per-child accounting on fan-out.** Every fan-out child records its spent cost and final depth on its `Runs` record. Under `Collect`, the parent receives results in input order (positions keyed to the input slice, not completion order) plus a `*PartialError` whose per-error entry names the child position; per-child cost and depth are readable from the run tree, and the parent tree budget reflects the sum of child spends.
 4. **Per-wave concurrency.** `MaxParallelChildren` bounds the concurrently running children of one fan-out wave; queued children start as running ones finish. It is not a process-lifetime cap.
-5. **Relocated spec detail (body compression).** The queueing obligation moved here from the `Fan-out accounting and collection` body: queued children MUST start as running ones finish; the cap is never a process-lifetime bound. The per-level resume bound moved here from the `Nested suspension` body: resume consumes one token per level, bounded by `MaxDepth`. No obligation is dropped.
+5. **Obligations stay inline in the requirements.** The queueing rule lives in the `Fan-out accounting and collection` body: queued children MUST start as running ones finish; the cap is never a process-lifetime bound. The per-level resume bound lives in the `Nested suspension` body: resume consumes one token per level, bounded by `MaxDepth`. This design restates both; no obligation is dropped or relocated.
+
+## Frozen contracts (task 1.2)
+
+Frozen before fan-out. Coders implement these shapes; nothing here adds a port method.
+
+```go
+// core/types/child_limits.go
+type CostShare int
+
+const (
+	ShareRemaining CostShare = iota
+	ShareFixed
+)
+
+// ChildLimits bounds one sub-flow call. FixedCost is read only when
+// CostShare is ShareFixed; ShareRemaining ignores it.
+type ChildLimits struct {
+	MaxWallClock time.Duration
+	CostShare    CostShare
+	FixedCost    float64
+}
+
+type OnError int
+
+const (
+	FailFast OnError = iota
+	Collect
+)
+```
+
+```go
+// core/flow_tool.go
+type SubflowOption func(*subflowConfig) error
+
+func FlowAsTool[In, Out any](name string, f Flow[In, Out], opts ...SubflowOption) (Tool, error)
+func WithChildLimits(l types.ChildLimits) SubflowOption
+func WithEffect(e types.Effect) SubflowOption
+```
+
+```go
+// std/flow/fork.go, std/flow/mapreduce.go
+type FanOption func(*fanConfig)
+
+func WithOnError(types.OnError) FanOption
+func WithParallelism(n int) FanOption
+
+func Fork[In, Out any](child Flow[In, Out], opts ...FanOption) gohan.Flow[[]In, []Out]
+func MapReduce[In, Mid, Out any](child Flow[In, Mid], reduce func([]Mid) (Out, error), opts ...FanOption) gohan.Flow[[]In, Out]
+```
+
+```go
+// core/stores/runs.go — optional surface, discovered by type assertion
+type RunCostRecorder interface {
+	RecordCost(ctx context.Context, l Lease, cost float64) error
+}
+```
+
+Derivation at the call boundary, in this order:
+
+1. Depth: `parent.Depth+1 > MaxDepth` refuses before the child starts with `*types.LimitExceededError{Limit: "MaxDepth"}`.
+2. Declared wall clock above the parent's declared `MaxWallClock` fails `Build`, naming both flows.
+3. Effective wall clock `min(ChildLimits.MaxWallClock, parent remaining)` from the parent's ledger (`WallClockLeft`), recorded on the child run.
+4. Effective cost `min(share, tree remaining)`, where `share` is `MaxCost - TreeCost()` for `ShareRemaining` and `FixedCost` for `ShareFixed`.
+5. Child spend is the `TreeCost()` delta across the call; it leaves the parent tree budget reduced by exactly that amount and is recorded on the child row through `RunCostRecorder` when the store implements it.
+
+Chain shape: a suspending call inside a sub-flow writes the child token to `Checkpoint.Child` of the level above and returns that level's own `*SuspendError` with the same `Reason`/`Payload`; `Resume` at any level consumes exactly one token, drives the level below, and the root completes only after every inner level finishes. Every token stays single-use.
 
 ## Risks / Trade-offs
 
