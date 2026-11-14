@@ -107,6 +107,8 @@ External `Resume` requires the run store's optional `stores.CheckpointRuns` surf
 
 With an event log configured, recovered execution records its redacted event tail before delivery. Completion writes use a bounded context independent of reaper cancellation. Another conversation sharing the log can `Attach` from its last sequence and reads through the next `Done`, `Suspended` or `TerminalError` boundary. A failed terminal store write surfaces an error instead of delivering `Done`.
 
+**Sub-flow calls derive their budget at the boundary.** `Stack.FlowAsTool` runs a child flow under its own tree identity and ledger branch. Depth, wall clock and cost share come from the calling run's limits and from what the parent has left; the child's spend charges the shared tree budget; the derived budget travels as `types.RunBudget` and persists in the child's suspension checkpoint, so a resumed level reuses the recorded values. A child suspension checkpoints its token in the parent's `Checkpoint.Child`, and `Resume` consumes one token per level, routes the input into the child and re-drives the parent from the settled history. Fan-out waves (`std/flow.Fork`, `MapReduce`) collect results keyed to input positions, cap their own concurrency per wave and report failures as `*PartialError` positions.
+
 ### 4.3 Adapter roles
 
 | Module | Runtime | Flow backends | Model | Tool | Decider |

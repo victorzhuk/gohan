@@ -170,7 +170,7 @@ ID: `subflows.collect-partials`
 
 ### Requirement: Fan-out accounting and collection
 
-A parent fan-out SHALL collect child results keyed to their input positions regardless of completion order, and each child SHALL record its spent cost and final depth on its `Runs` record. The parent tree budget MUST reflect the sum of child spends, and `*PartialError` under `Collect` SHALL identify each failed child by input position. A fan-out wave SHALL cap its concurrently running children at its parallelism, which defaults to `MaxParallelChildren`. Queued children MUST start as running ones finish.
+A parent fan-out SHALL collect child results keyed to their input positions regardless of completion order, and each child SHALL record its spent cost and final depth on its `Runs` record. The tree budget MUST reflect the sum of child spends, and `*PartialError` SHALL identify failed children by input position. A wave SHALL cap its concurrent children at its parallelism, defaulting to `MaxParallelChildren`; queued children start as running ones finish.
 
 #### Scenario: results keyed to inputs
 ID: `subflows.fanout-results-keyed`

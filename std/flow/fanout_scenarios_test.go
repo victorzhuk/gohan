@@ -376,7 +376,7 @@ func TestSubflowsFanout(t *testing.T) {
 		}
 	})
 
-	t.Run("subflows.fork-not-suspendable", func(t *testing.T) {
+	t.Run("fork-refuses-resume", func(t *testing.T) {
 		var ran int32
 		child := fanFlow[string, *string]{fn: func(_ context.Context, in string) (*string, error) {
 			atomic.AddInt32(&ran, 1)

@@ -83,7 +83,7 @@ func TestSubflowsLimits(t *testing.T) {
 		}
 	})
 
-	t.Run("subflows.missing-ledger-refused", func(t *testing.T) {
+	t.Run("missing-ledger-refused", func(t *testing.T) {
 		s := subflowBuild(t, nil)
 		childRan := false
 		child := FlowFunc[subflowIn, subflowOut]("child", func(_ context.Context, _ subflowIn) (subflowOut, error) {
