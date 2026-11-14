@@ -138,7 +138,9 @@ func decodeEnvelope(cp stores.Checkpoint, rt runtime.Runtime, spec string) (chec
 			return checkpointEnvelope{}, runtime.State{}, fmt.Errorf("%w: version 1 envelope approves one call among several pending", types.ErrCheckpointIncompatible)
 		}
 	case checkpointEnvelopeVersion:
-		if cp.Backend == "native" && cp.Reason == types.HumanApproval {
+		// A chained checkpoint carries the reason and payload verbatim
+		// while the approvals belong to the level that owns the ask.
+		if cp.Backend == "native" && cp.Reason == types.HumanApproval && cp.Child == "" {
 			if err := validateNativeApprovalState(env.State, env.Approvals); err != nil {
 				return checkpointEnvelope{}, runtime.State{}, err
 			}

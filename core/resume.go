@@ -300,8 +300,12 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			yield(nil, err)
 			return
 		}
+		// A chained checkpoint forwards the decision verbatim to the level
+		// that owns the ask: the parent runs no approval validation of its
+		// own, only the token, principal and approver guards below.
+		ownApproval := cp.Reason == types.HumanApproval && cp.Child == ""
 		var pols []permission.ApprovalPolicy
-		if cp.Reason == types.HumanApproval && r.Verdict != stores.VerdictReject {
+		if ownApproval && r.Verdict != stores.VerdictReject {
 			if c.policySrc == nil {
 				yield(nil, fmt.Errorf("resume: no approval policy wired: %w", types.ErrApproverNotEligible))
 				return
@@ -349,7 +353,7 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 		}
 
 		switch {
-		case cp.Reason == types.HumanApproval && r.Verdict == stores.VerdictEdit:
+		case ownApproval && r.Verdict == stores.VerdictEdit:
 			next, nerr := applyEdit(env, cp, r)
 			if nerr != nil {
 				yield(nil, nerr)
@@ -360,7 +364,7 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 				return
 			}
 			return
-		case cp.Reason == types.HumanApproval && r.Verdict == stores.VerdictApprove && !approvalCompletes(env, pols, approver, cp.Originator):
+		case ownApproval && r.Verdict == stores.VerdictApprove && !approvalCompletes(env, pols, approver, cp.Originator):
 			next := cloneCheckpoint(cp)
 			nenv := env
 			for i := range nenv.Approvals {
@@ -390,7 +394,7 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			yield(nil, err)
 			return
 		}
-		if cp.Reason == types.HumanApproval && r.Verdict == stores.VerdictApprove {
+		if ownApproval && r.Verdict == stores.VerdictApprove {
 			for i := range env.Approvals {
 				if !approverRecorded(env.Approvals[i], approver) {
 					env.Approvals[i].ApprovedBy = append(slices.Clone(env.Approvals[i].ApprovedBy), approver)
@@ -449,7 +453,7 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 		if h.Version > st.HistoryVersion {
 			st.HistoryVersion = h.Version
 		}
-		if r.Verdict == stores.VerdictApprove && cp.Reason == types.HumanApproval {
+		if ownApproval && r.Verdict == stores.VerdictApprove {
 			if aerr := appendReceipts(credCtx, c.log, h, consumed.RunID, env, &st, r.ScopeTTL > 0); aerr != nil {
 				prepFail(aerr)
 				return
@@ -462,12 +466,15 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 				}
 			}
 		}
-		if aerr := applyResume(credCtx, c.log, cp.SessionID, &st, r); aerr != nil {
-			prepFail(aerr)
-			return
+		chainResume := cp.Child != ""
+		if !chainResume {
+			if aerr := applyResume(credCtx, c.log, cp.SessionID, &st, r); aerr != nil {
+				prepFail(aerr)
+				return
+			}
 		}
 		credCtx = types.WithApproval(credCtx, types.Approval{Approver: approver, At: time.Now().UTC()})
-		if cp.Reason == types.HumanApproval && r.Verdict == stores.VerdictApprove {
+		if ownApproval && r.Verdict == stores.VerdictApprove {
 			credCtx = withApprovedCalls(credCtx, approvedCalls(env, approver))
 		}
 		// The approval lineage rides on every resumed drive, whichever
@@ -534,6 +541,75 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 				return
 			}
 			runCtx, rt, ag, ledger = rctx, nrt, nag, nled
+		}
+		if chainResume {
+			head, herr := chainResumeHead(&st)
+			if herr != nil {
+				prepFail(herr)
+				return
+			}
+			var target types.Tool
+			for _, tl := range ag.Tools {
+				if tl.Spec().Name == head.Name {
+					target = tl
+					break
+				}
+			}
+			if target == nil {
+				prepFail(fmt.Errorf("resume: tool %q is not registered on the resumed run: %w", head.Name, types.ErrCheckpointIncompatible))
+				return
+			}
+			sr, ok := target.(subflowResumer)
+			if !ok {
+				prepFail(fmt.Errorf("resume: tool %q cannot resume a child flow: %w", head.Name, types.ErrCheckpointIncompatible))
+				return
+			}
+			out, cerr := sr.ResumeChild(runCtx, cp.Child, r)
+			if inner, ok := errors.AsType[*types.SuspendError](cerr); ok {
+				rt = &chainSuspendRuntime{Runtime: rt, sig: inner}
+			} else if cerr != nil {
+				prepFail(cerr)
+				return
+			} else {
+				res := types.ToolResult{
+					Outcome: types.Succeeded,
+					Content: []types.Block{types.Text{Text: string(out)}},
+				}
+				if aerr := appendResumeResults(credCtx, c.log, cp.SessionID, &st, res); aerr != nil {
+					prepFail(aerr)
+					return
+				}
+				// The settle appended the child's result after the run
+				// builders snapshotted the history: rebuild the drive so
+				// the model turn sees the settled call and never re-issues
+				// it.
+				hDrive, derr := authorizeResume(ctx, c.log, cp.SessionID, approver)
+				if derr != nil {
+					prepFail(derr)
+					return
+				}
+				var seed float64
+				if rf, ok := c.runs.(runFinder); ok {
+					if run, ferr := rf.ByID(ctx, consumed.RunID); ferr == nil {
+						seed = run.Cost
+					}
+				}
+				if c.foreignRun != nil {
+					rctx, nrt, nag, nled, berr := c.foreignRun(credCtx, cp.SessionID, hDrive, seed, nil)
+					if berr != nil {
+						prepFail(berr)
+						return
+					}
+					runCtx, rt, ag, ledger = rctx, nrt, nag, nled
+				} else if c.newResumeRun != nil {
+					rctx, nrt, nag, nled, berr := c.newResumeRun(credCtx, cp.SessionID, hDrive, seed)
+					if berr != nil {
+						prepFail(berr)
+						return
+					}
+					runCtx, rt, ag, ledger = rctx, nrt, nag, nled
+				}
+			}
 		}
 		// The resumed drive carries the original run's identity: the gate
 		// reads the run's principal scopes from ctx, and a zero run would
@@ -619,6 +695,36 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 			}
 		}
 	}
+}
+
+// chainResumeHead names the pending call a child checkpoint settles: the
+// state's active ask, or the single call the driver record carries when the
+// suspension came from a tool error instead of a gate ask.
+func chainResumeHead(st *runtime.State) (types.ToolUse, error) {
+	if len(st.Pending) == 1 {
+		return st.Pending[0], nil
+	}
+	b, err := decodeNativeBackend(*st)
+	if err != nil || b.Driver == nil || b.Driver.Batch == nil || len(b.Driver.Batch.Calls) != 1 {
+		return types.ToolUse{}, fmt.Errorf("resume: child checkpoint without exactly one pending call: %w", types.ErrCheckpointIncompatible)
+	}
+	return b.Driver.Batch.Calls[0], nil
+}
+
+// chainSuspendRuntime re-suspends the resumed drive once with the inner
+// token a child resume surfaced, before the runtime's own first step.
+type chainSuspendRuntime struct {
+	runtime.Runtime
+	sig *types.SuspendError
+}
+
+func (r *chainSuspendRuntime) Step(ctx context.Context, st runtime.State) (runtime.State, []types.Event, runtime.Status, error) {
+	if r.sig != nil {
+		sig := r.sig
+		r.sig = nil
+		return st, nil, runtime.Continue, sig
+	}
+	return r.Runtime.Step(ctx, st)
 }
 
 // applyEdit builds the edited active request: arguments replaced, the

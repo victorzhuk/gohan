@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	jsonv2 "encoding/json/v2"
+
 	"github.com/victorzhuk/gohan/core/chains"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
@@ -100,6 +102,22 @@ func (t flowSubtool[In, Out]) Spec() types.ToolSpec { return t.tool.Spec() }
 
 func (t flowSubtool[In, Out]) Call(ctx context.Context, args json.RawMessage) (types.ToolResult, error) {
 	return t.tool.Call(ctx, args)
+}
+
+// ResumeChild resumes the wrapped flow at a suspension token the child
+// minted and returns the typed result as bytes. An *types.SuspendError and
+// types.ErrNotSuspendable cross unchanged: the caller decides between
+// re-suspending and refusing.
+func (t flowSubtool[In, Out]) ResumeChild(ctx context.Context, token types.ResumeToken, r stores.ResumeInput) (json.RawMessage, error) {
+	out, err := t.f.Resume(ctx, token, r)
+	if err != nil {
+		return nil, err
+	}
+	b, err := jsonv2.Marshal(out)
+	if err != nil {
+		return nil, fmt.Errorf("gohan: subflow tool %s: encode resume result: %w", t.cfg.name, err)
+	}
+	return b, nil
 }
 
 // subflowParentLimits resolves the limits the call boundary derives the

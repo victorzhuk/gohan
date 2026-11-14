@@ -68,7 +68,7 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 		Generation: 1,
 		State:      st,
 	}
-	if reason == types.HumanApproval {
+	if reason == types.HumanApproval && (sig == nil || sig.Token == "") {
 		aps, aerr := lc.approvalsFor(ctx, r, st)
 		if aerr != nil {
 			return nil, aerr
@@ -107,6 +107,10 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 	if err != nil {
 		return nil, err
 	}
+	var child types.ResumeToken
+	if sig != nil {
+		child = sig.Token
+	}
 	token, err := r.Save(ctx, stores.Checkpoint{
 		RunID:               lc.lease.RunID,
 		SchemaVersion:       stores.CurrentSchemaVersion,
@@ -118,6 +122,7 @@ func (lc *Lifecycle) suspend(ctx context.Context, rt runtime.Runtime, r runtime.
 		Workspace:           snap.Ref,
 		WorkspaceGeneration: snap.Generation,
 		Data:                data,
+		Child:               child,
 	})
 	if err != nil {
 		return nil, err

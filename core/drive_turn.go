@@ -879,6 +879,25 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 				Value: float64(used + len(calls)),
 			}
 		}
+		// A tool raised the suspension itself, typically a sub-flow whose
+		// child level already parked under its own token: the checkpoint
+		// must carry the calls a resume settles, so record them pending
+		// with their batch slots when no earlier phase named them.
+		if _, ok := errors.AsType[*types.SuspendError](err); ok && len(st.Pending) == 0 {
+			st.Pending = append([]types.ToolUse(nil), calls...)
+			b := nativeBackend{
+				Phase: "batch",
+				Driver: &nativeProgress{
+					Version:   nativeProgressVersion,
+					ToolCalls: admitted + len(calls),
+					Batch:     &nativeBatchContinuation{Calls: calls, Results: make([]types.ToolResult, len(calls))},
+				},
+			}
+			if enc, encErr := encodeNativeBackend(b); encErr == nil {
+				st.Backend = enc
+			}
+			return st, nil, runtime.Continue, err
+		}
 		return st, nil, runtime.Continue, err
 	}
 
