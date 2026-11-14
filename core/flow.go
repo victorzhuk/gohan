@@ -46,7 +46,6 @@ func AllowAnonymousFlow() FlowOption {
 type flowFunc[In, Out any] struct {
 	name string
 	fn   func(context.Context, In) (Out, error)
-	last In
 
 	anonymous bool
 }
@@ -56,7 +55,6 @@ func (f *flowFunc[In, Out]) Invoke(ctx context.Context, in In) (Out, error) {
 		var out Out
 		return out, err
 	}
-	f.last = in
 	step := &flowStep[In, Out]{fn: f.fn, in: in}
 	var out Out
 	for _, err := range driveFlow(ctx, step) {
