@@ -23,7 +23,7 @@ Non-Goals:
 1. **Chained checkpoints, one per level.** A depth-2 suspension stores the depth-2 child token in the depth-1 parent's `Checkpoint.Child`, and the depth-1 parent's token in the root's `Checkpoint.Child`. `Resume` at any level consumes exactly its own token and drives the level below; the full chain completes only when every level finishes. Each token remains single-use; presenting an inner token after its outer ancestor was consumed fails `ErrTokenConsumed`, already specified.
 2. **Inheritance from remaining, not granted.** A child's effective wall clock is `min(declared, parent remaining)`, its cost budget is `min(cost share, tree remaining)`, and its depth allowance is `MaxDepth - parent depth`. Effective budgets are checked at the call boundary and recorded on the child run, so `Recover` replays the tree with the same budgets.
 3. **Per-child accounting on fan-out.** Every fan-out child records its spent cost and final depth on its `Runs` record. Under `Collect`, the parent receives results in input order (positions keyed to the input slice, not completion order) plus a `*PartialError` whose per-error entry names the child position; per-child cost and depth are readable from the run tree, and the parent tree budget reflects the sum of child spends.
-4. **Per-wave concurrency.** `MaxParallelChildren` bounds the concurrently running children of one fan-out wave; queued children start as running ones finish. It is not a process-lifetime cap.
+4. **Per-wave concurrency.** A fan-out wave caps its concurrently running children at `WithParallelism`, which defaults to the preset `MaxParallelChildren` (8); queued children start as running ones finish. The cap is per wave, never a process-lifetime bound, and no call boundary re-checks it as a refusal.
 5. **Obligations stay inline in the requirements.** The queueing rule lives in the `Fan-out accounting and collection` body: queued children MUST start as running ones finish; the cap is never a process-lifetime bound. The per-level resume bound lives in the `Nested suspension` body: resume consumes one token per level, bounded by `MaxDepth`. This design restates both; no obligation is dropped or relocated.
 
 ## Frozen contracts (task 1.2)
@@ -103,7 +103,7 @@ type RunCostRecorder interface {
 Derivation at the call boundary, in this order:
 
 1. Depth: `parent.Depth+1 > MaxDepth` refuses before the child starts with `*types.LimitExceededError{Limit: "MaxDepth"}`.
-2. Declared wall clock above the parent's declared `MaxWallClock` fails `Build`, naming both flows.
+2. Declared wall clock above the parent's declared `MaxWallClock` refuses the call, naming both flows.
 3. Effective wall clock `min(ChildLimits.MaxWallClock, parent remaining)` from the parent's ledger (`WallClockLeft`), recorded on the child run.
 4. Effective cost `min(share, tree remaining)`, where `share` is `MaxCost - TreeCost()` for `ShareRemaining` and `FixedCost` for `ShareFixed`.
 5. Child spend is the `TreeCost()` delta across the call; it leaves the parent tree budget reduced by exactly that amount and is recorded on the child row through `RunCostRecorder` when the store implements it.

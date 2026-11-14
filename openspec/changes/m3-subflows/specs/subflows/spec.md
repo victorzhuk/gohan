@@ -4,7 +4,7 @@
 
 ### Requirement: Fan-out accounting and collection
 
-A parent fan-out SHALL collect child results keyed to their input positions regardless of completion order, and each child SHALL record its spent cost and final depth on its `Runs` record. The parent tree budget MUST reflect the sum of child spends, and `*PartialError` under `Collect` SHALL identify each failed child by input position. `MaxParallelChildren` SHALL bound the children running concurrently per fan-out wave. Queued children MUST start as running ones finish.
+A parent fan-out SHALL collect child results keyed to their input positions regardless of completion order, and each child SHALL record its spent cost and final depth on its `Runs` record. The parent tree budget MUST reflect the sum of child spends, and `*PartialError` under `Collect` SHALL identify each failed child by input position. A fan-out wave SHALL cap its concurrently running children at its parallelism, which defaults to `MaxParallelChildren`. Queued children MUST start as running ones finish.
 
 #### Scenario: results keyed to inputs
 ID: `subflows.fanout-results-keyed`
@@ -83,7 +83,7 @@ ID: `subflows.inner-token-consumed-by-chain`
 
 ### Requirement: Limits and failure
 
-A child MUST declare `ChildLimits.MaxWallClock` no greater than the parent's declared wall clock, else `Build` fails; a declaration within that bound but above the parent's remaining time clamps to the remainder. `CostShare`: `ShareRemaining` (default) lets the child spend what the tree has left; `ShareFixed` caps it at `ChildLimits.FixedCost`. `MaxDepth` and `MaxParallelChildren` are checked at the call boundary; exceeding either is `*LimitExceededError`. `MaxTurns`/`MaxToolCalls` are per run; `MaxCost` and `MaxSandboxSeconds` are per tree.
+A child MUST declare `ChildLimits.MaxWallClock` no greater than the parent's declared wall clock, else the call refuses before the child starts, naming both flows; a declaration within that bound but above the parent's remaining time clamps to the remainder. `CostShare`: `ShareRemaining` (default) lets the child spend what the tree has left; `ShareFixed` caps it at `ChildLimits.FixedCost`. `MaxDepth` is checked at the call boundary; exceeding it is `*LimitExceededError`. A fan-out wave caps its concurrently running children at its parallelism, which defaults to `MaxParallelChildren`. `MaxTurns`/`MaxToolCalls` are per run; `MaxCost` and `MaxSandboxSeconds` are per tree.
 
 #### Scenario: depth limit
 ID: `subflows.max-depth`
@@ -98,12 +98,12 @@ ID: `subflows.max-parallel-children`
 #### Scenario: child wall clock
 ID: `subflows.child-wall-clock`
 - WHEN a child declares `MaxWallClock` greater than the parent's
-- THEN `Build` returns an error naming both flows
+- THEN the call refuses with an error naming both flows and the child never starts
 
 #### Scenario: fixed cost share
 ID: `subflows.fixed-cost-share`
 - WHEN a child runs with `CostShare: ShareFixed` and `FixedCost: 0.10` and exceeds it
-- THEN the child aborts with `*LimitExceededError` and the parent receives it as the tool error; the tree budget is unaffected beyond the spent 0.10
+- THEN the child aborts with `*LimitExceededError` and the parent receives it as the tool error; the tree budget keeps the spend already charged
 
 #### Scenario: fail fast
 ID: `subflows.fail-fast`

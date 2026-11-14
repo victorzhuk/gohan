@@ -15,6 +15,10 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 - Explicit unscored evaluation outcomes never pass required gates; provenance records can export through the durable telemetry spool with stable identities across replay.
 - A judge calibration gate in `std/evals` checks versioned human-labelled sets and per-class criteria before model-backed judge activation.
 - An `adapter/adkgo` runtime backend for `google.golang.org/adk/v2`: turn-granularity stepping, message and tool bridges, graph admission with a governed-component audit, and declared `Replay` fallback for capabilities the backend does not carry. Conformance runs beside `native` and `eino`.
+- `Stack.FlowAsTool` exposes a sub-flow as a tool and derives its budget at the call boundary: wall clock and cost share come from what the parent has left, a depth or declared wall clock the parent cannot carry refuses before the child starts, and the child's spend charges the tree. The derived budget travels as `types.RunBudget`.
+- `std/flow` ships `Fork` and `MapReduce`: results keyed to input positions regardless of completion order, `FailFast` and `Collect` with `*PartialError` naming failed positions, and one concurrency cap per wave.
+- An optional `stores.RunCostRecorder` surface records a run's spend on its own row, so a sub-flow's cost is readable without widening the `Runs` port.
+- A sub-flow suspension chains through every level: the child's token lands in the parent's `Checkpoint.Child`, each level returns its own `*SuspendError` with the same reason and payload, and `Resume` consumes one token per level and drives the level below. A chained approval keeps the child's approval request instead of rebuilding one from the sub-flow call.
 
 ### Changed
 
