@@ -59,10 +59,28 @@ const (
 // core/flow_tool.go
 type SubflowOption func(*subflowConfig) error
 
-func FlowAsTool[In, Out any](name string, f Flow[In, Out], opts ...SubflowOption) (Tool, error)
+func (s *Stack) FlowAsTool[In, Out any](name string, f Flow[In, Out], opts ...SubflowOption) (Tool, error)
 func WithChildLimits(l types.ChildLimits) SubflowOption
+func WithParentLimits(l types.RunLimits) SubflowOption
+func WithChildEffect(e types.Effect) SubflowOption
 func WithEffect(e types.Effect) SubflowOption
 ```
+
+The constructor is stack-scoped because the parent's `RunLimits` (which carries `MaxDepth`, `MaxParallelChildren` and the declared wall clock) is reachable only through the stack that resolved them; a tool call receives no limits on its ctx. At call time it resolves `s.limits[types.RunInfoFrom(ctx).Flow]`, `WithParentLimits` wins when set, and a call with neither refuses before the child starts.
+
+```go
+// core/types/run_budget.go
+type RunBudget struct {
+	WallClock time.Duration
+	Cost      float64
+	Depth     int
+}
+
+func WithRunBudget(ctx context.Context, b RunBudget) context.Context
+func RunBudgetFrom(ctx context.Context) (RunBudget, bool)
+```
+
+The derived budget rides the child ctx as `RunBudget`; the child's own suspension checkpoint persists it, so a resumed level reuses the recorded values instead of re-deriving them from a parent whose remaining budget moved.
 
 ```go
 // std/flow/fork.go, std/flow/mapreduce.go

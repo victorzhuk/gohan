@@ -12,7 +12,17 @@ Defines what a flow invoked from inside another flow (`FlowAsTool`, `fork`, `Map
 ## Contract
 
 ```go
-func FlowAsTool[In, Out any](name string, f Flow[In, Out], opts ...ToolOption) Tool
+func (s *Stack) FlowAsTool[In, Out any](name string, f Flow[In, Out], opts ...SubflowOption) (Tool, error)
+
+type SubflowOption func(*subflowConfig) error
+
+// RunBudget is the effective budget one sub-flow call derived for its
+// child; it travels on the child ctx and survives resumption.
+type RunBudget struct {
+	WallClock time.Duration
+	Cost      float64
+	Depth     int
+}
 
 type ChildLimits struct {
 	MaxWallClock time.Duration
@@ -46,9 +56,9 @@ Rules:
 
 1. **Isolation.** A child run starts with an empty history in a child session `<parent-session>/<callID>` on the same stores. Only the typed `In` crosses into the child; the parent's history, notes and tool results do not. Typed `Out` returns as the parent's tool result and passes `StageToolResult` guards like any tool result. `Notes` are per session; a child has its own.
 2. **Identity.** The child runs under the parent's ambient `Principal`; its `RequiredScopes` are checked at the call boundary before the child's deciders run. `RootRunID` is inherited, `ParentRunID` set, `Depth = parent + 1`.
-3. **Effect derivation.** `FlowAsTool` derives `ToolSpec.Effect` from the child's registered tools: `SideEffect` if any is `SideEffect`, else `Idempotent` if any is `Idempotent`, else `ReadOnly`; `flowdef` `call: flow` is the same. The parent's journal, permission gate and cancel shield therefore apply to the whole child. An explicit `WithEffect` may only tighten.
+3. **Effect derivation.** `FlowAsTool` derives `ToolSpec.Effect` from the child's registered tools: `SideEffect` if any is `SideEffect`, else `Idempotent` if any is `Idempotent`, else `ReadOnly`; `flowdef` `call: flow` is the same. The parent's journal, permission gate and cancel shield therefore apply to the whole child. An explicit `WithEffect` may only tighten. A `Flow` value does not expose its tools, so the wiring declares the derived effect with `WithChildEffect`; the constructor defaults to `ReadOnly` and refuses an effect looser than the declared one.
 4. **Nested suspension.** When a child returns `*SuspendError`, the parent checkpoints with the child token in `Checkpoint.Child` and returns its own `*SuspendError` with the same `Reason` and `Payload`, a new parent token. `Resume(parentToken, in)` consumes the parent checkpoint, resumes the child with `in`, and continues the parent when the child finishes; both tokens are single-use. Depth of chaining is bounded by `MaxDepth`.
-5. **Limits.** A child must declare `ChildLimits.MaxWallClock` ≤ the parent's remaining wall clock, else `Build` fails. `CostShare`: `ShareRemaining` (default) lets the child spend what the tree has left; `ShareFixed` caps it at `ChildLimits.FixedCost`. `MaxDepth` and `MaxParallelChildren` are checked at the call boundary; exceeding either is `*LimitExceededError`. `MaxTurns`/`MaxToolCalls` are per run; `MaxCost` and `MaxSandboxSeconds` are per tree.
+5. **Limits.** A child must declare `ChildLimits.MaxWallClock` ≤ the parent's remaining wall clock, else `Build` fails. `CostShare`: `ShareRemaining` (default) lets the child spend what the tree has left; `ShareFixed` caps it at `ChildLimits.FixedCost`. `MaxDepth` and `MaxParallelChildren` are checked at the call boundary; exceeding either is `*LimitExceededError`. `MaxTurns`/`MaxToolCalls` are per run; `MaxCost` and `MaxSandboxSeconds` are per tree. The constructor resolves the parent's `RunLimits` from the stack by the calling run's flow; `WithParentLimits` overrides it, and a call with neither refuses before the child starts. The derived budget travels on the child's ctx as `RunBudget` and is persisted in the child's suspension checkpoint, so a resumed level reuses the recorded values rather than re-deriving them from a changed parent.
 6. **Fan-out failure.** `fork`, `MapReduce` and `std/flow` parallel recipes take `OnError`: `FailFast` (default) cancels siblings on the first error and returns it; `Collect` waits for all, returns partial results plus `*PartialError`. Refinement loops (`Judge`-driven retries) require an explicit iteration cap.
 7. **Cancellation.** The parent ctx is the child's ctx; cancellation propagates, the `SideEffect` shield (`streams`) is unchanged inside the child. A child never outlives its parent in v1.
 8. **Events.** Child events carry `EventMeta.ParentRunID` and `Depth` and are delivered in the parent's stream and `EventLog` interleaved by arrival; `Done` of the child is not the parent's `Done`.
