@@ -37,7 +37,7 @@ func TestingTB(t *testing.T) conformanceTB { return testingTB{t} }
 // Legs of runtime.message-round-trip this contract carries:
 //
 //	eino   passing (M2, adapter/eino)
-//	adkgo  pending (M3)
+//	adkgo  passing (M3, adapter/adkgo)
 func MessageFidelity(tb conformanceTB, name string, codec MessageCodec, in []types.Message) {
 	tb.Helper()
 	tb.Run(name, func(tb conformanceTB) {

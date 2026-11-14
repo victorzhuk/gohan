@@ -30,6 +30,7 @@ const rootModulePath = "github.com/victorzhuk/gohan"
 
 var defaultModules = []string{
 	"adapter/anthropic",
+	"adapter/adkgo",
 	"adapter/docker",
 	"adapter/eino",
 	"adapter/openai",
@@ -41,6 +42,7 @@ var defaultModules = []string{
 // entry points that must be observed passing in the go test -json events.
 var requiredConformance = map[string][]string{
 	"anthropic": {"TestModelConformance"},
+	"adkgo":     {"TestConformance"},
 	"docker":    {"TestSandboxConformance"},
 	"eino":      {"TestConformance"},
 	"openai":    {"TestModelConformance"},
