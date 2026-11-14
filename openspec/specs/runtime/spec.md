@@ -243,7 +243,6 @@ ID: `runtime.done-after-finish`
 - WHEN a run completes
 - THEN `Runs.Finish` has been called before `Done` is observable on the stream, and `Done` is the last event
 
-
 ### Requirement: Health
 
 `Health` MUST run readiness checks with a bounded ctx (default 2 s) and report each by name. Every configured store MUST answer a ping and the Postgres schema MUST be within the skew rule. Every platform provider key validated at `Build` MUST still be accepted, re-checked at most once per minute and cached. `shutdown` MUST be false once `Shutdown` began.
@@ -257,7 +256,6 @@ ID: `runtime.readyz-false-on-schema-skew`
 ID: `runtime.readyz-false-during-shutdown`
 - WHEN `Shutdown` has begun while runs drain
 - THEN `/readyz` answers 503 and `/healthz` still answers 200 until the process exits
-
 
 ### Requirement: Graceful shutdown
 
@@ -292,7 +290,6 @@ ID: `runtime.preempted-resume-continue`
 ID: `runtime.shutdown-grace-exhausted`
 - WHEN the `Shutdown` ctx expires while a `SideEffect` tool is still executing
 - THEN `Shutdown` returns `ErrShutdownIncomplete` naming the run and the run is later reclaimed as stale by `Recover`
-
 
 ### Requirement: Tool batch protocol
 
@@ -338,10 +335,9 @@ ID: `runtime.sequential-tools-hint`
 - WHEN a flow is built with `SequentialTools()` or the profile has `ParallelTools: false`
 - THEN the model request asks for single-call turns and a multi-call response is still executed by the batch protocol
 
-
 ### Requirement: Runtime conformance
 
-`conformance.Runtime(t, newRuntime)` SHALL pass for `native`, `eino`, `adkgo`. The `adkgo` leg MUST run against the `google.golang.org/adk/v2` tag pinned in `adapter/adkgo/go.mod`. A backend MUST propagate `ctx` unchanged into every component call, translate a component's suspend signal into its own mechanism and back into `Suspended`, honour cancellation, and MUST NOT emit component events or count turns.
+`conformance.Runtime(t, newRuntime)` SHALL pass for `native`, `eino`, `adkgo`. The `adkgo` leg MUST run against the `google.golang.org/adk/v2` tag pinned in `adapter/adkgo/go.mod`. A backend MUST propagate `ctx` unchanged into every component call, translate suspend into its own mechanism and back into `Suspended`, honour cancellation, and MUST NOT emit component events or count turns.
 
 #### Scenario: conformance suite passes for the native runtime
 ID: `runtime.conformance-native`
@@ -383,7 +379,6 @@ ID: `runtime.cancellation`
 - WHEN ctx is cancelled mid-stream
 - THEN the iterator yields `context.Canceled` and no further components run
 
-
 ### Requirement: Component mixing
 
 A backend MUST reach every governed model, tool and message conversion through the exported seams, so mixing a foreign component under the native runtime and mixing governed components inside a foreign graph run the same chains. A message bridge MUST declare the fidelity it keeps, and MUST NOT drop a block the source carried.
@@ -422,7 +417,6 @@ ID: `runtime.foreign-call-denied`
 - WHEN the gate denies a foreign run's `SideEffect` call
 - THEN the model receives a `Failed(Permanent)` result reading `not_executed:` and the tool implementation never runs
 
-
 ### Requirement: Foreign call identity is required
 
 A foreign call that carries no stable `ToolUse` identity MUST fail closed with a `Failed(Permanent)` result before the gate, the reservation and any side effect, and MUST NOT be journaled.
@@ -431,7 +425,6 @@ A foreign call that carries no stable `ToolUse` identity MUST fail closed with a
 ID: `runtime.foreign-call-identity-required`
 - WHEN a foreign backend delivers a tool call with no stable call id
 - THEN the call fails closed before the gate and before any side effect, and no journal entry is written
-
 
 ### Requirement: Foreign call identity
 
@@ -447,7 +440,6 @@ ID: `runtime.foreign-call-id-distinct`
 - WHEN one foreign turn carries two calls to the same tool with ids `call-1` and `call-2`
 - THEN each is gated and journaled under its own id and neither result is attached to the other call
 
-
 ### Requirement: Foreign invocation context
 
 The caller's identity, deadline and cancellation lineage MUST reach every foreign model and tool call. A foreign run started by `Send`, resumed by `Resume` and reclaimed by `Recover` MUST observe the caller's principal, credential, run identity and deadline. A derived context MUST preserve that lineage; it does not promise the same context object inside a shielded call.
@@ -456,7 +448,6 @@ The caller's identity, deadline and cancellation lineage MUST reach every foreig
 ID: `runtime.foreign-ctx-preserved`
 - WHEN a foreign run is started by `Send`, resumed by `Resume` and reclaimed by `Recover`
 - THEN each path carries the caller's identity, deadline and cancellation lineage into every model and tool call
-
 
 ### Requirement: Foreign cancellation stops the turn by effect
 
@@ -467,7 +458,6 @@ ID: `runtime.foreign-cancellation`
 - WHEN the caller's ctx is cancelled during a foreign turn
 - THEN an unshielded `ReadOnly` call aborts and no further component of that turn runs, while a committed non-`ReadOnly` call settles and journals its result before the run stops
 
-
 ### Requirement: Foreign recovery replays a completed call
 
 `Recover` MUST answer a completed non-`ReadOnly` call from the journal and MUST NOT re-execute it.
@@ -476,7 +466,6 @@ ID: `runtime.foreign-cancellation`
 ID: `runtime.foreign-completed-call-replayed`
 - WHEN a foreign run crashes after a non-`ReadOnly` call completed and was journaled
 - THEN `Recover` replays the result from the journal, does not re-execute the call, and finishes the run
-
 
 ### Requirement: Atomic shutdown admission
 
@@ -502,7 +491,6 @@ ID: `runtime.shutdown-admission-every-constructor`
 ID: `runtime.shutdown-admission-resume`
 - WHEN `Resume` starts a run
 - THEN it is registered in the in-flight set before `Runs.Start`
-
 
 ### Requirement: Terminal stop reason preservation
 
@@ -531,7 +519,6 @@ ID: `runtime.cancelled-run-keeps-reason`
 ID: `runtime.handed-off-run-keeps-reason`
 - WHEN the model requested a human and the run closes
 - THEN `Done.Reason` is `StopHandedOff` and the durable reason matches
-
 
 ### Requirement: Foreign tool governance
 
@@ -606,4 +593,3 @@ A shipped foreign runtime MUST carry each backend-generated tool call ID through
 ID: `runtime.eino-governed-call-identity`
 - WHEN a registered Eino flow invokes a tool through its foreign conversation
 - THEN its backend call ID reaches the gate and journal and the tool executes once when authorized
-
