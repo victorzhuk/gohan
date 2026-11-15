@@ -29,3 +29,39 @@ New module, no migration. Adoption is explicit wiring of `mcp.Client` or the MCP
 ## ADR
 
 `docs/adr/0183-mcp-client-and-server.md` records the M3 module decision: one `adapter/mcp` module on the 2026-07-28 binding, guarding intact across the import boundary, suspension surfaced as an error carrying the resume token.
+
+## Implementation contract
+
+Binding: `github.com/modelcontextprotocol/go-sdk` v1.8.0, protocol revision `2026-07-28` (the SDK default). The SDK carries stateless streamable HTTP, MRTR (`NeedsInput`, `InputResponses`, `RequestState`), cacheable catalogs (`ttlMs`, `cacheScope`), annotations and native `subscriptions/listen`; it has no Tasks extension, so `tasks/get` is registered as a custom JSON-RPC method.
+
+| File | Responsibility |
+|---|---|
+| `client.go` | `Client(url, opts...) (*Set, error)`, options, `Tools`, `Assemble`, imported-tool registration and call mapping |
+| `catalog.go` | `tools/list` fetch, `ttlMs` refresh loop, pin compare, drift disable, `gohan.tool.manifest_drift` |
+| `guard.go` | `AnnotationCap`: annotations lower the wiring effect cap and never raise it |
+| `mrtr.go` | `input_required` → suspension, child-token continuation, schema guard, `tools/call` replay |
+| `tasksclient.go` | task meta → `AwaitingTool`, `Waker` poll fallback |
+| `server.go` | `Expose`, `NewHandler`, suspension → `input_required` reply, stateless retry → `Flow.Resume` |
+| `tasksserver.go` | `tasks/get`, `TaskStatus`, `Detached` run row, `EventLog`-backed ordered updates |
+| `wire.go` | `_meta` keys, `TaskRef`, opaque `RequestState` codec, method names |
+| `internal/schema` | JSON-Schema instance validation over `google/jsonschema-go` (2020-12) |
+
+Client decisions:
+
+- Namespace pins the import: `<ns>__<tool>`, `^[a-z][a-z0-9]{0,15}$`. `mcp.Assemble` refuses more than one set when any set has no namespace and names that server's URL, before `Build` runs; core keeps `ErrToolCollision` as the backstop.
+- Imported tools are `Deferred` and `Untrusted`. Effective effect is the lower of the wiring `MaxEffect` (default `ReadOnly`) and the annotation cap (`readOnlyHint` → `ReadOnly`; `destructiveHint: false` with `idempotentHint` → `Idempotent`), then `ApplyToolPolicy` runs, so no annotation can raise it. Trust has no wire field.
+- Refresh runs on first `tools/list` and every `ttlMs` (minimum 1s) while the set lives. Each refresh recomputes `std.ToolManifestHash`; a pinned tool whose hash changed or that disappeared is disabled and `gohan.tool.manifest_drift` increments once per changed tool at disable time. An unpinned first catalog self-pins. A refresh never moves a tool between namespaces or raises trust or effect.
+- MRTR uses the chain-resume seam: the tool mints a single-use token in a required `stores.Checkpoints` and returns `&types.SuspendError{Token, Reason: HumanApproval|AwaitingInput, Payload}`. Core stores it as `Checkpoint.Child` and, on resume, calls the tool's `ResumeChild`, which validates delivered data against the server schema **before** consuming its token, then replays `tools/call` with `inputResponses` and the echoed `RequestState`. A returned `SuspendError` re-suspends, so multi-round input requests chain. A confirmation carries an adapter-built `permission.ApprovalRequest`; chained confirmations deliberately bypass core quorum, eligibility and approval receipts because the confirmation is the MCP server's, not a gohan gate's. The added dependency is `mcp.WithCheckpoints`, required at construction; a dedicated store instance keeps adapter records out of the recovery sweep.
+- A task handle in `_meta.gohan.task` suspends with `AwaitingTool`; completion arrives from the subscription stream when available and otherwise from a bounded poll.
+
+Server decisions:
+
+- One exposed flow is one MCP tool with the declared `In`/`Out` schema. `HumanApproval` and `AwaitingInput` produce an `input_required` result carrying `_meta.gohan.token` and an opaque `RequestState`; the delta's "error" wording is satisfied by the `input_required` outcome, because the protocol and the SDK put `_meta` only on results and a JSON-RPC error has no `_meta`.
+- The retry decodes `inputResponses` into `stores.ResumeInput` (accept → `Approve`, decline → `Reject`, content → `Deliver` after schema validation) and calls `Flow.Resume` with the principal from the OAuth layer placed in context as transport code; core replaces any caller-set approver with that principal.
+- `AwaitingExternal`, `AwaitingBatch`, `Scheduled` and `AwaitingTool` become a task reference with `TaskStatus` `working` and `wakeAt` where known; they are never JSON-RPC errors. Tasks rows live in `Runs`, status and ordered updates come from `Runs` and `EventLog`, and the handler holds no run state between calls.
+- The Tasks extension has no SDK support, and the SDK's `subscriptions/listen` stream carries only catalog and resource-change notifications, so run progress is served by `tasks/get` plus an `EventLog.Read`-backed ordered pull surface. The notification-stream attachment stays a single named seam; no notification is faked.
+
+Contract consequences recorded for review:
+
+- `interop.mrtr-replay`'s "journal records one entry" holds only for a journaled call (effect above `ReadOnly`): the original round completes one entry and the replayed round adds none. At the default `ReadOnly` cap the call is not journaled at all. The fixture must raise `MaxEffect` to assert the count, never the entry content.
+- `interop.awaiting-input-invalid` ("the token remains usable") describes a non-chained core `AwaitingInput` suspension. Through the chain seam the parent token is spent before `ResumeChild` runs, so the adapter proves error-before-replay, not token reuse. Core-local `AwaitingInput` schema validation stays unimplemented because the root module carries no dependency; that gap is a named follow-up, not absorbed here.

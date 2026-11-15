@@ -4,6 +4,10 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ## [Unreleased]
 
+### Added
+
+- An `adapter/mcp` module binds the 2026-07-28 MCP revision in both directions. The client imports server tools as deferred, untrusted tools whose effect annotations may only lower the wiring cap, refreshes the catalog on `ttlMs` and disables a tool whose pinned description or spec hash changed. The server exposes one flow per MCP tool, surfaces approval and structured-input suspensions as `input_required` replies carrying the resume token, resumes statelessly from that token, and reports every other suspension as a Tasks status instead of a protocol error.
+
 ### Fixed
 
 - A nested sub-flow derives its wall clock from the calling flow's inherited budget, and a resumed level is enforced under its recorded budget, so a depth-2 child can no longer outlive the budget its parent holds.

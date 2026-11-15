@@ -1319,6 +1319,48 @@
     "title": "long flow as task",
     "deferred_to": "M3"
   },
+  "interop.client-deferred-registration": {
+    "capability": "interop",
+    "origin": "ADR-0183",
+    "title": "deferred registration",
+    "deferred_to": "M3"
+  },
+  "interop.client-guarding-intact": {
+    "capability": "interop",
+    "origin": "ADR-0183",
+    "title": "guarding intact",
+    "deferred_to": "M3"
+  },
+  "interop.client-description-drift": {
+    "capability": "interop",
+    "origin": "ADR-0183",
+    "title": "description drift",
+    "deferred_to": "M3"
+  },
+  "interop.client-awaiting-input-schema": {
+    "capability": "interop",
+    "origin": "ADR-0183",
+    "title": "awaiting input schema",
+    "deferred_to": "M3"
+  },
+  "interop.server-suspension-token-error": {
+    "capability": "interop",
+    "origin": "ADR-0183",
+    "title": "suspension token error",
+    "deferred_to": "M3"
+  },
+  "interop.server-awaiting-input-token": {
+    "capability": "interop",
+    "origin": "ADR-0183",
+    "title": "awaiting input token",
+    "deferred_to": "M3"
+  },
+  "interop.server-suspensions-never-protocol-errors": {
+    "capability": "interop",
+    "origin": "ADR-0183",
+    "title": "suspensions never protocol errors",
+    "deferred_to": "M3"
+  },
   "sandbox.effect-derived": {
     "capability": "sandbox",
     "origin": "ADR-0093",

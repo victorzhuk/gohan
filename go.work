@@ -6,6 +6,7 @@ use (
 	./adapter/anthropic
 	./adapter/docker
 	./adapter/eino
+	./adapter/mcp
 	./adapter/openai
 	./adapter/otel
 	./adapter/postgres
