@@ -183,14 +183,14 @@ ID: `interop.server-long-task`
 - WHEN a flow marked for the Tasks extension is called
 - THEN `tools/call` returns a task, `tasks/get` reflects the run state and `subscriptions/listen` delivers `Seq`-ordered updates
 
-### Requirement: Server suspension carries the token in an input_required reply
+### Requirement: Server suspension surfaces as an error carrying the token
 
-The MCP server MUST surface a suspending flow as an `input_required` reply whose `_meta.gohan.token` carries the resume token, and MUST NOT hold run state in process between the call and its retry.
+The MCP server MUST surface a suspending flow as an `input_required` error whose `_meta.gohan.token` carries the resume token, and MUST NOT hold run state in process between the call and its retry.
 
 #### Scenario: suspension token error
 ID: `interop.server-suspension-token-error`
 - WHEN an exposed flow suspends and `tools/call` returns
-- THEN the reply is `input_required` with the resume token in `_meta.gohan.token` and no run state remains in the serving process
+- THEN the reply is an `input_required` error with the resume token in `_meta.gohan.token` and no run state remains in the serving process
 
 ### Requirement: Server AwaitingInput resumes statelessly
 
