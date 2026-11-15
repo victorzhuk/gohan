@@ -10,5 +10,6 @@ use (
 	./adapter/openai
 	./adapter/otel
 	./adapter/postgres
+	./adapter/redis
 	./examples
 )

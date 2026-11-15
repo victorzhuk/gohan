@@ -147,3 +147,13 @@ type DefinitionParser interface {
 `Build`: parse with the declared front-end → validate every `call` against the registry (`stack.RegisterFlow(name, flow)`, tools by name) including `In`/`Out` schemas → compile expressions with the configured `ExprLang` and reject any referencing host calls → hash the canonical JSON form into the manifest (ADR-0081) → `Explain` prints the compiled definition in canonical form. `Build` refuses an `ExprLang` lacking `Deterministic + StepLimit`, and a `ScriptLang` role entirely in v1.
 
 Adapters: `adapter/cel` (default `ExprLang`; non-Turing-complete, linear evaluation, cost estimate and runtime cost limit, type-checked against the `Data` schema); `adapter/lispico` (definition front-end; `ExprLang` if go-lispico declares `Deterministic + StepLimit` for a restricted evaluation mode; the `Continuations` route for scripts is the natural Lisp option and is tracked in Q21); `std` ships the JSON/YAML front-end with no dependencies. `adapter/starlark`, `adapter/goja`, `adapter/wasm` are possible later under the same matrix and none is required.
+
+### 7.10 Redis adapter contract
+
+`github.com/victorzhuk/gohan/adapter/redis` owns only the cross-process slice. One rate-limited bucket per pool name is shared by every service, with class admission (`Interactive` holds a reserved share, `Agentic` sits between, `Batch` defers while the interactive queue-wait exceeds its threshold), and a `pool/day` breaker gates the day's spend. One shared `EventLog` lives on Redis streams and implements `stores.EventLog` and `stores.CompactionEventAppender`.
+
+Rates and stamps are decided by Redis server `TIME`; callers pass durations and never instants for limiter decisions. A caller-supplied event instant is recorded as given, exactly as the memory and Postgres stores do, and `EventLog.Expire` compares that recorded instant with the horizon, so retention never depends on the adapter reading the caller's clock. Wiring stays a `Build` caller concern: setting `ModelProfile.QuotaPool` means supplying `redis.NewPool(client, redis.PoolConfig{Name: profile.QuotaPool, ...})`. No core port changes and no other store port is implemented.
+
+Every retained record is a `stores.RecordEnvelope` through the schema registry, and keys are tenant-scoped under the configured prefix.
+
+Conformance: `storetest.EventLog` plus module scenario tests under testcontainers; `task adapters:verify` verifies the module from an isolated copy against the published root.

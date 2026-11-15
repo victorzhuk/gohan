@@ -25,6 +25,7 @@ tasks:
           go -C adapter/adkgo test -json -timeout 2m -short ./... || { echo "leg failed: adapter/adkgo" >&2; exit 1; };
           go -C adapter/docker test -json -timeout 10m -short ./... || { echo "leg failed: adapter/docker" >&2; exit 1; };
           go -C adapter/postgres test -json -timeout 2m -short ./... || { echo "leg failed: adapter/postgres" >&2; exit 1; };
+          go -C adapter/redis test -json -timeout 2m -short ./... || { echo "leg failed: adapter/redis" >&2; exit 1; };
           go -C examples test -json -timeout 2m -short ./... || { echo "leg failed: examples" >&2; exit 1; }; } |
           python3 tools/spec_coverage.py {{.CLI_ARGS}}
 
@@ -44,6 +45,7 @@ tasks:
           go -C adapter/adkgo test -json -timeout 2m -short ./... || { echo "leg failed: adapter/adkgo" >&2; exit 1; };
           go -C adapter/docker test -json -timeout 10m -short ./... || { echo "leg failed: adapter/docker" >&2; exit 1; };
           go -C adapter/postgres test -json -timeout 10m -short -tags full ./... || { echo "leg failed: adapter/postgres" >&2; exit 1; };
+          go -C adapter/redis test -json -timeout 2m -short ./... || { echo "leg failed: adapter/redis" >&2; exit 1; };
           go -C examples test -json -timeout 2m -short ./... || { echo "leg failed: examples" >&2; exit 1; }; } |
           python3 tools/spec_coverage.py --gate '{{.GATE}}'
 
@@ -85,6 +87,13 @@ tasks:
       - golangci-lint run {{.CLI_ARGS}}
       - golangci-lint run -c examples/.golangci.yml ./examples/... {{.CLI_ARGS}}
       - go -C adapter/postgres run ./internal/lint/cmd/pgtxlint ../../examples/...
+      - task: lint:redis
+
+  lint:redis:
+    internal: true
+    dir: adapter/redis
+    cmds:
+      - golangci-lint run -c ../../.golangci.yml ./...
 
   test:
     desc: Run short unit tests
@@ -98,12 +107,14 @@ tasks:
       - go -C adapter/adkgo test -timeout 2m -short{{if .FILTER}} -run '{{.FILTER}}'{{end}} ./...
       - go -C adapter/docker test -timeout 10m -short{{if .FILTER}} -run '{{.FILTER}}'{{end}} ./...
       - go -C adapter/postgres test -timeout 2m -short{{if .FILTER}} -run '{{.FILTER}}'{{end}} ./...
+      - go -C adapter/redis test -timeout 2m -short{{if .FILTER}} -run '{{.FILTER}}'{{end}} ./...
       - go -C examples test -timeout 2m -short{{if .FILTER}} -run '{{.FILTER}}'{{end}} ./...
 
   test:full:
     desc: Run the store conformance suites under testcontainers (needs Docker)
     cmds:
       - go -C adapter/postgres test -timeout 30m -tags full ./...
+      - go -C adapter/redis test -timeout 30m -tags full ./...
       - go test -timeout 10m -tags full ./...
 
   examples:test:

@@ -5,7 +5,7 @@
 // requires a clean go mod tidy
 // -diff, downloads and verifies the declared published dependencies with
 // default checksum verification, builds the module and runs its conformance
-// tests (never in short mode, with -tags full for PostgreSQL) with
+// tests (never in short mode, with -tags full for PostgreSQL and Redis) with
 // GOWORK=off. It parses the go test -json events and fails unless every
 // required conformance entry point was observed passing. It is
 // verification-only: it never creates a tag, a release or a publication.
@@ -37,6 +37,7 @@ var defaultModules = []string{
 	"adapter/openai",
 	"adapter/otel",
 	"adapter/postgres",
+	"adapter/redis",
 }
 
 // requiredConformance maps a module directory base name to the conformance
@@ -60,16 +61,25 @@ var requiredConformance = map[string][]string{
 		"TestNotes",
 		"TestRedaction",
 	},
+	"redis": {
+		"TestEventLog",
+		"TestRedisEventLogScenarios",
+		"TestRedisPoolScenarios",
+	},
 }
 
 // expectedRoot returns the published root version the adapter in dir must
 // pin. adapter/otel consumes the telemetry export contracts first published
-// in root v0.3.0; every other adapter pins the lowest verified root v0.2.0.
+// in root v0.3.0; adapter/redis consumes the published record-envelope and
+// event-log contracts from the same release; every other adapter pins the
+// lowest verified root v0.2.0.
 func expectedRoot(dir string) string {
-	if filepath.Base(dir) == "otel" {
+	switch filepath.Base(dir) {
+	case "otel", "redis":
 		return "v0.3.0"
+	default:
+		return "v0.2.0"
 	}
-	return "v0.2.0"
 }
 
 func main() {
@@ -259,7 +269,8 @@ func compareManifests(dir, copyGoMod, copyGoSum string, srcMod, srcSum []byte) e
 // returns the top-level tests observed passing and skipped.
 func runConformance(ctx context.Context, copyDir, dir string, env []string, stdout, stderr io.Writer) (map[string]bool, map[string]bool, error) {
 	argv := []string{"test", "-json", "-timeout", "10m", "-p", "2", "-parallel", "2"}
-	if filepath.Base(dir) == "postgres" {
+	switch filepath.Base(dir) {
+	case "postgres", "redis":
 		argv = append(argv, "-tags", "full")
 	}
 	argv = append(argv, "./...")

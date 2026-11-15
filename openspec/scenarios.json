@@ -607,6 +607,42 @@
     "title": "daily pool budget",
     "deferred_to": "M3"
   },
+  "stores.redis-limiter-store-clock": {
+    "capability": "stores",
+    "origin": "m3-redis-stores",
+    "title": "limiter decided on store clock",
+    "deferred_to": "M3"
+  },
+  "stores.redis-admission-class-share": {
+    "capability": "stores",
+    "origin": "m3-redis-stores",
+    "title": "admission class share",
+    "deferred_to": "M3"
+  },
+  "stores.redis-pool-budget-window-reset": {
+    "capability": "stores",
+    "origin": "m3-redis-stores",
+    "title": "pool budget window reset",
+    "deferred_to": "M3"
+  },
+  "stores.redis-eventlog-shared-reattach": {
+    "capability": "stores",
+    "origin": "m3-redis-stores",
+    "title": "shared eventlog reattach",
+    "deferred_to": "M3"
+  },
+  "stores.redis-eventlog-compaction-idempotent": {
+    "capability": "stores",
+    "origin": "m3-redis-stores",
+    "title": "eventlog compaction idempotent",
+    "deferred_to": "M3"
+  },
+  "stores.redis-conformance-parity": {
+    "capability": "stores",
+    "origin": "m3-redis-stores",
+    "title": "conformance parity",
+    "deferred_to": "M3"
+  },
   "stores.retention-by-partition": {
     "capability": "stores",
     "origin": "R5u",
