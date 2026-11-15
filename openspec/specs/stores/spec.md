@@ -8,7 +8,6 @@ Capability: `stores` · Spec v1.10 (ADR-0133) · Source of truth for this capabi
 
 See `docs/overview.md` for how `stores` fits the architecture. Out of scope for this capability is anything owned by another capability spec; cross-references are by capability name.
 
-
 ## Contract
 
 ### 6.13 Stores
@@ -436,7 +435,6 @@ Contracts:
 - `adapter/postgres` adds `func (j *Journal) CompleteTx(ctx context.Context, tx pgx.Tx, k gohan.CallKey, res gohan.ToolResult) error`.
 - **Postgres schema.** Every table lives in schema `gohan` (or the name given by `postgres.WithSchema`, so two stacks may share one database) as `<store>_<record>`; users never alter these tables and extend by their own tables keyed on gohan ids; `sqlc` queries are the only SQL in the adapter. Migrations are embedded goose SQL files applied by `postgres.Migrate(ctx, pool, MigrateOptions{Schema, TargetVersion})` under an advisory lock (concurrent pods serialise) and by the `gohan-postgres migrate` command (JSON output when stdout is not a TTY). The intended place is the deploy pipeline or a pre-install hook with a DDL role; `postgres.WithAutoMigrate()` is for development and `Build` refuses it when `CostTags.Environment` is `production`. DDL versions are separate from record `SchemaVersion`s. **Skew rule:** each release runs against the previous release's schema and the next one — added columns are nullable or defaulted and not read until the following release, drops happen two releases after the last reader; `postgres.New` reads `gohan.schema_version` and fails with `ErrSchemaTooOld` below its `MinSchema`, and `Build` warns `gohan.postgres.schema_ahead` when the schema is newer than the code. Time-partitioned tables (`journal`, `events`, `audit`, `outputs`, `session_log`) have partitions created 14 days ahead by `Migrate` and thereafter by `postgres.Maintain(ctx)` on the reaper cadence; a write into a missing partition fails with `ErrPartitionMissing`, never a default partition. `storetest.Migrations` runs every store suite on a fresh install at head and on an install migrated step by step from the first version, and requires both schemas to be identical.
 
-
 ### Session workspace metadata
 
 `SessionWorkspaceMeta` is such a surface on `SessionLog`: `WorkspaceMeta` reads the durable per-session workspace pointer and reports absence, `SetWorkspaceMeta` compares the expected generation and validates the current lease owner in one atomic write and returns `types.ErrVersionConflict` on a stale token or `types.ErrRunNotActive` on a stale owner, and `ImportWorkspaceMeta` writes one legacy generation-zero ref into absent metadata. A `SessionLog` that does not implement the surface keeps every other operation unchanged, and core MUST refuse a `PerSession` build that wires no durable workspace-metadata surface.
@@ -513,7 +511,6 @@ ID: `stores.reclaim-race`
 - WHEN 10 reapers call `Reclaim` on the same stale run
 - THEN exactly one succeeds
 
-
 ### Requirement: Two clocks
 
 Stores MUST compute and compare persisted instants using their own clocks.
@@ -538,7 +535,6 @@ ID: `stores.memstore-clock-jump`
 - WHEN `memory.New(memory.WithNow(clock))` is used and `clock` is advanced past `LeaseTTL` without a heartbeat
 - THEN `Stale(ctx, LeaseTTL, 10)` lists the run
 
-
 ### Requirement: Exactly-once tool effects
 
 `adapter/postgres` MUST expose `CompleteTx(ctx context.Context, tx pgx.Tx, k gohan.CallKey, res gohan.ToolResult) error` on its concrete `Journal` so a caller-owned `pgx.Tx` carries a tool's own write and the journal completion to one commit; a rollback MUST leave neither. `Complete` and `CompleteTx` MUST share one guarded statement path, so a key with no live reservation is refused with `ErrJournalCompleteMissed` on either, and `CompleteTx` MUST NOT commit — the caller owns the transaction.
@@ -557,7 +553,6 @@ ID: `stores.crash-window`
 ID: `stores.same-transaction-journal`
 - WHEN a postgres-backed tool inserts a booking and calls `CompleteTx` in the same `pgx.Tx`, and the tx rolls back
 - THEN neither the booking nor the journal entry exists
-
 
 ### Requirement: Intent-level idempotency and uncertainty
 
@@ -593,7 +588,6 @@ ID: `stores.complete-without-reservation`
 - WHEN a completion arrives for a key that is expired or was never reserved
 - THEN it is refused with `ErrJournalCompleteMissed`, so the caller cannot report a clean run over an unrecorded result
 
-
 ### Requirement: Optional interfaces
 
 An optional surface MUST be discovered by type assertion, and the spec that introduces it MUST state core's behaviour when the assertion fails.
@@ -608,7 +602,6 @@ ID: `stores.optional-preempted-lister-fallback`
 - WHEN a `Runs` implementation does not implement `PreemptedLister` and a run was preempted
 - THEN `Recover` completes without error, the run stays `Suspended` and `Resume(token, Continue())` still works
 
-
 ### Requirement: Notice outbox
 
 `Finish` and `Suspend` MUST append a `RunNotice` (`streams`) in the same transaction as the state change; a crash after the transaction never loses the notice and a crash before it never emits one.
@@ -617,7 +610,6 @@ ID: `stores.optional-preempted-lister-fallback`
 ID: `stores.notice-written-with-finish`
 - WHEN the pod crashes right after `Runs.Finish` commits and before any delivery
 - THEN another pod's dispatcher claims the notice through `Notices` and delivers it; an unacknowledged claim returns to pending and a redelivery carries the same notice id, which is the consumer's idempotency key (`streams`)
-
 
 ### Requirement: Run mailbox
 
@@ -632,7 +624,6 @@ ID: `stores.signal-cancel-cross-pod`
 ID: `stores.mailbox-full`
 - WHEN eleven steers are posted before the holder drains
 - THEN the eleventh returns `ErrMailboxFull` and the first ten are delivered in order
-
 
 ### Requirement: Session index
 
@@ -663,7 +654,6 @@ ID: `stores.purge-respects-pinned-and-archived`
 - WHEN `Purge` runs with a 30-day threshold over a pinned session, an archived session 200 days old and an archived one 100 days old
 - THEN the pinned session stays, the 200-day archived one is purged and the 100-day one stays
 
-
 ### Requirement: Forking
 
 `Stores.ForkSession(from, upTo)` MUST create a new session with the parent's history prefix through `upTo`, preserving message IDs, origins and compaction blocks.
@@ -688,7 +678,6 @@ ID: `stores.reconstruct-crosses-fork`
 - WHEN `Reconstruct` runs on a fork
 - THEN the trail starts with the parent's records through `UpTo`, a fork marker, then the fork's own records
 
-
 ### Requirement: Feedback store
 
 Feedback MUST be removed with its session on erasure or deletion.
@@ -697,7 +686,6 @@ Feedback MUST be removed with its session on erasure or deletion.
 ID: `stores.feedback-cascades-on-erase`
 - WHEN `EraseSubject` or `DeleteSession` runs for a session with feedback rows
 - THEN `FeedbackStore.Feedback(sessionID)` returns nothing and audit keeps the `feedback` records with checksums only
-
 
 ### Requirement: Retention and legal hold
 
@@ -723,7 +711,6 @@ ID: `stores.purge-audited`
 - WHEN `Maintain` purges twelve sessions of tenant `t1`
 - THEN one audit record `purge` for `t1` names the tenant, the policy in force and the per-store counts, and no content
 
-
 ### Requirement: Session deletion
 
 `Stores.DeleteSession` MUST delete the session and its dependent records while retaining audit records with content checksums only.
@@ -732,7 +719,6 @@ ID: `stores.purge-audited`
 ID: `stores.delete-cascades`
 - WHEN `Stores.DeleteSession` is called for a session with checkpoints, journal entries, outputs, notes and events
 - THEN the session, its child and shadow sessions, and every dependent record are removed from all stores; audit records remain with content checksums only; a session under a hold fails with `ErrSessionHeld` first, and otherwise a live lease makes the call fail with `ErrRunActive`
-
 
 ### Requirement: Audit trail
 
@@ -768,7 +754,6 @@ ID: `stores.hash-chain`
 - WHEN a record in the middle of a session is modified in the store
 - THEN `Reconstruct` reports a chain break at that record
 
-
 ### Requirement: Checkpoint versioning and quota pools
 
 A checkpoint MUST carry the backend and backend version that wrote it, and the additive `WorkspaceGeneration int64` field names the session workspace generation the checkpoint's ref was published at; a checkpoint written before this field reads it as zero, which restores only a session that holds no durable workspace metadata.
@@ -797,7 +782,6 @@ ID: `stores.batch-yields-to-interactive`
 ID: `stores.daily-pool-budget`
 - WHEN `pool/day` spend reaches its limit
 - THEN new model calls on that pool fail `Permanent` with `*LimitExceededError{Limit: "pool/day"}` until the window resets
-
 
 ### Requirement: Postgres contract
 
@@ -863,7 +847,6 @@ ID: `stores.bloat-bound`
 - WHEN `storetest.Bloat` runs 1 M reserve/complete cycles
 - THEN p99 `Reserve` stays under the bound and dead tuples stay bounded
 
-
 ### Requirement: Postgres schema ownership and maintenance
 
 `adapter/postgres` MUST own schema upkeep: `Migrate` applies embedded versions under one advisory lock to `TargetVersion`; `gohan-postgres migrate` drives it offline; `Maintain` creates time partitions, reaps dead runs via `SKIP LOCKED` with coalesced heartbeats and drops aged partitions. Deployments MUST run expand migrations before rollouts and contract migrations only after all readers serve the new shape.
@@ -888,7 +871,6 @@ ID: `stores.pg-hot-runs-reaping`
 - WHEN dead runs accumulate while active runs heartbeat every interval and a reaper runs under live workers
 - THEN reaping takes bounded `SKIP LOCKED` batches without blocking workers, heartbeats coalesce to one row update per run and the hot table stays within its row bound
 
-
 ### Requirement: Postgres output claim ledger
 
 `adapter/postgres.Outputs.Put` MUST record one claim per `(ref, session)`, so a ref written again by another session keeps a claim for each. A ref MUST live until its last claim drops; subject erasure and the session cascade MUST drop only their own claims and MUST delete a ref only when no claim remains. `CopySessionDependents` MUST give a fork a claim on each ref the parent owns.
@@ -903,7 +885,6 @@ ID: `stores.pg-output-last-claim-deletes-ref`
 - WHEN the last claim on a ref drops through a session delete
 - THEN `Get(ref)` returns `stores.ErrOutputNotFound`
 
-
 ### Requirement: Postgres output claim backfill
 
 The migration MUST create session claims for surviving persisted references whose session and owner are reconstructable. When no session attribution survives, it MUST preserve every `output_record` tenant and subject as a legacy owner claim and MUST NOT invent a synthetic session. A ref MUST stay live while a session claim or a legacy owner claim exists, and a claim change MUST run under a ref-keyed advisory lock taken in sorted order.
@@ -917,7 +898,6 @@ ID: `stores.pg-output-legacy-claims-preserved`
 ID: `stores.pg-output-put-erase-race`
 - WHEN `Put` for one ref and the removal of that ref's last claim run concurrently
 - THEN the ref survives with exactly one claim and `Get(ref)` returns the canonical bytes
-
 
 ### Requirement: Postgres session index pagination
 
@@ -963,7 +943,6 @@ ID: `stores.pg-sessions-cursor-invalid`
 - WHEN a cursor is malformed, missing, or used with different filters
 - THEN the adapter refuses it without restarting
 
-
 ### Requirement: Postgres journal reservation atomicity
 
 `adapter/postgres.Journal.Reserve` and `ReserveTx` MUST make a first reservation atomic: a missing row's `SELECT ... FOR UPDATE` MUST NOT be the only guard. The adapter MUST insert with conflict handling and then read the row under `FOR UPDATE`, so concurrent first reservations of one `CallKey` yield exactly one `created=true` and the others reuse or refresh the winner's entry.
@@ -972,7 +951,6 @@ ID: `stores.pg-sessions-cursor-invalid`
 ID: `stores.pg-journal-concurrent-reserve`
 - WHEN ten goroutines `Reserve` the same fresh `CallKey`
 - THEN exactly one gets `created=true` and no caller receives a unique-violation error
-
 
 ### Requirement: Postgres operation-id uniqueness
 
@@ -983,7 +961,6 @@ ID: `stores.pg-operation-id-cross-session-race`
 - WHEN two concurrent `Start` calls on different sessions use the same tenant `OperationID`
 - THEN exactly one succeeds and the other gets `stores.OperationExistsError{RunID}` naming the recorded run
 
-
 ### Requirement: Postgres notice claim exclusivity
 
 `adapter/postgres.Runs.Notices` MUST claim each pending notice with a guarded claim that succeeds for one dispatcher only, so two concurrent dispatchers never receive the same notice id. An unacknowledged claim MUST expire after `LeaseTTL` and return the notice to pending with its id unchanged.
@@ -993,7 +970,6 @@ ID: `stores.pg-notice-claim-exclusive`
 - WHEN two dispatchers call `Notices` at the same time
 - THEN no notice id is returned to both, and after the claim expires the notice returns to pending with the same id
 
-
 ### Requirement: Postgres session cascade atomicity
 
 `adapter/postgres.SessionLog` `Delete`, `Purge` and `EraseSessions` MUST delete dependents inside the session-delete transaction through package-local transaction methods on the concrete `Runs`, `Notes`, `Outputs` and `Checkpoints` stores. A rollback MUST preserve the session and all dependent rows, and a commit MUST remove them all.
@@ -1002,7 +978,6 @@ ID: `stores.pg-notice-claim-exclusive`
 ID: `stores.pg-cascade-in-one-transaction`
 - WHEN a session delete removes dependent rows and the transaction rolls back
 - THEN no dependent row is removed, and on commit the session and every dependent row are gone
-
 
 ### Requirement: Postgres session run discovery
 
@@ -1022,7 +997,6 @@ ID: `stores.pg-run-for-session-none`
 ID: `stores.pg-run-for-session-ineligible`
 - WHEN the only run for a session is `Suspended`, terminal, or holds a null lease
 - THEN `RunForSession` returns `stores.ErrRunNotFound`
-
 
 ### Requirement: Session run discovery
 
@@ -1188,3 +1162,36 @@ ID: `stores.run-cost-optional`
 - WHEN one run finishes on a store implementing `RunCostRecorder` and another on a store without it
 - THEN the first run's row reports the recorded spend and the second row keeps zero without an error
 
+### Requirement: Redis contract
+
+`adapter/redis` MUST provide quota pool limiting, class admission, `pool/day` breaker and `EventLog` behind `ModelProfile.QuotaPool` in module `github.com/victorzhuk/gohan/adapter/redis`. Windows, expiry, staleness MUST use Redis server time; callers MUST pass durations. Stores MUST match memory and Postgres port methods and refusals and pass `storetest`. It MUST NOT implement SessionLog/Checkpoints/Journal/Runs/AuditLog/OutputStore/NotesStore/RedactionMaps.
+
+#### Scenario: limiter decided on store clock
+ID: `stores.redis-limiter-store-clock`
+- WHEN a caller whose wall clock is minutes ahead admits against the pool
+- THEN the window boundaries and refill come from Redis server time and the caller cannot extend or shorten its share
+
+#### Scenario: admission class share
+ID: `stores.redis-admission-class-share`
+- WHEN the pool is near saturation and `Interactive`, `Agentic` and `Batch` requests contend
+- THEN `Interactive` is admitted from its reserved share first and `Batch` requests are deferred while queue-wait exceeds the threshold
+
+#### Scenario: pool budget window reset
+ID: `stores.redis-pool-budget-window-reset`
+- WHEN `pool/day` spend reaches its limit and the UTC day passes on Redis server time
+- THEN admission resumes without any caller action and spend restarts from zero for the new window
+
+#### Scenario: shared eventlog reattach
+ID: `stores.redis-eventlog-shared-reattach`
+- WHEN a client of another service reconnects with `Last-Event-ID` against the shared Redis `EventLog`
+- THEN events after that `Seq` replay with no gap and no duplicate, and a cursor older than retained entries is refused instead of served with a gap
+
+#### Scenario: eventlog compaction idempotent
+ID: `stores.redis-eventlog-compaction-idempotent`
+- WHEN the same compaction publication is appended twice to the Redis `EventLog`
+- THEN the first append commits and the second returns the original version appending nothing
+
+#### Scenario: conformance parity
+ID: `stores.redis-conformance-parity`
+- WHEN the `storetest` suites run against the redis implementations with testcontainers
+- THEN the suites pass with the same sentinel refusals and envelope shapes as the memory and Postgres implementations
