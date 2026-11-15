@@ -184,9 +184,10 @@ func runSubflow[In, Out any](ctx context.Context, s *Stack, f Flow[In, Out], cfg
 	if info.SessionID != "" {
 		childInfo.SessionID = info.SessionID + "/" + childID
 	}
+	start := time.Now()
 	childCtx := chains.WithLimitsState(
 		types.WithRunInfo(types.WithoutRunIdentity(ctx), childInfo),
-		ledger.Branch(),
+		ledger.BranchInherited(wall, start),
 	)
 	childCtx = types.WithRunBudget(childCtx, types.RunBudget{
 		WallClock: wall,
@@ -204,7 +205,6 @@ func runSubflow[In, Out any](ctx context.Context, s *Stack, f Flow[In, Out], cfg
 		stopHeartbeat = startLeaseHeartbeat(ctx, s.stores.Runs, lease, &lease)
 	}
 	before := ledger.TreeCost()
-	start := time.Now()
 	out, callErr := f.Invoke(childCtx, in)
 	spent := ledger.TreeCost() - before
 	var storeErr error

@@ -379,10 +379,15 @@ func (h *chainHarness) mustResumeAndComplete(t *testing.T, spec string, tok Resu
 // mustRefuseConsumed presents a token the chain already consumed.
 func (h *chainHarness) mustRefuseConsumed(t *testing.T, spec string, tok ResumeToken) {
 	t.Helper()
+	observed := false
 	for _, err := range h.conv(t, spec).Resume(nrrCtx(), tok, Approve()) {
+		observed = true
 		if !errors.Is(err, types.ErrTokenConsumed) {
 			t.Fatalf("resume of consumed token = %v, want ErrTokenConsumed", err)
 		}
+	}
+	if !observed {
+		t.Fatalf("resume of consumed token %s succeeded: token was accepted instead of refused with ErrTokenConsumed", tok)
 	}
 }
 

@@ -546,6 +546,13 @@ func (c *conversation) Resume(ctx context.Context, t ResumeToken, r stores.Resum
 		// never under a re-derivation.
 		if env.Budget != nil {
 			runCtx = types.WithRunBudget(runCtx, types.RunBudget(*env.Budget))
+			// The ledger must enforce the recorded wall clock too: a
+			// fresh one would re-derive from the configured limit and
+			// over-grant past the inherited budget.
+			if env.Budget.WallClock > 0 && ledger != nil {
+				ledger = ledger.BranchInherited(env.Budget.WallClock, time.Now())
+				runCtx = chains.WithLimitsState(runCtx, ledger)
+			}
 		}
 		if chainResume {
 			head, herr := chainResumeHead(&st)

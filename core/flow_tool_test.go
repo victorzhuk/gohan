@@ -210,6 +210,62 @@ func TestSubflowsLimits(t *testing.T) {
 		}
 	})
 
+	t.Run("subflow nested derivation clamps to the inherited wall clock", func(t *testing.T) {
+		parentLimits := subflowLimits(func(l *types.RunLimits) {
+			l.MaxWallClock = 30 * time.Minute
+			l.MaxDepth = 3
+		})
+		s, err := Build(WithLimits("parent", parentLimits))
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		parentLedger := chains.NewLimitsState()
+		if _, err := parentLedger.WallClockLeft(parentLimits, time.Now().Add(-26*time.Minute)); err != nil {
+			t.Fatalf("backdate ledger: %v", err)
+		}
+		var grandBudget types.RunBudget
+		var grandOK bool
+		grand := FlowFunc[subflowIn, subflowOut]("grand", func(ctx context.Context, _ subflowIn) (subflowOut, error) {
+			grandBudget, grandOK = types.RunBudgetFrom(ctx)
+			return subflowOut{}, nil
+		}, AllowAnonymousFlow())
+		grandTool, err := s.FlowAsTool("grand", grand,
+			WithDescription("grandchild flow"),
+			WithChildLimits(types.ChildLimits{MaxWallClock: 20 * time.Minute}),
+		)
+		if err != nil {
+			t.Fatalf("grand flow as tool: %v", err)
+		}
+		child := FlowFunc[subflowIn, subflowOut]("child", func(ctx context.Context, _ subflowIn) (subflowOut, error) {
+			_, err := grandTool.Call(ctx, nil)
+			return subflowOut{}, err
+		}, AllowAnonymousFlow())
+		childTool, err := s.FlowAsTool("child", child,
+			WithDescription("child flow"),
+			WithChildLimits(types.ChildLimits{MaxWallClock: 10 * time.Minute}),
+		)
+		if err != nil {
+			t.Fatalf("child flow as tool: %v", err)
+		}
+		info := types.RunInfo{
+			RunID:     "run-mid",
+			RootRunID: "run-parent",
+			SessionID: "s1",
+			Flow:      "parent",
+			Depth:     1,
+		}
+		ctx := chains.WithLimitsState(types.WithRunInfo(context.Background(), info), parentLedger)
+		if _, err := childTool.Call(ctx, nil); err != nil {
+			t.Fatalf("child call: %v", err)
+		}
+		if !grandOK {
+			t.Fatal("no run budget in grandchild ctx")
+		}
+		if grandBudget.WallClock <= 3*time.Minute || grandBudget.WallClock > 4*time.Minute {
+			t.Errorf("grandchild wall clock %s: want in (3m, 4m]", grandBudget.WallClock)
+		}
+	})
+
 	t.Run("subflows.fixed-cost-share", func(t *testing.T) {
 		s := subflowBuild(t, func(l *types.RunLimits) { l.MaxCost = 0.50 })
 		child := FlowFunc[subflowIn, subflowOut]("child", func(ctx context.Context, _ subflowIn) (subflowOut, error) {

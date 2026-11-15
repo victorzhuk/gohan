@@ -4,6 +4,10 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ## [Unreleased]
 
+### Fixed
+
+- A nested sub-flow derives its wall clock from the calling flow's inherited budget, and a resumed level is enforced under its recorded budget, so a depth-2 child can no longer outlive the budget its parent holds.
+
 ## [0.3.0] - 2026-11-15
 
 ### Added

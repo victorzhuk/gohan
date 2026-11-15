@@ -26,6 +26,9 @@ type LimitsState struct {
 	tree     *treeSpend
 	tel      types.Telemetry
 
+	// inheritedWall is the parent's remaining wall clock a sub-flow
+	// branch runs under; zero keeps the branch on its configured limit.
+	inheritedWall  time.Duration
 	sandboxSeconds float64
 	sandboxTree    *treeSpend
 
@@ -81,6 +84,25 @@ func (s *LimitsState) Branch() *LimitsState {
 	}
 	s.mu.Unlock()
 	return &LimitsState{tree: t, sandboxTree: sb}
+}
+
+// BranchInherited branches like Branch and additionally caps the branch's
+// wall clock at wall, measured from start: a sub-flow must never run
+// longer than the budget its caller still holds.
+func (s *LimitsState) BranchInherited(wall time.Duration, start time.Time) *LimitsState {
+	b := s.Branch()
+	b.inheritedWall = wall
+	b.start = start
+	return b
+}
+
+// wallClockLimit is the effective limit a call runs under: the configured
+// MaxWallClock clamped to the branch's inherited budget when one exists.
+func (s *LimitsState) wallClockLimit(l types.RunLimits) time.Duration {
+	if s.inheritedWall > 0 {
+		return min(l.MaxWallClock, s.inheritedWall)
+	}
+	return l.MaxWallClock
 }
 
 // TreeCost reports the spend the whole run tree charged so far.
@@ -252,7 +274,7 @@ func (s *LimitsState) preCall(l types.RunLimits, now time.Time) (time.Duration, 
 			return 0, &types.LimitExceededError{Limit: "MaxTurns", Value: float64(s.turns)}
 		}
 	}
-	remaining := l.MaxWallClock - now.Sub(s.start)
+	remaining := s.wallClockLimit(l) - now.Sub(s.start)
 	if remaining <= 0 {
 		return 0, &types.LimitExceededError{Limit: "MaxWallClock", Value: now.Sub(s.start).Seconds()}
 	}
@@ -381,7 +403,7 @@ func (s *LimitsState) preToolCall(l types.RunLimits, now time.Time) (time.Durati
 	if spend, over := s.sandboxSpend(l); over {
 		return 0, &types.LimitExceededError{Limit: "MaxSandboxSeconds", Value: spend}
 	}
-	remaining := l.MaxWallClock - now.Sub(s.start)
+	remaining := s.wallClockLimit(l) - now.Sub(s.start)
 	if remaining <= 0 {
 		return 0, &types.LimitExceededError{Limit: "MaxWallClock", Value: now.Sub(s.start).Seconds()}
 	}
@@ -466,7 +488,7 @@ func (s *LimitsState) ChargeModelCall(l types.RunLimits, now time.Time) (time.Du
 	if l.MaxTurns > 0 {
 		s.turns++
 	}
-	remaining := l.MaxWallClock - now.Sub(s.start)
+	remaining := s.wallClockLimit(l) - now.Sub(s.start)
 	if remaining <= 0 {
 		return 0, &types.LimitExceededError{Limit: "MaxWallClock", Value: now.Sub(s.start).Seconds()}
 	}
@@ -492,7 +514,7 @@ func (s *LimitsState) ChargeToolCall(l types.RunLimits, now time.Time) (time.Dur
 	if l.MaxToolCalls > 0 {
 		s.toolUses++
 	}
-	remaining := l.MaxWallClock - now.Sub(s.start)
+	remaining := s.wallClockLimit(l) - now.Sub(s.start)
 	if remaining <= 0 {
 		return 0, &types.LimitExceededError{Limit: "MaxWallClock", Value: now.Sub(s.start).Seconds()}
 	}
@@ -511,7 +533,7 @@ func (s *LimitsState) WallClockLeft(l types.RunLimits, now time.Time) (time.Dura
 	if spend, over := s.sandboxSpend(l); over {
 		return 0, &types.LimitExceededError{Limit: "MaxSandboxSeconds", Value: spend}
 	}
-	remaining := l.MaxWallClock - now.Sub(s.start)
+	remaining := s.wallClockLimit(l) - now.Sub(s.start)
 	if remaining <= 0 {
 		return 0, &types.LimitExceededError{Limit: "MaxWallClock", Value: now.Sub(s.start).Seconds()}
 	}
