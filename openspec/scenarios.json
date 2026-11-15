@@ -1091,6 +1091,42 @@
     "origin": "RPERF",
     "title": "regression gate"
   },
+  "performance.disconnect-storm-exactly-once": {
+    "capability": "performance",
+    "origin": "m3-s3-loadtest",
+    "title": "disconnect storm exactly once",
+    "deferred_to": "M3"
+  },
+  "performance.disconnect-storm-recovery": {
+    "capability": "performance",
+    "origin": "m3-s3-loadtest",
+    "title": "disconnect storm recovery",
+    "deferred_to": "M3"
+  },
+  "performance.noisy-neighbor-isolation": {
+    "capability": "performance",
+    "origin": "m3-s3-loadtest",
+    "title": "noisy neighbor isolation",
+    "deferred_to": "M3"
+  },
+  "performance.live-kafka-refunds-under-load": {
+    "capability": "performance",
+    "origin": "m3-s3-loadtest",
+    "title": "live kafka refunds under load",
+    "deferred_to": "M3"
+  },
+  "performance.live-temporal-travel-under-load": {
+    "capability": "performance",
+    "origin": "m3-s3-loadtest",
+    "title": "live temporal travel under load",
+    "deferred_to": "M3"
+  },
+  "performance.live-camunda-invoice-under-load": {
+    "capability": "performance",
+    "origin": "m3-s3-loadtest",
+    "title": "live camunda invoice under load",
+    "deferred_to": "M3"
+  },
   "context.projection-does-not-write": {
     "capability": "context",
     "origin": "ADR-0090",

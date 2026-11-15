@@ -178,3 +178,4 @@ tasks:
     desc: Run the base/head performance regression gate (BASE/HEAD overrides)
     cmds:
       - go run ./tools/performance_gate.go --base '{{.BASE | default "HEAD~1"}}' --head '{{.HEAD | default "HEAD"}}' --baselines core/performance_baselines.json
+      - go run ./tools/loadgate

@@ -27,5 +27,12 @@
   },
   "model_chain": {
     "allocs_per_op": 12
+  },
+  "noisy_neighbor": {
+    "max_ratio": 4.17,
+    "measured_ratio": 2.011,
+    "measured_max_step_ratio": 5.5897,
+    "reference_steps": 8,
+    "note": "advisory: the bound gates the mean per-step ratio; the worst single-step ratio is recorded as diagnostics only because an 8-step sample is not reproducible across runs; measurements are advisory, taken 2026-11-15 on the developer workstation class, not the reference runner"
   }
 }

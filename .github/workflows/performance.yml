@@ -25,3 +25,5 @@ jobs:
             --head "${{ github.sha }}" \
             --baselines core/performance_baselines.json \
             --latency
+      - name: load gate
+        run: go run ./tools/loadgate --latency
