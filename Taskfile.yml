@@ -45,7 +45,7 @@ tasks:
           go -C adapter/adkgo test -json -timeout 2m -short ./... || { echo "leg failed: adapter/adkgo" >&2; exit 1; };
           go -C adapter/docker test -json -timeout 10m -short ./... || { echo "leg failed: adapter/docker" >&2; exit 1; };
           go -C adapter/postgres test -json -timeout 10m -short -tags full ./... || { echo "leg failed: adapter/postgres" >&2; exit 1; };
-          go -C adapter/redis test -json -timeout 2m -short ./... || { echo "leg failed: adapter/redis" >&2; exit 1; };
+          go -C adapter/redis test -json -timeout 10m -short -tags full ./... || { echo "leg failed: adapter/redis" >&2; exit 1; };
           go -C examples test -json -timeout 2m -short ./... || { echo "leg failed: examples" >&2; exit 1; }; } |
           python3 tools/spec_coverage.py --gate '{{.GATE}}'
 
