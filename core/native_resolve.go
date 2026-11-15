@@ -158,6 +158,11 @@ func (s *Stack) resolveNative(defs []NativeSpec, profiles map[string]types.Model
 		if err != nil {
 			return err
 		}
+		if plan.Structured == StructuredConstrained && len(spec.ModelOptions.ResponseSchema) > 0 {
+			if err := types.ValidateStrictSchema(spec.ModelOptions.ResponseSchema); err != nil {
+				return fmt.Errorf("flow %q: %w", name, err)
+			}
+		}
 		if err := s.CheckFidelity(req, profiles, spec.Profile); err != nil {
 			return err
 		}

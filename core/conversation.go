@@ -51,8 +51,9 @@ type SessionRunFinder interface {
 }
 
 var (
-	errConversationRuns   = errors.New("gohan: conversation needs a runs store")
-	errConversationEvents = errors.New("gohan: conversation needs an event log")
+	errConversationRuns     = errors.New("gohan: conversation needs a runs store")
+	errConversationEvents   = errors.New("gohan: conversation needs an event log")
+	errShadowRequiresNative = errors.New("gohan: shadow mode needs a native conversation")
 )
 
 type conversation struct {
@@ -109,6 +110,10 @@ type conversation struct {
 	titled         map[string]bool
 	flags          types.Flags
 	frozen         map[string]any
+	releaseID      string
+	variant        string
+	variantFlag    string
+	shadow         bool
 
 	mu      sync.Mutex
 	live    map[string]string
@@ -127,6 +132,10 @@ func (c *conversation) bindStack(stack *Stack) {
 	c.titleProfile = stack.titleProfile
 	c.flags = stack.flags
 	c.frozen = stack.frozen
+	c.releaseID = stack.releaseID
+	c.variant = stack.variant
+	c.variantFlag = stack.variantFlag
+	c.shadow = stack.shadow
 }
 
 // markRunEnded records that the run produced its last event and wakes any
@@ -216,6 +225,9 @@ func (c *conversation) verifyOptions(opts []LifecycleOption) []LifecycleOption {
 func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...ConversationOption) (Conversation, error) {
 	c := &conversation{spec: spec, rt: rt, live: map[string]string{}}
 	if stack != nil {
+		if stack.shadow {
+			return nil, errShadowRequiresNative
+		}
 		c.stack = stack
 		c.tenant = stack.Tenant()
 		c.log = stack.stores.SessionLog
@@ -236,6 +248,10 @@ func NewConversation(stack *Stack, spec string, rt runtime.Runtime, opts ...Conv
 		c.recipeModel = stack.RecipeModel
 		c.flags = stack.flags
 		c.frozen = stack.frozen
+		c.releaseID = stack.releaseID
+		c.variant = stack.variant
+		c.variantFlag = stack.variantFlag
+		c.shadow = stack.shadow
 		if l, ok := stack.Limits(spec); ok {
 			c.wall = l.MaxWallClock
 			c.stall = l.ConsumerStall
@@ -292,7 +308,7 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 			}
 			ctrl = v
 		}
-		if ctrl == stores.ControlHuman {
+		if ctrl == stores.ControlHuman && !c.shadow {
 			hist, err := c.load(ctx, sessionID)
 			if err != nil {
 				yield(nil, err)
@@ -322,10 +338,11 @@ func (c *conversation) Send(ctx context.Context, sessionID string, msg Message) 
 			return
 		}
 		lease, serr := c.runs.Start(ctx, stores.Run{
-			SessionID:   sessionID,
+			SessionID:   c.shadowSession(sessionID, runID),
 			RunID:       runID,
 			Flow:        c.spec,
 			OperationID: key,
+			Mode:        c.runMode(),
 		}, stores.LeaseTTL)
 		if serr != nil {
 			c.dropRun(runID)
@@ -367,7 +384,8 @@ func (c *conversation) runIdentityCtx(ctx context.Context, runID, sessionID stri
 		SessionID: sessionID,
 		RunID:     runID,
 		RootRunID: runID,
-		Mode:      types.Primary,
+		Mode:      c.runMode(),
+		ReleaseID: c.releaseID,
 		Residency: c.tenant.Residency,
 	}
 	if p, ok := types.PrincipalFrom(ctx); ok {
@@ -387,6 +405,9 @@ func (c *conversation) runIdentityCtx(ctx context.Context, runID, sessionID stri
 		// Cost attribution follows the caller's tags even though the run
 		// identity itself is rebuilt; identity must not survive, tags may.
 		info.CostTags = a.CostTags
+		if c.shadow && a.CostTags.Feature != "" {
+			info.CostTags.Feature += "/shadow"
+		}
 	}
 	if c.flags != nil && len(c.frozen) > 0 {
 		snap, err := SnapshotFlags(ctx, c.flags, types.FlagContext{
@@ -400,13 +421,15 @@ func (c *conversation) runIdentityCtx(ctx context.Context, runID, sessionID stri
 		} else {
 			info.Flags = snap
 		}
-		if c.consolidationAudit != nil {
+		if info.Mode != types.Shadow && c.consolidationAudit != nil {
 			rec := stores.AuditRecord{
 				Kind:      stores.AuditRunStarted,
 				SessionID: sessionID,
 				RunID:     runID,
 				RootRunID: runID,
 				Flow:      c.spec,
+				ReleaseID: info.ReleaseID,
+				Variant:   c.resolveVariant(info.Flags),
 				Tenant:    info.Principal.Tenant,
 				Subject:   info.Principal.Subject,
 			}
@@ -420,7 +443,36 @@ func (c *conversation) runIdentityCtx(ctx context.Context, runID, sessionID stri
 			}
 		}
 	}
+	info.Variant = c.resolveVariant(info.Flags)
 	return types.WithRunInfo(ctx, info)
+}
+
+// resolveVariant resolves the variant a run carries: the frozen flag
+// snapshot overrides the literal when the named flag is set.
+func (c *conversation) resolveVariant(flags map[string]any) string {
+	if c.variantFlag != "" {
+		if v, ok := flags[c.variantFlag]; ok {
+			return fmt.Sprint(v)
+		}
+	}
+	return c.variant
+}
+
+// runMode reports the mode every run of this conversation carries.
+func (c *conversation) runMode() types.RunMode {
+	if c.shadow {
+		return types.Shadow
+	}
+	return types.Primary
+}
+
+// shadowSession names the shadow session a shadow run appends to; the
+// primary id keeps owning journal keys and history reads.
+func (c *conversation) shadowSession(sessionID, runID string) string {
+	if !c.shadow {
+		return sessionID
+	}
+	return sessionID + "/shadow/" + runID
 }
 
 // appendInput loads the history and appends the acquired run's input under
@@ -428,15 +480,21 @@ func (c *conversation) runIdentityCtx(ctx context.Context, runID, sessionID stri
 // Failed, so the caller never leaks an active lease, and reports false
 // once the terminal error tuple is delivered.
 func (c *conversation) appendInput(ctx context.Context, lease stores.Lease, sessionID string, msg Message, yield func(Event, error) bool) bool {
-	hist, err := c.load(ctx, sessionID)
+	appendSession := c.shadowSession(sessionID, lease.RunID)
+	hist, err := c.load(ctx, appendSession)
 	if err == nil {
 		var stored []types.Message
 		stored, err = c.redactMessages(ctx, sessionID, []types.Message{msg})
 		if err == nil {
+			if c.shadow {
+				sinfo, _ := types.RunInfoFrom(ctx)
+				sinfo.SessionID = appendSession
+				ctx = types.WithRunInfo(ctx, sinfo)
+			}
 			err = c.spillInput(ctx, stored)
 		}
 		if err == nil {
-			_, err = c.log.Append(ctx, sessionID, hist.Version, stored...)
+			_, err = c.log.Append(ctx, appendSession, hist.Version, stored...)
 		}
 	}
 	if err != nil {
@@ -479,6 +537,9 @@ func (c *conversation) Cancel(ctx context.Context, sessionID string) error {
 	}
 	h, ok := c.runs.(stores.SessionLeaseHolder)
 	if !ok {
+		return nil
+	}
+	if run.Mode == types.Shadow {
 		return nil
 	}
 	deadline := time.Now().Add(stores.LeaseTTL)
@@ -569,7 +630,7 @@ func (c *conversation) stream(ctx context.Context, lease stores.Lease, sessionID
 			return
 		}
 	}
-	if completed {
+	if completed && !c.shadow {
 		go c.maybeTitle(ctx, sessionID)
 	}
 }
@@ -584,7 +645,7 @@ func (c *conversation) relay(ctx context.Context, runID string, ev Event, yield 
 		yield(nil, fmt.Errorf("redact event: %w", err))
 		return false
 	}
-	if err := c.events.Append(ctx, runID, stores.Event{Payload: stored, Meta: types.EventMeta{RunID: runID}}); err != nil {
+	if err := c.events.Append(ctx, runID, stores.Event{Payload: stored, Meta: c.eventMeta(ctx, runID)}); err != nil {
 		yield(nil, fmt.Errorf("record event: %w", err))
 		return false
 	}
@@ -598,6 +659,15 @@ func (c *conversation) relay(ctx context.Context, runID string, ev Event, yield 
 	}
 	c.notify(runID)
 	return true
+}
+
+// eventMeta builds the meta an appended event carries from the ctx run
+// info; the store stamps Seq and Time, so they stay zero here.
+func (c *conversation) eventMeta(ctx context.Context, runID string) types.EventMeta {
+	info, _ := types.RunInfoFrom(ctx)
+	meta := RunMeta(info, 0, time.Time{})
+	meta.RunID = runID
+	return meta
 }
 
 // reattach replays the recorded run's events from sequence 1.

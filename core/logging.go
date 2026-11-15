@@ -44,13 +44,15 @@ func runLoggerAttrs(info types.RunInfo) []slog.Attr {
 	return attrs
 }
 
-func modeAttr(m types.RunMode) slog.Attr {
-	switch m {
-	case types.Shadow:
-		return slog.String(types.KeyModeAttr, "shadow")
-	default:
-		return slog.String(types.KeyModeAttr, "primary")
+func runModeValue(m types.RunMode) string {
+	if m == types.Shadow {
+		return "shadow"
 	}
+	return "primary"
+}
+
+func modeAttr(m types.RunMode) slog.Attr {
+	return slog.String(types.KeyModeAttr, runModeValue(m))
 }
 
 // runLogger derives the per-run logger from the stack's logger, so the

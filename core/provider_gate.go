@@ -34,6 +34,14 @@ func providerDeclarationGate(cfg *resolvedNativeConfig) func(context.Context, ty
 				declared = append(declared, spec)
 				continue
 			}
+			// The provider executes the call inside Generate, so a
+			// shadow run can never suppress it after the fact: the
+			// declaration is omitted unless the tool is read-only.
+			if run.Mode == types.Shadow {
+				if spec.Effect != types.ReadOnly {
+					continue
+				}
+			}
 			dec := permission.DecideProviderTool(ctx, cfg.decider, spec, opts...)
 			switch dec.Verdict {
 			case permission.ProviderDeclare:

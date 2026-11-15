@@ -101,9 +101,36 @@ func WithSandboxRegistration(reg SandboxRegistration) Option {
 	}
 }
 
+// WithReleaseIdentity pins the release identity every run of this
+// conversation carries. variantFlag, when non-empty, names a frozen flag
+// whose snapshot value overrides variant at run start.
+func WithReleaseIdentity(releaseID, variant, variantFlag string) Option {
+	return func(c *config) error {
+		c.releaseID = releaseID
+		c.variant = variant
+		c.variantFlag = variantFlag
+		return nil
+	}
+}
+
+// WithShadowMode makes every run of this conversation a shadow run:
+// appends go to a shadow session, side effects replay or are suppressed,
+// suspensions finish terminally. The guarantee applies to native
+// conversations; foreign runtimes are not enforced.
+func WithShadowMode() Option {
+	return func(c *config) error {
+		c.shadow = true
+		return nil
+	}
+}
+
 type config struct {
 	flags              types.Flags
 	frozen             map[string]any
+	releaseID          string
+	variant            string
+	variantFlag        string
+	shadow             bool
 	controlWait        time.Duration
 	streamBuffer       int
 	latencyTimeouts    map[types.LatencyClass][3]time.Duration

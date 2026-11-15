@@ -140,6 +140,9 @@ type EventMeta struct {
 	ParentRunID string
 	Depth       int
 	Flow        string
+	ReleaseID   string
+	Variant     string
+	Mode        RunMode
 	Seq         int64
 	Time        time.Time
 }

@@ -62,6 +62,9 @@ func RunMeta(info types.RunInfo, seq int64, at time.Time) types.EventMeta {
 		ParentRunID: info.ParentRunID,
 		Depth:       info.Depth,
 		Flow:        info.Flow,
+		ReleaseID:   info.ReleaseID,
+		Variant:     info.Variant,
+		Mode:        info.Mode,
 		Seq:         seq,
 		Time:        at,
 	}

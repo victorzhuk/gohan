@@ -22,10 +22,12 @@ const (
 
 // Metric names core counts from the governed sites.
 const (
-	MetricRunRecovered    = "gohan.run.recovered"
-	MetricRunAbandoned    = "gohan.run.abandoned"
-	MetricToolUnknown     = "gohan.tool.unknown"
-	MetricToolInvalidArgs = "gohan.tool.invalid_args"
+	MetricRunRecovered     = "gohan.run.recovered"
+	MetricRunAbandoned     = "gohan.run.abandoned"
+	MetricToolUnknown      = "gohan.tool.unknown"
+	MetricToolInvalidArgs  = "gohan.tool.invalid_args"
+	MetricShadowRuns       = "gohan.shadow.runs"
+	MetricShadowSuppressed = "gohan.shadow.suppressed"
 )
 
 func withTelemetry(ctx context.Context, tel types.Telemetry) context.Context {
@@ -60,16 +62,56 @@ func startSpan(ctx context.Context, tel types.Telemetry, name string, attrs ...t
 }
 
 // runSpanAttrs are the run-tree keys the attribute table places on run,
-// model and tool spans alike.
+// model and tool spans alike. The mode is always present; release and
+// variant follow the non-empty convention.
 func runSpanAttrs(info types.RunInfo) []types.Attr {
-	return []types.Attr{
+	attrs := []types.Attr{
 		types.String(types.KeyFlow, info.Flow),
 		types.String(types.KeySessionID, info.SessionID),
 		types.String(types.KeyRunID, info.RunID),
 		types.String(types.KeyRootRunID, info.RootRunID),
 		types.String(types.KeyParentRunID, info.ParentRunID),
 		types.Int(types.KeyTurn, int64(info.Turn)),
+		types.String(types.KeyModeAttr, runModeValue(info.Mode)),
 	}
+	if info.ReleaseID != "" {
+		attrs = append(attrs, types.String(types.KeyRelease, info.ReleaseID))
+	}
+	if info.Variant != "" {
+		attrs = append(attrs, types.String(types.KeyVariant, info.Variant))
+	}
+	return attrs
+}
+
+// runIdentityTelemetry decorates the run context's port with the release
+// identity every metric and child span of the run carries.
+type runIdentityTelemetry struct {
+	inner   types.Telemetry
+	release string
+	variant string
+}
+
+func (t runIdentityTelemetry) attrs(attrs []types.Attr) []types.Attr {
+	out := append([]types.Attr(nil), attrs...)
+	if t.release != "" {
+		out = append(out, types.String(types.KeyRelease, t.release))
+	}
+	if t.variant != "" {
+		out = append(out, types.String(types.KeyVariant, t.variant))
+	}
+	return out
+}
+
+func (t runIdentityTelemetry) StartSpan(ctx context.Context, name string, attrs ...types.Attr) (context.Context, func(...types.Attr)) {
+	return t.inner.StartSpan(ctx, name, t.attrs(attrs)...)
+}
+
+func (t runIdentityTelemetry) Count(ctx context.Context, name string, n int64, attrs ...types.Attr) {
+	t.inner.Count(ctx, name, n, t.attrs(attrs)...)
+}
+
+func (t runIdentityTelemetry) Record(ctx context.Context, name string, v float64, attrs ...types.Attr) {
+	t.inner.Record(ctx, name, v, t.attrs(attrs)...)
 }
 
 // ConsultGuard runs one guard consultation inside a gohan.guard span, at

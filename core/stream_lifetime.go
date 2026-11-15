@@ -90,24 +90,29 @@ func (c *conversation) lifecycleOptions(sessionID string, lease stores.Lease, or
 	if c.log != nil {
 		// The steers a drained mailbox carries are appended to history
 		// before SteerApplied acknowledges them; without the appender the
-		// signal path fails the step.
+		// signal path fails the step. A shadow run appends to its shadow
+		// session, so the primary history stays untouched.
 		opts = append(opts, WithLifecycleAppender(AppendFunc(func(ctx context.Context, expected int64, msgs ...types.Message) (int64, error) {
 			return c.log.Append(ctx, sessionID, expected, msgs...)
 		})))
-		if hw, ok := c.log.(SessionControlWriter); ok {
-			opts = append(opts, WithLifecycleHandoffSink(func(ctx context.Context, hc types.HandoffContext) error {
-				return c.requestHandoff(ctx, sessionID, hc, hw, originator, hasOriginator)
-			}))
+		if !c.shadow {
+			if hw, ok := c.log.(SessionControlWriter); ok {
+				opts = append(opts, WithLifecycleHandoffSink(func(ctx context.Context, hc types.HandoffContext) error {
+					return c.requestHandoff(ctx, sessionID, hc, hw, originator, hasOriginator)
+				}))
+			}
 		}
 	}
-	if c.consolidator != nil {
-		opts = append(opts, WithLifecycleConsolidation(c.consolidator, c.consolidationAudit))
-	}
-	if c.evaluator != nil {
-		opts = append(opts, WithLifecycleEvaluation(c.evaluator, c.evalHistoryLoader(sessionID)))
-	}
-	if idx, ok := c.log.(stores.SessionIndex); ok {
-		opts = append(opts, WithLifecycleSessions(idx))
+	if !c.shadow {
+		if c.consolidator != nil {
+			opts = append(opts, WithLifecycleConsolidation(c.consolidator, c.consolidationAudit))
+		}
+		if c.evaluator != nil {
+			opts = append(opts, WithLifecycleEvaluation(c.evaluator, c.evalHistoryLoader(sessionID)))
+		}
+		if idx, ok := c.log.(stores.SessionIndex); ok {
+			opts = append(opts, WithLifecycleSessions(idx))
+		}
 	}
 	if hasOriginator {
 		opts = append(opts, WithLifecycleOriginator(originator))
@@ -172,22 +177,50 @@ func (c *conversation) run(ctx context.Context, lease stores.Lease, sessionID st
 		ag := runtime.AgentRun{Input: input}
 		runCtx := ctx
 		originator, hasOriginator := PrincipalFrom(ctx)
-		lc := NewLifecycle(c.lifecycleOptions(sessionID, lease, originator, hasOriginator)...)
+		lcSession := c.shadowSession(sessionID, lease.RunID)
+		lc := NewLifecycle(c.lifecycleOptions(lcSession, lease, originator, hasOriginator)...)
+		// shadowHistVersion resolves the append version the lifecycle
+		// seeds with: a shadow run appends to its shadow session, whose
+		// version already counts the appended input, while the run's
+		// history stays the primary session's. The shadow version seeds
+		// unconditionally, including at zero.
+		shadowHistVersion := func() (int64, bool, error) {
+			if !c.shadow {
+				return 0, false, nil
+			}
+			sh, err := c.load(ctx, lcSession)
+			if err != nil {
+				return 0, false, err
+			}
+			return sh.Version, true, nil
+		}
+		fail := func(err error) {
+			// The run is already acquired: close it as Failed so the
+			// lease never dangles behind the error tuple.
+			if ferr := lc.finishRun(ctx, runtime.State{}, stores.Failed, nil, types.StopFailed); ferr != nil {
+				yield(nil, ferr)
+				return
+			}
+			c.failRun(ctx, lease, 0, yield, err)
+		}
 		if c.foreignRun != nil {
 			rctx, frt, fag, _, err := c.foreignRun(ctx, sessionID, stores.History{}, 0, input)
 			if err != nil {
-				// The run is already acquired: close it as Failed so the
-				// lease never dangles behind the error tuple.
-				if ferr := lc.finishRun(ctx, runtime.State{}, stores.Failed, nil, types.StopFailed); ferr != nil {
-					yield(nil, ferr)
-					return
-				}
-				c.failRun(ctx, lease, 0, yield, err)
+				fail(err)
 				return
 			}
 			runCtx, rt, ag = rctx, frt, fag
-			if ag.History.Version > 0 {
-				opts := append(slices.Clone(c.lifecycleOptions(sessionID, lease, originator, hasOriginator)),
+			v, isShadow, err := shadowHistVersion()
+			if err != nil {
+				fail(err)
+				return
+			}
+			if isShadow {
+				opts := append(slices.Clone(c.lifecycleOptions(lcSession, lease, originator, hasOriginator)),
+					WithLifecycleHistoryVersion(v))
+				lc = NewLifecycle(opts...)
+			} else if ag.History.Version > 0 {
+				opts := append(slices.Clone(c.lifecycleOptions(lcSession, lease, originator, hasOriginator)),
 					WithLifecycleHistoryVersion(ag.History.Version))
 				lc = NewLifecycle(opts...)
 			}
@@ -195,21 +228,22 @@ func (c *conversation) run(ctx context.Context, lease stores.Lease, sessionID st
 			rt = runtime.NewNative()
 			rctx, run, err := c.newRun(ctx, sessionID, lease, input)
 			if err != nil {
-				// The run is already acquired: close it as Failed so the
-				// lease never dangles behind the error tuple.
-				if ferr := lc.finishRun(ctx, runtime.State{}, stores.Failed, nil, types.StopFailed); ferr != nil {
-					yield(nil, ferr)
-					return
-				}
-				c.failRun(ctx, lease, 0, yield, err)
+				fail(err)
 				return
 			}
 			runCtx, ag = rctx, run
-			opts := c.lifecycleOptions(sessionID, lease, originator, hasOriginator)
+			v, isShadow, err := shadowHistVersion()
+			if err != nil {
+				fail(err)
+				return
+			}
+			opts := c.lifecycleOptions(lcSession, lease, originator, hasOriginator)
 			if ledger, ok := chains.LimitsStateFrom(runCtx); ok {
 				opts = append(opts, WithLifecycleLedger(ledger))
 			}
-			if ag.History.Version > 0 {
+			if isShadow {
+				opts = append(opts, WithLifecycleHistoryVersion(v))
+			} else if ag.History.Version > 0 {
 				opts = append(opts, WithLifecycleHistoryVersion(ag.History.Version))
 			}
 			lc = NewLifecycle(opts...)

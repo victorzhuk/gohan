@@ -107,6 +107,10 @@ type Stack struct {
 	evaluator          RunEvaluator
 	flags              types.Flags
 	frozen             map[string]any
+	releaseID          string
+	variant            string
+	variantFlag        string
+	shadow             bool
 	titleProfile       string
 	controlWait        time.Duration
 	streamBuffer       int
@@ -218,6 +222,10 @@ func Build(opts ...Option) (*Stack, error) {
 		evaluator:          cfg.evaluator,
 		flags:              cfg.flags,
 		frozen:             cfg.frozen,
+		releaseID:          cfg.releaseID,
+		variant:            cfg.variant,
+		variantFlag:        cfg.variantFlag,
+		shadow:             cfg.shadow,
 		titleProfile:       titleProfile,
 		controlWait:        cfg.controlWait,
 		streamBuffer:       cfg.streamBuffer,

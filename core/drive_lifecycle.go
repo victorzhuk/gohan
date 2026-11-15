@@ -154,6 +154,16 @@ func DriveLifecycle(ctx context.Context, lc *Lifecycle, rt runtime.Runtime, r ru
 		}
 		ctx, endSpan := startRunSpan(ctx, lc.telemetry)
 		defer endSpan()
+		if info, ok := types.RunInfoFrom(ctx); ok && (info.ReleaseID != "" || info.Variant != "") {
+			if inner := types.TelemetryFrom(ctx); inner != nil {
+				ctx = types.WithTelemetry(ctx, runIdentityTelemetry{inner: inner, release: info.ReleaseID, variant: info.Variant})
+			}
+		}
+		if info, ok := types.RunInfoFrom(ctx); ok && info.Mode == types.Shadow {
+			if tel := telemetryFrom(ctx); tel != nil {
+				tel.Count(ctx, MetricShadowRuns, 1, types.String(types.KeyFlow, info.Flow))
+			}
+		}
 		if lc.ledger != nil {
 			// The ledger travels in the run context for the whole run, so
 			// the effects charge the same ledger a resume restored.
@@ -291,6 +301,16 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 			}
 			if se, ok := errors.AsType[*types.SuspendError](err); ok {
 				st = next
+				if shadowRun(sctx) {
+					lc.stopHeartbeat()
+					uncertain := lc.callKeys(st)
+					if ferr := lc.finishRun(sctx, st, stores.Finished, uncertain, types.StopShadowSuspended); ferr != nil {
+						yield(nil, ferr)
+						return
+					}
+					yield(lc.done(st, uncertain, types.StopShadowSuspended), nil)
+					return
+				}
 				ev, serr := lc.suspend(sctx, rt, r, st, se)
 				lc.stopHeartbeat()
 				if serr != nil {
@@ -311,6 +331,16 @@ func (lc *Lifecycle) drive(ctx context.Context, rt runtime.Runtime, r runtime.Ag
 		st = next
 		switch status {
 		case runtime.SuspendedStatus:
+			if shadowRun(sctx) {
+				lc.stopHeartbeat()
+				uncertain := lc.callKeys(st)
+				if ferr := lc.finishRun(sctx, st, stores.Finished, uncertain, types.StopShadowSuspended); ferr != nil {
+					yield(nil, ferr)
+					return
+				}
+				yield(lc.done(st, uncertain, types.StopShadowSuspended), nil)
+				return
+			}
 			ev, err := lc.suspend(sctx, rt, r, st, nil)
 			lc.stopHeartbeat()
 			if err != nil {

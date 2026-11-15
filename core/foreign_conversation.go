@@ -338,6 +338,9 @@ func NewForeignConversation(stack *Stack, name string, opts ...ConversationOptio
 	if _, ok := stack.resolvedForeign(name); !ok {
 		return nil, fmt.Errorf("gohan: flow %q is not a registered foreign definition", name)
 	}
+	if stack.shadow {
+		return nil, errShadowRequiresNative
+	}
 	newRT, _ := stack.resolvedForeign(name)
 	c := &conversation{spec: name, rt: newRT(), live: map[string]string{}}
 	c.bindStack(stack)

@@ -205,6 +205,10 @@ type ToolError struct {
 	Message string
 }
 
+// ShadowSuppressed is the frozen sentinel a shadow run returns for a
+// side-effect call the primary journal cannot answer.
+var ShadowSuppressed = &ToolError{Kind: Permanent, Message: "shadow run: call suppressed"}
+
 // Wire encoding: an interface field cannot unmarshal without a concrete type,
 // so blocks travel as {kind, payload} pairs keyed by the spec's BlockKind
 // strings. Nested block slices (Document, ToolResult, Compaction.Summary) reuse

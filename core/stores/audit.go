@@ -45,6 +45,8 @@ type AuditRecord struct {
 	RunID        string
 	RootRunID    string
 	Flow         string
+	ReleaseID    string
+	Variant      string
 	Subject      string
 	Tenant       string
 	Tool         string
@@ -366,5 +368,10 @@ func auditHash(r AuditRecord) string {
 	// A nil compaction payload writes no bytes, so legacy records keep their
 	// historical hash bytes byte for byte.
 	h.Write(CompactionAuditHashBytes(r.Compaction))
+	// Release identity entered the chain after the compaction segment; an
+	// identity-less record writes no bytes for it, keeping legacy seals.
+	if r.ReleaseID != "" || r.Variant != "" {
+		_, _ = fmt.Fprintf(h, "\n%s\n%s", r.ReleaseID, r.Variant)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }

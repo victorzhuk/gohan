@@ -60,6 +60,15 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 		}
 
 		tc := stack.nativeTurnConfig(cfg)
+		if info, ok := types.RunInfoFrom(ctx); ok && info.Mode == types.Shadow {
+			// A shadow run never rewrites the primary history, so the
+			// compaction stage and its publication seams stay unwired.
+			tc.compactor = nil
+			tc.compactionAppend = nil
+			tc.compactionAudit = nil
+			tc.compactionEvents = nil
+			tc.compactionLoad = nil
+		}
 		tc.gate = nativeBatchGate(cfg, hist, c.approvalGrants)
 		restored := false
 		tc.reserve = func(ctx context.Context, n int) (context.Context, func(), error) {
@@ -90,6 +99,15 @@ func NewNativeConversation(stack *Stack, name string, opts ...ConversationOption
 		ctx = chains.WithLimitsState(ctx, ledger)
 
 		tc := stack.nativeTurnConfig(cfg)
+		if info, ok := types.RunInfoFrom(ctx); ok && info.Mode == types.Shadow {
+			// A shadow run never rewrites the primary history, so the
+			// compaction stage and its publication seams stay unwired.
+			tc.compactor = nil
+			tc.compactionAppend = nil
+			tc.compactionAudit = nil
+			tc.compactionEvents = nil
+			tc.compactionLoad = nil
+		}
 		tc.gate = nativeBatchGate(cfg, hist, c.approvalGrants)
 		restored := false
 		tc.reserve = func(ctx context.Context, n int) (context.Context, func(), error) {
@@ -153,6 +171,35 @@ func nativeBatchGate(cfg *resolvedNativeConfig, hist stores.History, grants ...p
 		}
 		run, _ := RunInfoFrom(ctx)
 		inv := &permission.ToolInvocation{Spec: spec, Call: call, Run: run}
+		if run.Mode == types.Shadow && nativeEffectOf(cfg.tools)(call) != types.ReadOnly {
+			// A shadow run never owes an approval for a call it never
+			// executes: a live-control ask suspends into the terminal
+			// shadow path, denies deny, and everything else settles
+			// replayed or suppressed.
+			if cfg.liveControl != nil {
+				action, reason := cfg.liveControl(ctx, inv)
+				if action == types.TaintDeny {
+					return runtime.BatchDecision{Outcome: runtime.BatchDeny, Reason: reason}
+				}
+				if action == types.TaintAsk {
+					return runtime.BatchDecision{Outcome: runtime.BatchAsk, Reason: reason}
+				}
+			}
+			if cfg.taintPolicy != nil {
+				action, taints := cfg.taintPolicy(ctx, inv.Spec, inv.Call.Args)
+				switch action {
+				case types.TaintDeny:
+					reason := "denied by taint policy"
+					if len(taints) > 0 {
+						reason = types.TaintDenied{Arg: taints[0].Arg, Origins: taints[0].Origins}.Error()
+					}
+					return runtime.BatchDecision{Outcome: runtime.BatchTaintDenied, Reason: reason}
+				case types.TaintAsk:
+					return runtime.BatchDecision{Outcome: runtime.BatchAsk, Taints: taints}
+				}
+			}
+			return runtime.BatchDecision{Outcome: runtime.BatchAllow}
+		}
 		granted := func(ctx context.Context, candidate *permission.ToolInvocation) bool {
 			if grant(ctx, candidate) {
 				return true

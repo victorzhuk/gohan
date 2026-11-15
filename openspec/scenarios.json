@@ -1616,32 +1616,27 @@
   "release.shadow-suppressed": {
     "capability": "release",
     "origin": "ADR-0096",
-    "title": "side effect suppressed",
-    "deferred_to": "M3"
+    "title": "side effect suppressed"
   },
   "release.shadow-replayed": {
     "capability": "release",
     "origin": "ADR-0096",
-    "title": "side effect replayed",
-    "deferred_to": "M3"
+    "title": "side effect replayed"
   },
   "release.shadow-isolated": {
     "capability": "release",
     "origin": "ADR-0096",
-    "title": "primary stores untouched",
-    "deferred_to": "M3"
+    "title": "primary stores untouched"
   },
   "release.shadow-budget": {
     "capability": "release",
     "origin": "ADR-0096",
-    "title": "shadow budget separate",
-    "deferred_to": "M3"
+    "title": "shadow budget separate"
   },
   "release.shadow-suspension": {
     "capability": "release",
     "origin": "ADR-0096",
-    "title": "shadow suspension terminal",
-    "deferred_to": "M3"
+    "title": "shadow suspension terminal"
   },
   "release.id-deterministic": {
     "capability": "release",
@@ -1651,8 +1646,7 @@
   "release.run-attributes": {
     "capability": "release",
     "origin": "ADR-0096",
-    "title": "run carries release and variant",
-    "deferred_to": "M3"
+    "title": "run carries release and variant"
   },
   "release.dataset-pinned": {
     "capability": "release",
@@ -1709,6 +1703,54 @@
     "capability": "release",
     "origin": "ADR-0176",
     "title": "judge version changes"
+  },
+  "release.shadow-traffic-replay": {
+    "capability": "release",
+    "origin": "ADR-0184",
+    "title": "recorded traffic replayed",
+    "deferred_to": "M3"
+  },
+  "release.shadow-scripted-suite": {
+    "capability": "release",
+    "origin": "ADR-0184",
+    "title": "scripted suite accepted",
+    "deferred_to": "M3"
+  },
+  "release.shadow-no-caller-serving": {
+    "capability": "release",
+    "origin": "ADR-0184",
+    "title": "candidate cannot serve",
+    "deferred_to": "M3"
+  },
+  "release.check-manifest-driven": {
+    "capability": "release",
+    "origin": "ADR-0184",
+    "title": "checks enumerated from manifest",
+    "deferred_to": "M3"
+  },
+  "release.check-dependency-evidence": {
+    "capability": "release",
+    "origin": "ADR-0184",
+    "title": "dependency evidence required",
+    "deferred_to": "M3"
+  },
+  "release.check-compat-evidence": {
+    "capability": "release",
+    "origin": "ADR-0184",
+    "title": "compatibility evidence required",
+    "deferred_to": "M3"
+  },
+  "release.check-fail-closed": {
+    "capability": "release",
+    "origin": "ADR-0184",
+    "title": "checks fail closed",
+    "deferred_to": "M3"
+  },
+  "release.decision-durable": {
+    "capability": "release",
+    "origin": "ADR-0184",
+    "title": "decision survives replay",
+    "deferred_to": "M3"
   },
   "taint.substring-match": {
     "capability": "taint",

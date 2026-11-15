@@ -134,9 +134,91 @@ type turnEnv struct {
 	// reasoning is the provider reasoning the model effect streamed for the
 	// current turn; the batch effect retains it on the assistant message.
 	reasoning string
+	// replayed records the call ids a shadow run answered from the primary
+	// journal, so their ToolFinished carries Replayed.
+	replayed map[string]bool
 }
 
 type turnEnvKey struct{}
+
+// shadowRun reports whether the run in ctx executes in shadow mode.
+func shadowRun(ctx context.Context) bool {
+	info, ok := types.RunInfoFrom(ctx)
+	return ok && info.Mode == types.Shadow
+}
+
+// shadowCall settles one batch call under shadow enforcement: a
+// read-only call executes through the governed path, a side-effect call
+// replays the primary journal's completed result or is suppressed.
+func (env *turnEnv) shadowCall(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+	if env.callEffect(call) == types.ReadOnly {
+		c := env.c
+		exec := c.exec
+		if exec == nil {
+			exec = func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+				return CallTool(ctx, c.tools, call.Name, call.Args)
+			}
+		}
+		return governedAskExec(ctx, env, exec, call)
+	}
+	return env.settleShadow(ctx, call), nil
+}
+
+func (env *turnEnv) callEffect(call types.ToolUse) types.Effect {
+	if env.c.scheduler.EffectOf != nil {
+		return env.c.scheduler.EffectOf(call)
+	}
+	return types.SideEffect
+}
+
+// settleShadow answers a side-effect shadow call from the primary
+// journal or with the frozen suppression sentinel, and records the
+// replay bookkeeping or the suppression count.
+func (env *turnEnv) settleShadow(ctx context.Context, call types.ToolUse) types.ToolResult {
+	res, replayed := shadowReplayOrSuppress(ctx, env.c, call)
+	if replayed {
+		if env.replayed == nil {
+			env.replayed = map[string]bool{}
+		}
+		env.replayed[call.ID] = true
+	} else if tel := telemetryFrom(ctx); tel != nil {
+		tel.Count(ctx, MetricShadowSuppressed, 1, types.String(types.KeyToolName, call.Name))
+	}
+	return res
+}
+
+// shadowReplayOrSuppress answers a side-effect shadow call from the
+// primary journal's completed entry for the same fingerprint, or with the
+// frozen suppression sentinel. It only reads the journal.
+func shadowReplayOrSuppress(ctx context.Context, c turnConfig, call types.ToolUse) (types.ToolResult, bool) {
+	info, ok := types.RunInfoFrom(ctx)
+	if ok && c.journal != nil {
+		spec, found := specLookup(c.specs)(call.Name)
+		if !found {
+			spec = types.ToolSpec{Name: call.Name}
+		}
+		entries, err := c.journal.ByFingerprint(ctx, info.SessionID, ToolFingerprint(spec, json.RawMessage(call.Args)))
+		if err == nil {
+			for _, e := range entries {
+				if e.Key == call.ID && e.State == stores.Completed {
+					res := e.Result
+					res.ID = call.ID
+					return res, true
+				}
+			}
+		}
+	}
+	return types.ToolResult{ID: call.ID, Outcome: types.Failed, Error: types.ShadowSuppressed}, false
+}
+
+// emitToolFinished emits one settled tool result; a result a shadow run
+// replayed from the primary journal carries Replayed.
+func (env *turnEnv) emitToolFinished(ctx context.Context, res types.ToolResult) {
+	if env.sink == nil {
+		return
+	}
+	env.sink.Emit(ctx, types.ToolFinished{Turn: env.turn, Result: res, Replayed: env.replayed[res.ID]})
+}
 
 func withTurnEnv(ctx context.Context, env *turnEnv) context.Context {
 	return context.WithValue(ctx, turnEnvKey{}, env)
@@ -396,7 +478,7 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	// completed replays the recorded response instead of re-issuing the
 	// call, so a hedged pair is never sent twice.
 	k, journalling := modelStepKey(ctx, env.turn)
-	if c.journal == nil || !c.modelJournal {
+	if c.journal == nil || !c.modelJournal || shadowRun(ctx) {
 		journalling = false
 	}
 
@@ -868,6 +950,9 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 		Gate:      gate,
 		Scheduler: c.scheduler,
 		Exec: func(ctx context.Context, call types.ToolUse) (types.ToolResult, error) {
+			if shadowRun(ctx) {
+				return env.shadowCall(ctx, call)
+			}
 			return governedAskExec(ctx, env, exec, call)
 		},
 	}.Run(ctx)
@@ -988,7 +1073,7 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	// A provider-executed call skips the tool chain's journal step when its
 	// effect is read-only, so the settled result is journaled here: a
 	// recovery re-drive replays it instead of re-billing the provider.
-	if c.journal != nil && report.Suspend == nil {
+	if c.journal != nil && report.Suspend == nil && !shadowRun(ctx) {
 		if info, ok := types.RunInfoFrom(ctx); ok && info.SessionID != "" {
 			for i, res := range settled {
 				call := calls[index[res.ID]]
@@ -1036,7 +1121,7 @@ func batchEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 	}
 	if env.sink != nil {
 		for _, res := range settled {
-			env.sink.Emit(ctx, types.ToolFinished{Turn: turn, Result: res})
+			env.emitToolFinished(ctx, res)
 		}
 	}
 	// The batch phase marker is a string literal: the runtime's phase
@@ -1143,6 +1228,11 @@ func replayAskEffect(ctx context.Context, st runtime.State) (runtime.State, []ty
 			Error:   &types.ToolError{Kind: types.Permanent, Message: runtime.NotExecutedPrefix + d.Reason},
 		}
 	default:
+		if shadowRun(ctx) {
+			// A resumed shadow run never executes a tool.
+			res = env.settleShadow(ctx, head)
+			break
+		}
 		res, err = runApprovedAsk(ctx, env, head)
 		if err != nil {
 			return st, nil, runtime.Continue, err
@@ -1155,7 +1245,7 @@ func replayAskEffect(ctx context.Context, st runtime.State) (runtime.State, []ty
 		return st, nil, runtime.Continue, err
 	}
 	if env.sink != nil {
-		env.sink.Emit(ctx, types.ToolFinished{Turn: env.turn, Result: res})
+		env.emitToolFinished(ctx, res)
 	}
 	if len(st.Pending) > 0 {
 		return st, nil, runtime.SuspendedStatus, &types.SuspendError{Reason: types.HumanApproval}

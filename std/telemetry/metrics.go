@@ -32,6 +32,9 @@ const (
 
 	MetricEvalScore    = "gohan.eval.score"
 	MetricEvalUnstable = "gohan.eval.unstable"
+
+	MetricShadowRuns       = "gohan.shadow.runs"
+	MetricShadowSuppressed = "gohan.shadow.suppressed"
 )
 
 // DefaultMetrics are the metric registrations the std presets carry. A
@@ -39,6 +42,8 @@ const (
 // in core are validated against one list.
 var DefaultMetrics = []Metric{
 	{Name: MetricFeedback, Labels: []string{"name", "flow"}},
+	{Name: MetricShadowRuns, Labels: []string{"flow", "release", "variant"}},
+	{Name: MetricShadowSuppressed, Labels: []string{"tool", "release", "variant"}},
 }
 
 // Metric is one metric registration: its name and the label names it

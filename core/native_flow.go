@@ -14,6 +14,9 @@ import (
 type RecipeCall struct {
 	Call     types.ModelFunc
 	Provider string
+	// Constrained reports whether the profile declares Caps.Constrained,
+	// so a recipe can pick the constrained or the tool-schema path.
+	Constrained bool
 }
 
 // RecipeModel resolves one profile's model and wraps it in the same
@@ -25,8 +28,9 @@ func (s *Stack) RecipeModel(profile string) (RecipeCall, error) {
 		return RecipeCall{}, fmt.Errorf("gohan: recipe profile %q not configured", profile)
 	}
 	return RecipeCall{
-		Call:     deprecatedRoute(s.telemetry, m.Profile(), runModelChain(modelChainWithMiddleware(nil, s.middleware), m.Generate), s.successorModelFunc(m.Profile())),
-		Provider: m.Profile().Name,
+		Call:        deprecatedRoute(s.telemetry, m.Profile(), runModelChain(modelChainWithMiddleware(nil, s.middleware), m.Generate), s.successorModelFunc(m.Profile())),
+		Provider:    m.Profile().Name,
+		Constrained: m.Profile().Caps.Constrained,
 	}, nil
 }
 

@@ -224,10 +224,18 @@ func (s *LimitsState) recordCost(ctx context.Context) {
 	cost := s.cost
 	s.mu.Unlock()
 	flow := ""
+	attrs := []types.Attr{}
 	if ri, ok := types.RunInfoFrom(ctx); ok {
 		flow = ri.Flow
+		if ri.ReleaseID != "" {
+			attrs = append(attrs, types.String(types.KeyRelease, ri.ReleaseID))
+		}
+		if ri.Variant != "" {
+			attrs = append(attrs, types.String(types.KeyVariant, ri.Variant))
+		}
 	}
-	s.tel.Record(ctx, metricCostPerRun, cost, types.String(types.KeyFlow, flow))
+	attrs = append(attrs, types.String(types.KeyFlow, flow))
+	s.tel.Record(ctx, metricCostPerRun, cost, attrs...)
 }
 
 // RecordCost reports the run's cumulative cost on the ledger's telemetry.
