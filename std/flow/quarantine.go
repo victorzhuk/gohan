@@ -30,7 +30,7 @@ func Quarantine[Out any](s *gohan.Stack, profile string, opts ...Option) gohan.F
 			return types.Quarantined[Out]{}, buildErr
 		}
 		var out Out
-		err := call(ctx, rc, repair, schema, in, c, func(text string) (any, error) {
+		err := call(ctx, rc, repair, schema, in, c, rc.Constrained, func(text string) (any, error) {
 			if err := json.Unmarshal([]byte(text), &out); err != nil {
 				return nil, err
 			}

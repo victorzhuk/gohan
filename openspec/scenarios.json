@@ -843,6 +843,48 @@
     "origin": "R5t",
     "title": "strict schema"
   },
+  "structured-output.cap-negotiation": {
+    "capability": "structured-output",
+    "origin": "m3-constrained-output",
+    "title": "resolver honours the cap",
+    "deferred_to": "M3"
+  },
+  "structured-output.dynamic-schema-without-cap": {
+    "capability": "structured-output",
+    "origin": "m3-constrained-output",
+    "title": "dynamic schema without the cap fails permanently",
+    "deferred_to": "M3"
+  },
+  "structured-output.openai-strict-response-format": {
+    "capability": "structured-output",
+    "origin": "m3-constrained-output",
+    "title": "openai strict response format",
+    "deferred_to": "M3"
+  },
+  "structured-output.unrepresentable-mechanism": {
+    "capability": "structured-output",
+    "origin": "m3-constrained-output",
+    "title": "unrepresentable mechanism fails permanently",
+    "deferred_to": "M3"
+  },
+  "structured-output.tool-schema-fallback": {
+    "capability": "structured-output",
+    "origin": "m3-constrained-output",
+    "title": "tool schema fallback validates",
+    "deferred_to": "M3"
+  },
+  "structured-output.unrepresentable-schema": {
+    "capability": "structured-output",
+    "origin": "m3-constrained-output",
+    "title": "unrepresentable schema rejected at build",
+    "deferred_to": "M3"
+  },
+  "structured-output.bounds-stay-validation": {
+    "capability": "structured-output",
+    "origin": "m3-constrained-output",
+    "title": "bounds stay a validation failure",
+    "deferred_to": "M3"
+  },
   "engines.redelivery-returns-the-same-result": {
     "capability": "engines",
     "origin": "R5v",

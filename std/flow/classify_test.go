@@ -27,6 +27,7 @@ func classifyCall(t *testing.T, m *scriptedModel, texts ...string) (label, error
 func TestFlowRecipesClassify(t *testing.T) {
 	t.Run("flow.classify-recipe", func(t *testing.T) {
 		m := &scriptedModel{profile: types.ModelProfile{Name: "cheap"}}
+		m.profile.Caps.Constrained = true
 		got, err := classifyCall(t, m, `{"label":"car"}`, `{"label":"billing"}`)
 		if err != nil {
 			t.Fatalf("Invoke: %v", err)
@@ -45,6 +46,7 @@ func TestFlowRecipesClassify(t *testing.T) {
 		}
 
 		m2 := &scriptedModel{profile: types.ModelProfile{Name: "cheap"}}
+		m2.profile.Caps.Constrained = true
 		if _, err := classifyCall(t, m2, `{"label":"car"}`, `{"label":"car"}`); err == nil {
 			t.Fatal("exhausted repair turns returned no error")
 		} else {

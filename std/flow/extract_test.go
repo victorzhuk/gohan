@@ -56,6 +56,24 @@ func newTextModel(profile string, texts ...string) *scriptedModel {
 	return m
 }
 
+// newConstrainedTextModel is newTextModel over a profile declaring
+// Caps.Constrained, so the recipe takes the constrained path.
+func newConstrainedTextModel(profile string, texts ...string) *scriptedModel {
+	m := newTextModel(profile, texts...)
+	m.profile.Caps.Constrained = true
+	return m
+}
+
+// newArgsModel streams each payload as tool-argument deltas over a profile
+// without Caps.Constrained, the tool-schema fallback path.
+func newArgsModel(profile string, args ...string) *scriptedModel {
+	m := &scriptedModel{profile: types.ModelProfile{Name: profile}}
+	for _, a := range args {
+		m.streams = append(m.streams, []streamItem{{chunk: types.ModelChunk{Kind: types.DeltaToolArgs, Delta: a}}})
+	}
+	return m
+}
+
 // recipeStack builds a Stack over m with the caller's PromptSet, the
 // documented construction surface the recipes bind to.
 func recipeStack(t *testing.T, prompts chains.PromptSet, models ...*scriptedModel) *gohan.Stack {
@@ -77,7 +95,7 @@ type invoice struct {
 
 func TestFlowRecipes(t *testing.T) {
 	t.Run("flow.extract-recipe", func(t *testing.T) {
-		m := newTextModel("cheap", `{"total": 12}`)
+		m := newConstrainedTextModel("cheap", `{"total": 12}`)
 		f := Extract[invoice](recipeStack(t, chains.PromptSet{}, m), "cheap")
 		got, err := f.Invoke(gohanctx(), []types.Block{types.Text{Text: "invoice for June"}})
 		if err != nil {
@@ -111,12 +129,13 @@ func TestFlowRecipes(t *testing.T) {
 	})
 
 	t.Run("no-tool-offered", func(t *testing.T) {
-		m := newTextModel("cheap", `{"total": 3}`)
+		m := newConstrainedTextModel("cheap", `{"total": 3}`)
 		s := recipeStack(t, chains.PromptSet{}, m)
 		if _, err := Extract[invoice](s, "cheap").Invoke(gohanctx(), nil); err != nil {
 			t.Fatalf("extract Invoke: %v", err)
 		}
 		m2 := &scriptedModel{profile: types.ModelProfile{Name: "cheap"}}
+		m2.profile.Caps.Constrained = true
 		if _, err := classifyCall(t, m2, `{"label":"refund"}`); err != nil {
 			t.Fatalf("classify Invoke: %v", err)
 		}
@@ -153,7 +172,7 @@ func TestFlowRecipes(t *testing.T) {
 	})
 
 	t.Run("empty-prompt-set-adds-no-prompt-text", func(t *testing.T) {
-		m := newTextModel("cheap", `{"total": 0}`, `{"total": 5}`)
+		m := newConstrainedTextModel("cheap", `{"total": 0}`, `{"total": 5}`)
 		f := Extract[invoice](recipeStack(t, chains.PromptSet{}, m), "cheap")
 		if _, err := f.Invoke(gohanctx(), []types.Block{types.Text{Text: "invoice"}}); err != nil {
 			t.Fatalf("Invoke: %v", err)

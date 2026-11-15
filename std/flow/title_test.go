@@ -13,7 +13,7 @@ import (
 func assertTitleFlow(_ gohan.Flow[[]types.Block, string]) {}
 
 func TestTitleRecipe(t *testing.T) {
-	m := newTextModel("cheap", `"Refund Policy Questions"`)
+	m := newConstrainedTextModel("cheap", `"Refund Policy Questions"`)
 	s := recipeStack(t, chains.PromptSet{}, m)
 	f := Title(s, "cheap")
 	assertTitleFlow(f)
@@ -56,7 +56,7 @@ func TestTitleRecipe(t *testing.T) {
 		t.Fatalf("title instruction %q, want it to ask for at most six words", instruction)
 	}
 
-	m2 := newTextModel("cheap", `"one two three four five six seven eight"`)
+	m2 := newConstrainedTextModel("cheap", `"one two three four five six seven eight"`)
 	got, err = Title(recipeStack(t, chains.PromptSet{}, m2), "cheap").Invoke(gohanctx(), []types.Block{
 		types.Text{BlockBase: types.BlockBase{Origin: types.Origin{Kind: types.OriginUser}}, Text: "long"},
 	})

@@ -147,6 +147,72 @@ func TestToolSchema(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("builder-depth-parity", func(t *testing.T) {
+		type leaf struct {
+			Name string `json:"name"`
+		}
+		type level3 struct {
+			Inner []leaf `json:"inner"`
+		}
+		type level2 struct {
+			Inner map[string]level3 `json:"inner"`
+		}
+		type level1 struct {
+			Inner []map[string]level2 `json:"inner"`
+		}
+		raw, err := NewSchemaBuilder().Schema(reflect.TypeFor[level1]())
+		if err != nil {
+			t.Fatalf("Schema on 4 struct levels through slices and maps: %v", err)
+		}
+		if err := ValidateStrictSchema(raw); err != nil {
+			t.Fatalf("ValidateStrictSchema rejected the builder output: %v", err)
+		}
+		wrapped, err := json.Marshal(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"n": json.RawMessage(raw),
+			},
+			"required":             []any{"n"},
+			"additionalProperties": false,
+		})
+		if err != nil {
+			t.Fatalf("wrap: %v", err)
+		}
+		if _, err := NewSchemaBuilder().Schema(reflect.TypeOf(struct {
+			N level1 `json:"n"`
+		}{})); err == nil {
+			t.Fatal("Schema accepted a 5th struct level, want rejection")
+		}
+		if err := ValidateStrictSchema(wrapped); err == nil {
+			t.Fatal("ValidateStrictSchema accepted a 5th struct level, want rejection")
+		}
+
+		type outer struct {
+			Sub struct {
+				Note string `json:"note,omitempty"`
+			} `json:"sub"`
+		}
+		nested, err := NewSchemaBuilder().Schema(reflect.TypeFor[outer]())
+		if err != nil {
+			t.Fatalf("Schema on a nested all-optional struct: %v", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(nested, &m); err != nil {
+			t.Fatalf("schema is not valid JSON: %v", err)
+		}
+		sub := m["properties"].(map[string]any)["sub"].(map[string]any)
+		req, ok := sub["required"].([]any)
+		if !ok {
+			t.Fatalf("sub.required = %v, want a JSON array", sub["required"])
+		}
+		if len(req) != 0 {
+			t.Errorf("sub.required = %v, want empty", req)
+		}
+		if err := ValidateStrictSchema(nested); err != nil {
+			t.Fatalf("ValidateStrictSchema rejected the nested all-optional schema: %v", err)
+		}
+	})
 }
 
 // matchList is a test stand-in for the driver's *IdentityFieldMatcher.

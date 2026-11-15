@@ -10,7 +10,7 @@ import (
 
 func TestQuarantine(t *testing.T) {
 	t.Run("reports-input-block-origins", func(t *testing.T) {
-		m := newTextModel("cheap", `{"total": 12}`)
+		m := newConstrainedTextModel("cheap", `{"total": 12}`)
 		f := Quarantine[invoice](recipeStack(t, chains.PromptSet{}, m), "cheap")
 		got, err := f.Invoke(gohanctx(), []types.Block{
 			types.Text{Text: "invoice for June"},

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -137,7 +138,7 @@ func TestAnthropicSend(t *testing.T) {
 		}
 	})
 
-	t.Run("schema-refused", func(t *testing.T) {
+	t.Run("structured-output.dynamic-schema-without-cap", func(t *testing.T) {
 		tr := &captureTransport{}
 		m := newTestModel(t, tr, func(c *Config) { c.Profile.Caps.Constrained = false })
 		req := probeReq()
@@ -147,8 +148,32 @@ func TestAnthropicSend(t *testing.T) {
 		if !errors.As(err, &me) || me.Class != types.ClassPermanent {
 			t.Fatalf("err = %v, want permanent ModelError", err)
 		}
+		if !strings.Contains(me.Error(), "constrained") {
+			t.Errorf("error %q does not name the constrained mechanism", me.Error())
+		}
 		if tr.requests != 0 {
 			t.Fatalf("sent %d requests for an unsupported schema", tr.requests)
+		}
+	})
+
+	t.Run("structured-output.unrepresentable-mechanism", func(t *testing.T) {
+		tr := &captureTransport{}
+		m := newTestModel(t, tr, func(c *Config) { c.Profile.Caps.Constrained = false })
+		req := probeReq()
+		req.Options.ResponseSchema = json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`)
+		_, err := collectChunks(context.Background(), m, req)
+		var me *types.ModelError
+		if !errors.As(err, &me) {
+			t.Fatalf("err = %v, want ModelError", err)
+		}
+		if me.Class != types.ClassPermanent {
+			t.Fatalf("class %d, want permanent", me.Class)
+		}
+		if !strings.Contains(me.Error(), "constrained") {
+			t.Errorf("error %q does not name the unsupported constrained mechanism", me.Error())
+		}
+		if tr.requests != 0 {
+			t.Fatalf("sent %d requests, want no unconstrained request after the refusal", tr.requests)
 		}
 	})
 
@@ -170,6 +195,17 @@ func TestAnthropicSend(t *testing.T) {
 		tool := tools[0].(map[string]any)
 		if tool["name"] != forcedToolName {
 			t.Fatalf("forced tool name %v", tool["name"])
+		}
+		var schemaWant any
+		if err := json.Unmarshal([]byte(`{"type":"object","properties":{"q":{"type":"string"}}}`), &schemaWant); err != nil {
+			t.Fatalf("decode caller schema: %v", err)
+		}
+		if !reflect.DeepEqual(tool["input_schema"], schemaWant) {
+			t.Errorf("input_schema %v, want the caller schema %v", tool["input_schema"], schemaWant)
+		}
+		choice, ok := tr.bodies[0]["tool_choice"].(map[string]any)
+		if !ok || choice["type"] != "tool" || choice["name"] != forcedToolName {
+			t.Fatalf("tool_choice %v, want the forced %s tool pinned", tr.bodies[0]["tool_choice"], forcedToolName)
 		}
 		var text string
 		for _, c := range chunks {

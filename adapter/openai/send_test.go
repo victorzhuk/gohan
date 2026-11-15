@@ -236,6 +236,63 @@ func TestSchemaCapability(t *testing.T) {
 			t.Errorf("json_schema carries no schema")
 		}
 	})
+	t.Run("structured-output.openai-strict-response-format", func(t *testing.T) {
+		tp := &captureTransport{}
+		p := proofModel(t, proofCaps(nil), simpleKeys(fixtureKeyID, fixtureToken), tp)
+		req := proofRequest("strict response format")
+		req.Options.ResponseSchema = schema
+		collect(t, p, req)
+		if len(tp.requests) != 1 {
+			t.Fatalf("transport called %d times, want 1", len(tp.requests))
+		}
+		var body struct {
+			ResponseFormat map[string]any `json:"response_format"`
+		}
+		if err := json.Unmarshal(tp.requests[0].Body, &body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if body.ResponseFormat["type"] != "json_schema" {
+			t.Errorf("response_format type %v, want json_schema", body.ResponseFormat["type"])
+		}
+		inner, ok := body.ResponseFormat["json_schema"].(map[string]any)
+		if !ok {
+			t.Fatalf("response_format carries no json_schema object: %v", body.ResponseFormat)
+		}
+		if inner["strict"] != true {
+			t.Errorf("json_schema strict %v, want true", inner["strict"])
+		}
+		var sent any
+		if err := json.Unmarshal(schema, &sent); err != nil {
+			t.Fatalf("decode caller schema: %v", err)
+		}
+		if !reflect.DeepEqual(inner["schema"], sent) {
+			t.Errorf("json_schema schema %v, want the caller schema %v", inner["schema"], sent)
+		}
+	})
+
+	t.Run("structured-output.dynamic-schema-without-cap", func(t *testing.T) {
+		tp := &captureTransport{}
+		p := proofModel(t, proofCaps(func(c *types.Caps) { c.Constrained = false }), simpleKeys(fixtureKeyID, fixtureToken), tp)
+		req := proofRequest("dynamic schema without cap")
+		req.Options.ResponseSchema = schema
+		err := drainErr(p, req)
+		if err == nil {
+			t.Fatal("schema on an unconstrained profile streamed")
+		}
+		var modelErr *types.ModelError
+		if !errors.As(err, &modelErr) {
+			t.Fatalf("error is %T, want *ModelError", err)
+		}
+		if modelErr.Class != types.ClassPermanent {
+			t.Errorf("class %d, want permanent", modelErr.Class)
+		}
+		if !strings.Contains(modelErr.Error(), "constrained") {
+			t.Errorf("error %q does not name the constrained mechanism", modelErr.Error())
+		}
+		if len(tp.requests) != 0 {
+			t.Errorf("transport called %d times before refusal", len(tp.requests))
+		}
+	})
 }
 
 func TestCacheModes(t *testing.T) {

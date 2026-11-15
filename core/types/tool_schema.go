@@ -302,6 +302,9 @@ func (b *SchemaBuilder) kind(t reflect.Type, path string, depth int) (map[string
 		if err != nil {
 			return nil, fmt.Errorf("schema: field %q: %w", path, err)
 		}
+		if required == nil {
+			required = []string{}
+		}
 		return map[string]any{
 			"type":                 "object",
 			"properties":           props,

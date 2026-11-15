@@ -16,6 +16,10 @@ import (
 	"github.com/victorzhuk/gohan/std/structured"
 )
 
+// gohanRespondDescription is the short description the single fallback tool
+// carries: its arguments are the structured answer.
+const gohanRespondDescription = "Return the structured answer as this tool's JSON arguments."
+
 // Option configures a recipe's bounded repair behavior.
 type Option func(*config)
 
@@ -59,13 +63,18 @@ func Extract[Out any](s *gohan.Stack, profile string, opts ...Option) gohan.Flow
 	if buildErr == nil {
 		buildErr = schemaErr
 	}
+	if buildErr == nil {
+		if err := types.ValidateStrictSchema(schema); err != nil {
+			buildErr = &types.ModelError{Class: types.ClassPermanent, Provider: rc.Provider, Err: err}
+		}
+	}
 	return gohan.FlowFunc[[]types.Block, Out]("flow.extract", func(ctx context.Context, in []types.Block) (Out, error) {
 		if buildErr != nil {
 			var zero Out
 			return zero, buildErr
 		}
 		var out Out
-		err := call(ctx, rc, repair, schema, in, c, func(text string) (any, error) {
+		err := call(ctx, rc, repair, schema, in, c, rc.Constrained, func(text string) (any, error) {
 			if err := json.Unmarshal([]byte(text), &out); err != nil {
 				return nil, err
 			}
@@ -89,17 +98,21 @@ func Classify[L ~string](s *gohan.Stack, profile string, labels []L, opts ...Opt
 	c := newConfig(opts)
 	schema, schemaErr := labelSchema(labels)
 	rc, repair, buildErr := bind(s, profile, "flow.classify")
+	if buildErr == nil {
+		buildErr = schemaErr
+	}
+	if buildErr == nil {
+		if err := types.ValidateStrictSchema(schema); err != nil {
+			buildErr = &types.ModelError{Class: types.ClassPermanent, Provider: rc.Provider, Err: err}
+		}
+	}
 	return gohan.FlowFunc[[]types.Block, L]("flow.classify", func(ctx context.Context, in []types.Block) (L, error) {
 		if buildErr != nil {
 			var zero L
 			return zero, buildErr
 		}
-		if schemaErr != nil {
-			var zero L
-			return zero, schemaErr
-		}
 		var out L
-		err := call(ctx, rc, repair, schema, in, c, func(text string) (any, error) {
+		err := call(ctx, rc, repair, schema, in, c, rc.Constrained, func(text string) (any, error) {
 			var choice struct {
 				Label L `json:"label"`
 			}
@@ -153,14 +166,27 @@ func (e outOfSetError) Error() string { return e.err.Error() }
 // and a passing attempt returns the text for the caller to decode. The
 // repair turn speaks only the caller's RepairInstruction; a set without
 // one adds no prompt text.
-func call(ctx context.Context, rc gohan.RecipeCall, repair string, schema json.RawMessage, in []types.Block, c config, decode func(string) (any, error)) error {
+func call(ctx context.Context, rc gohan.RecipeCall, repair string, schema json.RawMessage, in []types.Block, c config, constrained bool, decode func(string) (any, error)) error {
+	opts := types.ModelOptions{}
+	var tools []types.ToolSpec
+	if constrained {
+		opts.ResponseSchema = schema
+	} else {
+		tools = []types.ToolSpec{{
+			Name:        "gohan_respond",
+			Description: gohanRespondDescription,
+			Schema:      schema,
+		}}
+		opts.ToolChoice = types.ToolChoiceAny
+	}
 	req := types.ModelRequest{
 		Messages: []types.Message{{Role: types.RoleUser, Blocks: in}},
-		Options:  types.ModelOptions{ResponseSchema: schema},
+		Tools:    tools,
+		Options:  opts,
 	}
 	var lastErr error
 	for range c.attempts() {
-		text, err := drain(ctx, rc.Call, req)
+		text, callID, err := drain(ctx, rc.Call, req, constrained)
 		if err != nil {
 			return err
 		}
@@ -176,9 +202,28 @@ func call(ctx context.Context, rc gohan.RecipeCall, repair string, schema json.R
 		default:
 			lastErr = fmt.Errorf("structured output: %w: %s", types.ErrStructuredOutput, err)
 		}
-		req.Messages = append(req.Messages,
-			types.Message{Role: types.RoleAssistant, Blocks: []types.Block{types.Text{Text: text}}},
-		)
+		if constrained {
+			req.Messages = append(req.Messages,
+				types.Message{Role: types.RoleAssistant, Blocks: []types.Block{types.Text{Text: text}}},
+			)
+		} else {
+			id := callID
+			if id == "" {
+				id = "call_gohan_respond"
+			}
+			req.Messages = append(req.Messages,
+				types.Message{Role: types.RoleAssistant, Blocks: []types.Block{types.ToolUse{
+					ID:   id,
+					Name: "gohan_respond",
+					Args: json.RawMessage(text),
+				}}},
+				types.Message{Role: types.RoleUser, Blocks: []types.Block{types.ToolResult{
+					ID:      id,
+					Content: []types.Block{types.Text{Text: lastErr.Error()}},
+					Error:   &types.ToolError{Kind: types.Retryable, Message: lastErr.Error()},
+				}}},
+			)
+		}
 		if repair != "" {
 			req.Messages = append(req.Messages,
 				types.Message{Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: repair}}},
@@ -188,18 +233,41 @@ func call(ctx context.Context, rc gohan.RecipeCall, repair string, schema json.R
 	return lastErr
 }
 
-// drain collects the text deltas of one governed model call.
-func drain(ctx context.Context, next types.ModelFunc, req types.ModelRequest) (string, error) {
-	var text []byte
+// drain collects the payload of one governed model call. Constrained mode
+// returns the text deltas. Fallback mode prefers a complete ToolUse.Args
+// chunk, then the accumulated tool-argument deltas, then the text, and
+// captures the tool-call ID for the repair turn.
+func drain(ctx context.Context, next types.ModelFunc, req types.ModelRequest, constrained bool) (string, string, error) {
+	var text, args, complete []byte
+	callID := ""
 	for chunk, err := range next(ctx, req) {
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		if chunk.Kind == types.DeltaText {
+		switch chunk.Kind {
+		case types.DeltaText:
 			text = append(text, chunk.Delta...)
+		case types.DeltaToolArgs:
+			args = append(args, chunk.Delta...)
+		}
+		if chunk.ToolUse != nil {
+			if chunk.ToolUse.ID != "" {
+				callID = chunk.ToolUse.ID
+			}
+			if len(chunk.ToolUse.Args) > 0 {
+				complete = append(complete[:0], chunk.ToolUse.Args...)
+			}
 		}
 	}
-	return string(text), nil
+	if !constrained {
+		switch {
+		case len(complete) > 0:
+			return string(complete), callID, nil
+		case len(args) > 0:
+			return string(args), callID, nil
+		}
+	}
+	return string(text), callID, nil
 }
 
 // schemaFor derives the strict schema through the floor's SchemaBuilder,

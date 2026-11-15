@@ -20,6 +20,10 @@ The `Constrained` strategy composes three frozen seams: `Caps.Constrained` on th
 - Tests for the dynamic-schema and unrepresentable-mechanism scenarios run against scripted models and recorded fixtures; no live provider is required.
 - Stricter `Build` rejection may surface previously tolerated schemas; mitigation is the existing `NewTool` strict-compatible derivation, which produces representable schemas by construction.
 
+## Implementation notes
+
+- The resolver already lives in `core`, and the strict-compatibility walker cannot live only in `std/structured`: `core` imports no `std` package, and a static schema is refused inside `Build`. The walker therefore lives beside the schema builder in `core/types.ValidateStrictSchema`, `resolveNative` refuses a static `ResponseSchema` under `Constrained`, and `RecipeCall` carries the profile's `Caps.Constrained` so a `std/flow` recipe selects the constrained or the tool-schema path. This is a deliberate deviation from the planning note that implementation touches `std/structured` only; adapters needed no production change, because their call paths already refuse a schema the profile cannot represent.
+
 ## Migration Plan
 
 No migration: the change specifies existing behavior and hardens it. Scenario ids are registered proposed at admission (task 1.1) and wired to subtests in `std/structured` and the adapter call-path tests that already exist.
