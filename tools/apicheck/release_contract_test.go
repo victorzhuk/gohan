@@ -265,6 +265,18 @@ func TestReleaseVerificationCLI(t *testing.T) {
 		t.Errorf("wrong-root refusal does not name the required version v0.2.0; output:\n%s", out)
 	}
 
+	// otel-expected-root-refused: adapter/otel must pin the published root
+	// carrying its telemetry export contracts, and the refusal names it
+	// before any command rewrites or fetches the manifest.
+	otelWrong := writeFixtureModule(t, fixtureSpec{dirName: "otel", rootVersion: "v0.2.0"}, proxy)
+	out, code = runVerifier(t, otelWrong, proxy)
+	if code == 0 {
+		t.Fatalf("verifier accepted adapter/otel pinning root v0.2.0; exit 0, output:\n%s", out)
+	}
+	if !strings.Contains(out, "v0.3.0") {
+		t.Errorf("otel expected-root refusal does not name the required version v0.3.0; output:\n%s", out)
+	}
+
 	// clean-module positive control: direct v0.2.0 root requirement and an
 	// observed passing TestSandboxConformance stub are accepted.
 	clean := writeFixtureModule(t, fixtureSpec{

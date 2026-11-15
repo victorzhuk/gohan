@@ -63,7 +63,7 @@ The `openai`, `anthropic`, `postgres`, `eino`, `docker` and `otel` adapters have
 
 `go.work` contains the root module, six adapter modules and `examples/`. Core and std are in the root module and have only standard-library dependencies. Each adapter has its own module and third-party dependencies.
 
-The published root is `v0.2.0`, which all six adapters require. Adapter first-publication identity is `v0.1.0`; the already-published `adapter/otel/v0.1.0` is followed by `v0.1.1`. ADR-0173 records the retired local `v1.0.0` drafts. Examples remain a development workspace consumer.
+The published root is `v0.3.0`. `adapter/otel` requires `v0.3.0` for the telemetry export contracts; the other adapters require `v0.2.0`. Adapter first-publication identity is `v0.1.0`; the already-published `adapter/otel/v0.1.0` is followed by `v0.1.1`. ADR-0173 records the retired local `v1.0.0` drafts. Examples remain a development workspace consumer.
 
 ## Task targets
 

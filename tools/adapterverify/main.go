@@ -1,7 +1,8 @@
 // Command adapterverify verifies release readiness of the adapter modules
 // from isolated copies. For every module it copies the directory out of the
 // repository, refuses any replace directive and any root requirement other
-// than github.com/victorzhuk/gohan v0.2.0, requires a clean go mod tidy
+// than the module's expected published version of github.com/victorzhuk/gohan,
+// requires a clean go mod tidy
 // -diff, downloads and verifies the declared published dependencies with
 // default checksum verification, builds the module and runs its conformance
 // tests (never in short mode, with -tags full for PostgreSQL) with
@@ -59,6 +60,16 @@ var requiredConformance = map[string][]string{
 		"TestNotes",
 		"TestRedaction",
 	},
+}
+
+// expectedRoot returns the published root version the adapter in dir must
+// pin. adapter/otel consumes the telemetry export contracts first published
+// in root v0.3.0; every other adapter pins the lowest verified root v0.2.0.
+func expectedRoot(dir string) string {
+	if filepath.Base(dir) == "otel" {
+		return "v0.3.0"
+	}
+	return "v0.2.0"
 }
 
 func main() {
@@ -145,7 +156,7 @@ func verifyModule(ctx context.Context, dir string, stdout, stderr io.Writer) (st
 	if err := rejectReplace(goModPath, dir, mod); err != nil {
 		return "", err
 	}
-	if err := requireRootV2(goModPath, dir, mod); err != nil {
+	if err := requireRoot(goModPath, dir, mod, expectedRoot(dir)); err != nil {
 		return "", err
 	}
 
@@ -181,7 +192,7 @@ func verifyModule(ctx context.Context, dir string, stdout, stderr io.Writer) (st
 			return "", err
 		}
 	}
-	if err := inspectModuleGraph(ctx, copyDir, env, dir, mod, stderr); err != nil {
+	if err := inspectModuleGraph(ctx, copyDir, env, dir, mod, expectedRoot(dir), stderr); err != nil {
 		return "", err
 	}
 
@@ -304,8 +315,8 @@ type listedModule struct {
 
 // inspectModuleGraph runs go list -m -json all in the isolated copy and
 // refuses replacement metadata, module errors, and any root selection other
-// than the direct v0.2.0 requirement.
-func inspectModuleGraph(ctx context.Context, copyDir string, env []string, dir, mod string, stderr io.Writer) error {
+// than the direct expected-version requirement.
+func inspectModuleGraph(ctx context.Context, copyDir string, env []string, dir, mod, want string, stderr io.Writer) error {
 	cmd := exec.CommandContext(ctx, "go", "-C", copyDir, "list", "-m", "-json", "all")
 	cmd.Env = env
 	cmd.Stderr = stderr
@@ -335,23 +346,24 @@ func inspectModuleGraph(ctx context.Context, copyDir string, env []string, dir, 
 		if m.Path == rootModulePath {
 			sawRoot = true
 			if m.Indirect {
-				return fmt.Errorf("%s (%s): %s is an indirect requirement; release verification requires a direct v0.2.0 requirement", dir, mod, rootModulePath)
+				return fmt.Errorf("%s (%s): %s is an indirect requirement; release verification requires a direct %s requirement", dir, mod, rootModulePath, want)
 			}
-			if m.Version != "v0.2.0" {
-				return fmt.Errorf("%s (%s): selected %s version is %s; release verification requires v0.2.0", dir, mod, rootModulePath, m.Version)
+			if m.Version != want {
+				return fmt.Errorf("%s (%s): selected %s version is %s; release verification requires %s", dir, mod, rootModulePath, m.Version, want)
 			}
 		}
 	}
 	if !sawRoot {
-		return fmt.Errorf("%s (%s): module graph does not select %s; release verification requires a direct v0.2.0 requirement", dir, mod, rootModulePath)
+		return fmt.Errorf("%s (%s): module graph does not select %s; release verification requires a direct %s requirement", dir, mod, rootModulePath, want)
 	}
 	return nil
 }
 
-// requireRootV2 reads the copied go.mod and refuses anything other than a
-// direct github.com/victorzhuk/gohan v0.2.0 requirement before any command
-// runs, so a wrong requirement is never rewritten or fetched.
-func requireRootV2(path, dir, mod string) error {
+// requireRoot reads the copied go.mod and refuses anything other than a
+// direct github.com/victorzhuk/gohan requirement at the expected published
+// version before any command runs, so a wrong requirement is never
+// rewritten or fetched.
+func requireRoot(path, dir, mod, want string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read go.mod: %w", err)
@@ -366,13 +378,13 @@ func requireRootV2(path, dir, mod string) error {
 		case strings.HasPrefix(trimmed, "require ") && strings.HasSuffix(trimmed, "("):
 			inBlock = true
 		case strings.HasPrefix(trimmed, "require "):
-			if matches, err := requireLine(strings.TrimPrefix(trimmed, "require "), i, dir, mod); err != nil {
+			if matches, err := requireLine(strings.TrimPrefix(trimmed, "require "), i, dir, mod, want); err != nil {
 				return err
 			} else if matches {
 				found = true
 			}
 		case inBlock:
-			if matches, err := requireLine(trimmed, i, dir, mod); err != nil {
+			if matches, err := requireLine(trimmed, i, dir, mod, want); err != nil {
 				return err
 			} else if matches {
 				found = true
@@ -380,14 +392,14 @@ func requireRootV2(path, dir, mod string) error {
 		}
 	}
 	if !found {
-		return fmt.Errorf("%s (%s): go.mod has no direct %s v0.2.0 requirement; release verification requires it", dir, mod, rootModulePath)
+		return fmt.Errorf("%s (%s): go.mod has no direct %s %s requirement; release verification requires it", dir, mod, rootModulePath, want)
 	}
 	return nil
 }
 
 // requireLine reports whether the require line names the root module and
-// refuses an indirect annotation or a version other than v0.2.0.
-func requireLine(trimmed string, i int, dir, mod string) (bool, error) {
+// refuses an indirect annotation or a version other than the expected one.
+func requireLine(trimmed string, i int, dir, mod, want string) (bool, error) {
 	fields := strings.Fields(trimmed)
 	if len(fields) < 2 || fields[0] != rootModulePath {
 		return false, nil
@@ -397,11 +409,11 @@ func requireLine(trimmed string, i int, dir, mod string) (bool, error) {
 			break
 		}
 		if f == "indirect" {
-			return false, fmt.Errorf("%s (%s): %s is an indirect requirement at line %d; release verification requires a direct v0.2.0 requirement", dir, mod, rootModulePath, i+1)
+			return false, fmt.Errorf("%s (%s): %s is an indirect requirement at line %d; release verification requires a direct %s requirement", dir, mod, rootModulePath, i+1, want)
 		}
 	}
-	if fields[1] != "v0.2.0" {
-		return false, fmt.Errorf("%s (%s): go.mod requires %s %s at line %d; release verification requires v0.2.0", dir, mod, rootModulePath, fields[1], i+1)
+	if fields[1] != want {
+		return false, fmt.Errorf("%s (%s): go.mod requires %s %s at line %d; release verification requires %s", dir, mod, rootModulePath, fields[1], i+1, want)
 	}
 	return true, nil
 }

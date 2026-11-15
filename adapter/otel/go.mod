@@ -3,7 +3,7 @@ module github.com/victorzhuk/gohan/adapter/otel
 go 1.27.1
 
 require (
-	github.com/victorzhuk/gohan v0.2.0
+	github.com/victorzhuk/gohan v0.3.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/metric v1.44.0
 	go.opentelemetry.io/otel/sdk v1.44.0

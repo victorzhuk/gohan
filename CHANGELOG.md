@@ -4,6 +4,8 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-15
+
 ### Added
 
 - `task adapters:verify` and CI release verification run full adapter conformance and check isolated published dependencies without tagging or publishing.
@@ -22,7 +24,7 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 
 ### Changed
 
-- All six adapters require the published root `v0.2.0`.
+- Five adapters and `adapter/adkgo` require the published root `v0.2.0`; `adapter/otel` requires `v0.3.0` for the telemetry export contracts.
 - API comparison uses separate module-aware `go/types` graphs and corrects the verified historical OTel baseline in a temporary copy.
 - Temporal travel and research report examples wire the optional checkpoint-runs surface for resume and recovery.
 
