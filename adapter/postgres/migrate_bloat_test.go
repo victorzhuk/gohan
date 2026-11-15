@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,7 +25,7 @@ func TestMigrations(t *testing.T) {
 		db := newDB(t, fmt.Sprintf("bloat_%d", time.Now().UnixNano()))
 		cycles := 1_000
 		if !testing.Short() {
-			cycles = 20_000
+			cycles = 1_000_000
 		}
 		storetest.Bloat(t, bloatHarness(db), cycles, 500*time.Millisecond, int64(2*cycles+64))
 	})
@@ -67,7 +69,7 @@ SELECT c.relname,
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 JOIN pg_attribute a ON a.attrelid = c.oid
-WHERE n.nspname = $1 AND c.relkind IN ('r', 'v') AND NOT c.relispartition
+WHERE n.nspname = $1 AND c.relkind IN ('r', 'v', 'p') AND NOT c.relispartition
   AND a.attnum > 0 AND NOT a.attisdropped
 ORDER BY c.relname, a.attnum`, schema)
 	if err != nil {
@@ -90,8 +92,10 @@ SELECT c.relname, pg_get_constraintdef(con.oid)
 FROM pg_constraint con
 JOIN pg_class c ON c.oid = con.conrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = $1
-ORDER BY c.relname, con.conname`, schema)
+LEFT JOIN pg_inherits i ON i.inhrelid = c.oid
+LEFT JOIN pg_class p ON p.oid = i.inhparent
+WHERE n.nspname = $1 AND NOT c.relispartition
+ORDER BY coalesce(p.relname, c.relname), con.conname`, schema)
 	if err != nil {
 		return nil, err
 	}
@@ -107,23 +111,95 @@ ORDER BY c.relname, con.conname`, schema)
 	if err := crows.Err(); err != nil {
 		return nil, err
 	}
+	irows, err := pool.Query(ctx, `
+SELECT coalesce(parent.relname, tbl.relname) || ' index', pg_get_indexdef(c.oid)
+FROM pg_class c
+JOIN pg_index idx ON idx.indexrelid = c.oid
+JOIN pg_class tbl ON tbl.oid = idx.indrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_inherits i ON i.inhrelid = tbl.oid
+LEFT JOIN pg_class parent ON parent.oid = i.inhparent
+WHERE n.nspname = $1 AND NOT tbl.relispartition
+ORDER BY coalesce(parent.relname, tbl.relname), c.relname`, schema)
+	if err != nil {
+		return nil, err
+	}
+	for irows.Next() {
+		var name, def string
+		if err := irows.Scan(&name, &def); err != nil {
+			irows.Close()
+			return nil, err
+		}
+		dump[name] += normalizeIndexDef(def) + " "
+	}
+	irows.Close()
+	if err := irows.Err(); err != nil {
+		return nil, err
+	}
 	return dump, nil
+}
+
+var indexQualifierRe = regexp.MustCompile(`(\bON\s+(?:ONLY\s+)?)[A-Za-z_][A-Za-z0-9_]*\.`)
+
+func normalizeIndexDef(def string) string {
+	return indexQualifierRe.ReplaceAllString(def, "$1")
 }
 
 func bloatHarness(db *postgres.DB) storetest.BloatHarness {
 	return func(ctx context.Context, cycles int) (storetest.BloatResult, error) {
+		var autovacuum string
+		if err := db.Pool().QueryRow(ctx, `SELECT setting FROM pg_settings WHERE name = 'autovacuum'`).Scan(&autovacuum); err != nil {
+			return storetest.BloatResult{}, err
+		}
+		if autovacuum != "on" {
+			return storetest.BloatResult{}, fmt.Errorf("autovacuum = %q, want on", autovacuum)
+		}
 		j := postgres.NewJournal(db)
+		const workers = 8
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		perWorker := make([][]time.Duration, workers)
+		var firstErr error
+		var once sync.Once
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for w := range workers {
+			w := w
+			go func() {
+				defer wg.Done()
+				share := make([]time.Duration, 0, cycles/workers+1)
+				for i := w; i < cycles; i += workers {
+					k := types.CallKey{SessionID: "bloat", CallID: fmt.Sprintf("c%d", i)}
+					start := time.Now()
+					if _, _, err := j.Reserve(ctx, k, "tool", "fp", json.RawMessage(`{}`)); err != nil {
+						once.Do(func() {
+							firstErr = err
+							cancel()
+						})
+						return
+					}
+					share = append(share, time.Since(start))
+					if err := j.Complete(ctx, k, types.ToolResult{ID: k.CallID}); err != nil {
+						once.Do(func() {
+							firstErr = err
+							cancel()
+						})
+						return
+					}
+				}
+				perWorker[w] = share
+			}()
+		}
+		wg.Wait()
+		if firstErr != nil {
+			return storetest.BloatResult{}, firstErr
+		}
 		lat := make([]time.Duration, 0, cycles)
-		for i := range cycles {
-			k := types.CallKey{SessionID: "bloat", CallID: fmt.Sprintf("c%d", i)}
-			start := time.Now()
-			if _, _, err := j.Reserve(ctx, k, "tool", "fp", json.RawMessage(`{}`)); err != nil {
-				return storetest.BloatResult{}, err
-			}
-			lat = append(lat, time.Since(start))
-			if err := j.Complete(ctx, k, types.ToolResult{ID: k.CallID}); err != nil {
-				return storetest.BloatResult{}, err
-			}
+		for _, share := range perWorker {
+			lat = append(lat, share...)
+		}
+		if len(lat) != cycles {
+			return storetest.BloatResult{}, fmt.Errorf("successful cycles = %d, want %d", len(lat), cycles)
 		}
 		sort.Slice(lat, func(a, b int) bool { return lat[a] < lat[b] })
 		var stored int
@@ -134,7 +210,7 @@ func bloatHarness(db *postgres.DB) storetest.BloatHarness {
 			return storetest.BloatResult{}, fmt.Errorf("journal rows = %d, want %d", stored, cycles)
 		}
 		var dead int64
-		if err := db.Pool().QueryRow(ctx, `SELECT coalesce(n_dead_tup, 0) FROM pg_stat_user_tables WHERE schemaname = $1 AND relname = 'journal_record'`, db.Schema()).Scan(&dead); err != nil {
+		if err := db.Pool().QueryRow(ctx, `SELECT coalesce(sum(s.n_dead_tup), 0) FROM pg_stat_user_tables s WHERE s.schemaname = $1 AND (s.relname = 'journal_record' OR s.relid IN (SELECT i.inhrelid FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhparent JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = 'journal_record'))`, db.Schema()).Scan(&dead); err != nil {
 			return storetest.BloatResult{}, err
 		}
 		return storetest.BloatResult{Cycles: cycles, P99Latency: lat[(len(lat)*99)/100], DeadTuples: dead}, nil

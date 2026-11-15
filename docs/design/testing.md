@@ -82,7 +82,7 @@ func EventLog(t *testing.T, newLog EventLogFactory)
 func Schemas(t *testing.T, factory SchemasFactory)
 ```
 
-`storetest.Bloat` (1 M reserve/complete cycles under autovacuum, p99 `Reserve` latency and dead-tuple bounds) is **not shipped**: it is an M3 deliverable that lands with the Postgres partitioning work (`docs/design/adapters.md`; `docs/overview.md` M3 row).
+`storetest.Migrations` and `storetest.Bloat` ship in `testkit/storetest`: the bloat run checks p99 `Reserve` latency and dead-tuple bounds over 1,000 reserve/complete cycles in the short lane and 1,000,000 in the full lane, with autovacuum enabled and a process deadline.
 
 Every suite runs the scenarios listed against its capability in `openspec/scenarios.json`, using subtest names equal to the IDs, so `task spec:gate` counts adapters' conformance runs in the `adapter/otel` stream.
 

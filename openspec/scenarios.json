@@ -2888,6 +2888,30 @@
     "title": "partitions created ahead",
     "deferred_to": "M3"
   },
+  "stores.pg-maintain-idempotent": {
+    "capability": "stores",
+    "origin": "m3-postgres-schema-ownership",
+    "title": "maintain is idempotent and concurrent-safe",
+    "deferred_to": "M3"
+  },
+  "stores.pg-migrate-command": {
+    "capability": "stores",
+    "origin": "m3-postgres-schema-ownership",
+    "title": "migrate command drives one path",
+    "deferred_to": "M3"
+  },
+  "stores.pg-expand-contract-skew": {
+    "capability": "stores",
+    "origin": "m3-postgres-schema-ownership",
+    "title": "expand before contract across versions",
+    "deferred_to": "M3"
+  },
+  "stores.pg-hot-runs-reaping": {
+    "capability": "stores",
+    "origin": "m3-postgres-schema-ownership",
+    "title": "hot runs table stays small",
+    "deferred_to": "M3"
+  },
   "stores.pg-fresh-equals-upgraded": {
     "capability": "stores",
     "origin": "R51",

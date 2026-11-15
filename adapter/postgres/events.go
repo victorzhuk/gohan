@@ -79,7 +79,7 @@ func (s *EventLog) Append(ctx context.Context, runID string, e stores.Event) err
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO event_record (run_id, seq, kind, at, payload) VALUES ($1, $2, $3, $4, $5)`,
 		runID, seq, kind, e.Meta.Time, raw); err != nil {
-		return fmt.Errorf("event append: %w", err)
+		return fmt.Errorf("event append: %w", mapPartitionErr(err))
 	}
 	if s.capacity > 0 {
 		if _, err := tx.Exec(ctx,

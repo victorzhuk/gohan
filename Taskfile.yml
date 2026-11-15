@@ -84,6 +84,7 @@ tasks:
     cmds:
       - golangci-lint run {{.CLI_ARGS}}
       - golangci-lint run -c examples/.golangci.yml ./examples/... {{.CLI_ARGS}}
+      - go -C adapter/postgres run ./internal/lint/cmd/pgtxlint ../../examples/...
 
   test:
     desc: Run short unit tests
@@ -102,7 +103,7 @@ tasks:
   test:full:
     desc: Run the store conformance suites under testcontainers (needs Docker)
     cmds:
-      - go -C adapter/postgres test -timeout 10m -tags full ./...
+      - go -C adapter/postgres test -timeout 30m -tags full ./...
       - go test -timeout 10m -tags full ./...
 
   examples:test:

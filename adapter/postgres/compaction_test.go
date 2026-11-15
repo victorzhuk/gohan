@@ -513,6 +513,9 @@ func TestAuditCompactionHash(t *testing.T) {
 			return func() time.Time { t := now; now = now.Add(time.Second); return t }
 		}
 		db := newDB(t, bindSchema("cmphash"), postgres.WithClock(newTicker()))
+		if _, err := postgres.Maintain(ctx, db.Pool(), postgres.MaintainOptions{Schema: db.Schema(), WindowDays: 2, Now: func() time.Time { return stamp }}); err != nil {
+			t.Fatal(err)
+		}
 		pg := postgres.NewAuditLog(db)
 		schema := db.Schema()
 		mem := stores.NewMemoryAuditLog(stores.WithMemoryAuditClock(newTicker()))

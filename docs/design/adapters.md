@@ -70,12 +70,12 @@ OpenAI validates the whole pending `tool_calls` batch before emitting any comple
 
 ### 7.6 Postgres adapter contract
 
-- `journal`, `audit`, `events` and `outputs` are range-partitioned by time (daily by default); TTL and retention run as `DROP PARTITION`, never as bulk `DELETE`. `session_log` is partitioned by tenant hash and time.
+- `journal`, `audit` and `events` are range-partitioned by time (daily); scheduled `postgres.Maintain` retention drops whole partitions with `DROP TABLE` rather than bulk `DELETE`. Explicit expiry and purge APIs (`EventLog.Expire`, `AuditLog.Purge`, `SessionLog.Purge`) still delete rows separately from partition maintenance. Output and session-log partitioning is not yet shipped; ADR-0073 defines the shape.
 - `runs` is a small hot table (`fillfactor 70`); heartbeats are coalesced into turn writes (ADR-0048); a standalone heartbeat runs only for `Detached` runs and shielded tools longer than `ttl/3`.
 - Journal entries and checkpoints are insert-then-one-update; grants and audit are insert-only.
 - `Recover` reaps stale runs with `FOR UPDATE SKIP LOCKED` in batches of at most 100 and commits per batch.
 - Every pool gohan uses sets `statement_timeout`, `lock_timeout` and `idle_in_transaction_session_timeout`; values are `Build` options with defaults (5 s / 2 s / 10 s).
-- **No transaction may be open across a model call or a tool call.** `CompleteTx` is called inside a tool, around the business write only. The adapter ships an analyzer (`adapter/postgres/lint`) run by golangci-lint in `examples/` that flags `pgx.Tx` values live across `Flow`, `Model` or `Tool` calls.
+- **No transaction may be open across a model call or a tool call.** `CompleteTx` is called inside a tool, around the business write only. `task lint` runs the stdlib-only checker in `adapter/postgres/internal/lint` as `go -C adapter/postgres run ./internal/lint/cmd/pgtxlint ../../examples/...`; a finding fails the task.
 - Schema ownership, embedded goose migrations (`postgres.Migrate`, `gohan-postgres migrate`), the expand/contract skew rule, partition maintenance and `storetest.Migrations`: `stores` *Postgres schema* (ADR-0125).
 - `storetest.Bloat`: 1 M reserve/complete cycles with autovacuum enabled must keep p99 `Reserve` latency under a configurable bound and dead tuples bounded.
 

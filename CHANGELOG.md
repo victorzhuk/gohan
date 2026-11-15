@@ -7,6 +7,7 @@ All notable changes to the `github.com/victorzhuk/gohan` root module are documen
 ### Added
 
 - An `adapter/mcp` module binds the 2026-07-28 MCP revision in both directions. The client imports server tools as deferred, untrusted tools whose effect annotations may only lower the wiring cap, refreshes the catalog on `ttlMs` and disables a tool whose pinned description or spec hash changed. The server exposes one flow per MCP tool, surfaces approval and structured-input suspensions as `input_required` replies carrying the resume token, resumes statelessly from that token, and reports every other suspension as a Tasks status instead of a protocol error.
+- `gohan-postgres migrate` and `gohan-postgres maintain` drive the adapter's migration and maintenance entry points offline. `Maintain` creates the rolling daily window for partitioned journal, audit and event tables, drops aged partitions instead of deleting rows, and reaps dead runs in bounded `SKIP LOCKED` batches. Expand-before-contract gating uses `MigrateOptions.MinReaderVersion` and `ErrContractMigrationBlocked`; `storetest.Migrations` and `storetest.Bloat` prove migration equivalence and bound reserve latency and dead tuples.
 
 ### Fixed
 

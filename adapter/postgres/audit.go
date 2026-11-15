@@ -54,9 +54,19 @@ func (a *AuditLog) Append(ctx context.Context, r stores.AuditRecord) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("audit append: %w", err)
 	}
+	tx, err := a.db.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("audit append: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
 	rec := r
 	var prev string
-	err := a.db.pool.QueryRow(ctx,
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext('gohan:auditchain:' || $1))`,
+		rec.SessionID); err != nil {
+		return fmt.Errorf("audit append: %w", err)
+	}
+	err = tx.QueryRow(ctx,
 		`SELECT hash FROM audit_record WHERE session_id = $1 ORDER BY seq DESC LIMIT 1`,
 		rec.SessionID).Scan(&prev)
 	switch {
@@ -67,7 +77,7 @@ func (a *AuditLog) Append(ctx context.Context, r stores.AuditRecord) error {
 	default:
 		return fmt.Errorf("audit append: %w", err)
 	}
-	at, err := a.db.now(ctx, poolConn{a.db.pool})
+	at, err := a.db.now(ctx, txConn{tx})
 	if err != nil {
 		return fmt.Errorf("audit append: %w", err)
 	}
@@ -77,10 +87,13 @@ func (a *AuditLog) Append(ctx context.Context, r stores.AuditRecord) error {
 	if err != nil {
 		return err
 	}
-	if _, err := a.db.pool.Exec(ctx,
+	if _, err := tx.Exec(ctx,
 		`INSERT INTO audit_record (session_id, seq, kind, at, tenant, prev_hash, hash, payload)
 		 SELECT $1, COALESCE(MAX(seq), 0) + 1, $2, $3, $4, $5, $6, $7 FROM audit_record WHERE session_id = $1`,
 		rec.SessionID, string(rec.Kind), rec.At, rec.Tenant, rec.PrevHash, rec.Hash, raw); err != nil {
+		return fmt.Errorf("audit append: %w", mapPartitionErr(err))
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("audit append: %w", err)
 	}
 	return nil
@@ -285,6 +298,20 @@ func (a *AuditLog) AppendCompactionAudit(ctx context.Context, record stores.Audi
 // the transaction end. A lost race returns errCompactionRetry so the caller
 // re-resolves the identity against the winner's commit.
 func (a *AuditLog) appendCompactionAuditTx(ctx context.Context, tx pgx.Tx, pending stores.AuditRecord) (bool, error) {
+	// The partitioned audit has no (session_id, publication_id) unique
+	// index, so the identity barrier is this advisory transaction lock
+	// taken before the duplicate read, and the hash chain serialises on
+	// the same per-session lock as Append.
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext('gohan:auditchain:' || $1))`,
+		pending.SessionID); err != nil {
+		return false, fmt.Errorf("audit compaction append: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext('gohan:auditpub:' || $1 || ':' || $2))`,
+		pending.SessionID, pending.Compaction.PublicationID); err != nil {
+		return false, fmt.Errorf("audit compaction append: %w", err)
+	}
 	duplicate, err := a.compactionAuditDuplicate(ctx, tx, pending)
 	if err != nil {
 		return false, err

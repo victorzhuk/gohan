@@ -2,61 +2,39 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"flag"
 	"fmt"
+	"io"
 	"os"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/victorzhuk/gohan/adapter/postgres"
+	"github.com/victorzhuk/gohan/adapter/postgres/internal/maintaincmd"
+	"github.com/victorzhuk/gohan/adapter/postgres/internal/migratecmd"
 )
 
+var verbs = map[string]func(context.Context, []string, io.Writer, io.Writer) error{
+	"migrate":  migratecmd.Run,
+	"maintain": maintaincmd.Run,
+}
+
 func main() {
-	if err := run(); err != nil {
+	run, ok := verbs[verb()]
+	if !ok {
+		usage(os.Stderr)
+		os.Exit(2)
+	}
+	if err := run(context.Background(), os.Args[2:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "gohan-postgres:", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	dsn := flag.String("dsn", os.Getenv("DATABASE_URL"), "database URL")
-	schema := flag.String("schema", postgres.DefaultSchema, "schema the migrations apply to")
-	target := flag.Int64("target", 0, "migrate up to this version, 0 for head")
-	flag.Parse()
-	if *dsn == "" {
-		return fmt.Errorf("no -dsn given and DATABASE_URL is empty")
+func verb() string {
+	if len(os.Args) < 2 {
+		return ""
 	}
-	pool, err := pgxpool.New(context.Background(), *dsn)
-	if err != nil {
-		return err
-	}
-	defer pool.Close()
-	applied, err := postgres.Migrate(context.Background(), pool, postgres.MigrateOptions{Schema: *schema, TargetVersion: *target})
-	if err != nil {
-		return err
-	}
-	if isTTY(os.Stdout) {
-		for _, v := range applied {
-			fmt.Printf("applied version %d\n", v)
-		}
-		if len(applied) == 0 {
-			fmt.Println("nothing to apply")
-		}
-		return nil
-	}
-	out := struct {
-		Applied []int64 `json:"applied"`
-	}{Applied: applied}
-	if out.Applied == nil {
-		out.Applied = []int64{}
-	}
-	return json.NewEncoder(os.Stdout).Encode(out)
+	return os.Args[1]
 }
 
-func isTTY(f *os.File) bool {
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+func usage(w io.Writer) {
+	fmt.Fprintln(w, "usage: gohan-postgres migrate -dsn <url> [-schema <name>] [-target <version>] [-min-reader <version>]")
+	fmt.Fprintln(w, "usage: gohan-postgres maintain -dsn <url> [-schema <name>] [-window <days>] [-retention <duration>] [-reap-batch <n>] [-max-reap-batches <n>]")
 }

@@ -541,6 +541,9 @@ func TestEventLog(t *testing.T) {
 	storetest.EventLog(t, func(t *testing.T, now func() time.Time, capacity int) storetest.EventLogStore {
 		t.Helper()
 		db := newDB(t, bindSchema("events"), postgres.WithClock(now))
+		if _, err := postgres.Maintain(context.Background(), db.Pool(), postgres.MaintainOptions{Schema: db.Schema(), WindowDays: 2, Now: now}); err != nil {
+			t.Fatalf("Maintain: %v", err)
+		}
 		return eventLogBinding{s: postgres.NewEventLog(db, postgres.WithEventLogCapacity(capacity))}
 	})
 }
