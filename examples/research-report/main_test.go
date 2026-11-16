@@ -12,6 +12,7 @@ import (
 	"time"
 
 	gohan "github.com/victorzhuk/gohan/core"
+	"github.com/victorzhuk/gohan/core/runtime"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
 )
@@ -584,6 +585,48 @@ func TestResearchReportOffline(t *testing.T) {
 		}
 		if !strings.Contains(strings.ToLower(fr.Reason), "maxcost") {
 			t.Fatalf("refusal reason %q does not identify the MaxCost limit", fr.Reason)
+		}
+	})
+
+	t.Run("context.research-report-claim-boundary", func(t *testing.T) {
+		drep, err := ComposeDetached(context.Background(), "windowed joins and exactly-once sinks")
+		if err != nil {
+			t.Fatalf("ComposeDetached: %v", err)
+		}
+		assertDetachedResumeEvidence(t, drep)
+
+		var envelope struct {
+			State runtime.State `json:"state"`
+		}
+		if err := json.Unmarshal(drep.Checkpoint.Data, &envelope); err != nil {
+			t.Fatalf("decode checkpoint envelope: %v", err)
+		}
+		if len(envelope.State.ActiveTools) != 0 {
+			t.Fatalf("the checkpoint carries %d active tool identities: the checkpoint store must hold no toolsearch activation payload", len(envelope.State.ActiveTools))
+		}
+		if envelope.State.Foreign != nil && len(envelope.State.Foreign.ReplayCallIDs) != 0 {
+			t.Fatalf("the checkpoint carries %d replayable call identities: the example must record zero Replay invocations", len(envelope.State.Foreign.ReplayCallIDs))
+		}
+
+		searchUses := 0
+		for _, m := range drep.History {
+			for _, b := range m.Blocks {
+				if u, ok := b.(types.ToolUse); ok && u.Name == "search_tools" {
+					searchUses++
+				}
+			}
+		}
+		if searchUses != 1 {
+			t.Fatalf("the durable history holds %d search_tools invocations: the shipped native resume restores the checkpoint position without replaying discovery", searchUses)
+		}
+
+		suspended := requestToolNames(drep.Requests[3])
+		resumed := requestToolNames(drep.ResumedRequests[0])
+		if !requestHasSourceTool(drep.ResumedRequests[0]) {
+			t.Fatal("the first resumed request carries no discovered source definitions: the recomputed active set is missing")
+		}
+		if !reflect.DeepEqual(suspended, resumed) {
+			t.Fatalf("the first resumed request's toolset %v differs from the suspension boundary's %v: the active set was not recomputed identically from the reloaded history", resumed, suspended)
 		}
 	})
 

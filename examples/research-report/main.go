@@ -222,6 +222,7 @@ type DetachedReport struct {
 	Suspension      stores.Event
 	ResumeEvents    []stores.Event
 	TokenConsumed   bool
+	Checkpoint      stores.Checkpoint
 }
 
 // hasDurableCompaction reports whether the history holds a published
@@ -436,6 +437,7 @@ func ComposeDetached(ctx context.Context, topic string) (DetachedReport, error) 
 	if cp.Reason != types.AwaitingControl {
 		return rep, fmt.Errorf("checkpoint reason %q: want %q", cp.Reason, types.AwaitingControl)
 	}
+	rep.Checkpoint = cp
 	// The durable history the Resume rebuilds from is frozen here: the
 	// compaction the Continue run published is part of it.
 	loaded, err := sessions.Load(ctx, "research")
