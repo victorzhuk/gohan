@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -69,6 +70,19 @@ func TestStores(t *testing.T) {
 			if n != 1 {
 				t.Fatalf("version %d applied %d times across %d pods, want exactly once", v, n, pods)
 			}
+		}
+	})
+
+	t.Run("stores.pg-auto-migrate-refused-in-prod", func(t *testing.T) {
+		_, err := postgres.Build(context.Background(), dsn(t),
+			types.CostTags{Environment: "production"},
+			postgres.WithAutoMigrate(),
+		)
+		if err == nil {
+			t.Fatal("postgres.Build with WithAutoMigrate in production: want error, got nil")
+		}
+		if !strings.Contains(err.Error(), "WithAutoMigrate") {
+			t.Fatalf("build error must name the option, got: %v", err)
 		}
 	})
 
