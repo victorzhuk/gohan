@@ -1156,9 +1156,9 @@ func (m slowJudgeModel) Generate(ctx context.Context, req types.ModelRequest) it
 	return func(yield func(types.ModelChunk, error) bool) {
 		time.Sleep(m.delay)
 		yield(types.ModelChunk{
-			Kind:  types.DeltaText,
-			Delta: "0.8",
-			Usage: &types.Usage{InputTokens: 10, OutputTokens: 20},
+			Kind:   types.DeltaText,
+			Delta:  "0.8",
+			Usage:  &types.Usage{InputTokens: 10, OutputTokens: 20},
 			Finish: types.FinishStop,
 		}, nil)
 	}

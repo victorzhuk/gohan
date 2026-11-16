@@ -556,9 +556,9 @@ func TestSubflowTaint(t *testing.T) {
 			t.Fatalf("flow as tool: %v", err)
 		}
 		native := NativeSpec{
-			Request: FlowRequest{Name: "chat"},
-			Profile: "native",
-			Tools:   []types.Tool{childTool, pay},
+			Request:     FlowRequest{Name: "chat"},
+			Profile:     "native",
+			Tools:       []types.Tool{childTool, pay},
 			TaintPolicy: hook,
 			Assemble: func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
 				return types.ModelRequest{Messages: append(append([]types.Message{}, in.History...), in.Input...)}, nil

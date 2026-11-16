@@ -99,7 +99,7 @@ func (f *directFlow) Invoke(ctx context.Context, in chainReq) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out, susp, done, err := streamChain(conv.Send(types.WithPrincipal(ctx, nrrOwner), info.SessionID+"-conv", nlUser(in.Ask)))
+	out, susp, done, _ := streamChain(conv.Send(types.WithPrincipal(ctx, nrrOwner), info.SessionID+"-conv", nlUser(in.Ask)))
 	return chainFlowSignal("childflow", out, susp, done)
 }
 
@@ -112,7 +112,7 @@ func (f *directFlow) Resume(ctx context.Context, t ResumeToken, r stores.ResumeI
 	if err != nil {
 		return "", err
 	}
-	out, susp, done, err := streamChain(conv.Resume(types.WithPrincipal(ctx, nrrOwner), t, r))
+	out, susp, done, _ := streamChain(conv.Resume(types.WithPrincipal(ctx, nrrOwner), t, r))
 	return chainFlowSignal("childflow", out, susp, done)
 }
 
