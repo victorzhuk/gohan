@@ -82,6 +82,9 @@ var (
 	ErrCallerServing = errors.New("gohan/evals: shadow orchestration serves no caller")
 	// ErrShadowConfig rejects an unusable shadow configuration.
 	ErrShadowConfig = errors.New("gohan/evals: shadow configuration invalid")
+	// ErrDatasetPinned rejects a run whose dataset hash differs from the
+	// recorded pin; the suite fails before any case runs.
+	ErrDatasetPinned = errors.New("gohan/evals: dataset hash does not match the recorded pin")
 )
 
 // Row is one input's pairwise comparison: per-side cost and latency, the
@@ -146,6 +149,7 @@ type ShadowRun struct {
 	Inputs          []Case
 	Source          string          // SourceCassette or SourceScripted; defaults to SourceScripted
 	Scorer          Evaluator       // optional; nil leaves every row unscored with a reason
+	DatasetHash     string          // optional; when set, a mismatch with the inputs' hash refuses the run before any case runs
 	CallerTransport CallerTransport // must stay nil; a non-nil value refuses the whole run
 	Logger          *slog.Logger    // optional; defaults to slog.New(slog.DiscardHandler)
 }
@@ -185,6 +189,12 @@ func Shadow(ctx context.Context, run ShadowRun) (Report, error) {
 		source = SourceScripted
 	}
 	datasetHash := sha256.Sum256([]byte(mustJSON(run.Inputs)))
+	if run.DatasetHash != "" {
+		got := hex.EncodeToString(datasetHash[:])
+		if got != run.DatasetHash {
+			return Report{}, fmt.Errorf("%w: dataset hashes to %s, recorded %s", ErrDatasetPinned, got, run.DatasetHash)
+		}
+	}
 
 	report := Report{
 		Source:              source,

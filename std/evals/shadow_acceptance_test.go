@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"sync"
@@ -227,6 +228,45 @@ func TestReleaseShadow(t *testing.T) {
 		want := Judge{Dimension: shadowScorerDouble{}.Dimension(), Version: shadowScorerDouble{}.Version()}.Fingerprint()
 		if !slices.Equal(report.JudgeFingerprints, []string{want}) {
 			t.Errorf("JudgeFingerprints = %v, want [%s]", report.JudgeFingerprints, want)
+		}
+	})
+
+	t.Run("release.pairwise-report", func(t *testing.T) {
+		const n = 50
+		cases := make([]Case, 0, n)
+		for i := range n {
+			cases = append(cases, Case{ID: fmt.Sprintf("case-%02d", i), Input: fmt.Sprintf("request %d", i)})
+		}
+		champ := &shadowFlowDouble{name: "champion", tools: []string{"search", "book"}, cost: 0.01}
+		chall := &shadowFlowDouble{name: "challenger", tools: []string{"search", "refund"}, cost: 0.02}
+		run := shadowScriptedRun(champ, chall)
+		run.Inputs = cases
+		run.Scorer = shadowScorerDouble{}
+
+		report, err := Shadow(context.Background(), run)
+		if err != nil {
+			t.Fatalf("Shadow: %v", err)
+		}
+		if len(report.Rows) != n {
+			t.Fatalf("rows = %d, want %d", len(report.Rows), n)
+		}
+		for _, row := range report.Rows {
+			if row.ScoreStatus != types.EvalScored {
+				t.Errorf("row %s score status = %q (%s), want scored", row.CaseID, row.ScoreStatus, row.ScoreReason)
+				continue
+			}
+			if row.ScoreDelta < -0.3-1e-9 || row.ScoreDelta > -0.3+1e-9 {
+				t.Errorf("row %s score delta = %v, want -0.3", row.CaseID, row.ScoreDelta)
+			}
+			if !slices.Equal(row.ToolSequenceDiff, []string{"-book", "+refund"}) {
+				t.Errorf("row %s tool diff = %v, want [-book +refund]", row.CaseID, row.ToolSequenceDiff)
+			}
+			if row.ChampionCost != 0.01 || row.ChallengerCost != 0.02 {
+				t.Errorf("row %s costs = %v/%v, want 0.01/0.02", row.CaseID, row.ChampionCost, row.ChallengerCost)
+			}
+			if row.ChampionLatency <= 0 || row.ChallengerLatency <= 0 {
+				t.Errorf("row %s latencies = %v/%v, want both measured", row.CaseID, row.ChampionLatency, row.ChallengerLatency)
+			}
 		}
 	})
 

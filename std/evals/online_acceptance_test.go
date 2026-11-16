@@ -913,6 +913,79 @@ func TestReleaseOnline(t *testing.T) {
 			t.Errorf("refusal for the missing class coverage: err = %v; want the error to name the uncovered class hard", err)
 		}
 	})
+
+	// evals.Online{Rate: 0.1} over 1000 finishing runs judges about 100:
+	// admission never waits on judge work and the settled score carries
+	// the run's variant.
+	t.Run("release.online-sampling", func(t *testing.T) {
+		rec := &sinkRecorder{}
+		tel := &telRecorder{}
+		metrics, err := telemetry.Build(tel, Metrics(), telemetry.WithVariant("sampling-b"))
+		if err != nil {
+			t.Fatalf("telemetry.Build: %v", err)
+		}
+		const judgeDelay = 300 * time.Millisecond
+		judge := NewJudge(types.EvalQuality, slowJudgeModel{delay: judgeDelay}, "judge-v1",
+			Rubric{Version: "rub-v1", Instruction: "score quality"})
+		eng, err := NewOnline(0.1, []Judge{judge}, WithSink(rec, "dest-eval"),
+			WithRedactor(passthroughRedactor{}, types.RedactionPolicy{}), WithMetrics(metrics))
+		if err != nil {
+			t.Fatalf("NewOnline: %v", err)
+		}
+		eng.Limits = OnlineLimits{QueueCapacity: 256, Workers: 128, JobDeadline: 30 * time.Second}
+
+		// A fixed variate source makes the 1-in-10 draw deterministic:
+		// every tenth offer draws below the rate, the rest above it.
+		drawn := 0
+		eng.sample = func() float64 {
+			drawn++
+			if drawn%10 == 1 {
+				return 0.05
+			}
+			return 0.95
+		}
+
+		const total = 1000
+		worst := time.Duration(0)
+		for i := range total {
+			start := time.Now()
+			if err := eng.Evaluate(context.Background(), evalCompletion(fmtSession("os", i%10))); err != nil {
+				t.Fatalf("Evaluate os%d: %v", i, err)
+			}
+			if elapsed := time.Since(start); elapsed > worst {
+				worst = elapsed
+			}
+		}
+		if worst >= judgeDelay/2 {
+			t.Errorf("slowest Evaluate took %v with judge calls taking %v; admission must not wait on judge work", worst, judgeDelay)
+		}
+
+		if err := eng.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+		rates := eng.Rates()
+		if rates.Eligible != total {
+			t.Errorf("Rates().Eligible = %d; want %d offered terminal primary completions", rates.Eligible, total)
+		}
+		if rates.Evaluated != 100 {
+			t.Errorf("Rates().Evaluated = %d; want about 100 of %d judged under Rate 0.1", rates.Evaluated, total)
+		}
+		if rates.Skipped != 900 {
+			t.Errorf("Rates().Skipped = %d; want the remaining 900 offers skipped", rates.Skipped)
+		}
+		if got := len(rec.snapshot()); got != 100 {
+			t.Errorf("%d eval records settled; want one per judged run (100)", got)
+		}
+		scores := tel.named(telemetry.MetricEvalScore)
+		if len(scores) == 0 {
+			t.Fatal("no gohan.eval.score emission; every judged run must carry its score")
+		}
+		for _, p := range scores {
+			if got := attrMap(p.attrs)[types.KeyVariant]; got != "sampling-b" {
+				t.Errorf("gohan.eval.score carries variant %q; want the run's variant sampling-b", got)
+			}
+		}
+	})
 }
 
 // evalCompletionScoredEval is a terminal completion whose history carries
@@ -1064,6 +1137,28 @@ func (m *fixedModel) Generate(ctx context.Context, req types.ModelRequest) iter.
 			Kind:   types.DeltaText,
 			Delta:  m.delta,
 			Usage:  &types.Usage{InputTokens: 10, OutputTokens: 20},
+			Finish: types.FinishStop,
+		}, nil)
+	}
+}
+
+// slowJudgeModel is a judge model whose Generate call takes a fixed real
+// delay before answering one score token.
+type slowJudgeModel struct {
+	delay time.Duration
+}
+
+func (m slowJudgeModel) Profile() types.ModelProfile {
+	return types.ModelProfile{Name: "slow-judge", Version: "judge-v1"}
+}
+
+func (m slowJudgeModel) Generate(ctx context.Context, req types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+	return func(yield func(types.ModelChunk, error) bool) {
+		time.Sleep(m.delay)
+		yield(types.ModelChunk{
+			Kind:  types.DeltaText,
+			Delta: "0.8",
+			Usage: &types.Usage{InputTokens: 10, OutputTokens: 20},
 			Finish: types.FinishStop,
 		}, nil)
 	}

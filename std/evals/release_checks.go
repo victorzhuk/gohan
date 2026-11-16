@@ -194,6 +194,45 @@ func (rc ReleaseChecks) Run(ctx context.Context) (Decision, error) {
 	}, nil
 }
 
+// GateResult is the delta-gate band a candidate release lands in.
+type GateResult string
+
+const (
+	GateFail        GateResult = "fail"
+	GateNeedsReview GateResult = "needs_review"
+	GatePass        GateResult = "pass"
+)
+
+// Gate decides a candidate release from its eval score against the
+// baseline. HardBlock and Review are signed deltas from Baseline: a
+// candidate below Baseline+HardBlock fails, one below Baseline+Review
+// needs review, and anything at or above Baseline+Review passes.
+// MinScore is the absolute-threshold alternative: when non-zero, a
+// candidate below it fails regardless of the bands.
+type Gate struct {
+	Baseline  float64
+	HardBlock float64
+	Review    float64
+	MinScore  float64
+}
+
+// DefaultGate returns the spec's band deltas: HardBlock -0.05 and
+// Review -0.02.
+func DefaultGate(baseline float64) Gate {
+	return Gate{Baseline: baseline, HardBlock: -0.05, Review: -0.02}
+}
+
+// Decide returns the band for one candidate score.
+func (g Gate) Decide(candidate float64) GateResult {
+	if candidate < g.Baseline+g.HardBlock || (g.MinScore != 0 && candidate < g.MinScore) {
+		return GateFail
+	}
+	if candidate < g.Baseline+g.Review {
+		return GateNeedsReview
+	}
+	return GatePass
+}
+
 func (rc ReleaseChecks) dependencyCheck(section, name, manifestVersion string) CheckResult {
 	check := CheckResult{Name: "dependency:" + section + ":" + name}
 	var matched, conflicting bool

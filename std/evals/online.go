@@ -99,6 +99,10 @@ type Online struct {
 	metrics  *telemetry.Metrics
 	logger   *slog.Logger
 
+	// sample draws the admission variate; nil falls back to the global
+	// source. Tests install a fixed source for deterministic sampling.
+	sample func() float64
+
 	mu          sync.Mutex
 	state       int
 	approvals   map[string]CalibrationApproval
@@ -375,7 +379,7 @@ func (o *Online) Evaluate(ctx context.Context, c gohan.RunCompletion) error {
 		o.mu.Unlock()
 		return nil
 	}
-	if o.Rate < 1 && rand.Float64() >= o.Rate {
+	if o.Rate < 1 && o.drawSample() >= o.Rate {
 		o.rates.Skipped++
 		o.mu.Unlock()
 		return nil
@@ -406,6 +410,13 @@ func (o *Online) Evaluate(ctx context.Context, c gohan.RunCompletion) error {
 	}
 	o.mu.Unlock()
 	return nil
+}
+
+func (o *Online) drawSample() float64 {
+	if o.sample != nil {
+		return o.sample()
+	}
+	return rand.Float64()
 }
 
 // rollWindowLocked resets consumption and accounting when the current
