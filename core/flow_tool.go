@@ -14,15 +14,28 @@ import (
 	"github.com/victorzhuk/gohan/core/types"
 )
 
+// effectName renders an effect for error messages.
+func effectName(e types.Effect) string {
+	switch e {
+	case types.SideEffect:
+		return "SideEffect"
+	case types.Idempotent:
+		return "Idempotent"
+	default:
+		return "ReadOnly"
+	}
+}
+
 // subflowConfig carries the options FlowAsTool applies to one sub-flow
 // tool: the description, the parent limits override, the child call
-// bounds and the derived and declared effects.
+// bounds and the declared effect. A nil childEffect derives the effect
+// from the child flow's registered tools.
 type subflowConfig struct {
 	name        string
 	desc        string
 	parent      *types.RunLimits
 	child       types.ChildLimits
-	childEffect types.Effect
+	childEffect *types.Effect
 }
 
 // SubflowOption adjusts one FlowAsTool construction.
@@ -46,11 +59,42 @@ func WithParentLimits(l types.RunLimits) SubflowOption {
 	}
 }
 
+// maxSpecEffect folds the strongest effect any registered tool declares.
+func maxSpecEffect(specs []types.ToolSpec) types.Effect {
+	e := types.ReadOnly
+	for _, sp := range specs {
+		e = max(e, sp.Effect)
+	}
+	return e
+}
+
+// derivedChildEffect reads the floor a sub-flow tool must declare: the
+// strongest effect among the child flow's registered tools. An unregistered
+// flow has no registry entry and keeps the ReadOnly default.
+func (s *Stack) derivedChildEffect[In, Out any](f Flow[In, Out]) types.Effect {
+	ff, ok := f.(*flowFunc[In, Out])
+	if !ok {
+		return types.ReadOnly
+	}
+	c, ok := s.native[ff.name]
+	if !ok || len(c.specs) == 0 {
+		return types.ReadOnly
+	}
+	return maxSpecEffect(c.specs)
+}
+
+func flowNameOf[In, Out any](f Flow[In, Out], fallback string) string {
+	if ff, ok := f.(*flowFunc[In, Out]); ok {
+		return ff.name
+	}
+	return fallback
+}
+
 // WithChildEffect sets the effect the child flow derives. It defaults to
-// ReadOnly.
+// the strongest effect among the child flow's registered tools.
 func WithChildEffect(e types.Effect) SubflowOption {
 	return func(c *subflowConfig) error {
-		c.childEffect = e
+		c.childEffect = &e
 		return nil
 	}
 }
@@ -70,7 +114,7 @@ func WithDescription(desc string) SubflowOption {
 // the child under its own tree identity and ledger branch, and charges
 // the spend to the parent's tree.
 func (s *Stack) FlowAsTool[In, Out any](name string, f Flow[In, Out], opts ...SubflowOption) (types.Tool, error) {
-	cfg := subflowConfig{name: name, childEffect: types.ReadOnly}
+	cfg := subflowConfig{name: name}
 	for _, opt := range opts {
 		if err := opt(&cfg); err != nil {
 			return nil, fmt.Errorf("gohan: subflow tool %s: %w", name, err)
@@ -79,9 +123,18 @@ func (s *Stack) FlowAsTool[In, Out any](name string, f Flow[In, Out], opts ...Su
 	if cfg.desc == "" {
 		return nil, fmt.Errorf("gohan: subflow tool %s requires a description", name)
 	}
+	derived := s.derivedChildEffect(f)
+	effect := derived
+	if cfg.childEffect != nil {
+		if *cfg.childEffect < derived {
+			return nil, fmt.Errorf("gohan: subflow tool %s: effect %s tightens below the child flow %s derived effect %s",
+				name, effectName(*cfg.childEffect), flowNameOf(f, name), effectName(derived))
+		}
+		effect = *cfg.childEffect
+	}
 	inner, err := NewTool[In, Out](name, cfg.desc, func(ctx context.Context, in In) (Out, error) {
 		return runSubflow(ctx, s, f, cfg, in)
-	}, WithEffect(cfg.childEffect))
+	}, WithEffect(effect))
 	if err != nil {
 		return nil, err
 	}

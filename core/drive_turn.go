@@ -606,6 +606,24 @@ func modelEffect(ctx context.Context, st runtime.State) (runtime.State, []types.
 		recordFinish(ctx, finish)
 		break
 	}
+	// The profile pins the validated version, the provider reports the served
+	// one on the final chunk, a strict profile refuses before anything commits.
+	if usage != nil && c.profile.Version != "" && usage.ModelVersion != "" && usage.ModelVersion != c.profile.Version {
+		if tel := telemetryFrom(ctx); tel != nil {
+			tel.Count(ctx, "gohan.model.version_drift", 1,
+				types.String(types.KeyModelProfile, c.profile.Name),
+				types.String(types.KeyModelVersion, usage.ModelVersion))
+		}
+		if c.profile.Caps.StrictVersion {
+			env.flushDeltas(ctx)
+			return st, nil, runtime.Continue, &types.ModelError{
+				Class:    types.ClassVersionDrift,
+				Provider: c.profile.Name,
+				Err: fmt.Errorf("served model version %q drifts from pinned profile version %q",
+					usage.ModelVersion, c.profile.Version),
+			}
+		}
+	}
 	calibrateFromUsage(ctx, &st, c, req, usage)
 	if journalling {
 		if err := completeModelStep(ctx, c.journal, k, hsink, sb.String(), reasoning.String(), calls); err != nil {
@@ -1481,7 +1499,8 @@ func isControlError(err error) bool {
 	var abort *types.AbortError
 	var handoff *types.HandoffError
 	var limit *types.LimitExceededError
-	return errors.As(err, &suspend) || errors.As(err, &abort) || errors.As(err, &handoff) || errors.As(err, &limit)
+	var blocked *types.GuardBlockedError
+	return errors.As(err, &suspend) || errors.As(err, &abort) || errors.As(err, &handoff) || errors.As(err, &limit) || errors.As(err, &blocked)
 }
 
 func truncatedTurn(tu types.ToolUse, res types.ToolResult, turn int) types.Message {

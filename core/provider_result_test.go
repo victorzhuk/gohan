@@ -359,3 +359,112 @@ func TestProviderToolUsage(t *testing.T) {
 		}
 	})
 }
+
+type driftMetric struct {
+	name  string
+	value int64
+	attrs []types.Attr
+}
+
+type driftTelemetry struct {
+	counts []driftMetric
+}
+
+func (*driftTelemetry) StartSpan(ctx context.Context, _ string, _ ...types.Attr) (context.Context, func(...types.Attr)) {
+	return ctx, func(...types.Attr) {}
+}
+
+func (t *driftTelemetry) Count(_ context.Context, name string, value int64, attrs ...types.Attr) {
+	t.counts = append(t.counts, driftMetric{name: name, value: value, attrs: append([]types.Attr(nil), attrs...)})
+}
+
+func (*driftTelemetry) Record(context.Context, string, float64, ...types.Attr) {}
+
+func (t *driftTelemetry) counted(name string) []driftMetric {
+	var out []driftMetric
+	for _, c := range t.counts {
+		if c.name == name {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+type driftModel struct {
+	profile types.ModelProfile
+	usage   *types.Usage
+}
+
+func (m *driftModel) Profile() types.ModelProfile { return m.profile }
+
+func (m *driftModel) Generate(_ context.Context, _ types.ModelRequest) iter.Seq2[types.ModelChunk, error] {
+	return func(yield func(types.ModelChunk, error) bool) {
+		if !yield(types.ModelChunk{Kind: types.DeltaText, Delta: "hello"}, nil) {
+			return
+		}
+		yield(types.ModelChunk{Finish: types.FinishStop, Usage: m.usage}, nil)
+	}
+}
+
+func TestModelVersionDrift(t *testing.T) {
+	for _, scenario := range []struct {
+		name      string
+		strict    bool
+		served    string
+		wantErr   bool
+		wantCount bool
+	}{
+		{name: "model.version-drift", strict: true, served: "2026-11-02", wantErr: true, wantCount: true},
+		{name: "non-strict drift completes", strict: false, served: "2026-11-02", wantCount: true},
+		{name: "strict matching version completes", strict: true, served: "2026-11-01"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			tel := &driftTelemetry{}
+			m := &driftModel{
+				profile: types.ModelProfile{
+					Name:    "pinned",
+					Version: "2026-11-01",
+					Caps:    types.Caps{StrictVersion: scenario.strict},
+				},
+				usage: &types.Usage{ModelVersion: scenario.served},
+			}
+			stack := nativeStack(chains.PromptSet{})
+			bound, _ := nativeConfig(stack)
+			bound.model = m.Generate
+			bound.profile = m.profile
+			env := &turnEnv{c: bound, msgs: []types.Message{{Blocks: []types.Block{types.Text{Text: "hi"}}}}}
+			ctx := types.WithTelemetry(withTurnEnv(t.Context(), env), tel)
+			_, _, _, err := modelEffect(ctx, runtime.State{})
+			counts := tel.counted("gohan.model.version_drift")
+			if scenario.wantErr {
+				var me *types.ModelError
+				if !errors.As(err, &me) || me.Class != types.ClassVersionDrift {
+					t.Fatalf("err = %v, want *ModelError{Class: VersionDrift}", err)
+				}
+				for _, part := range []string{"2026-11-02", "2026-11-01"} {
+					if !strings.Contains(err.Error(), part) {
+						t.Errorf("err = %v, want it to name %q", err, part)
+					}
+				}
+			} else if err != nil {
+				t.Fatalf("model effect: %v", err)
+			}
+			if scenario.wantCount {
+				if len(counts) != 1 {
+					t.Fatalf("version_drift counts = %+v, want exactly one emission", counts)
+				}
+				for _, a := range counts[0].attrs {
+					if a.Key == types.KeyModelProfile && a.Value == "pinned" {
+						continue
+					}
+					if a.Key == types.KeyModelVersion && a.Value == scenario.served {
+						continue
+					}
+					t.Errorf("attr = %+v, want profile=pinned and version=%s", a, scenario.served)
+				}
+			} else if len(counts) != 0 {
+				t.Fatalf("version_drift counts = %+v, want none", counts)
+			}
+		})
+	}
+}

@@ -2,6 +2,7 @@ package gohan
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"strings"
@@ -9,8 +10,11 @@ import (
 	"time"
 
 	"github.com/victorzhuk/gohan/core/chains"
+	"github.com/victorzhuk/gohan/core/permission"
 	"github.com/victorzhuk/gohan/core/stores"
 	"github.com/victorzhuk/gohan/core/types"
+	"github.com/victorzhuk/gohan/std/taint"
+	"github.com/victorzhuk/gohan/testkit/gohantest"
 )
 
 type subflowIn struct{}
@@ -56,6 +60,13 @@ func subflowCharge(ctx context.Context, tokens int) {
 	if ledger, ok := chains.LimitsStateFrom(ctx); ok {
 		ledger.Charge(types.Usage{InputTokens: tokens}, types.Pricing{Input: 0.01})
 	}
+}
+
+type specTool struct{ spec types.ToolSpec }
+
+func (t specTool) Spec() types.ToolSpec { return t.spec }
+func (t specTool) Call(_ context.Context, _ json.RawMessage) (types.ToolResult, error) {
+	return types.ToolResult{}, nil
 }
 
 func TestSubflowsLimits(t *testing.T) {
@@ -394,6 +405,207 @@ func TestSubflowsLimits(t *testing.T) {
 		}
 		if row.State != stores.Finished {
 			t.Errorf("child run state %v: want Finished", row.State)
+		}
+	})
+
+	t.Run("subflows.effect-derived", func(t *testing.T) {
+		s, err := Build(
+			WithModels(&funcModel{}),
+			WithLimits("parent", subflowLimits(nil)),
+			WithNativeAgent(NativeSpec{
+				Request: FlowRequest{Name: "childflow"},
+				Profile: "native",
+				Tools: []types.Tool{
+					specTool{spec: types.ToolSpec{Name: "read", Effect: types.ReadOnly}},
+					specTool{spec: types.ToolSpec{Name: "write", Effect: types.SideEffect}},
+				},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		childRan := false
+		child := FlowFunc[subflowIn, subflowOut]("childflow", func(_ context.Context, _ subflowIn) (subflowOut, error) {
+			childRan = true
+			return subflowOut{}, nil
+		}, AllowAnonymousFlow())
+		tool, err := s.FlowAsTool("child", child, WithDescription("child flow"))
+		if err != nil {
+			t.Fatalf("flow as tool: %v", err)
+		}
+		spec := tool.Spec()
+		if spec.Effect != types.SideEffect {
+			t.Errorf("subflow tool effect %v: want SideEffect", spec.Effect)
+		}
+		dec := permission.DecideCall(context.Background(), nil, &permission.ToolInvocation{
+			Spec: spec,
+			Call: types.ToolUse{ID: "c1", Name: spec.Name},
+		})
+		if dec.Verdict != permission.Ask {
+			t.Errorf("parent gate verdict %v: want Ask for a SideEffect sub-flow call", dec.Verdict)
+		}
+		if childRan {
+			t.Error("child body ran before the parent gate allowed the call")
+		}
+	})
+
+	t.Run("subflows.effect-tighten-only", func(t *testing.T) {
+		s, err := Build(
+			WithModels(&funcModel{}),
+			WithLimits("parent", subflowLimits(nil)),
+			WithNativeAgent(NativeSpec{
+				Request: FlowRequest{Name: "childflow"},
+				Profile: "native",
+				Tools: []types.Tool{
+					specTool{spec: types.ToolSpec{Name: "read", Effect: types.ReadOnly}},
+					specTool{spec: types.ToolSpec{Name: "write", Effect: types.SideEffect}},
+				},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		child := FlowFunc[subflowIn, subflowOut]("childflow", func(_ context.Context, _ subflowIn) (subflowOut, error) {
+			return subflowOut{}, nil
+		}, AllowAnonymousFlow())
+		_, err = s.FlowAsTool("child", child,
+			WithDescription("child flow"),
+			WithChildEffect(types.ReadOnly),
+		)
+		if err == nil {
+			t.Fatal("tightening a SideEffect child to ReadOnly passed")
+		}
+		if !strings.Contains(err.Error(), "ReadOnly") || !strings.Contains(err.Error(), "SideEffect") {
+			t.Errorf("err %q does not name the effect conflict", err)
+		}
+	})
+}
+
+type subflowTaintMetric struct {
+	name  string
+	value int64
+	attrs []types.Attr
+}
+
+type subflowTaintTelemetry struct {
+	metrics []subflowTaintMetric
+}
+
+func (m *subflowTaintTelemetry) StartSpan(ctx context.Context, _ string, _ ...types.Attr) (context.Context, func(...types.Attr)) {
+	return ctx, func(...types.Attr) {}
+}
+
+func (m *subflowTaintTelemetry) Count(_ context.Context, name string, value int64, attrs ...types.Attr) {
+	m.metrics = append(m.metrics, subflowTaintMetric{name: name, value: value, attrs: append([]types.Attr(nil), attrs...)})
+}
+
+func (m *subflowTaintTelemetry) Record(_ context.Context, _ string, _ float64, _ ...types.Attr) {}
+
+type subflowTaintApprovalPolicy struct{}
+
+func (subflowTaintApprovalPolicy) ApprovalPolicy(context.Context, types.RiskTier, string, bool) (permission.ApprovalPolicy, error) {
+	return permission.ApprovalPolicy{}, nil
+}
+
+type subflowInvoice struct {
+	IBAN string `json:"iban"`
+	Name string `json:"name"`
+}
+
+func TestSubflowTaint(t *testing.T) {
+	t.Run("taint.subflow-carries-origin", func(t *testing.T) {
+		const iban = "DE44500105175407324931"
+		mailOrigin := types.Origin{Kind: types.OriginProvider, Name: "mail"}
+		telemetry := &subflowTaintTelemetry{}
+		hook, err := taint.New(taint.Default(), telemetry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		child := FlowFunc[subflowIn, types.Quarantined[subflowInvoice]]("child", func(_ context.Context, _ subflowIn) (types.Quarantined[subflowInvoice], error) {
+			return types.Quarantined[subflowInvoice]{
+				Value:   subflowInvoice{IBAN: iban, Name: "Nordwind GmbH"},
+				Origins: []types.Origin{mailOrigin},
+			}, nil
+		}, AllowAnonymousFlow())
+		pay := gohantest.NewFakeTool("pay_supplier", gohantest.WithToolSpec(func(spec *types.ToolSpec) {
+			spec.Effect = types.SideEffect
+		}))
+		model := gohantest.NewScriptedModel(types.ModelProfile{Name: "native", Caps: types.Caps{Tools: true}},
+			gohantest.ToolCall("child", map[string]any{}),
+			gohantest.ToolCall("pay_supplier", map[string]any{"iban": iban, "note": "settle invoice"}),
+			gohantest.Text("finished"),
+		)
+		log := stores.NewMemorySessionLog(stores.WithSessionPrincipals(types.PrincipalFrom))
+		runs := stores.NewMemoryRuns(stores.WithMemoryRunClock(time.Now), stores.WithMemoryRunInfo(func(ctx context.Context) (types.RunInfo, bool) {
+			principal, ok := types.PrincipalFrom(ctx)
+			return types.RunInfo{Principal: principal}, ok
+		}))
+		checkpoints := stores.NewMemoryCheckpoints(stores.WithMemoryCheckpointClock(time.Now), stores.WithMemoryCheckpointRunInfo(types.RunInfoFrom))
+		storesFor := func() stores.Stores {
+			return stores.Stores{SessionLog: log, Runs: runs, Checkpoints: checkpoints}
+		}
+		// FlowAsTool resolves against a stack; the seed stack shares the
+		// stores and limits the parent run uses so the child books into the
+		// same run tree.
+		seedStack, err := Build(AllowAnonymous(), WithLimits("chat", subflowLimits(nil)), WithStores(storesFor()))
+		if err != nil {
+			t.Fatalf("seed build: %v", err)
+		}
+		childTool, err := seedStack.FlowAsTool("child", child, WithDescription("extract the invoice from the mail"))
+		if err != nil {
+			t.Fatalf("flow as tool: %v", err)
+		}
+		native := NativeSpec{
+			Request: FlowRequest{Name: "chat"},
+			Profile: "native",
+			Tools:   []types.Tool{childTool, pay},
+			TaintPolicy: hook,
+			Assemble: func(_ context.Context, in types.AssembleInput) (types.ModelRequest, error) {
+				return types.ModelRequest{Messages: append(append([]types.Message{}, in.History...), in.Input...)}, nil
+			},
+		}
+		stack, err := Build(
+			AllowAnonymous(),
+			WithTelemetry(telemetry),
+			WithLimits("chat", subflowLimits(nil)),
+			WithStores(storesFor()),
+			WithModels(model),
+			WithNativeAgent(native),
+		)
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		conv, err := NewNativeConversation(stack, "chat",
+			WithConversationRuns(runs),
+			WithConversationEventLog(stores.NewMemoryEventLog(stores.WithMemoryEventLogClock(time.Now))),
+			WithConversationApprovalPolicy(subflowTaintApprovalPolicy{}),
+		)
+		if err != nil {
+			t.Fatalf("NewNativeConversation: %v", err)
+		}
+		ctx := types.WithPrincipal(context.Background(), types.Principal{Tenant: "tenant", Subject: "user"})
+		var susp types.Suspended
+		for ev, sendErr := range conv.Send(ctx, "s1", types.Message{Role: types.RoleUser, Blocks: []types.Block{types.Text{Text: "settle the supplier invoice"}}}) {
+			if sendErr != nil {
+				t.Fatalf("Send: %v", sendErr)
+			}
+			if event, ok := ev.(types.Suspended); ok {
+				susp = event
+			}
+		}
+		if susp.Reason != types.HumanApproval {
+			t.Fatalf("suspension = %+v, want HumanApproval", susp)
+		}
+		req, ok := susp.Payload.(permission.ApprovalRequest)
+		if !ok {
+			t.Fatalf("suspension payload = %T, want permission.ApprovalRequest", susp.Payload)
+		}
+		origin := req.ArgOrigins["iban"]
+		if origin != mailOrigin {
+			t.Fatalf("ArgOrigins[iban] = %+v, want the child's provider origin %+v", origin, mailOrigin)
+		}
+		if origin.Kind == types.OriginTool && origin.Name == "child" {
+			t.Fatalf("ArgOrigins[iban] = %+v: the subflow tool origin must not replace the child's source origin", origin)
 		}
 	})
 }

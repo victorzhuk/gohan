@@ -133,8 +133,7 @@
   "model.version-drift": {
     "capability": "model",
     "origin": "R5j",
-    "title": "version drift",
-    "deferred_to": "M3"
+    "title": "version drift"
   },
   "model.early-break-releases": {
     "capability": "model",
@@ -810,8 +809,7 @@
   "structured-output.constrained": {
     "capability": "structured-output",
     "origin": "R9",
-    "title": "constrained",
-    "deferred_to": "M3"
+    "title": "constrained"
   },
   "structured-output.validate-and-repair": {
     "capability": "structured-output",
@@ -1214,32 +1212,27 @@
   "subflows.fresh-history": {
     "capability": "subflows",
     "origin": "ADR-0091",
-    "title": "fresh history",
-    "deferred_to": "M3"
+    "title": "fresh history"
   },
   "subflows.child-session": {
     "capability": "subflows",
     "origin": "ADR-0091",
-    "title": "child session",
-    "deferred_to": "M3"
+    "title": "child session"
   },
   "subflows.output-guarded": {
     "capability": "subflows",
     "origin": "ADR-0091",
-    "title": "output guarded",
-    "deferred_to": "M3"
+    "title": "output guarded"
   },
   "subflows.effect-derived": {
     "capability": "subflows",
     "origin": "ADR-0091",
-    "title": "side effect dominates",
-    "deferred_to": "M3"
+    "title": "side effect dominates"
   },
   "subflows.effect-tighten-only": {
     "capability": "subflows",
     "origin": "ADR-0091",
-    "title": "tightening only",
-    "deferred_to": "M3"
+    "title": "tightening only"
   },
   "subflows.nested-approval": {
     "capability": "subflows",
@@ -1298,8 +1291,7 @@
   "subflows.cancel-propagates": {
     "capability": "subflows",
     "origin": "ADR-0091",
-    "title": "cancellation",
-    "deferred_to": "M3"
+    "title": "cancellation"
   },
   "subflows.child-events": {
     "capability": "subflows",
@@ -1382,8 +1374,7 @@
   "interop.awaiting-input-invalid": {
     "capability": "interop",
     "origin": "ADR-0092",
-    "title": "invalid input keeps token",
-    "deferred_to": "M3"
+    "title": "invalid input keeps token"
   },
   "interop.annotations-never-raise": {
     "capability": "interop",
@@ -1729,38 +1720,32 @@
   "release.dataset-pinned": {
     "capability": "release",
     "origin": "ADR-0096",
-    "title": "dataset pinned",
-    "deferred_to": "M3"
+    "title": "dataset pinned"
   },
   "release.delta-gate": {
     "capability": "release",
     "origin": "ADR-0096",
-    "title": "delta gate bands",
-    "deferred_to": "M3"
+    "title": "delta gate bands"
   },
   "release.judge-median": {
     "capability": "release",
     "origin": "ADR-0096",
-    "title": "judge median and spread",
-    "deferred_to": "M3"
+    "title": "judge median and spread"
   },
   "release.pairwise-report": {
     "capability": "release",
     "origin": "ADR-0096",
-    "title": "pairwise shadow report",
-    "deferred_to": "M3"
+    "title": "pairwise shadow report"
   },
   "release.import-redacted": {
     "capability": "release",
     "origin": "ADR-0096",
-    "title": "import redacts",
-    "deferred_to": "M3"
+    "title": "import redacts"
   },
   "release.online-sampling": {
     "capability": "release",
     "origin": "ADR-0096",
-    "title": "online sampling off the request path",
-    "deferred_to": "M3"
+    "title": "online sampling off the request path"
   },
   "release.online-bounded": {
     "capability": "release",
@@ -1905,8 +1890,7 @@
   "taint.subflow-carries-origin": {
     "capability": "taint",
     "origin": "ADR-0097",
-    "title": "sub-flow output tainted",
-    "deferred_to": "M3"
+    "title": "sub-flow output tainted"
   },
   "tools.verify-reconciles-unknown": {
     "capability": "tools",
@@ -3077,8 +3061,7 @@
   "stores.pg-auto-migrate-refused-in-prod": {
     "capability": "stores",
     "origin": "R51",
-    "title": "auto-migrate refused in production",
-    "deferred_to": "M3"
+    "title": "auto-migrate refused in production"
   },
   "errors.every-sentinel-has-code": {
     "capability": "messages",
@@ -3848,8 +3831,7 @@
     "origin": "ADR-0090",
     "title": "claim boundary for native resume and deferred-tool selection",
     "owner": "m2-research-report-example",
-    "example": "examples/research-report",
-    "deferred_to": "M2"
+    "example": "examples/research-report"
   },
   "sandbox.handle-owner-exclusive": {
     "capability": "sandbox",

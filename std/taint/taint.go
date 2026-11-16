@@ -61,19 +61,12 @@ func evaluate(ctx context.Context, policy TaintPolicy, cap int, tel types.Teleme
 	}
 	blocks = afterLastUser(blocks)
 	blocks = truncateWindow(ctx, blocks, cap, tel)
-	type segment struct {
-		text   string
-		origin types.Origin
-	}
 	var segments []segment
 	for _, b := range blocks {
-		o := b.BlockOrigin()
-		if o.Kind == types.OriginSystem || o.Kind == types.OriginUser {
+		if o := b.BlockOrigin(); o.Kind == types.OriginSystem || o.Kind == types.OriginUser {
 			continue
 		}
-		for _, t := range blockTexts(b) {
-			segments = append(segments, segment{text: t, origin: o})
-		}
+		collectSegments(&segments, b, b.BlockOrigin())
 	}
 	var taints []types.ArgTaint
 	for path, value := range argStrings(args) {
@@ -139,32 +132,49 @@ func truncateWindow(ctx context.Context, blocks []types.Block, cap int, tel type
 	return blocks[start:]
 }
 
-func blockTexts(b types.Block) []string {
-	switch b := b.(type) {
-	case types.Text:
-		return []string{b.Text}
-	case types.Reasoning:
-		return []string{b.Text}
-	case types.ToolResult:
-		return nestedTexts(b.Content)
-	case types.Document:
-		return nestedTexts(b.Content)
-	}
-	return nil
+type segment struct {
+	text   string
+	origin types.Origin
 }
 
-func nestedTexts(blocks []types.Block) []string {
-	var out []string
-	for _, b := range blocks {
-		out = append(out, blockTexts(b)...)
+// collectSegments flattens one window block to (text, origin) segments. A
+// nested ToolResult carrying its own origin anchors its subtree to that
+// origin, so a quarantined sub-flow result keeps the child's source
+// provenance; blocks without their own origin inherit the enclosing one.
+func collectSegments(out *[]segment, b types.Block, inherited types.Origin) {
+	o := inherited
+	var content []types.Block
+	switch b := b.(type) {
+	case types.ToolResult:
+		if bo := b.BlockOrigin(); bo != (types.Origin{}) {
+			o = bo
+		}
+		content = b.Content
+	case types.Document:
+		if bo := b.BlockOrigin(); bo != (types.Origin{}) {
+			o = bo
+		}
+		content = b.Content
+	case types.Text:
+		*out = append(*out, segment{text: b.Text, origin: o})
+		return
+	case types.Reasoning:
+		*out = append(*out, segment{text: b.Text, origin: o})
+		return
+	default:
+		return
 	}
-	return out
+	for _, c := range content {
+		collectSegments(out, c, o)
+	}
 }
 
 func textBytes(b types.Block) int {
+	var segs []segment
+	collectSegments(&segs, b, types.Origin{})
 	n := 0
-	for _, t := range blockTexts(b) {
-		n += len(t)
+	for _, s := range segs {
+		n += len(s.text)
 	}
 	return n
 }
