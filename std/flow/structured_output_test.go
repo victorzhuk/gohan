@@ -183,4 +183,23 @@ func TestStructuredOutputHardening(t *testing.T) {
 			t.Fatalf("err = %v, want no permanent model error for a bounds violation", err)
 		}
 	})
+
+	t.Run("structured-output.constrained", func(t *testing.T) {
+		m := newConstrainedTextModel("cheap", `{"total":7}`)
+		f := Extract[invoice](recipeStack(t, chains.PromptSet{}, m), "cheap")
+		got, err := f.Invoke(gohanctx(), nil)
+		if err != nil {
+			t.Fatalf("Invoke: %v", err)
+		}
+		if got.Total != 7 {
+			t.Fatalf("result = %+v, want total 7", got)
+		}
+		if m.calls != 1 {
+			t.Fatalf("model calls = %d, want zero repair turns", m.calls)
+		}
+		req := m.requests[0]
+		if len(req.Options.ResponseSchema) == 0 {
+			t.Error("request carried no ResponseSchema under Caps.Constrained")
+		}
+	})
 }
