@@ -22,6 +22,10 @@ type scriptedJudgeModel struct {
 
 	mu    sync.Mutex
 	calls int
+
+	// release, when non-nil, makes every Generate wait until cap(release)
+	// calls have started; the last arrival closes it.
+	release chan struct{}
 }
 
 func (m *scriptedJudgeModel) Profile() types.ModelProfile {
@@ -38,7 +42,18 @@ func (m *scriptedJudgeModel) Generate(ctx context.Context, req types.ModelReques
 	return func(yield func(types.ModelChunk, error) bool) {
 		m.mu.Lock()
 		m.calls++
+		if m.release != nil && m.calls == cap(m.release) {
+			close(m.release)
+		}
 		m.mu.Unlock()
+		if m.release != nil {
+			select {
+			case <-m.release:
+			case <-ctx.Done():
+				yield(types.ModelChunk{}, ctx.Err())
+				return
+			}
+		}
 		u := m.usage
 		yield(types.ModelChunk{Kind: types.DeltaText, Delta: m.delta, Finish: types.FinishStop, Usage: &u}, nil)
 	}
@@ -150,6 +165,7 @@ func TestBudget(t *testing.T) {
 		const extra = 5
 		const n = k + extra
 		m, judge := scriptedJudge()
+		m.release = make(chan struct{}, k)
 		rec := &settleSink{settled: make(chan struct{}, n)}
 		eng, err := NewOnline(1, []Judge{judge}, WithSink(rec, "dest-eval"),
 			WithRedactor(passRedactor{}, types.RedactionPolicy{}))
@@ -165,7 +181,9 @@ func TestBudget(t *testing.T) {
 
 		// Wave 1: k concurrent offers while the window spend is zero — all
 		// k are admitted and settle, consuming exactly the whole budget
-		// with exactly one judge call each.
+		// with exactly one judge call each. The judge's release barrier
+		// holds every Generate until all k have started admission, so no
+		// job can settle before every offer has passed the budget check.
 		var mu sync.Mutex
 		var firstErr error
 		var wg sync.WaitGroup

@@ -157,8 +157,25 @@ the requirement where the assertion exposes a gap. No spec text changes.
 
 ## 5. Floor
 
-- [ ] 5.1 Run the M3 gate. Acceptance: `missing_in_scope=3`, and those three are the blocked
+- [x] 5.1 Run the M3 gate. Acceptance: `missing_in_scope=3`, and those three are the blocked
   `performance.live-*` legs with their admission recorded in
   `openspec/changes/m3-s3-loadtest/lane-report.md`. Verify `timeout 15m task spec:gate GATE=M3`.
-- [ ] 5.2 Run the floor. Acceptance: `task spec`, `task lint` and `task test` exit zero on the
+  - observed: `summary registered=820 subtests=2938 covered=771 missing=49 missing_in_scope=4
+    unregistered=0 failed_legs=0`. The fourth in-scope id is `subflows.child-events`, not
+    `missing_in_scope=3`: the plan's contingency for an id that cannot be implemented as
+    written applies, and the exact spec sentence, the four code sites that drop child
+    identity, and the ADR-scale remedy are recorded under task 2.1. The three
+    `performance.live-*` legs remain blocked and owned by `m3-s3-loadtest`. Nothing was
+    re-deferred; `covered` rose from 753 to 771 (+18 asserted ids) and `subtests` from 2913
+    to 2938.
+- [x] 5.2 Run the floor. Acceptance: `task spec`, `task lint` and `task test` exit zero on the
   tree with the change applied.
+  - observed: `task spec` → `summary … missing_in_scope=0 unregistered=0 failed_legs=0`
+    (M0.5 gate). `task lint` → `0 issues` for the root module, the examples config, the
+    postgres `pgtxlint` leg and the redis module (run through the CI-pinned
+    `golangci-lint@v2.14.0`, since the binary is absent from this environment). `task test`
+    → exit 0 across the workspace. One pre-existing load-sensitive hang in
+    `std/evals.TestBudget` surfaced under parallel packages; the engine's spend-accrued
+    admission rule could skip a racing offer, so the test waited forever for a settle that
+    could not happen. The test now gates its wave-1 judge calls on an arrival barrier; every
+    assertion is unchanged. Repro `go test -short -p 8 -timeout 2m ./std/...` is green.
