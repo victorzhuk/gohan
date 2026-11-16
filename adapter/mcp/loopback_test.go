@@ -195,6 +195,53 @@ func TestLoopback(t *testing.T) {
 			t.Fatalf("second resume: %v, want ErrReplayStateLost", err)
 		}
 	})
+
+	t.Run("interop.awaiting-input-invalid", func(t *testing.T) {
+		flow := &loopFlow{
+			invokeResult: &types.SuspendError{
+				Token:  "cp_invalid",
+				Reason: types.AwaitingInput,
+				Payload: types.InputRequest{
+					Prompt: "pick one",
+					Schema: json.RawMessage(`{"type":"object","properties":{"choice":{"type":"string"}},"required":["choice"]}`),
+				},
+			},
+			resumeOut: rtOut{A: "answered"},
+		}
+		ts := loopServer(t, Expose("roundtrip", flow,
+			InputSchema(json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`)),
+			OutputSchema(json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}}}`)),
+		))
+		_, tool, seam := loopClient(t, ts.URL)
+
+		_, err := tool.Call(loopContext(), json.RawMessage(`{"q":"hi"}`))
+		susp := requireSuspend(t, err, types.AwaitingInput)
+
+		ctx, cancel := loopContextTimeout()
+		defer cancel()
+		_, err = seam.ResumeChild(ctx, susp.Token, gohan.Deliver(json.RawMessage(`{"choice":123}`)))
+		if !errors.Is(err, types.ErrInputInvalid) {
+			t.Fatalf("ResumeChild with non-conforming data: %v, want ErrInputInvalid", err)
+		}
+
+		invokes, resumes := flow.snapshot()
+		if resumes != 0 {
+			t.Fatalf("flow resumes = %d, want 0 after rejected delivery", resumes)
+		}
+
+		out, err := seam.ResumeChild(ctx, susp.Token, gohan.Deliver(json.RawMessage(`{"choice":"a"}`)))
+		if err != nil {
+			t.Fatalf("ResumeChild after rejection: %v", err)
+		}
+		var res map[string]any
+		if json.Unmarshal(out, &res) != nil || res["a"] != "answered" {
+			t.Fatalf("resume = %s, want the flow output", out)
+		}
+		invokes, resumes = flow.snapshot()
+		if invokes != 1 || resumes != 1 {
+			t.Fatalf("flow invokes %d resumes %d, want 1 and 1", invokes, resumes)
+		}
+	})
 }
 
 func TestLoopbackApproval(t *testing.T) {
